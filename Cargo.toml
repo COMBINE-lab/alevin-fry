@@ -8,4 +8,7 @@ authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Rob Patro <rob@cs.umd.edu
 [dependencies]	
 
 libradicl = { path = "libradicl" }
-
+clap = "3.0.0-beta.1"
+#default-features = false
+# Cherry-pick the features you'd like to use
+#features = [ "suggestions", "color" ]
