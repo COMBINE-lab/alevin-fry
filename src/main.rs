@@ -1,7 +1,10 @@
 extern crate clap;
 
-use clap::Clap;
+use std::io::{BufReader};
+use std::fs::File;
 
+
+use clap::Clap;
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
@@ -23,7 +26,7 @@ enum SubCommand {
 struct Read {
     /// Print debug info
     #[clap(short)]
-    debug: bool
+    input: String 
 }
 
 
@@ -31,16 +34,16 @@ fn main() {
     let opts: Opts = Opts::parse();
     println!("I'm using the library: {:?}", libradicl::lib_name());
 
+
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     match opts.subcmd {
         SubCommand::Read(t) => {
-            if t.debug {
-                println!("Printing debug info...");
-            } else {
-                println!("Printing normally...");
-            }
+            let f = File::open(t.input).unwrap();
+            let mut br = BufReader::new(f);
+            let h = libradicl::RADHeader::from_bytes(&mut br);
+            println!("paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
+                      h.is_paired, h.ref_count, h.num_chunks);
         }
     }
-
 }

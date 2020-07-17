@@ -3,3 +3,5 @@ name = "libradicl"
 version = "0.0.1"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Rob Patro <rob@cs.umd.edu>"]
 
+[dependencies]
+byteorder = "~1.3.4"
