@@ -27,7 +27,7 @@ impl RADHeader {
 
     // size of the longest allowable string 
     // plus size of u16.
-    let mut buf = [0u8; 65538];
+    let mut buf = [0u8; 65536];
     reader.read_exact(&mut buf[0..1]).unwrap();
     rh.is_paired = buf[0];
     reader.read_exact(&mut buf[0..8]).unwrap();
