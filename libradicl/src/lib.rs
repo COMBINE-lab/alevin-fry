@@ -33,6 +33,9 @@ impl RADHeader {
     reader.read_exact(&mut buf[0..8]).unwrap();
     rh.ref_count = LittleEndian::read_u64(&buf);
     
+    // we know how many names we will read in.
+    rh.ref_names.reserve_exact(rh.ref_count as usize);
+
     let mut num_read = 0u64;
     while num_read < rh.ref_count {
       reader.read_exact(&mut buf[0..2]).unwrap();
