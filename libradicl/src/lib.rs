@@ -22,10 +22,12 @@ pub struct RADHeader {
 
 impl RADHeader {
   pub fn from_bytes(reader: &mut BufReader<File>) -> RADHeader {
-    //let mut buffer = reader.fill_buf().unwrap();
+    
     let mut rh = RADHeader{ is_paired : 0, ref_count : 0, ref_names : vec![], num_chunks : 0 };
 
-    let mut buf = [0u8; 65536];
+    // size of the longest allowable string 
+    // plus size of u16.
+    let mut buf = [0u8; 65538];
     reader.read_exact(&mut buf[0..1]).unwrap();
     rh.is_paired = buf[0];
     reader.read_exact(&mut buf[0..8]).unwrap();
@@ -37,7 +39,7 @@ impl RADHeader {
       let l : usize = LittleEndian::read_u16(&buf) as usize;
       reader.read_exact(&mut buf[0..l]).unwrap();
       rh.ref_names.push( std::str::from_utf8(&buf[0..l]).unwrap().to_string() );
-      println!("{:?}",rh.ref_names[num_read as usize]);
+      //println!("{:?}",rh.ref_names[num_read as usize]);
       num_read += 1;
     }
 
