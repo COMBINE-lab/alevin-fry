@@ -44,6 +44,15 @@ fn main() {
             let h = libradicl::RADHeader::from_bytes(&mut br);
             println!("paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
                       h.is_paired, h.ref_count, h.num_chunks);
+            // file-level
+            let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+            println!("read {:?} file-level tags", fl_tags.tags.len());
+            // read-level
+            let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+            println!("read {:?} read-level tags", rl_tags.tags.len());
+            // alignment-level
+            let al_tags = libradicl::TagSection::from_bytes(&mut br);
+            println!("read {:?} alignemnt-level tags", al_tags.tags.len());
         }
     }
 }
