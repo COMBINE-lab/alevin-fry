@@ -53,6 +53,33 @@ fn main() {
             // alignment-level
             let al_tags = libradicl::TagSection::from_bytes(&mut br);
             println!("read {:?} alignemnt-level tags", al_tags.tags.len());
+
+            let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+            println!("File-level tag values {:?}", ft_vals);
+
+            let bct = rl_tags.tags[0].typeid;
+            let umit = rl_tags.tags[1].typeid;
+
+            match (bct, umit) {
+                (3, 3) => {
+                    let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
+                    //println!("{:?}", c)
+                },
+                (3, 4) => {
+                    let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
+                    //println!("{:?}", c)
+                },
+                (4, 3) => {
+                    let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
+                    //println!("{:?}", c)
+                },
+                (4, 4) => {
+                    let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
+                    //println!("{:?}", c)
+                },
+                (_, _) => println!("types not supported"),
+            }
+
         }
     }
 }
