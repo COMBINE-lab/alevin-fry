@@ -1,8 +1,10 @@
 // scroll now, explore nom later
 extern crate scroll;
+extern crate fasthash;
 
 use scroll::{Pread}; 
 use std::vec::{Vec};
+use std::collections::HashMap;
 use std::io::{Read, BufReader};
 use std::fs::File;
 
@@ -209,4 +211,13 @@ impl RADHeader {
     rh.num_chunks = buf.pread::<u64>(0).unwrap();
     rh
   }
+}
+
+
+pub fn update_barcode_hist(hist: &mut HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>, chunk: &Chunk) -> () {
+
+  for r in &chunk.reads {
+     *hist.entry(r.bc).or_insert(0) += 1;
+  }
+
 }

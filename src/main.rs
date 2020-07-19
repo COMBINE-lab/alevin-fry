@@ -1,10 +1,11 @@
 extern crate slog;
+extern crate fasthash;
 extern crate slog_term;
 
 extern crate clap;
-
+use fasthash::{sea, RandomState};
 use slog::{Drain, o, info};
-
+use std::collections::HashMap;
 use std::io::{BufReader};
 use std::fs::File;
 
@@ -72,25 +73,33 @@ fn main() {
 
             let mut num_reads: usize = 0;
 
+            
+            let s = RandomState::<sea::Hash64>::new();
+            let mut hm = HashMap::with_hasher(s);
+
             for _ in 0..(h.num_chunks as usize) {
                 match (bct, umit) {
                     (3, 3) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
+                        libradicl::update_barcode_hist(&mut hm, &c);
                         num_reads += c.reads.len();
                         //info!(log, "{:?}", c)
                     },
                     (3, 4) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
+                        libradicl::update_barcode_hist(&mut hm, &c);
                         num_reads += c.reads.len();
                         //info!(log, "{:?}", c)
                     },
                     (4, 3) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
+                        libradicl::update_barcode_hist(&mut hm, &c);
                         num_reads += c.reads.len();
                         //info!(log, "{:?}", c)
                     },
                     (4, 4) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
+                        libradicl::update_barcode_hist(&mut hm, &c);
                         num_reads += c.reads.len();
                         //info!(log, "{:?}", c)
                     },
@@ -99,7 +108,12 @@ fn main() {
             }
 
             info!(log, "observed {:?} reads in {:?} chunks", num_reads, h.num_chunks);
-            
+
+            let mut freq : Vec<u64> = hm.values().cloned().collect();
+            freq.sort_unstable();
+            freq.reverse();
+
+            println!("{:?}", &freq[0..100] );
         }
     }
 }
