@@ -1,4 +1,9 @@
+extern crate slog;
+extern crate slog_term;
+
 extern crate clap;
+
+use slog::{Drain, o, info};
 
 use std::io::{BufReader};
 use std::fs::File;
@@ -32,9 +37,14 @@ struct Read {
 
 fn main() {
     let opts: Opts = Opts::parse();
-    println!("I'm using the library: {:?}", libradicl::lib_name());
 
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    
+    let log = slog::Logger::root(drain, o!());
 
+    info!(log, "I'm using the library: {:?}", libradicl::lib_name());
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     match opts.subcmd {
@@ -42,20 +52,20 @@ fn main() {
             let f = File::open(t.input).unwrap();
             let mut br = BufReader::new(f);
             let h = libradicl::RADHeader::from_bytes(&mut br);
-            println!("paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
+            info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
                       h.is_paired, h.ref_count, h.num_chunks);
             // file-level
             let fl_tags = libradicl::TagSection::from_bytes(&mut br);
-            println!("read {:?} file-level tags", fl_tags.tags.len());
+            info!(log, "read {:?} file-level tags", fl_tags.tags.len());
             // read-level
             let rl_tags = libradicl::TagSection::from_bytes(&mut br);
-            println!("read {:?} read-level tags", rl_tags.tags.len());
+            info!(log, "read {:?} read-level tags", rl_tags.tags.len());
             // alignment-level
             let al_tags = libradicl::TagSection::from_bytes(&mut br);
-            println!("read {:?} alignemnt-level tags", al_tags.tags.len());
+            info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
             let ft_vals = libradicl::FileTags::from_bytes(&mut br);
-            println!("File-level tag values {:?}", ft_vals);
+            info!(log, "File-level tag values {:?}", ft_vals);
 
             let bct = rl_tags.tags[0].typeid;
             let umit = rl_tags.tags[1].typeid;
@@ -67,28 +77,28 @@ fn main() {
                     (3, 3) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
                         num_reads += c.reads.len();
-                        //println!("{:?}", c)
+                        //info!(log, "{:?}", c)
                     },
                     (3, 4) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
                         num_reads += c.reads.len();
-                        //println!("{:?}", c)
+                        //info!(log, "{:?}", c)
                     },
                     (4, 3) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
                         num_reads += c.reads.len();
-                        //println!("{:?}", c)
+                        //info!(log, "{:?}", c)
                     },
                     (4, 4) => {
                         let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
                         num_reads += c.reads.len();
-                        //println!("{:?}", c)
+                        //info!(log, "{:?}", c)
                     },
-                    (_, _) => println!("types not supported")
+                    (_, _) => info!(log, "types not supported")
                 }
             }
 
-            println!("observed {:?} reads in {:?} chunks", num_reads, h.num_chunks);
+            info!(log, "observed {:?} reads in {:?} chunks", num_reads, h.num_chunks);
             
         }
     }

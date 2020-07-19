@@ -96,7 +96,6 @@ impl ReadRecord {
 
     let bc = read_into_u64(reader, bct); 
     let umi = read_into_u64(reader, umit);
-    // println!("BC : {:?}, UMI : {:?}", bc, umi);
 
     let mut rec = Self {
       bc : bc,
@@ -160,7 +159,7 @@ impl TagDesc {
     let mut buf = [0u8; 257];
     reader.read_exact(&mut buf[0..2]).unwrap();
     let str_len = buf.pread::<u16>(0).unwrap() as usize;
-    println!("STR LEN : {:?}", str_len);
+    
     // read str_len + 1 to get the type id that follows the string
     reader.read_exact(&mut buf[0..str_len+1]).unwrap();
     TagDesc {
@@ -176,13 +175,11 @@ impl TagSection {
     let mut buf = [0u8; 2];
     reader.read_exact(&mut buf).unwrap();
     let num_tags = buf.pread::<u16>(0).unwrap() as usize;
-    println!("Will read {:?}", num_tags);
 
     let mut ts = TagSection{ tags: Vec::with_capacity(num_tags) };
 
     for _ in 0..num_tags {
       ts.tags.push( TagDesc::from_bytes(reader) );
-      println!("TAG: {:?}", ts.tags.last().unwrap().name );
     }
 
     ts
@@ -209,7 +206,6 @@ impl RADHeader {
       let l : usize = buf.pread::<u16>(0).unwrap() as usize;
       reader.read_exact(&mut buf[0..l]).unwrap();
       rh.ref_names.push( std::str::from_utf8(&buf[0..l]).unwrap().to_string() );
-      //println!("{:?}",rh.ref_names[num_read as usize]);
       num_read += 1;
     }
 
