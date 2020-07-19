@@ -77,7 +77,6 @@ fn read_into_u64(reader: &mut BufReader<File>, rt : &RADIntID ) -> u64 {
     },
     RADIntID::U32 => {
       reader.read_exact(&mut rbuf[0..4]).unwrap();
-      println!("{:?}", rbuf);
       v = rbuf.pread::<u32>(0).unwrap() as u64;
     },
     RADIntID::U64 => {
@@ -97,7 +96,7 @@ impl ReadRecord {
 
     let bc = read_into_u64(reader, bct); 
     let umi = read_into_u64(reader, umit);
-    println!("BC : {:?}, UMI : {:?}", bc, umi);
+    // println!("BC : {:?}, UMI : {:?}", bc, umi);
 
     let mut rec = Self {
       bc : bc,
