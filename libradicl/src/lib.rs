@@ -1,11 +1,7 @@
 // scroll now, explore nom later
 extern crate scroll;
-extern crate num;
 
-use std::io::Cursor;
-use scroll::{ctx, Pread, LE, Endian, IOread};
-use num::{Integer};
-
+use scroll::{Pread}; 
 use std::vec::{Vec};
 use std::io::{Read, BufReader};
 use std::fs::File;
@@ -65,7 +61,7 @@ pub enum RADIntID {
 
 fn read_into_u64(reader: &mut BufReader<File>, rt : &RADIntID ) -> u64 {
   let mut rbuf = [0u8; 8];
-  let mut v : u64 = 0;
+  let v : u64;
   match rt {
     RADIntID::U8 => {
       reader.read_exact(&mut rbuf[0..1]).unwrap();
@@ -91,23 +87,23 @@ impl ReadRecord {
   pub fn from_bytes(reader: &mut BufReader<File>, bct : &RADIntID, umit : &RADIntID) -> Self {
     let mut rbuf = [0u8; 255];
     
-    reader.read_exact(&mut rbuf[0..4]);
+    reader.read_exact(&mut rbuf[0..4]).unwrap();
     let na = rbuf.pread::<u32>(0).unwrap();
 
     let bc = read_into_u64(reader, bct); 
     let umi = read_into_u64(reader, umit);
 
     let mut rec = Self {
-      bc : bc,
-      umi : umi,
+      bc,
+      umi,
       dirs : Vec::with_capacity(na as usize),
       refs : Vec::with_capacity(na as usize)
     };
 
     for _ in 0..(na as usize) {
-      reader.read_exact(&mut rbuf[0..4]);
+      reader.read_exact(&mut rbuf[0..4]).unwrap();
       let v = rbuf.pread::<u32>(0).unwrap();
-      let dir = if (v & 0x80000000) != 0  { true } else { false };
+      let dir = (v & 0x80000000) != 0; 
       rec.dirs.push( dir );
       rec.refs.push( v & 0x7FFFFFFF );
     }
@@ -120,13 +116,13 @@ impl Chunk {
   pub fn from_bytes(reader: &mut BufReader<File>, bct : RADIntID, umit : RADIntID) -> Self {
     let mut buf = [0u8;8];
 
-    reader.read_exact(&mut buf);
+    reader.read_exact(&mut buf).unwrap();
     let nbytes = buf.pread::<u32>(0).unwrap();
     let nrec = buf.pread::<u32>(4).unwrap();
 
     let mut c = Self {
-      nbytes : nbytes,
-      nrec : nrec,
+      nbytes,
+      nrec,
       reads : Vec::with_capacity(nrec as usize)
     };
 
