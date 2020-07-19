@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::io::{Read, BufReader};
 use std::fs::File;
 
+mod utils;
+
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
 
