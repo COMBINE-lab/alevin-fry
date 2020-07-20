@@ -12,7 +12,7 @@ use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::io::{BufReader};
 use std::fs::File;
-
+use std::io::{BufWriter, Write};
 
 use clap::Clap;
 
@@ -28,15 +28,17 @@ struct Opts {
 #[derive(Clap)]
 enum SubCommand {
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
-    Read(Read),
+    GeneratePermitList(GeneratePermitList),
 }
 
 /// A subcommand for controlling testing
 #[derive(Clap)]
-struct Read {
+struct GeneratePermitList {
     /// Print debug info
     #[clap(short, long)]
     input: String,
+    #[clap(short, long)]
+    output: String,
     #[clap(short, long)]
     top_k: Option<u32>
 }
@@ -75,7 +77,8 @@ fn main() {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     match opts.subcmd {
-        SubCommand::Read(t) => {
+        SubCommand::GeneratePermitList(t) => {
+
             let f = File::open(t.input).unwrap();
             let mut br = BufReader::new(f);
             let h = libradicl::RADHeader::from_bytes(&mut br);
@@ -145,23 +148,34 @@ fn main() {
             // collect all of the barcodes that have a frequency 
             // >= to min_thresh.
             let valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-            // println!("{:?}", valid_bc);
 
-            // generate the map from each permitted barcode to some barcode within
+            // generate the map from each permitted barcode to all barcodes within
             // edit distance 1 of it.
             let full_permit_list = libradicl::utils::generate_permitlist_map(
                 &valid_bc, 
                 ft_vals.bclen as usize).unwrap();
-            //println!("{:?}", full_permit_list);
 
-            for (k,v) in hm.iter_mut() {
-                //full_permit_list.get()
+            let s2 = RandomState::<sea::Hash64>::new();
+            let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2); 
+
+            for (k,v) in hm.iter() {
                 match full_permit_list.get(k) {
                     Some(&valid_key) => { 
-                        println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
+                        *permitted_map.entry(valid_key).or_insert(0u64) += *v;
+                        //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
                     },
                     None => {}
                 }
+            }
+
+            let o_path = std::path::Path::new(&t.output);
+            let parent = o_path.parent().unwrap();
+            std::fs::create_dir_all(&parent).unwrap();
+            let output = std::fs::File::create(&o_path).expect("could not create output.");
+            let mut writer = BufWriter::new(&output);
+
+            for (k,v) in permitted_map {
+                writeln!(&mut writer, "{:?}\t{:?}", k, v);
             }
 
         }
