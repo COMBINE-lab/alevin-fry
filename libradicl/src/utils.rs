@@ -60,8 +60,9 @@ fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>>
         // iterating over all 4 choices of the nucleotide
         for i in 0..=3 {
             let new_insertion_bc = upper_half | get_bit_mask(nt_index, i)? | (lower_half >> 2);
-            let new_deletion_bc =
-                upper_half | get_bit_mask(1, i)? | ((lower_half & !get_bit_mask(nt_index+1, 3)?) << 2);
+            let new_deletion_bc = upper_half
+                | get_bit_mask(1, i)?
+                | ((lower_half & !get_bit_mask(nt_index + 1, 3)?) << 2);
 
             if new_insertion_bc != bc {
                 indels.push(new_insertion_bc);
@@ -129,9 +130,7 @@ mod tests {
 
     #[test]
     fn test_get_all_snps() {
-        let mut output: Vec<u64> = get_all_snps(7, 3).unwrap()
-            .into_iter()
-            .collect();
+        let mut output: Vec<u64> = get_all_snps(7, 3).unwrap().into_iter().collect();
         output.sort();
 
         assert_eq!(output, vec![3, 4, 5, 6, 11, 15, 23, 39, 55]);
@@ -139,13 +138,11 @@ mod tests {
 
     #[test]
     fn test_get_all_indels() {
-        let mut output: Vec<u64> = get_all_indels(7, 3).unwrap()
-            .into_iter()
-            .collect();
+        let mut output: Vec<u64> = get_all_indels(7, 3).unwrap().into_iter().collect();
         output.sort();
         output.dedup();
 
-        assert_eq!(output, vec![1,4,5,6,9,12,13,14,15,28,29,30,31]);
+        assert_eq!(output, vec![1, 4, 5, 6, 9, 12, 13, 14, 15, 28, 29, 30, 31]);
     }
 
     #[test]
@@ -158,7 +155,10 @@ mod tests {
         output.sort();
         output.dedup();
 
-        assert_eq!(output, vec![1,3,4,5,6,9,11,12,13,14,15,23,28,29,30,31,39,55]);
+        assert_eq!(
+            output,
+            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+        );
     }
 
     #[test]
@@ -169,6 +169,9 @@ mod tests {
         output.sort();
         output.dedup();
 
-        assert_eq!(output, vec![1,3,4,5,6,9,11,12,13,14,15,23,28,29,30,31,39,55]);
+        assert_eq!(
+            output,
+            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+        );
     }
 }
