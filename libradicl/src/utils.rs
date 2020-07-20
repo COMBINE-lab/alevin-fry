@@ -10,6 +10,10 @@ fn get_bit_mask(nt_index: usize, fill_with: u64) -> Result<u64, Box<dyn Error>> 
 
 fn get_all_snps(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
     assert!(
+        bc <= 2u64.pow(2 * bc_length as u32),
+        "the barcode id is larger than possible (based on barcode length)"
+    );
+    assert!(
         bc_length <= 32,
         "barcode length greater than 32 not supported"
     );
@@ -35,6 +39,10 @@ fn get_all_snps(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
 
 fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
     assert!(
+        bc <= 2u64.pow(2 * bc_length as u32),
+        "the barcode id is larger than possible (based on barcode length)"
+    );
+    assert!(
         bc_length <= 32,
         "barcode length greater than 32 not supported"
     );
@@ -53,7 +61,7 @@ fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>>
         for i in 0..=3 {
             let new_insertion_bc = upper_half | get_bit_mask(nt_index, i)? | (lower_half >> 2);
             let new_deletion_bc =
-                upper_half | get_bit_mask(1, i)? | (lower_half & !get_bit_mask(nt_index, 3)?);
+                upper_half | get_bit_mask(1, i)? | ((lower_half & !get_bit_mask(nt_index+1, 3)?) << 2);
 
             if new_insertion_bc != bc {
                 indels.push(new_insertion_bc);
@@ -103,4 +111,64 @@ pub fn generate_whitelist_hash(
     }
 
     Ok(one_edit_barcode_hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use utils::*;
+
+    #[test]
+    fn test_get_bit_mask() {
+        let mut output = Vec::new();
+        for i in 0..=3 {
+            let mask = get_bit_mask(2, i).unwrap();
+            output.push(mask);
+        }
+        assert_eq!(output, vec![0, 4, 8, 12]);
+    }
+
+    #[test]
+    fn test_get_all_snps() {
+        let mut output: Vec<u64> = get_all_snps(7, 3).unwrap()
+            .into_iter()
+            .collect();
+        output.sort();
+
+        assert_eq!(output, vec![3, 4, 5, 6, 11, 15, 23, 39, 55]);
+    }
+
+    #[test]
+    fn test_get_all_indels() {
+        let mut output: Vec<u64> = get_all_indels(7, 3).unwrap()
+            .into_iter()
+            .collect();
+        output.sort();
+        output.dedup();
+
+        assert_eq!(output, vec![1,4,5,6,9,12,13,14,15,28,29,30,31]);
+    }
+
+    #[test]
+    fn test_get_all_one_edit_neighbors() {
+        let mut neighbors: HashSet<u64> = HashSet::new();
+        get_all_one_edit_neighbors(7, 3, &mut neighbors).unwrap();
+
+        let mut output: Vec<u64> = neighbors.into_iter().collect();
+
+        output.sort();
+        output.dedup();
+
+        assert_eq!(output, vec![1,3,4,5,6,9,11,12,13,14,15,23,28,29,30,31,39,55]);
+    }
+
+    #[test]
+    fn test_generate_whitelist_hash() {
+        let neighbors: HashSet<u64> = generate_whitelist_hash(&vec![7], 3).unwrap();
+        let mut output: Vec<u64> = neighbors.into_iter().collect();
+
+        output.sort();
+        output.dedup();
+
+        assert_eq!(output, vec![1,3,4,5,6,9,11,12,13,14,15,23,28,29,30,31,39,55]);
+    }
 }
