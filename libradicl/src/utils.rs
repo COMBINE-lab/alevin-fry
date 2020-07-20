@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
 fn get_bit_mask(nt_index: usize, fill_with: u64) -> Result<u64, Box<dyn Error>> {
@@ -92,7 +92,7 @@ fn get_all_one_edit_neighbors(
     Ok(())
 }
 
-pub fn generate_whitelist_hash(
+pub fn generate_whitelist_set(
     whitelist_bcs: &Vec<u64>,
     bc_length: usize,
 ) -> Result<HashSet<u64>, Box<dyn Error>> {
@@ -112,6 +112,38 @@ pub fn generate_whitelist_hash(
     }
 
     Ok(one_edit_barcode_hash)
+}
+
+/**
+ * generates a map that contains all one edit distance neighbors
+ * of the permitted barcodes.  The key is the neighbor and the value
+ * is the original permitted barcode to which it maps.
+ **/
+pub fn generate_permitlist_map(
+    permit_bcs: &Vec<u64>,
+    bc_length: usize,
+) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
+    let num_bcs = permit_bcs.len();
+
+    let mut one_edit_barcode_map: HashMap<u64, u64> = HashMap::with_capacity(10 * num_bcs);
+    // first insert everything already in the explicit permitlist
+    for bc in permit_bcs {
+        one_edit_barcode_map.insert(*bc, *bc);
+    }
+
+    // reserved space for 3*length SNP
+    // + 4 * (length -1) insertion
+    // + 4 * (length -1) deletion
+    let mut neighbors: HashSet<u64> = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
+
+    for bc in permit_bcs {
+        get_all_one_edit_neighbors(bc.clone(), bc_length, &mut neighbors)?;
+        for n in &neighbors {
+            one_edit_barcode_map.entry(*n).or_insert(*bc);
+        }
+    }
+
+    Ok(one_edit_barcode_map)
 }
 
 #[cfg(test)]

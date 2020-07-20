@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{Read, BufReader};
 use std::fs::File;
 
-mod utils;
+pub mod utils;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
@@ -222,4 +222,12 @@ pub fn update_barcode_hist(hist: &mut HashMap<u64, u64, fasthash::RandomState<fa
      *hist.entry(r.bc).or_insert(0) += 1;
   }
 
+}
+
+pub fn permit_list_from_threshold(
+  hist : &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+  min_freq: u64) -> Vec<u64> {
+
+  let valid_bc : Vec<u64> = hist.iter().filter_map(|(k,v)| if v >= &min_freq { Some(*k) } else {None}).collect();
+  valid_bc
 }

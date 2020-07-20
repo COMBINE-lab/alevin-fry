@@ -12,6 +12,8 @@ slog = "2.5.2"
 slog-term = "2.6.0"
 slog-async = "2.5.0"
 fasthash = "0.4.0"
+needletail = "0.4"
+rand = "*"
 #default-features = false
 # Cherry-pick the features you'd like to use
 #features = [ "suggestions", "color" ]

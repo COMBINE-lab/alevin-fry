@@ -1,10 +1,14 @@
 extern crate slog;
 extern crate fasthash;
 extern crate slog_term;
-
+extern crate needletail;
+extern crate rand;
 extern crate clap;
+
+use rand::Rng;
 use fasthash::{sea, RandomState};
 use slog::{Drain, o, info};
+use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::io::{BufReader};
 use std::fs::File;
@@ -31,10 +35,23 @@ enum SubCommand {
 #[derive(Clap)]
 struct Read {
     /// Print debug info
-    #[clap(short)]
-    input: String 
+    #[clap(short, long)]
+    input: String,
+    #[clap(short, long)]
+    top_k: Option<u32>
 }
 
+fn gen_random_kmer(k : usize) -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"ACGT";
+    let mut rng = rand::thread_rng();
+    let s : String = (0..k).map(|_| {
+            let idx = rng.gen_range(0, CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+    s
+}
 
 fn main() {
     let opts: Opts = Opts::parse();
@@ -44,6 +61,15 @@ fn main() {
     let drain = slog_async::Async::new(drain).build().fuse();
     
     let log = slog::Logger::root(drain, o!());
+
+    /*
+    for _ in (0..1000) {
+        let sk = gen_random_kmer(16);
+        let (_, k, _) = BitNuclKmer::new(sk.as_bytes(), 16, false).next().unwrap();
+        println!("{}\t{:?}", sk, k.0);
+    }
+    */
+
 
     info!(log, "I'm using the library: {:?}", libradicl::lib_name());
     // You can handle information about subcommands by requesting their matches by name
@@ -113,7 +139,31 @@ fn main() {
             freq.sort_unstable();
             freq.reverse();
 
-            println!("{:?}", &freq[0..100] );
+            let num_bc = t.top_k.unwrap_or((freq.len() - 1)as u32) as usize;
+            let min_freq = freq[num_bc];
+
+            // collect all of the barcodes that have a frequency 
+            // >= to min_thresh.
+            let valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+            // println!("{:?}", valid_bc);
+
+            // generate the map from each permitted barcode to some barcode within
+            // edit distance 1 of it.
+            let full_permit_list = libradicl::utils::generate_permitlist_map(
+                &valid_bc, 
+                ft_vals.bclen as usize).unwrap();
+            //println!("{:?}", full_permit_list);
+
+            for (k,v) in hm.iter_mut() {
+                //full_permit_list.get()
+                match full_permit_list.get(k) {
+                    Some(&valid_key) => { 
+                        println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
+                    },
+                    None => {}
+                }
+            }
+
         }
     }
 }
