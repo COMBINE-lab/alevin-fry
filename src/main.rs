@@ -83,6 +83,9 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
     let mut br = BufReader::new(f);
         
     let h = libradicl::RADHeader::from_bytes(&mut br);
+
+    let end_header_pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
+
     info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
               h.is_paired, h.ref_count, h.num_chunks);
     // file-level
@@ -147,6 +150,7 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
     let mut allocated_records = 0;
     let mut total_allocated_records = 0;
     let mut last_idx = 0;
+    let mut num_output_chunks = 0;
 
     while last_idx < tsv_map.len() {
         allocated_records = 0;
@@ -166,6 +170,7 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
             }
         }
 
+        num_output_chunks += output_cache.len();
         total_allocated_records += allocated_records;
         last_idx += init_offset;
 
@@ -181,6 +186,10 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
         info!(log, "total collated {:?} / {:?}", total_allocated_records, total_to_collate);
         info!(log, "last index processed {:?} / {:?}", last_idx, tsv_map.len());
     }
+
+    info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
+    owriter.get_ref().seek(SeekFrom::Start( end_header_pos - (std::mem::size_of::<u64>() as u64) ));
+    owriter.write(&num_output_chunks.to_le_bytes());
 
     Ok(())
 }
