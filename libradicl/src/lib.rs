@@ -10,6 +10,7 @@ use std::io::{BufWriter, Write};
 use std::fs::File;
 
 pub mod utils;
+pub mod collate;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
