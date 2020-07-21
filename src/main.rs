@@ -4,7 +4,11 @@ extern crate slog_term;
 extern crate needletail;
 extern crate rand;
 extern crate clap;
+extern crate serde;
+extern crate bincode;
 
+use bincode::{deserialize, serialize};
+use serde::{Serialize, Deserialize};
 use rand::Rng;
 use fasthash::{sea, RandomState};
 use slog::{Drain, o, info};
@@ -38,7 +42,7 @@ struct GeneratePermitList {
     #[clap(short, long)]
     input: String,
     #[clap(short, long)]
-    output: String,
+    output_dir: String,
     #[clap(short, long)]
     top_k: Option<u32>
 }
@@ -168,9 +172,9 @@ fn main() {
                 }
             }
 
-            let o_path = std::path::Path::new(&t.output);
-            let parent = o_path.parent().unwrap();
+            let parent = std::path::Path::new(&t.output_dir);
             std::fs::create_dir_all(&parent).unwrap();
+            let o_path = parent.join("permit_freq.tsv"); 
             let output = std::fs::File::create(&o_path).expect("could not create output.");
             let mut writer = BufWriter::new(&output);
 
@@ -178,6 +182,10 @@ fn main() {
                 writeln!(&mut writer, "{:?}\t{:?}", k, v);
             }
 
+            let s_path = parent.join("permit_map.bin"); 
+            let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
+            let mut s_writer = BufWriter::new(&s_file);
+            bincode::serialize_into(&mut s_writer, &full_permit_list);
         }
     }
 }
