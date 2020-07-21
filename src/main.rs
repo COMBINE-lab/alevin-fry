@@ -109,21 +109,78 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile);
     }
+    
+    let mut owriter = BufWriter::new(ofile);
 
     type TSVRec = (u64, u64);
-    let mut tsv_map = HashMap::<u64, u64>::new();
+    let mut tsv_map = Vec::<(u64,u64)>::new();//HashMap::<u64, u64>::new();
 
     let freq_file = std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
     let mut rdr = csv::ReaderBuilder::new()
                   .has_headers(false)
                   .delimiter(b'\t').from_reader(freq_file);
+    
+    let mut total_to_collate = 0;
     for result in rdr.deserialize() {
         let record : TSVRec = result?;
-        tsv_map.insert(record.0, record.1);
+        tsv_map.push(record);
+        total_to_collate += record.1;
     }
 
     info!(log, "size of TSVMap = {:?}", tsv_map.len());
     info!(log, "tsv_map = {:?}", tsv_map);
+
+    // get the correction map
+    let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
+    let correct_map : HashMap<u64,u64> = bincode::deserialize_from(&cmfile).unwrap();
+
+    info!(log, "deserialized correction map of length : {:?}", correct_map.len());
+
+    let mut pass_num = 1;
+    let cc = libradicl::ChunkConfig{
+                num_chunks : h.num_chunks, 
+                bc_type : bct,
+                umi_type : umit
+            };
+
+    let mut output_cache = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+    let mut allocated_records = 0;
+    let mut total_allocated_records = 0;
+    let mut last_idx = 0;
+
+    while last_idx < tsv_map.len() {
+        allocated_records = 0;
+        output_cache.clear();
+
+        // The tsv_map tells us, for each "true" barcode
+        // how many records belong to it.  We can scan this information
+        // to determine what true barcodes we will keep in memory. 
+        let init_offset = last_idx;
+        for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
+            output_cache.insert(rec.0, libradicl::CorrectedCBChunk::from_counter(rec.1));
+            allocated_records += rec.1;
+            last_idx = i + 1;
+            if allocated_records >= (t.max_records as u64){
+                info!(log, "pass {:?} will collate {:?} records", pass_num, allocated_records);
+                break;
+            }
+        }
+
+        total_allocated_records += allocated_records;
+        last_idx += init_offset;
+
+        // collect the output for the current barcode set
+        libradicl::collect_records(&mut br, &cc, &correct_map, &mut output_cache);
+
+        // dump the output we have
+        libradicl::dump_output_cache(&mut owriter, &output_cache);
+
+        // reset the reader to start of the chunks
+        br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
+        pass_num += 1;
+        info!(log, "total collated {:?} / {:?}", total_allocated_records, total_to_collate);
+        info!(log, "last index processed {:?} / {:?}", last_idx, tsv_map.len());
+    }
 
     Ok(())
 }

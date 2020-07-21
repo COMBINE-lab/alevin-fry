@@ -59,11 +59,24 @@ pub struct Chunk {
 
 
 #[derive(Debug)]
-struct CorrectedCBChunk {
+pub struct CorrectedCBChunk {
+  remaining_records : u64,
   corrected_bc : u64,
-  umis : Vec<u64>,
-  ref_offsets : Vec<u32>,
-  ref_ids : Vec<u32>
+  umis : Vec::<u64>,
+  ref_offsets : Vec::<u32>,
+  ref_ids : Vec::<u32>
+}
+
+impl CorrectedCBChunk {
+  pub fn from_counter(num_remain : u64) -> CorrectedCBChunk {
+    CorrectedCBChunk {
+      remaining_records : num_remain,
+      corrected_bc : 0,
+      umis : Vec::<u64>::with_capacity(num_remain as usize),
+      ref_offsets : Vec::<u32>::with_capacity(num_remain as usize),
+      ref_ids : Vec::<u32>::with_capacity(3*num_remain as usize)
+    }
+  }
 }
 
 pub enum RADIntID {
@@ -71,6 +84,44 @@ pub enum RADIntID {
   U16,
   U32,
   U64
+}
+
+pub struct ChunkConfig {
+  pub num_chunks : u64,
+  pub bc_type : u8,
+  pub umi_type : u8
+}
+
+pub fn collect_records(reader: &mut BufReader<File>, 
+                       chunk_config : &ChunkConfig,
+                       correct_map : &HashMap::<u64, u64>, 
+                       output_cache : &mut HashMap::<u64, CorrectedCBChunk>) -> () {
+  // NOTE: since the chunks are independent, this part could be multithreaded
+  for _ in 0..(chunk_config.num_chunks as usize) {
+    match (chunk_config.bc_type, chunk_config.umi_type) {
+        (3, 3) => {
+            process_corrected_cb_chunk(
+                      reader, RADIntID::U32, RADIntID::U32,
+                      correct_map, output_cache);
+        },
+        (3, 4) => {
+          process_corrected_cb_chunk(
+            reader, RADIntID::U32, RADIntID::U64,
+                      correct_map, output_cache);
+        },
+        (4, 3) => {
+          process_corrected_cb_chunk(
+            reader, RADIntID::U64, RADIntID::U32,
+            correct_map, output_cache);
+        },
+        (4, 4) => {
+          process_corrected_cb_chunk(
+            reader, RADIntID::U64, RADIntID::U32,
+            correct_map, output_cache);
+        },
+        (_, _) => println!("types not supported")
+    }
+  }
 }
 
 fn read_into_u64(reader: &mut BufReader<File>, rt : &RADIntID ) -> u64 {
@@ -124,6 +175,123 @@ impl ReadRecord {
 
     rec
   }
+
+  pub fn from_bytes_keep_ori(reader: &mut BufReader<File>, bct : &RADIntID, umit : &RADIntID) -> Self {
+    let mut rbuf = [0u8; 255];
+    
+    reader.read_exact(&mut rbuf[0..4]).unwrap();
+    let na = rbuf.pread::<u32>(0).unwrap();
+
+    let bc = read_into_u64(reader, bct); 
+    let umi = read_into_u64(reader, umit);
+
+    let mut rec = Self {
+      bc,
+      umi,
+      dirs : Vec::with_capacity(na as usize),
+      refs : Vec::with_capacity(na as usize)
+    };
+
+    for _ in 0..(na as usize) {
+      reader.read_exact(&mut rbuf[0..4]).unwrap();
+      let v = rbuf.pread::<u32>(0).unwrap();
+      //let dir = (v & 0x80000000) != 0; 
+      //rec.dirs.push( dir );
+      rec.refs.push(v);
+    }
+
+    rec
+  }
+}
+
+pub fn process_corrected_cb_chunk(reader: &mut BufReader<File>, 
+  bct : RADIntID, umit : RADIntID,
+  correct_map : &HashMap::<u64,u64>,
+  output_cache: &mut HashMap::<u64, CorrectedCBChunk>) -> () {
+ 
+    let mut buf = [0u8;8];
+
+    // get the number of bytes and records for 
+    // the next chunk
+    reader.read_exact(&mut buf).unwrap();
+    let nbytes = buf.pread::<u32>(0).unwrap();
+    let nrec = buf.pread::<u32>(4).unwrap();
+
+    // for each record, read it
+    for _ in 0..(nrec as usize) {
+      let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit);
+
+      // if this record had a correct or correctable barcode
+      match correct_map.get(&rr.bc) {
+      Some(corrected_id) => {
+        // key should always be present
+        match output_cache.get_mut(corrected_id) {
+          Some(v) => {
+            // update the corresponding corrected chunk entry
+            v.umis.push(rr.umi);
+            let ref_offset = v.ref_ids.len() as u32;
+            v.ref_offsets.push(ref_offset);
+            v.ref_ids.extend(&rr.refs);
+            v.remaining_records -= 1;
+            //println!("adding record for {}, remaining {}", corrected_id, v.remaining_records);
+          },
+          None => {}
+        }
+      },
+      None => { /* drop it like it's hot */ }
+    }
+  }
+
+}
+
+fn as_u8_slice(v: &[u32]) -> &[u8] {
+  unsafe {
+      std::slice::from_raw_parts(
+          v.as_ptr() as *const u8,
+          v.len() * std::mem::size_of::<u32>(),
+      )
+  }
+}
+
+pub fn dump_output_cache(owriter : &mut BufWriter<File>, 
+                         output_cache : &HashMap<u64, CorrectedCBChunk> ) -> () {
+  
+  for (bc, chunk) in output_cache.iter() {
+    // number of bytes 
+    let mut nbytes : u32 = 0;
+    nbytes += (chunk.ref_offsets.len() * 4) as u32;
+    // umis
+    nbytes += (chunk.umis.len() * 4) as u32;
+    // barcodes
+    nbytes += (chunk.umis.len() * 4) as u32;
+    // num alignment fields
+    nbytes += (chunk.umis.len() * 4) as u32;
+
+    let mut nrec = chunk.umis.len() as u32;
+
+    owriter.write(&nbytes.to_le_bytes());
+    owriter.write(&nrec.to_le_bytes());
+
+    for i in 0..chunk.umis.len() {
+      let s = chunk.ref_offsets[i];
+      let e = if (i == chunk.umis.len() - 1) { chunk.ref_ids.len() as u32 } else { chunk.ref_offsets[i+1] };
+
+      // num alignments 
+      let num_aln = (e - s) as u32;
+      // cb 
+      let cb = chunk.corrected_bc as u32;
+      // umi
+      let umi = chunk.umis[i] as u32;
+
+      owriter.write(&num_aln.to_le_bytes());
+      owriter.write(&cb.to_le_bytes());
+      owriter.write(&umi.to_le_bytes());
+      owriter.write(as_u8_slice(&chunk.ref_ids[(s as usize)..(e as usize)]));
+    }
+
+
+  }
+
 }
 
 impl Chunk {
