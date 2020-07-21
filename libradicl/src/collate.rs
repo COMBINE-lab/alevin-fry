@@ -91,7 +91,7 @@ pub fn collate(input_dir : String, rad_file : String, max_records : u32, log : &
     let pbar = ProgressBar::new(total_to_collate);
     pbar.set_style(ProgressStyle::default_bar()
     .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
-    .progress_chars("=> "));
+    .progress_chars("╢▌▌░╟"));
 
     while last_idx < tsv_map.len() {
         allocated_records = 0;

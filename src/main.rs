@@ -33,7 +33,9 @@ enum SubCommand {
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
     GeneratePermitList(GeneratePermitList),
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
-    Collate(Collate)
+    Collate(Collate),
+    #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
+    Quant(Quant)
 }
 
 /// A subcommand for controlling testing
@@ -57,6 +59,13 @@ struct Collate {
    rad_file : String,
    #[clap(short, long, default_value = "10000000")]
    max_records : u32
+}
+
+#[derive(Clap)]
+struct Quant {
+   /// 
+   #[clap(short, long)]
+   input_dir : String,
 }
 
 #[allow(dead_code)]
@@ -205,6 +214,9 @@ fn main() {
         },
         SubCommand::Collate(t) => {
             libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, &log).expect("could not collate.");
+        },
+        SubCommand::Quant(t) => {
+            libradicl::quant::quantify(t.input_dir, &log).expect("could not quantify rad file.");
         }
     }
 }
