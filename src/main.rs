@@ -6,7 +6,9 @@ extern crate rand;
 extern crate clap;
 extern crate serde;
 extern crate bincode;
+extern crate indicatif;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use bincode::{deserialize, serialize};
 use serde::{Serialize, Deserialize};
 use rand::Rng;
@@ -152,6 +154,12 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
     let mut last_idx = 0;
     let mut num_output_chunks = 0;
 
+
+    let bar = ProgressBar::new(total_to_collate);
+    bar.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
+    .progress_chars("=> "));
+
     while last_idx < tsv_map.len() {
         allocated_records = 0;
         output_cache.clear();
@@ -165,7 +173,7 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
             allocated_records += rec.1;
             last_idx = i + 1;
             if allocated_records >= (t.max_records as u64){
-                info!(log, "pass {:?} will collate {:?} records", pass_num, allocated_records);
+                //info!(log, "pass {:?} will collate {:?} records", pass_num, allocated_records);
                 break;
             }
         }
@@ -183,13 +191,16 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
         // reset the reader to start of the chunks
         br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
         pass_num += 1;
-        info!(log, "total collated {:?} / {:?}", total_allocated_records, total_to_collate);
-        info!(log, "last index processed {:?} / {:?}", last_idx, tsv_map.len());
+        //info!(log, "total collated {:?} / {:?}", total_allocated_records, total_to_collate);
+        //info!(log, "last index processed {:?} / {:?}", last_idx, tsv_map.len());
+        bar.inc(allocated_records);
     }
 
-    info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
+    //info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
     owriter.get_ref().seek(SeekFrom::Start( end_header_pos - (std::mem::size_of::<u64>() as u64) ));
     owriter.write(&num_output_chunks.to_le_bytes());
+    let pb_msg = format!("finished collating in {} passes", pass_num);
+    bar.finish_with_message(&pb_msg);
 
     Ok(())
 }
