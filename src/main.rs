@@ -16,7 +16,7 @@ use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::io::{BufReader};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write, Read, Seek, SeekFrom};
 
 use clap::Clap;
 
@@ -33,6 +33,8 @@ struct Opts {
 enum SubCommand {
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
     GeneratePermitList(GeneratePermitList),
+    #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
+    Collate(Collate)
 }
 
 /// A subcommand for controlling testing
@@ -47,6 +49,17 @@ struct GeneratePermitList {
     top_k: Option<u32>
 }
 
+#[derive(Clap)]
+struct Collate {
+   /// 
+   #[clap(short, long)]
+   input_dir : String,
+   #[clap(short, long)]
+   rad_file : String,
+   #[clap(short, long, default_value = "10000000")]
+   max_records : u32
+}
+
 fn gen_random_kmer(k : usize) -> String {
     use rand::Rng;
     const CHARSET: &[u8] = b"ACGT";
@@ -57,6 +70,62 @@ fn gen_random_kmer(k : usize) -> String {
         })
         .collect();
     s
+}
+
+
+fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::Error>> {
+
+    let parent = std::path::Path::new(&t.input_dir);
+    let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
+    let mut f = File::open(&t.rad_file).unwrap();
+    let f2 = f.try_clone().unwrap();
+
+    let mut br = BufReader::new(f);
+        
+    let h = libradicl::RADHeader::from_bytes(&mut br);
+    info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
+              h.is_paired, h.ref_count, h.num_chunks);
+    // file-level
+    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    // read-level
+    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+    // alignment-level
+    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+
+    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    info!(log, "File-level tag values {:?}", ft_vals);
+
+    let bct = rl_tags.tags[0].typeid;
+    let umit = rl_tags.tags[1].typeid;
+    
+    let pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
+
+    // copy the header 
+    {
+        br.get_mut().seek(SeekFrom::Start(0));
+        let mut br2 = BufReader::new(br.get_ref());
+        std::io::copy(&mut br2.by_ref().take(pos), &mut ofile);
+    }
+
+    type TSVRec = (u64, u64);
+    let mut tsv_map = HashMap::<u64, u64>::new();
+
+    let freq_file = std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
+    let mut rdr = csv::ReaderBuilder::new()
+                  .has_headers(false)
+                  .delimiter(b'\t').from_reader(freq_file);
+    for result in rdr.deserialize() {
+        let record : TSVRec = result?;
+        tsv_map.insert(record.0, record.1);
+    }
+
+    info!(log, "size of TSVMap = {:?}", tsv_map.len());
+    info!(log, "tsv_map = {:?}", tsv_map);
+
+    Ok(())
 }
 
 fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u64, Box<dyn std::error::Error>> {
@@ -194,6 +263,9 @@ fn main() {
         SubCommand::GeneratePermitList(t) => {
             let nc = generate_permit_list(t, &log).unwrap();
             info!(log, "total number of corrected barcodes : {}", nc);
+        },
+        SubCommand::Collate(t) => {
+            collate(t, &log).unwrap();
         }
     }
 }

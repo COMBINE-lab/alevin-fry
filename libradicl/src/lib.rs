@@ -6,6 +6,7 @@ use scroll::{Pread};
 use std::vec::{Vec};
 use std::collections::HashMap;
 use std::io::{Read, BufReader};
+use std::io::{BufWriter, Write, Seek, SeekFrom};
 use std::fs::File;
 
 pub mod utils;
@@ -54,6 +55,15 @@ pub struct Chunk {
   pub nbytes: u32,
   pub nrec: u32,
   pub reads: Vec<ReadRecord>
+}
+
+
+#[derive(Debug)]
+struct CorrectedCBChunk {
+  corrected_bc : u64,
+  umis : Vec<u64>,
+  ref_offsets : Vec<u32>,
+  ref_ids : Vec<u32>
 }
 
 pub enum RADIntID {
