@@ -9,12 +9,10 @@ extern crate bincode;
 extern crate indicatif;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use bincode::{deserialize, serialize};
-use serde::{Serialize, Deserialize};
 use rand::Rng;
 use fasthash::{sea, RandomState};
 use slog::{Drain, o, info};
-use needletail::bitkmer::BitNuclKmer;
+//use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::io::{BufReader};
 use std::fs::File;
@@ -62,8 +60,8 @@ struct Collate {
    max_records : u32
 }
 
+#[allow(dead_code)]
 fn gen_random_kmer(k : usize) -> String {
-    use rand::Rng;
     const CHARSET: &[u8] = b"ACGT";
     let mut rng = rand::thread_rng();
     let s : String = (0..k).map(|_| {
@@ -79,17 +77,16 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
 
     let parent = std::path::Path::new(&t.input_dir);
     let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
-    let mut f = File::open(&t.rad_file).unwrap();
-    let f2 = f.try_clone().unwrap();
+    let i_file = File::open(&t.rad_file).unwrap();
 
-    let mut br = BufReader::new(f);
+    let mut br = BufReader::new(i_file);
         
-    let h = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RADHeader::from_bytes(&mut br);
 
     let end_header_pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
 
     info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
-              h.is_paired, h.ref_count, h.num_chunks);
+              hdr.is_paired, hdr.ref_count, hdr.num_chunks);
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
@@ -110,9 +107,9 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
 
     // copy the header 
     {
-        br.get_mut().seek(SeekFrom::Start(0));
+        br.get_mut().seek(SeekFrom::Start(0)).expect("could not get read pointer.");
         let mut br2 = BufReader::new(br.get_ref());
-        std::io::copy(&mut br2.by_ref().take(pos), &mut ofile);
+        std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
     
     let mut owriter = BufWriter::new(ofile);
@@ -143,20 +140,20 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
 
     let mut pass_num = 1;
     let cc = libradicl::ChunkConfig{
-                num_chunks : h.num_chunks, 
+                num_chunks : hdr.num_chunks, 
                 bc_type : bct,
                 umi_type : umit
             };
 
     let mut output_cache = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
-    let mut allocated_records = 0;
+    let mut allocated_records;
     let mut total_allocated_records = 0;
     let mut last_idx = 0;
     let mut num_output_chunks = 0;
 
 
-    let bar = ProgressBar::new(total_to_collate);
-    bar.set_style(ProgressStyle::default_bar()
+    let pbar = ProgressBar::new(total_to_collate);
+    pbar.set_style(ProgressStyle::default_bar()
     .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
     .progress_chars("=> "));
 
@@ -193,24 +190,30 @@ fn collate(t : Collate, log : &slog::Logger) -> Result<(), Box<dyn std::error::E
         pass_num += 1;
         //info!(log, "total collated {:?} / {:?}", total_allocated_records, total_to_collate);
         //info!(log, "last index processed {:?} / {:?}", last_idx, tsv_map.len());
-        bar.inc(allocated_records);
+        pbar.inc(allocated_records);
     }
 
+    // make sure we wrote the same number of records that our
+    // file suggested we should.
+    assert!(total_allocated_records == total_to_collate);
+
     //info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
-    owriter.get_ref().seek(SeekFrom::Start( end_header_pos - (std::mem::size_of::<u64>() as u64) ));
-    owriter.write(&num_output_chunks.to_le_bytes());
+    owriter.get_ref().seek(
+            SeekFrom::Start( end_header_pos - (std::mem::size_of::<u64>() as u64) )
+        ).expect("couldn't seek in output file");
+    owriter.write_all(&num_output_chunks.to_le_bytes()).expect("couldn't write to output file.");
     let pb_msg = format!("finished collating in {} passes", pass_num);
-    bar.finish_with_message(&pb_msg);
+    pbar.finish_with_message(&pb_msg);
 
     Ok(())
 }
 
 fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u64, Box<dyn std::error::Error>> {
-    let f = File::open(t.input).unwrap();
-    let mut br = BufReader::new(f);
-    let h = libradicl::RADHeader::from_bytes(&mut br);
+    let i_file = File::open(t.input).unwrap();
+    let mut br = BufReader::new(i_file);
+    let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
-              h.is_paired, h.ref_count, h.num_chunks);
+              hdr.is_paired, hdr.ref_count, hdr.num_chunks);
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
@@ -233,7 +236,7 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
     let s = RandomState::<sea::Hash64>::new();
     let mut hm = HashMap::with_hasher(s);
 
-    for _ in 0..(h.num_chunks as usize) {
+    for _ in 0..(hdr.num_chunks as usize) {
         match (bct, umit) {
             (3, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
@@ -263,7 +266,7 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
         }
     }
 
-    info!(log, "observed {:?} reads in {:?} chunks", num_reads, h.num_chunks);
+    info!(log, "observed {:?} reads in {:?} chunks", num_reads, hdr.num_chunks);
 
     let mut freq : Vec<u64> = hm.values().cloned().collect();
     freq.sort_unstable();
@@ -287,13 +290,10 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
 
     let mut num_corrected = 0;
     for (k,v) in hm.iter() {
-        match full_permit_list.get(k) {
-            Some(&valid_key) => { 
-                *permitted_map.entry(valid_key).or_insert(0u64) += *v;
-                num_corrected += 1;
-                //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
-            },
-            None => {}
+        if let Some(&valid_key) = full_permit_list.get(k) {
+            *permitted_map.entry(valid_key).or_insert(0u64) += *v;
+            num_corrected += 1;
+            //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
         }
     }
 
@@ -304,13 +304,13 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
     let mut writer = BufWriter::new(&output);
 
     for (k,v) in permitted_map {
-        writeln!(&mut writer, "{:?}\t{:?}", k, v);
+        writeln!(&mut writer, "{:?}\t{:?}", k, v).expect("couldn't write to output file.");
     }
 
     let s_path = parent.join("permit_map.bin"); 
     let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
     let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &full_permit_list);
+    bincode::serialize_into(&mut s_writer, &full_permit_list).expect("couldn't serialize permit list.");
 
     Ok(num_corrected)
 }

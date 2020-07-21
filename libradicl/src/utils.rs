@@ -3,8 +3,7 @@ use std::error::Error;
 
 fn get_bit_mask(nt_index: usize, fill_with: u64) -> Result<u64, Box<dyn Error>> {
     let mut mask: u64 = fill_with;
-    mask = mask << (2 * (nt_index - 1));
-
+    mask <<= 2 * (nt_index - 1);
     Ok(mask)
 }
 
@@ -93,7 +92,7 @@ fn get_all_one_edit_neighbors(
 }
 
 pub fn generate_whitelist_set(
-    whitelist_bcs: &Vec<u64>,
+    whitelist_bcs: &[u64],
     bc_length: usize,
 ) -> Result<HashSet<u64>, Box<dyn Error>> {
     let num_bcs = whitelist_bcs.len();
@@ -107,7 +106,7 @@ pub fn generate_whitelist_set(
     neighbors.reserve(3 * bc_length + 8 * (bc_length - 1));
 
     for bc in whitelist_bcs {
-        get_all_one_edit_neighbors(bc.clone(), bc_length, &mut neighbors)?;
+        get_all_one_edit_neighbors(*bc, bc_length, &mut neighbors)?;
         one_edit_barcode_hash.extend(&neighbors);
     }
 
@@ -120,7 +119,7 @@ pub fn generate_whitelist_set(
  * is the original permitted barcode to which it maps.
  **/
 pub fn generate_permitlist_map(
-    permit_bcs: &Vec<u64>,
+    permit_bcs: &[u64],
     bc_length: usize,
 ) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
     let num_bcs = permit_bcs.len();
@@ -137,7 +136,7 @@ pub fn generate_permitlist_map(
     let mut neighbors: HashSet<u64> = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
 
     for bc in permit_bcs {
-        get_all_one_edit_neighbors(bc.clone(), bc_length, &mut neighbors)?;
+        get_all_one_edit_neighbors(*bc, bc_length, &mut neighbors)?;
         for n in &neighbors {
             one_edit_barcode_map.entry(*n).or_insert(*bc);
         }
