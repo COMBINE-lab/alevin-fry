@@ -21,18 +21,36 @@ struct EqMapEntry {
 }
 
 fn eqc_from_chunk(cell_chunk : & libradicl::Chunk, 
+                  nref : u32,
                   eqc_map : &mut HashMap<Vec<u32>, EqMapEntry, fasthash::RandomState<fasthash::sea::Hash64>>) {
     
+    let mut label_list_size = 0usize;
+    let mut ref_to_eqid : Vec<Vec<u32>> = vec![ vec![]; nref as usize];
+    let mut eq_label_starts : Vec<u32> = Vec::new();
+    let mut eq_labels : Vec<u32> = Vec::new();
+
     // gather the equivalence class map 
     // which is a map from 
     // target set -> Vec< (UMI, count) >
     for r in &cell_chunk.reads {
         match eqc_map.get_mut(&r.refs) {
             Some(v) => { v.umis.push((r.umi, 1)); },
-            None => { eqc_map.insert(r.refs.clone(), EqMapEntry { 
-                                      umis : vec![(r.umi,1)], eq_num : eqc_map.len() as u32}); }
+            None => { 
+                // each reference in this equivalence class label 
+                // will have to point to this equivalence class id
+                let eq_num = eqc_map.len() as u32;
+                label_list_size += eq_num as usize;
+                for r in r.refs.iter() {
+                    ref_to_eqid[*r as usize].push(eq_num);
+                }
+                eq_label_starts.push(eq_label_starts.len() as u32);
+                eq_labels.extend(r.refs.iter());
+
+                eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num }); 
+            }
         }
     }
+    eq_label_starts.push(eq_label_starts.len() as u32);
 
     // initially we inserted duplicate UMIs
     // here, collapse them and keep track of their count
@@ -62,6 +80,8 @@ fn eqc_from_chunk(cell_chunk : & libradicl::Chunk,
         // won't see a subsequent "different" element.
         v.umis.push((cur_elem, count));
     }
+
+    println!("{:#?}", ref_to_eqid);
 }
 
 
@@ -103,25 +123,25 @@ pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn 
         match (bct, umit) {
             (3, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                let eq = eqc_from_chunk(&c, h.ref_count, &mut eq_map);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (3, 4) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                let eq = eqc_from_chunk(&c, h.ref_count, &mut eq_map);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (4, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                let eq = eqc_from_chunk(&c, h.ref_count, &mut eq_map);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (4, 4) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                let eq = eqc_from_chunk(&c, h.ref_count, &mut eq_map);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
