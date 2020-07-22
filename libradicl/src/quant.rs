@@ -15,21 +15,53 @@ use std::io::{BufWriter, Write, Read, Seek, SeekFrom};
 
 use crate as libradicl;
 
-
+struct EqMapEntry {
+    umis : Vec<(u64, u32)>,
+    eq_num : u32
+}
 
 fn eqc_from_chunk(cell_chunk : & libradicl::Chunk, 
-                  eqc_map : &mut HashMap<Vec<u32>, Vec<(u64, u32)>, fasthash::RandomState<fasthash::sea::Hash64>>) {
+                  eqc_map : &mut HashMap<Vec<u32>, EqMapEntry, fasthash::RandomState<fasthash::sea::Hash64>>) {
     
-    // equivalence classes 
+    // gather the equivalence class map 
+    // which is a map from 
+    // target set -> Vec< (UMI, count) >
     for r in &cell_chunk.reads {
         match eqc_map.get_mut(&r.refs) {
-            Some(v) => { v.push((r.umi, 1)); },
-            None => { eqc_map.insert(r.refs.clone(), vec![(r.umi,1)]); }
+            Some(v) => { v.umis.push((r.umi, 1)); },
+            None => { eqc_map.insert(r.refs.clone(), EqMapEntry { 
+                                      umis : vec![(r.umi,1)], eq_num : eqc_map.len() as u32}); }
         }
-        //eqc_map.entry(&r.refs).or_insert(vec![]).push((r.umi,1));
     }
-    println!("for cell 1 eq_map has size {:?}", eqc_map.len());
 
+    // initially we inserted duplicate UMIs
+    // here, collapse them and keep track of their count
+    for (k, mut v) in eqc_map.iter_mut() {
+        // sort so dups are adjacent
+        v.umis.sort();
+        // we need a copy of the vector b/c we 
+        // can't easily modify it in place
+        // at least I haven't seen how (@k3yavi, help here if you can).
+        let cv = v.umis.clone();
+        // since we have a copy, clear the original to fill it
+        // with the new contents.
+        v.umis.clear();
+        
+        let mut count = 1;
+        let mut cur_elem = cv.first().unwrap().0;
+        for e in cv.iter().skip(1) {
+            if e.0 == cur_elem {
+                count += 1;
+            } else {
+                v.umis.push((cur_elem, count));
+                cur_elem = e.0;
+                count = 1;
+            }
+        }
+        // remember to push the last element, since we 
+        // won't see a subsequent "different" element.
+        v.umis.push((cur_elem, count));
+    }
 }
 
 
@@ -59,10 +91,15 @@ pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn 
     let mut num_reads: usize = 0;
     
     //Ok(())
-    
+    let pbar = ProgressBar::new(hdr.num_chunks);
+    pbar.set_style(ProgressStyle::default_bar()
+    .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
+    .progress_chars("╢▌▌░╟")); 
+
     let s = RandomState::<sea::Hash64>::new();
     let mut eq_map = HashMap::with_hasher(s);
     for _ in 0..(hdr.num_chunks as usize) {
+        eq_map.clear();
         match (bct, umit) {
             (3, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
@@ -90,6 +127,10 @@ pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn 
             },
             (_, _) => info!(log, "types not supported")
         }
+
+        pbar.inc(1);
     }
+
+    pbar.finish_with_message("processed all cells.");
     Ok(())
 }
