@@ -133,7 +133,8 @@ pub fn collate(input_dir : String, rad_file : String, max_records : u32, log : &
     // file suggested we should.
     assert!(total_allocated_records == total_to_collate);
 
-    //info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
+    info!(log, "writing num output chunks ({:?}) to header", num_output_chunks);
+    owriter.flush();
     owriter.get_ref().seek(
             SeekFrom::Start( end_header_pos - (std::mem::size_of::<u64>() as u64) )
         ).expect("couldn't seek in output file");
