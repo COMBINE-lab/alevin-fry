@@ -161,12 +161,22 @@ pub fn get_num_molecules(
         if comp_verts.len() > 1 {
             // vset will hold the set of vertices that are 
             // covered.
-            let mut vset = get_set(comp_verts.len() as u32);
+            let mut vset = HashSet::from_iter(comp_verts.iter().cloned());
+            /*
+            get_set(comp_verts.len() as u32);
+            // more efficient way to get a set from iterator?
             for vin in comp_verts.iter() {
                 vset.insert(*vin);
             }
+            */
+
+            // we will remove covered vertices from vset until they are 
+            // all gone (until all vertices have been covered)
             while !vset.is_empty() {
+                // will hold vertices in the best mcc
                 let mut best_mcc: Vec<u32> = Vec::new();
+                // the transcript that is responsible for the 
+                // best mcc covering
                 let mut best_covering_txp = std::u32::MAX;
                 for v in vset.iter() {
                     let (new_mcc, covering_txp) = collapse_vertices(*v, g, ce);

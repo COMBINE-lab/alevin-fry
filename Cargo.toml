@@ -17,11 +17,8 @@ rand = "*"
 serde = "1.0.114"
 bincode = "1.3.1"
 chrono = "0.4.13"
-#default-features = false
-# Cherry-pick the features you'd like to use
-#features = [ "suggestions", "color" ]
 
 [profile.release]
-lto="thin"
-codegen-units=1
-opt-level=3
+#lto="thin"
+#codegen-units=1
+#opt-level=3
