@@ -66,6 +66,8 @@ struct Quant {
     ///
     #[clap(short, long)]
     input_dir: String,
+    #[clap(short, long)]
+    tg_map: String 
 }
 
 #[allow(dead_code)]
@@ -242,7 +244,7 @@ fn main() {
                 .expect("could not collate.");
         }
         SubCommand::Quant(t) => {
-            libradicl::quant::quantify(t.input_dir, &log).expect("could not quantify rad file.");
+            libradicl::quant::quantify(t.input_dir, t.tg_map, &log).expect("could not quantify rad file.");
         }
     }
 }
