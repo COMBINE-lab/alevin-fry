@@ -7,7 +7,8 @@ extern crate petgraph;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{info};
-use std::collections::HashMap;
+use std::io;
+use std::collections::{HashMap, HashSet};
 use fasthash::{sea, RandomState};
 use std::io::{BufReader};
 use std::fs::File;
@@ -40,50 +41,72 @@ fn eqc_from_chunk(cell_chunk : & libradicl::Chunk,
 
     //let mut label_counts : Vec<u32> = vec![0; nref as usize];
 
+    // temporary map of equivalence class label to assigned 
+    // index.
+    let s = RandomState::<sea::Hash64>::new(); 
+    let mut eqid_map : HashMap::<Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>> = HashMap::with_hasher(s);
+
     // gather the equivalence class map 
     // which is a map from 
     // target set -> Vec< (UMI, count) >
     for r in &cell_chunk.reads {
-        match eqmap.eqc_map.get_mut(&r.refs) {
-            Some(v) => { v.umis.push((r.umi, 1)); },
+        match eqid_map.get_mut(&r.refs) {
+            Some(v) => { eqmap.eqc_info[*v as usize].umis.push((r.umi, 1)); },
             None => { 
                 // each reference in this equivalence class label 
                 // will have to point to this equivalence class id
-                let eq_num = eqmap.eqc_map.len() as u32;
-                eqmap.label_list_size += eq_num as usize;
+                let eq_num = eqmap.eqc_info.len() as u32;
+                eqmap.label_list_size += r.refs.len();
                 for r in r.refs.iter() {
-                    eqmap.label_counts[*r as usize] += 1;
+                    let ridx = *r as usize;
+                    // if this is the first time we've seen
+                    // this transcript, add it to the list of 
+                    // active transcripts.
+                    if eqmap.label_counts[ridx] == 0 {
+                        eqmap.active_refs.push(*r);
+                    }
+                    eqmap.label_counts[ridx] += 1;
                     //ref_to_eqid[*r as usize].push(eq_num);
                 }
-                eqmap.eq_label_starts.push(eqmap.eq_label_starts.len() as u32);
-                eqmap.eq_labels.extend(r.refs.iter());
-
-                eqmap.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num }); 
+                eqmap.eq_label_starts.push(eqmap.eq_labels.len() as u32);
+                eqmap.eq_labels.extend(&r.refs);
+                eqmap.eqc_info.push(EqMapEntry { umis : vec![(r.umi,1)], eq_num });
+                eqid_map.insert(r.refs.clone(), eq_num);
+                //eqmap.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num }); 
             }
         }
     }
     // final value to avoid special cases
-    eqmap.eq_label_starts.push(eqmap.eq_label_starts.len() as u32);
+    eqmap.eq_label_starts.push(eqmap.eq_labels.len() as u32);
 
     eqmap.fill_ref_offsets();
     eqmap.fill_label_sizes();
+
+    //println!("last offset = {}, num_eqc = {}\n", eqmap.eq_label_starts.last().unwrap(), eqid_map.len() );
 
     //let mut ref_offsets = label_counts.iter().scan(0, |sum, i| {*sum += i; Some(*sum)}).collect::<Vec<_>>();
     // final value to avoid special cases
     //ref_offsets.push(*ref_offsets.last().unwrap());
     //let mut ref_labels = vec![ u32::MAX; label_list_size];
 
+    let mut written_labels = 0usize;
+
     // initially we inserted duplicate UMIs
     // here, collapse them and keep track of their count
-    for (k, v) in eqmap.eqc_map.iter_mut() {
+    for idx in 0..eqmap.num_eq_classes() { //} eqmap.eqc_info.iter_mut().enumerate() {
 
         // for each reference in this 
         // label, put it in the next free spot
-        for r in k.iter() {
-            eqmap.ref_offsets[*r as usize] -= 1;
-            eqmap.ref_labels[eqmap.ref_offsets[*r as usize] as usize] = v.eq_num;
+        // TODO: @k3yavi, can we avoid this copy?
+        let label = eqmap.refs_for_eqc(idx as u32).to_vec();
+        //println!("{:?}", label);
+        for r in label {// k.iter() {
+            eqmap.ref_offsets[r as usize] -= 1;
+            eqmap.ref_labels[eqmap.ref_offsets[r as usize] as usize] = eqmap.eqc_info[idx].eq_num;
+            written_labels += 1;
         }
 
+        let v = &mut eqmap.eqc_info[idx];
         // sort so dups are adjacent
         v.umis.sort();
         // we need a copy of the vector b/c we 
@@ -105,18 +128,29 @@ fn eqc_from_chunk(cell_chunk : & libradicl::Chunk,
                 count = 1;
             }
         }
+
         // remember to push the last element, since we 
         // won't see a subsequent "different" element.
         v.umis.push((cur_elem, count));
     }
-
-    println!("{:#?}", &eqmap.eq_labels[1..100]);
-    //println!("{:#?}", ref_offsets);
-
+    /*
+    let mut cnt = 0usize;
+    for e in eqmap.ref_labels.iter() {
+        if *e != u32::MAX { cnt += 1;  }
+    }
+    
+    println!("total number of labels = {}, expected = {}, written = {}", cnt, eqmap.label_list_size, written_labels);
+    */
 }
 
-/*
-fn extract_graph() {
+
+fn extract_graph(eqmap : &EqMap, 
+                 log : &slog::Logger ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
+    let verbose = false;
+    
+    fn get_set() -> HashSet<u32, fasthash::sea::Hash64> {
+        HashSet::with_hasher(sea::Hash64)
+    }
 
     // given 2 pairs (UMI, count), determine if an edge exists 
     // between them, and if so, what type.
@@ -144,53 +178,68 @@ fn extract_graph() {
     let mut unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    for eqid in 0..ce.eq_classes.len() {
-        if verbose && eqid % 1000 == 0 {
+    let mut ctr = 0;
+    for eqid in 0..eqmap.num_eq_classes(){
+        //let eqid = eq_val.eq_num;
+        
+        if verbose && ctr % 1000 == 0 {
             print!("\rprocessed {:?} eq classes", eqid);
             io::stdout().flush().ok().expect("Could not flush stdout");
         }
+        ctr += 1;
+
+        let eq = &eqmap.eqc_info[eqid];
         // for each equivalence class
-        let eq = &ce.eq_classes[eqid as usize];
+        // let eq = &ce.eq_classes[eqid as usize];
         let u1 = &eq.umis;
+
+        // for each (umi, count) pair and its index
         for (xi, x) in u1.iter().enumerate() {
+            // add a node
             graph.add_node((eqid as u32, xi as u32));
+            
+            // for each (umi, count) pair and node after this one
             for xi2 in (xi + 1)..u1.len() {
+                // x2 is the other (umi, count) pair
                 let x2 = &u1[xi2];
+                // add a node for it
                 graph.add_node((eqid as u32, xi2 as u32));
+                // determine if an edge exists between x and x2, and if so, what kind
                 let et = has_edge(&x, &x2);
+                // for each type of edge, add the appropriate edge in the graph
                 match et {
-                    EdgeType::BiDirected => {
+                    PUGEdgeType::BiDirected => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         bidirected += 1;
-                        if multi_gene_vec[eqid] == true {
-                            bidirected_in_multigene += 1;
-                        }
+                        //if multi_gene_vec[eqid] == true {
+                        //    bidirected_in_multigene += 1;
+                        //}
                     }
-                    EdgeType::XToY => {
+                    PUGEdgeType::XToY => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         unidirected += 1;
-                        if multi_gene_vec[eqid] == true {
-                            unidirected_in_multigene += 1;
-                        }
+                        //if multi_gene_vec[eqid] == true {
+                        //    unidirected_in_multigene += 1;
+                        //}
                     }
-                    EdgeType::YToX => {
+                    PUGEdgeType::YToX => {
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         unidirected += 1;
-                        if multi_gene_vec[eqid] == true {
-                            unidirected_in_multigene += 1;
-                        }
+                        //if multi_gene_vec[eqid] == true {
+                        //    unidirected_in_multigene += 1;
+                        //}
                     }
-                    EdgeType::NoEdge => {}
+                    PUGEdgeType::NoEdge => {}
                 }
             }
         }
 
         let mut hset = get_set();
-        // for every transcript
-        for t in eq.transcripts.iter() {
-            // find the equivalence classes sharing this transcript
-            for eq2id in tid_map[t].iter() {
+        // for every reference id in this eq class 
+        for r in eqmap.refs_for_eqc(eqid as u32) {
+            // find the equivalence classes sharing this reference
+            for eq2id in eqmap.eq_classes_containing(*r).iter() { 
                 if (*eq2id as usize) <= eqid {
                     continue;
                 }
@@ -198,7 +247,7 @@ fn extract_graph() {
                     continue;
                 }
                 hset.insert(*eq2id);
-                let eq2 = &ce.eq_classes[*eq2id as usize];
+                let eq2 = &eqmap.eqc_info[*eq2id as usize];
                 // compare all the umis
                 let u2 = &eq2.umis;
                 for (xi, x) in u1.iter().enumerate() {
@@ -209,35 +258,35 @@ fn extract_graph() {
                         graph.add_node((*eq2id as u32, yi as u32));
                         let et = has_edge(&x, &y);
                         match et {
-                            EdgeType::BiDirected => {
+                            PUGEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 bidirected += 1;
-                                if multi_gene_vec[eqid] == true
-                                    || multi_gene_vec[*eq2id as usize] == true
-                                {
-                                    bidirected_in_multigene += 1;
-                                }
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    bidirected_in_multigene += 1;
+                                //}
                             }
-                            EdgeType::XToY => {
+                            PUGEdgeType::XToY => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 unidirected += 1;
-                                if multi_gene_vec[eqid] == true
-                                    || multi_gene_vec[*eq2id as usize] == true
-                                {
-                                    unidirected_in_multigene += 1;
-                                }
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    unidirected_in_multigene += 1;
+                                //}
                             }
-                            EdgeType::YToX => {
+                            PUGEdgeType::YToX => {
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 unidirected += 1;
-                                if multi_gene_vec[eqid] == true
-                                    || multi_gene_vec[*eq2id as usize] == true
-                                {
-                                    unidirected_in_multigene += 1;
-                                }
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    unidirected_in_multigene += 1;
+                                //}
                             }
-                            EdgeType::NoEdge => {}
+                            PUGEdgeType::NoEdge => {}
                         }
                     }
                 }
@@ -245,16 +294,15 @@ fn extract_graph() {
         }
     }
     if verbose {
-        info!("tid_map of size {:?}", tid_map.len());
-        info!(
+        //info!("tid_map of size {:?}", tid_map.len());
+        info!(log, 
             "size of graph ({:?}, {:?})",
             graph.node_count(),
             graph.edge_count()
         );
     }
-
+    graph
 }
-*/
 
 pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -281,15 +329,12 @@ pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn 
 
     let mut num_reads: usize = 0;
     
-    //Ok(())
     let pbar = ProgressBar::new(hdr.num_chunks);
     pbar.set_style(ProgressStyle::default_bar()
     .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}")
     .progress_chars("╢▌▌░╟")); 
 
     let s = RandomState::<sea::Hash64>::new();
-    //let mut eq_map = HashMap::with_hasher(s);
-
     let mut eq_map = EqMap::new(s, hdr.ref_count as u32);
 
     for _ in 0..(hdr.num_chunks as usize) {
@@ -297,25 +342,29 @@ pub fn quantify(input_dir : String, log : &slog::Logger ) -> Result<(), Box<dyn 
         match (bct, umit) {
             (3, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                eqc_from_chunk(&c, &mut eq_map);
+                let g = extract_graph(&eq_map, log);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (3, 4) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                eqc_from_chunk(&c, &mut eq_map);
+                let g = extract_graph(&eq_map, log);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (4, 3) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                eqc_from_chunk(&c, &mut eq_map);
+                let g = extract_graph(&eq_map, log);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },
             (4, 4) => {
                 let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
-                let eq = eqc_from_chunk(&c, &mut eq_map);
+                eqc_from_chunk(&c, &mut eq_map);
+                let g = extract_graph(&eq_map, log);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             },

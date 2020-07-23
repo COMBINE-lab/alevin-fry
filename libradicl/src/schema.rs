@@ -20,9 +20,12 @@ pub(super) struct EqMapEntry {
 }
 
 pub(super) struct EqMap {
-    pub eqc_map : HashMap<Vec<u32>, EqMapEntry, fasthash::RandomState<fasthash::sea::Hash64>>,
+    //pub eqc_map : HashMap<Vec<u32>, EqMapEntry, fasthash::RandomState<fasthash::sea::Hash64>>,
+    pub eqc_info : Vec<EqMapEntry>,
     pub nref : u32,
     pub label_list_size : usize,
+    // list of active reference ids in the current cell
+    pub active_refs : Vec<u32>,
     // concatenated lists of the labels of all equivalence classes
     pub eq_labels : Vec<u32>, //= Vec::new();
     // vector that deliniates where each equivalence class label 
@@ -37,11 +40,16 @@ pub(super) struct EqMap {
 }
 
 impl EqMap {
+    
+    pub(super) fn num_eq_classes(&self) -> usize {
+        self.eqc_info.len()
+    }
 
     pub(super) fn clear(&mut self) {
-        self.eqc_map.clear();
+        self.eqc_info.clear();
         // keep nref
         self.label_list_size = 0usize;
+        self.active_refs.clear();
         self.eq_labels.clear();
         self.eq_label_starts.clear();
         // clear the label_counts, but resize 
@@ -55,9 +63,10 @@ impl EqMap {
 
     pub(super) fn new(rs : RandomState::<sea::Hash64>, nref_in : u32) -> EqMap {
         EqMap {
-            eqc_map : HashMap::with_hasher(rs),
+            eqc_info: vec![],//HashMap::with_hasher(rs),
             nref : nref_in,
             label_list_size : 0usize,
+            active_refs : vec![],
             eq_labels : vec![],
             eq_label_starts : vec![],
             label_counts : vec![0; nref_in as usize],
@@ -72,9 +81,21 @@ impl EqMap {
     }
 
     pub(super) fn fill_label_sizes(&mut self)  {
-        self.ref_labels = vec![ u32::MAX; self.label_list_size];
+        self.ref_labels = vec![ u32::MAX; self.label_list_size + 1];
     }
 
+    pub(super) fn eq_classes_containing(&self, r : u32) -> &[u32] {
+        &self.ref_labels[
+            (self.ref_offsets[r as usize] as usize)..
+            (self.ref_offsets[(r+1) as usize] as usize)]
+    }
+
+    pub(super) fn refs_for_eqc(&self, idx : u32) -> &[u32] {
+        &self.eq_labels[
+            (self.eq_label_starts[idx as usize] as usize)..
+            (self.eq_label_starts[(idx+1) as usize] as usize)
+        ]
+    }
     //pub(super) 
 }
 
