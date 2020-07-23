@@ -1,20 +1,20 @@
-extern crate slog;
-extern crate fasthash;
-extern crate slog_term;
-extern crate needletail;
-extern crate rand;
-extern crate clap;
-extern crate serde;
 extern crate bincode;
 extern crate chrono;
+extern crate clap;
+extern crate fasthash;
+extern crate needletail;
+extern crate rand;
+extern crate serde;
+extern crate slog;
+extern crate slog_term;
 
-use rand::Rng;
 use fasthash::{sea, RandomState};
-use slog::{Drain, o, info};
+use rand::Rng;
+use slog::{info, o, Drain};
 //use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
-use std::io::{BufReader};
 use std::fs::File;
+use std::io::BufReader;
 use std::io::{BufWriter, Write};
 
 use clap::Clap;
@@ -35,7 +35,7 @@ enum SubCommand {
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
     Collate(Collate),
     #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
-    Quant(Quant)
+    Quant(Quant),
 }
 
 /// A subcommand for controlling testing
@@ -47,32 +47,33 @@ struct GeneratePermitList {
     #[clap(short, long)]
     output_dir: String,
     #[clap(short, long)]
-    top_k: Option<u32>
+    top_k: Option<u32>,
 }
 
 #[derive(Clap)]
 struct Collate {
-   /// 
-   #[clap(short, long)]
-   input_dir : String,
-   #[clap(short, long)]
-   rad_file : String,
-   #[clap(short, long, default_value = "10000000")]
-   max_records : u32
+    ///
+    #[clap(short, long)]
+    input_dir: String,
+    #[clap(short, long)]
+    rad_file: String,
+    #[clap(short, long, default_value = "10000000")]
+    max_records: u32,
 }
 
 #[derive(Clap)]
 struct Quant {
-   /// 
-   #[clap(short, long)]
-   input_dir : String,
+    ///
+    #[clap(short, long)]
+    input_dir: String,
 }
 
 #[allow(dead_code)]
-fn gen_random_kmer(k : usize) -> String {
+fn gen_random_kmer(k: usize) -> String {
     const CHARSET: &[u8] = b"ACGT";
     let mut rng = rand::thread_rng();
-    let s : String = (0..k).map(|_| {
+    let s: String = (0..k)
+        .map(|_| {
             let idx = rng.gen_range(0, CHARSET.len());
             CHARSET[idx] as char
         })
@@ -80,14 +81,20 @@ fn gen_random_kmer(k : usize) -> String {
     s
 }
 
-
-
-fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u64, Box<dyn std::error::Error>> {
+fn generate_permit_list(
+    t: GeneratePermitList,
+    log: &slog::Logger,
+) -> Result<u64, Box<dyn std::error::Error>> {
     let i_file = File::open(t.input).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
-    info!(log, "paired : {:?}, ref_count : {:?}, num_chunks : {:?}", 
-              hdr.is_paired, hdr.ref_count, hdr.num_chunks);
+    info!(
+        log,
+        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
+        hdr.is_paired,
+        hdr.ref_count,
+        hdr.num_chunks
+    );
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
@@ -106,64 +113,81 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
 
     let mut num_reads: usize = 0;
 
-    
     let s = RandomState::<sea::Hash64>::new();
     let mut hm = HashMap::with_hasher(s);
 
     for _ in 0..(hdr.num_chunks as usize) {
         match (bct, umit) {
             (3, 3) => {
-                let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U32);
+                let c = libradicl::Chunk::from_bytes(
+                    &mut br,
+                    libradicl::RADIntID::U32,
+                    libradicl::RADIntID::U32,
+                );
                 libradicl::update_barcode_hist(&mut hm, &c);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
-            },
+            }
             (3, 4) => {
-                let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U32, libradicl::RADIntID::U64);
+                let c = libradicl::Chunk::from_bytes(
+                    &mut br,
+                    libradicl::RADIntID::U32,
+                    libradicl::RADIntID::U64,
+                );
                 libradicl::update_barcode_hist(&mut hm, &c);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
-            },
+            }
             (4, 3) => {
-                let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U32);
+                let c = libradicl::Chunk::from_bytes(
+                    &mut br,
+                    libradicl::RADIntID::U64,
+                    libradicl::RADIntID::U32,
+                );
                 libradicl::update_barcode_hist(&mut hm, &c);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
-            },
+            }
             (4, 4) => {
-                let c = libradicl::Chunk::from_bytes(&mut br, libradicl::RADIntID::U64, libradicl::RADIntID::U64);
+                let c = libradicl::Chunk::from_bytes(
+                    &mut br,
+                    libradicl::RADIntID::U64,
+                    libradicl::RADIntID::U64,
+                );
                 libradicl::update_barcode_hist(&mut hm, &c);
                 num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
-            },
-            (_, _) => info!(log, "types not supported")
+            }
+            (_, _) => info!(log, "types not supported"),
         }
     }
 
-    info!(log, "observed {:?} reads in {:?} chunks", num_reads, hdr.num_chunks);
+    info!(
+        log,
+        "observed {:?} reads in {:?} chunks", num_reads, hdr.num_chunks
+    );
 
-    let mut freq : Vec<u64> = hm.values().cloned().collect();
+    let mut freq: Vec<u64> = hm.values().cloned().collect();
     freq.sort_unstable();
     freq.reverse();
 
-    let num_bc = t.top_k.unwrap_or((freq.len() - 1)as u32) as usize;
+    let num_bc = t.top_k.unwrap_or((freq.len() - 1) as u32) as usize;
     let min_freq = freq[num_bc];
 
-    // collect all of the barcodes that have a frequency 
+    // collect all of the barcodes that have a frequency
     // >= to min_thresh.
     let valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
 
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
-    let full_permit_list = libradicl::utils::generate_permitlist_map(
-        &valid_bc, 
-        ft_vals.bclen as usize).unwrap();
+    let full_permit_list =
+        libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
 
     let s2 = RandomState::<sea::Hash64>::new();
-    let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2); 
+    let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
 
     let mut num_corrected = 0;
-    for (k,v) in hm.iter() {
+    for (k, v) in hm.iter() {
         if let Some(&valid_key) = full_permit_list.get(k) {
             *permitted_map.entry(valid_key).or_insert(0u64) += *v;
             num_corrected += 1;
@@ -173,18 +197,19 @@ fn generate_permit_list(t : GeneratePermitList, log : &slog::Logger) -> Result<u
 
     let parent = std::path::Path::new(&t.output_dir);
     std::fs::create_dir_all(&parent).unwrap();
-    let o_path = parent.join("permit_freq.tsv"); 
+    let o_path = parent.join("permit_freq.tsv");
     let output = std::fs::File::create(&o_path).expect("could not create output.");
     let mut writer = BufWriter::new(&output);
 
-    for (k,v) in permitted_map {
+    for (k, v) in permitted_map {
         writeln!(&mut writer, "{:?}\t{:?}", k, v).expect("couldn't write to output file.");
     }
 
-    let s_path = parent.join("permit_map.bin"); 
+    let s_path = parent.join("permit_map.bin");
     let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
     let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &full_permit_list).expect("couldn't serialize permit list.");
+    bincode::serialize_into(&mut s_writer, &full_permit_list)
+        .expect("couldn't serialize permit list.");
 
     Ok(num_corrected)
 }
@@ -193,15 +218,15 @@ fn main() {
     let opts: Opts = Opts::parse();
 
     let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::CompactFormat::new(decorator).
-        use_custom_timestamp(
-            |out: &mut dyn std::io::Write| { 
-                write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
-                Ok(())
-            }
-        ).build().fuse();
+    let drain = slog_term::CompactFormat::new(decorator)
+        .use_custom_timestamp(|out: &mut dyn std::io::Write| {
+            write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
+            Ok(())
+        })
+        .build()
+        .fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-    
+
     let log = slog::Logger::root(drain, o!());
 
     info!(log, "I'm using the library: {:?}", libradicl::lib_name());
@@ -211,10 +236,11 @@ fn main() {
         SubCommand::GeneratePermitList(t) => {
             let nc = generate_permit_list(t, &log).unwrap();
             info!(log, "total number of corrected barcodes : {}", nc);
-        },
+        }
         SubCommand::Collate(t) => {
-            libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, &log).expect("could not collate.");
-        },
+            libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, &log)
+                .expect("could not collate.");
+        }
         SubCommand::Quant(t) => {
             libradicl::quant::quantify(t.input_dir, &log).expect("could not quantify rad file.");
         }
