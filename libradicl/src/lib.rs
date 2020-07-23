@@ -12,6 +12,7 @@ use std::fs::File;
 pub mod utils;
 pub mod collate;
 pub mod quant;
+pub mod schema;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
