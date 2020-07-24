@@ -72,7 +72,7 @@ impl EqMap {
         self.ref_labels.clear();
     }
 
-    pub(super) fn new(rs: RandomState<sea::Hash64>, nref_in: u32) -> EqMap {
+    pub(super) fn new(nref_in: u32) -> EqMap {
         EqMap {
             eqc_info: vec![], //HashMap::with_hasher(rs),
             nref: nref_in,
@@ -101,7 +101,7 @@ impl EqMap {
         self.ref_labels = vec![u32::MAX; self.label_list_size + 1];
     }
 
-    pub(super) fn init_from_chunk(&mut self, cell_chunk: &libradicl::Chunk) {
+    pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
 
         // temporary map of equivalence class label to assigned
         // index.
@@ -110,7 +110,11 @@ impl EqMap {
             HashMap::with_hasher(s);
 
         // gather the equivalence class info
-        for r in &cell_chunk.reads {
+        for r in &mut cell_chunk.reads {
+            // TODO: ensure this is done upstream so we 
+            // don't have to do it here.
+            r.refs.sort();
+
             match eqid_map.get_mut(&r.refs) {
                 // if we've seen this equivalence class before, just add the new
                 // umi.

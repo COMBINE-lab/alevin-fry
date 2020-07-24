@@ -158,7 +158,7 @@ pub fn collate(
         log,
         "writing num output chunks ({:?}) to header", num_output_chunks
     );
-    owriter.flush();
+    owriter.flush()?;
     owriter
         .get_ref()
         .seek(SeekFrom::Start(

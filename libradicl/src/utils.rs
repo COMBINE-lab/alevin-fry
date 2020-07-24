@@ -6,8 +6,7 @@ use std::error::Error;
 pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
     let bit_diffs = a ^ b;
     let two_bit_diffs = (bit_diffs | bit_diffs >> 1) & 0x5555555555555555;
-    let total_diffs = two_bit_diffs.count_ones() as usize;
-    return total_diffs;
+    two_bit_diffs.count_ones() as usize
 }
 
 fn get_bit_mask(nt_index: usize, fill_with: u64) -> Result<u64, Box<dyn Error>> {

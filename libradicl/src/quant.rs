@@ -8,7 +8,7 @@ extern crate slog;
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 use self::slog::info;
-use fasthash::{sea, RandomState};
+use fasthash::{sea};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
@@ -17,8 +17,9 @@ use std::io::Write;
 
 use crate as libradicl;
 
-use self::libradicl::schema::{EqMap, EqMapEntry, PUGEdgeType};
+use self::libradicl::schema::{EqMap, PUGEdgeType};
 use self::libradicl::utils::*;
+use self::libradicl::pugutils;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the 
 /// equivalence class map for a given cell.
@@ -35,7 +36,7 @@ fn extract_graph(
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
     let has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
-        if &x.0 == &y.0 {
+        if x.0 == y.0 {
             return PUGEdgeType::BiDirected;
         }
         if x.1 > (2 * y.1 - 1) {
@@ -54,19 +55,18 @@ fn extract_graph(
         PUGEdgeType::NoEdge
     };
 
-    let mut bidirected = 0u64;
-    let mut unidirected = 0u64;
+    let mut _bidirected = 0u64;
+    let mut _unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    let mut ctr = 0;
 
     // for every equivalence class in this cell
     for eqid in 0..eqmap.num_eq_classes() {
-        if verbose && ctr % 1000 == 0 {
+        if verbose && eqid % 1000 == 0 {
             print!("\rprocessed {:?} eq classes", eqid);
-            io::stdout().flush().ok().expect("Could not flush stdout");
+            io::stdout().flush().expect("Could not flush stdout");
         }
-        ctr += 1;
+        //ctr += 1;
 
         // get the info Vec<(UMI, frequency)>
         let eq = &eqmap.eqc_info[eqid];
@@ -78,9 +78,10 @@ fn extract_graph(
             graph.add_node((eqid as u32, xi as u32));
 
             // for each (umi, freq) pair and node after this one
-            for xi2 in (xi + 1)..u1.len() {
+            for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
+            //for xi2 in (xi + 1)..u1.len() {
                 // x2 is the other (umi, freq) pair
-                let x2 = &u1[xi2];
+                //let x2 = &u1[xi2];
 
                 // add a node for it
                 graph.add_node((eqid as u32, xi2 as u32));
@@ -92,21 +93,21 @@ fn extract_graph(
                     PUGEdgeType::BiDirected => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        bidirected += 1;
+                        _bidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    bidirected_in_multigene += 1;
                         //}
                     }
                     PUGEdgeType::XToY => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
-                        unidirected += 1;
+                        _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
                     }
                     PUGEdgeType::YToX => {
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        unidirected += 1;
+                        _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
@@ -152,7 +153,7 @@ fn extract_graph(
                             PUGEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                bidirected += 1;
+                                _bidirected += 1;
                                 //if multi_gene_vec[eqid] == true
                                 //    || multi_gene_vec[*eq2id as usize] == true
                                 //{
@@ -161,7 +162,7 @@ fn extract_graph(
                             }
                             PUGEdgeType::XToY => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
-                                unidirected += 1;
+                                _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
                                 //    || multi_gene_vec[*eq2id as usize] == true
                                 //{
@@ -170,7 +171,7 @@ fn extract_graph(
                             }
                             PUGEdgeType::YToX => {
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                unidirected += 1;
+                                _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
                                 //    || multi_gene_vec[*eq2id as usize] == true
                                 //{
@@ -277,7 +278,7 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
 
-    let mut num_reads: usize = 0;
+    let mut _num_reads: usize = 0;
 
     let pbar = ProgressBar::new(hdr.num_chunks);
     pbar.set_style(
@@ -288,54 +289,57 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             .progress_chars("╢▌▌░╟"),
     );
 
-    let s = RandomState::<sea::Hash64>::new();
-    let mut eq_map = EqMap::new(s, hdr.ref_count as u32);
+    let mut eq_map = EqMap::new(hdr.ref_count as u32);
 
     for _ in 0..(hdr.num_chunks as usize) {
         eq_map.clear();
         match (bct, umit) {
             (3, 3) => {
-                let c = libradicl::Chunk::from_bytes(
+                let mut c = libradicl::Chunk::from_bytes(
                     &mut br,
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U32,
                 );
-                eq_map.init_from_chunk(&c);
+                eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                num_reads += c.reads.len();
+                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
             (3, 4) => {
-                let c = libradicl::Chunk::from_bytes(
+                let mut c = libradicl::Chunk::from_bytes(
                     &mut br,
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U64,
                 );
-                eq_map.init_from_chunk(&c);
+                eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                num_reads += c.reads.len();
+                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
             (4, 3) => {
-                let c = libradicl::Chunk::from_bytes(
+                let mut c = libradicl::Chunk::from_bytes(
                     &mut br,
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U32,
                 );
-                eq_map.init_from_chunk(&c);
+                eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                num_reads += c.reads.len();
+                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
             (4, 4) => {
-                let c = libradicl::Chunk::from_bytes(
+                let mut c = libradicl::Chunk::from_bytes(
                     &mut br,
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U64,
                 );
-                eq_map.init_from_chunk(&c);
+                eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                num_reads += c.reads.len();
+                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
             (_, _) => info!(log, "types not supported"),
