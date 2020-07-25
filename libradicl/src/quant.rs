@@ -290,8 +290,9 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
     );
 
     let mut eq_map = EqMap::new(hdr.ref_count as u32);
+    let mut global_distinct_umis = 0usize;
 
-    for _ in 0..(hdr.num_chunks as usize) {
+    for cell_num in 0..(hdr.num_chunks as usize) {
         eq_map.clear();
         match (bct, umit) {
             (3, 3) => {
@@ -302,7 +303,15 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 );
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let mut gene_unique = 0usize;
+                let mut total = 0usize;
+                for (eqset, count) in gene_eqc.iter() {
+                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    total += *count as usize;
+                }
+                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -314,7 +323,15 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 );
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let mut gene_unique = 0usize;
+                let mut total = 0usize;
+                for (eqset, count) in gene_eqc.iter() {
+                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    total += *count as usize;
+                }
+                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -326,7 +343,15 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 );
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let mut gene_unique = 0usize;
+                let mut total = 0usize;
+                for (eqset, count) in gene_eqc.iter() {
+                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    total += *count as usize;
+                }
+                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -338,16 +363,25 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 );
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, log);
-                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let mut gene_unique = 0usize;
+                let mut total = 0usize;
+                for (eqset, count) in gene_eqc.iter() {
+                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    total += *count as usize;
+                }
+                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
             (_, _) => info!(log, "types not supported"),
         }
 
-        pbar.inc(1);
+        //pbar.inc(1);
     }
 
-    pbar.finish_with_message("processed all cells.");
+    info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
+    //pbar.finish_with_message("processed all cells.");
     Ok(())
 }
