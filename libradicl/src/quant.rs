@@ -5,16 +5,21 @@ extern crate petgraph;
 extern crate serde;
 extern crate slog;
 
+use executors::*;
+use executors::crossbeam_channel_pool;
+use std::sync::mpsc::channel;
+
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 use self::slog::info;
+use scroll::Pwrite;
 use fasthash::{sea};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
 use std::io::Write;
-
+use std::io::Read;
 use crate as libradicl;
 
 use self::libradicl::schema::{EqMap, PUGEdgeType};
@@ -289,20 +294,41 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             .progress_chars("╢▌▌░╟"),
     );
 
-    let mut eq_map = EqMap::new(hdr.ref_count as u32);
+    //let mut eq_map = EqMap::new(hdr.ref_count as u32);
+    
     let mut global_distinct_umis = 0usize;
+    
+    let n_workers = 4;
+    let n_jobs = 8;
+    let pool = crossbeam_channel_pool::ThreadPool::new(n_workers);
+    let ref_count = hdr.ref_count as u32; 
+    let (tx, rx) = channel();
 
     for cell_num in 0..(hdr.num_chunks as usize) {
-        eq_map.clear();
+        let tx = tx.clone();
+        //eq_map.clear();
+        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
+        let mut buf = vec![0u8; nbytes_chunk as usize + 8];
+        buf.pwrite::<u32>(nbytes_chunk, 0)?;
+        buf.pwrite::<u32>(nrec_chunk, 4)?;
+        br.read_exact(&mut buf[8..]).unwrap();
+        let tid_to_gid = tid_to_gid.clone();
+        let log = log.clone();
+        //&buf[..];
+        pool.execute( move|| {
+
+        let mut eq_map = EqMap::new(ref_count);
+        let mut nbr = BufReader::new(&buf[..]);
+ 
         match (bct, umit) {
             (3, 3) => {
                 let mut c = libradicl::Chunk::from_bytes(
-                    &mut br,
+                    &mut nbr,
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U32,
                 );
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, log);
+                let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
                 let mut gene_unique = 0usize;
                 let mut total = 0usize;
@@ -317,12 +343,12 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             }
             (3, 4) => {
                 let mut c = libradicl::Chunk::from_bytes(
-                    &mut br,
+                    &mut nbr,
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U64,
                 );
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, log);
+                let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
                 let mut gene_unique = 0usize;
                 let mut total = 0usize;
@@ -337,12 +363,12 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             }
             (4, 3) => {
                 let mut c = libradicl::Chunk::from_bytes(
-                    &mut br,
+                    &mut nbr,
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U32,
                 );
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, log);
+                let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
                 let mut gene_unique = 0usize;
                 let mut total = 0usize;
@@ -357,12 +383,12 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             }
             (4, 4) => {
                 let mut c = libradicl::Chunk::from_bytes(
-                    &mut br,
+                    &mut nbr,
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U64,
                 );
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, log);
+                let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
                 let mut gene_unique = 0usize;
                 let mut total = 0usize;
@@ -377,11 +403,13 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
             }
             (_, _) => info!(log, "types not supported"),
         }
-
+        tx.send(cell_num).expect("woot");
         //pbar.inc(1);
+        });
     }
 
-    info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
+    rx.iter().take(hdr.num_chunks as usize).for_each(|x| info!(log, "processed cell {}", x));
+    //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
     //pbar.finish_with_message("processed all cells.");
     Ok(())
 }

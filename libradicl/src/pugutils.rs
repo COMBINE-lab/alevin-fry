@@ -9,11 +9,11 @@ use self::slog::{crit};
 use fasthash::RandomState;
 use fasthash::sea::Hash64;
 
-use pugutils::petgraph::prelude::*;
-use pugutils::petgraph::unionfind::*;
-use pugutils::petgraph::visit::NodeIndexable;
+use petgraph::prelude::*;
+use petgraph::unionfind::*;
+use petgraph::visit::NodeIndexable;
 
-use schema::{EqMap};
+use crate::schema::{EqMap};
 
 type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 

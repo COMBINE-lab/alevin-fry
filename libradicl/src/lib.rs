@@ -5,7 +5,7 @@ extern crate scroll;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufRead, Read};
 use std::io::{BufWriter, Write};
 use std::vec::Vec;
 
@@ -94,8 +94,8 @@ pub struct ChunkConfig {
     pub umi_type: u8,
 }
 
-pub fn collect_records(
-    reader: &mut BufReader<File>,
+pub fn collect_records<T: Read>(
+    reader: &mut BufReader<T>,
     chunk_config: &ChunkConfig,
     correct_map: &HashMap<u64, u64>,
     output_cache: &mut HashMap<u64, CorrectedCBChunk>,
@@ -144,7 +144,7 @@ pub fn collect_records(
     }
 }
 
-fn read_into_u64(reader: &mut BufReader<File>, rt: &RADIntID) -> u64 {
+fn read_into_u64<T: Read>(reader: &mut BufReader<T>, rt: &RADIntID) -> u64 {
     let mut rbuf = [0u8; 8];
     let v: u64;
     match rt {
@@ -169,12 +169,11 @@ fn read_into_u64(reader: &mut BufReader<File>, rt: &RADIntID) -> u64 {
 }
 
 impl ReadRecord {
-    pub fn from_bytes(reader: &mut BufReader<File>, bct: &RADIntID, umit: &RADIntID) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RADIntID, umit: &RADIntID) -> Self {
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
         let na = rbuf.pread::<u32>(0).unwrap();
-
         let bc = read_into_u64(reader, bct);
         let umi = read_into_u64(reader, umit);
 
@@ -196,8 +195,8 @@ impl ReadRecord {
         rec
     }
 
-    pub fn from_bytes_keep_ori(
-        reader: &mut BufReader<File>,
+    pub fn from_bytes_keep_ori<T: Read>(
+        reader: &mut BufReader<T>,
         bct: &RADIntID,
         umit: &RADIntID,
     ) -> Self {
@@ -228,8 +227,8 @@ impl ReadRecord {
     }
 }
 
-pub fn process_corrected_cb_chunk(
-    reader: &mut BufReader<File>,
+pub fn process_corrected_cb_chunk<T: Read>(
+    reader: &mut BufReader<T>,
     bct: RADIntID,
     umit: RADIntID,
     correct_map: &HashMap<u64, u64>,
@@ -293,7 +292,7 @@ pub fn dump_output_cache(
     for (_bc, chunk) in output_cache.iter() {
         // number of bytes
         let mut nbytes: u32 = 0;
-        nbytes += (chunk.ref_offsets.len() * 4) as u32;
+        nbytes += (chunk.ref_ids.len() * 4) as u32;
         // umis
         nbytes += (chunk.umis.len() * 4) as u32;
         // barcodes
@@ -342,20 +341,28 @@ pub fn dump_output_cache(
 }
 
 impl Chunk {
-    pub fn from_bytes(reader: &mut BufReader<File>, bct: RADIntID, umit: RADIntID) -> Self {
+    pub fn read_header<T: Read>(reader: &mut BufReader<T>) -> (u32, u32) {
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf).unwrap();
         let nbytes = buf.pread::<u32>(0).unwrap();
         let nrec = buf.pread::<u32>(4).unwrap();
+        (nbytes, nrec)
+    }
 
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: RADIntID, umit: RADIntID) -> Self {
+        let mut buf = [0u8; 8];
+
+        reader.read_exact(&mut buf).unwrap();
+        let nbytes = buf.pread::<u32>(0).unwrap();
+        let nrec = buf.pread::<u32>(4).unwrap();
         let mut c = Self {
             nbytes,
             nrec,
             reads: Vec::with_capacity(nrec as usize),
         };
 
-        for _ in 0..(nrec as usize) {
+        for i in 0..(nrec as usize) {
             c.reads.push(ReadRecord::from_bytes(reader, &bct, &umit));
         }
 
@@ -364,7 +371,7 @@ impl Chunk {
 }
 
 impl FileTags {
-    pub fn from_bytes(reader: &mut BufReader<File>) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> Self {
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf).unwrap();
 
@@ -376,7 +383,7 @@ impl FileTags {
 }
 
 impl TagDesc {
-    pub fn from_bytes(reader: &mut BufReader<File>) -> TagDesc {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> TagDesc {
         // space for the string length (1 byte)
         // the longest string possible (255 char)
         // and the typeid
@@ -394,7 +401,7 @@ impl TagDesc {
 }
 
 impl TagSection {
-    pub fn from_bytes(reader: &mut BufReader<File>) -> TagSection {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> TagSection {
         let mut buf = [0u8; 2];
         reader.read_exact(&mut buf).unwrap();
         let num_tags = buf.pread::<u16>(0).unwrap() as usize;
@@ -412,7 +419,7 @@ impl TagSection {
 }
 
 impl RADHeader {
-    pub fn from_bytes(reader: &mut BufReader<File>) -> RADHeader {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> RADHeader {
         let mut rh = RADHeader {
             is_paired: 0,
             ref_count: 0,
