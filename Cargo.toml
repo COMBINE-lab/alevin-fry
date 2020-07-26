@@ -21,6 +21,6 @@ chrono = "0.4.13"
 mimalloc = { version = "0.1.19", default-features = false }
 
 [profile.release]
-#lto="thin"
-#codegen-units=1
-#opt-level=3
+lto="thin"
+codegen-units=1
+opt-level=3

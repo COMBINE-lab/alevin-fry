@@ -296,10 +296,9 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
 
     //let mut eq_map = EqMap::new(hdr.ref_count as u32);
     
-    let mut global_distinct_umis = 0usize;
+    let mut _global_distinct_umis = 0usize;
     
     let n_workers = 4;
-    let n_jobs = 8;
     let pool = crossbeam_channel_pool::ThreadPool::new(n_workers);
     let ref_count = hdr.ref_count as u32; 
     let (tx, rx) = channel();
@@ -330,14 +329,14 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut gene_unique = 0usize;
+                let mut _gene_unique = 0usize;
                 let mut total = 0usize;
                 for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    if eqset.len() == 1 { _gene_unique += *count as usize; }
                     total += *count as usize;
                 }
-                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                global_distinct_umis += total;
+                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                _global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -350,14 +349,14 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut gene_unique = 0usize;
+                let mut _gene_unique = 0usize;
                 let mut total = 0usize;
                 for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    if eqset.len() == 1 { _gene_unique += *count as usize; }
                     total += *count as usize;
                 }
-                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                global_distinct_umis += total;
+                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                _global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -370,14 +369,14 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut gene_unique = 0usize;
+                let mut _gene_unique = 0usize;
                 let mut total = 0usize;
                 for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    if eqset.len() == 1 { _gene_unique += *count as usize; }
                     total += *count as usize;
                 }
-                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                global_distinct_umis += total;
+                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                _global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -390,14 +389,14 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                 eq_map.init_from_chunk(&mut c);
                 let g = extract_graph(&eq_map, &log);
                 let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut gene_unique = 0usize;
+                let mut _gene_unique = 0usize;
                 let mut total = 0usize;
                 for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { gene_unique += *count as usize; }
+                    if eqset.len() == 1 { _gene_unique += *count as usize; }
                     total += *count as usize;
                 }
-                info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                global_distinct_umis += total;
+                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
+                _global_distinct_umis += total;
                 _num_reads += c.reads.len();
                 //info!(log, "{:?}", c)
             }
@@ -408,8 +407,8 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
         });
     }
 
-    rx.iter().take(hdr.num_chunks as usize).for_each(|x| info!(log, "processed cell {}", x));
+    rx.iter().take(hdr.num_chunks as usize).for_each(|_x| pbar.inc(1));//info!(log, "processed cell {}", x));
     //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
-    //pbar.finish_with_message("processed all cells.");
+    pbar.finish_with_message("processed all cells.");
     Ok(())
 }

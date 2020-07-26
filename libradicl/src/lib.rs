@@ -5,7 +5,7 @@ extern crate scroll;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufRead, Read};
+use std::io::{BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::vec::Vec;
 
@@ -362,7 +362,7 @@ impl Chunk {
             reads: Vec::with_capacity(nrec as usize),
         };
 
-        for i in 0..(nrec as usize) {
+        for _ in 0..(nrec as usize) {
             c.reads.push(ReadRecord::from_bytes(reader, &bct, &umit));
         }
 

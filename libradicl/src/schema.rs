@@ -57,6 +57,7 @@ impl EqMap {
         self.eqc_info.len()
     }
 
+    #[allow(dead_code)]
     pub(super) fn clear(&mut self) {
         self.eqc_info.clear();
         // keep nref
