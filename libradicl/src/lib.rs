@@ -14,6 +14,7 @@ pub mod quant;
 pub mod schema;
 pub mod utils;
 pub mod pugutils;
+pub mod em;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";

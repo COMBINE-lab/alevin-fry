@@ -8,6 +8,7 @@ extern crate slog;
 use executors::*;
 use executors::crossbeam_channel_pool;
 use std::sync::mpsc::channel;
+use sprs::TriMatI;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
@@ -15,6 +16,7 @@ use self::slog::info;
 use scroll::Pwrite;
 use fasthash::{sea};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
@@ -25,6 +27,7 @@ use crate as libradicl;
 use self::libradicl::schema::{EqMap, PUGEdgeType};
 use self::libradicl::utils::*;
 use self::libradicl::pugutils;
+use self::libradicl::em::em_optimize;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the 
 /// equivalence class map for a given cell.
@@ -202,7 +205,10 @@ fn extract_graph(
     graph
 }
 
-pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result<(), Box<dyn std::error::Error>> {
+pub fn quantify(input_dir: String, tg_map: String, 
+                output_dir: String, num_threads: u32, 
+                no_em: bool,
+                log: &slog::Logger) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).unwrap();
     let mut br = BufReader::new(i_file);
@@ -298,12 +304,12 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
     
     let mut _global_distinct_umis = 0usize;
     
-    let n_workers = 4;
+    let n_workers = num_threads as usize;
     let pool = crossbeam_channel_pool::ThreadPool::new(n_workers);
     let ref_count = hdr.ref_count as u32; 
     let (tx, rx) = channel();
 
-    for cell_num in 0..(hdr.num_chunks as usize) {
+    for _cell_num in 0..(hdr.num_chunks as usize) {
         let tx = tx.clone();
         //eq_map.clear();
         let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
@@ -313,12 +319,15 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
         br.read_exact(&mut buf[8..]).unwrap();
         let tid_to_gid = tid_to_gid.clone();
         let log = log.clone();
+        let num_genes = gene_name_to_id.len();
         //&buf[..];
         pool.execute( move|| {
 
         let mut eq_map = EqMap::new(ref_count);
         let mut nbr = BufReader::new(&buf[..]);
- 
+        let mut unique_evidence = vec![false; num_genes];
+        let mut no_ambiguity = vec![false; num_genes];
+        let mut bc : u64 = 0;
         match (bct, umit) {
             (3, 3) => {
                 let mut c = libradicl::Chunk::from_bytes(
@@ -326,19 +335,8 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U32,
                 );
+                bc = c.reads.first().expect("chunk with no reads").bc;
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, &log);
-                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut _gene_unique = 0usize;
-                let mut total = 0usize;
-                for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { _gene_unique += *count as usize; }
-                    total += *count as usize;
-                }
-                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                _global_distinct_umis += total;
-                _num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
             }
             (3, 4) => {
                 let mut c = libradicl::Chunk::from_bytes(
@@ -346,19 +344,8 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                     libradicl::RADIntID::U32,
                     libradicl::RADIntID::U64,
                 );
+                bc = c.reads.first().expect("chunk with no reads").bc;
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, &log);
-                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut _gene_unique = 0usize;
-                let mut total = 0usize;
-                for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { _gene_unique += *count as usize; }
-                    total += *count as usize;
-                }
-                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                _global_distinct_umis += total;
-                _num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
             }
             (4, 3) => {
                 let mut c = libradicl::Chunk::from_bytes(
@@ -366,19 +353,8 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U32,
                 );
+                bc = c.reads.first().expect("chunk with no reads").bc;
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, &log);
-                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut _gene_unique = 0usize;
-                let mut total = 0usize;
-                for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { _gene_unique += *count as usize; }
-                    total += *count as usize;
-                }
-                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                _global_distinct_umis += total;
-                _num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
             }
             (4, 4) => {
                 let mut c = libradicl::Chunk::from_bytes(
@@ -386,28 +362,43 @@ pub fn quantify(input_dir: String, tg_map: String, log: &slog::Logger) -> Result
                     libradicl::RADIntID::U64,
                     libradicl::RADIntID::U64,
                 );
+                bc = c.reads.first().expect("chunk with no reads").bc;
                 eq_map.init_from_chunk(&mut c);
-                let g = extract_graph(&eq_map, &log);
-                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let mut _gene_unique = 0usize;
-                let mut total = 0usize;
-                for (eqset, count) in gene_eqc.iter() {
-                    if eqset.len() == 1 { _gene_unique += *count as usize; }
-                    total += *count as usize;
-                }
-                //info!(log, "Cell {}, gene-unique UMIs = {}, total UMIs = {}", cell_num, gene_unique, total);
-                _global_distinct_umis += total;
-                _num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
             }
             (_, _) => info!(log, "types not supported"),
         }
-        tx.send(cell_num).expect("woot");
+
+        let g = extract_graph(&eq_map, &log);
+        let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+        let only_unique = no_em;
+        let counts = em_optimize(&gene_eqc, &mut unique_evidence, &mut no_ambiguity,
+                                         num_genes, only_unique, &log);
+        tx.send((bc, counts)).expect("woot");
         //pbar.inc(1);
         });
     }
 
-    rx.iter().take(hdr.num_chunks as usize).for_each(|_x| pbar.inc(1));//info!(log, "processed cell {}", x));
+    let num_genes = gene_name_to_id.len();
+    // TODO: guess capacity better
+    let mut omat = TriMatI::<f32, u32>::new((num_genes, hdr.num_chunks as usize));
+
+    let mut c = 0usize;
+    rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
+        pbar.inc(1);
+        for (i, v) in x.1.iter().enumerate() {
+            if *v > 0.0 { omat.add_triplet(i, c, *v); }
+        }
+        c += 1;
+    });
+    
+    let csr = omat.to_csr();
+    let output_path = std::path::Path::new(&output_dir);
+    fs::create_dir_all(output_path)?;
+
+    let save_path = output_path.join("counts.mtx");
+
+    sprs::io::write_matrix_market(&save_path, &csr)?;
+    //info!(log, "processed cell {}", x));
     //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
     pbar.finish_with_message("processed all cells.");
     Ok(())

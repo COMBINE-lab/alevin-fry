@@ -7,6 +7,7 @@ extern crate rand;
 extern crate serde;
 extern crate slog;
 extern crate slog_term;
+extern crate num_cpus;
 
 use fasthash::{sea, RandomState};
 use rand::Rng;
@@ -71,7 +72,13 @@ struct Quant {
     #[clap(short, long)]
     input_dir: String,
     #[clap(short, long)]
-    tg_map: String 
+    tg_map: String,
+    #[clap(short, long)]
+    output_dir: String,
+    #[clap(short, long)]
+    num_threads: Option<u32>,
+    #[clap(short, long)]
+    no_em: bool
 }
 
 #[allow(dead_code)]
@@ -248,7 +255,12 @@ fn main() {
                 .expect("could not collate.");
         }
         SubCommand::Quant(t) => {
-            libradicl::quant::quantify(t.input_dir, t.tg_map, &log).expect("could not quantify rad file.");
+            let num_threads = match t.num_threads {
+                Some(nt) => { nt },
+                None => { num_cpus::get() as u32 } 
+            };
+            libradicl::quant::quantify(t.input_dir, t.tg_map, 
+                                       t.output_dir, num_threads, t.no_em, &log).expect("could not quantify rad file.");
         }
     }
 }
