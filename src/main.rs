@@ -11,6 +11,7 @@ extern crate slog_term;
 use fasthash::{sea, RandomState};
 use rand::Rng;
 use slog::{info, o, Drain};
+use mimalloc::MiMalloc;
 //use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::fs::File;
@@ -18,6 +19,9 @@ use std::io::BufReader;
 use std::io::{BufWriter, Write};
 
 use clap::Clap;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
