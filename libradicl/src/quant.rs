@@ -367,11 +367,20 @@ pub fn quantify(
     // entire triplet matrix in memory at once?
     let mut omat = TriMatI::<f32, u32>::new((num_genes, hdr.num_chunks as usize));
 
+    let output_path = std::path::Path::new(&output_dir);
+    fs::create_dir_all(output_path)?;
+    /*
+    let mat_path = output_path.join("counts_triplets.mtx");
+    let mat_file = fs::File::create(mat_path)?;
+    let mut mat_writer = BufWriter::new(mat_file);
+    */
+    
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);
         for (i, v) in x.1.iter().enumerate() {
             if *v > 0.0 {
+                //&mat_writer.write(format!("{}\t{}\t{}", i, c, *v).as_bytes()).expect("can't write to output file");
                 omat.add_triplet(i, c, *v);
             }
         }
@@ -379,9 +388,6 @@ pub fn quantify(
     });
 
     let csr = omat.to_csr();
-    let output_path = std::path::Path::new(&output_dir);
-    fs::create_dir_all(output_path)?;
-
     let mat_path = output_path.join("counts.mtx");
     sprs::io::write_matrix_market(&mat_path, &csr)?;
 
