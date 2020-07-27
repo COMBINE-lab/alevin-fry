@@ -84,6 +84,8 @@ struct Quant {
     num_threads: Option<u32>,
     #[clap(short, long)]
     no_em: bool,
+    #[clap(short, long)]
+    naive: bool
 }
 
 #[allow(dead_code)]
@@ -265,6 +267,7 @@ fn main() {
                 t.output_dir,
                 num_threads,
                 t.no_em,
+                t.naive,
                 &log,
             )
             .expect("could not quantify rad file.");

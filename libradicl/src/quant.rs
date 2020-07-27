@@ -13,6 +13,7 @@ use std::sync::mpsc::channel;
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 use self::slog::info;
+use self::slog::crit;
 use crate as libradicl;
 use fasthash::sea;
 use scroll::Pwrite;
@@ -210,6 +211,7 @@ pub fn quantify(
     output_dir: String,
     num_threads: u32,
     no_em: bool,
+    naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -335,6 +337,7 @@ pub fn quantify(
         let num_genes = gene_name_to_id.len();
         let bc_type = bc_type.clone();
         let umi_type = umi_type.clone();
+        //let naive = naive.clone();
 
         pool.execute(move || {
             let mut eq_map = EqMap::new(ref_count);
@@ -344,10 +347,16 @@ pub fn quantify(
             let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
             let bc = c.reads.first().expect("chunk with no reads").bc;
             eq_map.init_from_chunk(&mut c);
+            let counts : Vec<f32>;
+            if naive {
+                crit!(log, "The naive mode is not yet implemented.");
+                std::process::exit(1);
+                //counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log); 
+            } else {
             let g = extract_graph(&eq_map, &log);
             let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
             let only_unique = no_em;
-            let counts = em_optimize(
+            counts = em_optimize(
                 &gene_eqc,
                 &mut unique_evidence,
                 &mut no_ambiguity,
@@ -355,6 +364,7 @@ pub fn quantify(
                 only_unique,
                 &log,
             );
+            }  
             tx.send((bc, counts))
                 .expect("failed to sent cell result over channel");
         });
@@ -374,7 +384,7 @@ pub fn quantify(
     let mat_file = fs::File::create(mat_path)?;
     let mut mat_writer = BufWriter::new(mat_file);
     */
-    
+
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);

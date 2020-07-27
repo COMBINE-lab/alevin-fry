@@ -129,6 +129,41 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
+
+pub(super) fn get_num_molecules_trivial(
+    eq_map: &EqMap, 
+    tid_to_gid: &[u32], 
+    num_genes: usize,
+    log: &slog::Logger) -> Vec<f32> {
+
+    let mut counts = vec![0.0f32; num_genes];
+    
+    for eqinfo in &eq_map.eqc_info {
+        let umis = &eqinfo.umis;
+        let eqid = &eqinfo.eq_num;
+        let tset = eq_map.refs_for_eqc(*eqid);
+        let mut prev_gene_id = u32::MAX;
+        let mut multi_gene = false;
+        // if this is a single-gene equivalence class
+        // then go ahead and assign the read
+        for t in tset {
+            let gid = tid_to_gid[*t as usize];
+            if gid != prev_gene_id && prev_gene_id < u32::MAX {
+                multi_gene = true;
+                break;
+            }
+            prev_gene_id = gid;
+        }
+        // otherwise, toss the read
+        if !multi_gene {
+            // the number of distinct UMIs 
+            counts[prev_gene_id as usize] = umis.len() as f32;
+        }
+    }
+
+    counts
+} 
+
 /// Given the digraph `g` representing the PUGs within the current
 /// cell, the EqMap `eqmap` to decode all equivalence classes
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
