@@ -83,6 +83,7 @@ impl CorrectedCBChunk {
     }
 }
 
+#[derive(Copy, Clone)]
 pub enum RADIntID {
     U8,
     U16,
@@ -96,6 +97,14 @@ pub struct ChunkConfig {
     pub umi_type: u8,
 }
 
+pub fn decode_int_type_tag(type_id: u8, ) -> Option<RADIntID> {
+  match type_id {
+              3 => Some(RADIntID::U32),
+              4 => Some(RADIntID::U64),
+              _ => None 
+  }
+}
+
 pub fn collect_records<T: Read>(
     reader: &mut BufReader<T>,
     chunk_config: &ChunkConfig,
@@ -104,50 +113,13 @@ pub fn collect_records<T: Read>(
     output_cache: &mut HashMap<u64, CorrectedCBChunk>,
 ) {
     // NOTE: since the chunks are independent, this part could be multithreaded
+    let bc_type = decode_int_type_tag(chunk_config.bc_type).expect("unknown barcode type id.");
+    let umi_type = decode_int_type_tag(chunk_config.umi_type).expect("unknown barcode type id.");
+
     for _ in 0..(chunk_config.num_chunks as usize) {
-        match (chunk_config.bc_type, chunk_config.umi_type) {
-            (3, 3) => {
-                process_corrected_cb_chunk(
-                    reader,
-                    RADIntID::U32,
-                    RADIntID::U32,
-                    correct_map,
-                    expected_ori,
-                    output_cache,
-                );
-            }
-            (3, 4) => {
-                process_corrected_cb_chunk(
-                    reader,
-                    RADIntID::U32,
-                    RADIntID::U64,
-                    correct_map,
-                    expected_ori,
-                    output_cache,
-                );
-            }
-            (4, 3) => {
-                process_corrected_cb_chunk(
-                    reader,
-                    RADIntID::U64,
-                    RADIntID::U32,
-                    correct_map,
-                    expected_ori,
-                    output_cache,
-                );
-            }
-            (4, 4) => {
-                process_corrected_cb_chunk(
-                    reader,
-                    RADIntID::U64,
-                    RADIntID::U32,
-                    correct_map,
-                    expected_ori,
-                    output_cache,
-                );
-            }
-            (_, _) => println!("types not supported"),
-        }
+      process_corrected_cb_chunk(
+                    reader, &bc_type, &umi_type,
+                    correct_map, expected_ori, output_cache);
     }
 }
 
@@ -251,8 +223,8 @@ impl ReadRecord {
 
 pub fn process_corrected_cb_chunk<T: Read>(
     reader: &mut BufReader<T>,
-    bct: RADIntID,
-    umit: RADIntID,
+    bct: &RADIntID,
+    umit: &RADIntID,
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
     output_cache: &mut HashMap<u64, CorrectedCBChunk>,
@@ -378,7 +350,7 @@ impl Chunk {
         (nbytes, nrec)
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: RADIntID, umit: RADIntID) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RADIntID, umit: &RADIntID) -> Self {
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf).unwrap();

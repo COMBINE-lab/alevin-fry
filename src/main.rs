@@ -133,51 +133,13 @@ fn generate_permit_list(
 
     let s = RandomState::<sea::Hash64>::new();
     let mut hm = HashMap::with_hasher(s);
+    let bc_type = libradicl::decode_int_type_tag(bct).expect("unknown barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit).expect("unknown barcode type id.");
 
     for _ in 0..(hdr.num_chunks as usize) {
-        match (bct, umit) {
-            (3, 3) => {
-                let c = libradicl::Chunk::from_bytes(
-                    &mut br,
-                    libradicl::RADIntID::U32,
-                    libradicl::RADIntID::U32,
-                );
+                let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
                 libradicl::update_barcode_hist(&mut hm, &c);
                 num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
-            }
-            (3, 4) => {
-                let c = libradicl::Chunk::from_bytes(
-                    &mut br,
-                    libradicl::RADIntID::U32,
-                    libradicl::RADIntID::U64,
-                );
-                libradicl::update_barcode_hist(&mut hm, &c);
-                num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
-            }
-            (4, 3) => {
-                let c = libradicl::Chunk::from_bytes(
-                    &mut br,
-                    libradicl::RADIntID::U64,
-                    libradicl::RADIntID::U32,
-                );
-                libradicl::update_barcode_hist(&mut hm, &c);
-                num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
-            }
-            (4, 4) => {
-                let c = libradicl::Chunk::from_bytes(
-                    &mut br,
-                    libradicl::RADIntID::U64,
-                    libradicl::RADIntID::U64,
-                );
-                libradicl::update_barcode_hist(&mut hm, &c);
-                num_reads += c.reads.len();
-                //info!(log, "{:?}", c)
-            }
-            (_, _) => info!(log, "types not supported"),
-        }
     }
 
     info!(

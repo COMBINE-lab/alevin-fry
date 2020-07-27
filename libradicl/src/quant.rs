@@ -204,6 +204,7 @@ fn extract_graph(
     graph
 }
 
+
 pub fn quantify(
     input_dir: String,
     tg_map: String,
@@ -319,6 +320,9 @@ pub fn quantify(
     let ref_count = hdr.ref_count as u32;
     let (tx, rx) = channel();
 
+    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+
     for _cell_num in 0..(hdr.num_chunks as usize) {
         let tx = tx.clone();
         //eq_map.clear();
@@ -330,53 +334,17 @@ pub fn quantify(
         let tid_to_gid = tid_to_gid.clone();
         let log = log.clone();
         let num_genes = gene_name_to_id.len();
+        let bc_type = bc_type.clone();
+        let umi_type = umi_type.clone();
         //&buf[..];
         pool.execute(move || {
             let mut eq_map = EqMap::new(ref_count);
             let mut nbr = BufReader::new(&buf[..]);
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
-            let mut bc: u64 = 0;
-            match (bct, umit) {
-                (3, 3) => {
-                    let mut c = libradicl::Chunk::from_bytes(
-                        &mut nbr,
-                        libradicl::RADIntID::U32,
-                        libradicl::RADIntID::U32,
-                    );
-                    bc = c.reads.first().expect("chunk with no reads").bc;
-                    eq_map.init_from_chunk(&mut c);
-                }
-                (3, 4) => {
-                    let mut c = libradicl::Chunk::from_bytes(
-                        &mut nbr,
-                        libradicl::RADIntID::U32,
-                        libradicl::RADIntID::U64,
-                    );
-                    bc = c.reads.first().expect("chunk with no reads").bc;
-                    eq_map.init_from_chunk(&mut c);
-                }
-                (4, 3) => {
-                    let mut c = libradicl::Chunk::from_bytes(
-                        &mut nbr,
-                        libradicl::RADIntID::U64,
-                        libradicl::RADIntID::U32,
-                    );
-                    bc = c.reads.first().expect("chunk with no reads").bc;
-                    eq_map.init_from_chunk(&mut c);
-                }
-                (4, 4) => {
-                    let mut c = libradicl::Chunk::from_bytes(
-                        &mut nbr,
-                        libradicl::RADIntID::U64,
-                        libradicl::RADIntID::U64,
-                    );
-                    bc = c.reads.first().expect("chunk with no reads").bc;
-                    eq_map.init_from_chunk(&mut c);
-                }
-                (_, _) => info!(log, "types not supported"),
-            }
-
+            let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+            let bc = c.reads.first().expect("chunk with no reads").bc;
+            eq_map.init_from_chunk(&mut c);
             let g = extract_graph(&eq_map, &log);
             let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
             let only_unique = no_em;
