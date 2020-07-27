@@ -1,6 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
+
+
+pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
+pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
+
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
 pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {

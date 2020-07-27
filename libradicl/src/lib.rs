@@ -2,6 +2,7 @@
 extern crate fasthash;
 extern crate scroll;
 
+use bio_types::strand::*;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,11 +11,11 @@ use std::io::{BufWriter, Write};
 use std::vec::Vec;
 
 pub mod collate;
+pub mod em;
+pub mod pugutils;
 pub mod quant;
 pub mod schema;
 pub mod utils;
-pub mod pugutils;
-pub mod em;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
@@ -99,6 +100,7 @@ pub fn collect_records<T: Read>(
     reader: &mut BufReader<T>,
     chunk_config: &ChunkConfig,
     correct_map: &HashMap<u64, u64>,
+    expected_ori: &Strand,
     output_cache: &mut HashMap<u64, CorrectedCBChunk>,
 ) {
     // NOTE: since the chunks are independent, this part could be multithreaded
@@ -110,6 +112,7 @@ pub fn collect_records<T: Read>(
                     RADIntID::U32,
                     RADIntID::U32,
                     correct_map,
+                    expected_ori,
                     output_cache,
                 );
             }
@@ -119,6 +122,7 @@ pub fn collect_records<T: Read>(
                     RADIntID::U32,
                     RADIntID::U64,
                     correct_map,
+                    expected_ori,
                     output_cache,
                 );
             }
@@ -128,6 +132,7 @@ pub fn collect_records<T: Read>(
                     RADIntID::U64,
                     RADIntID::U32,
                     correct_map,
+                    expected_ori,
                     output_cache,
                 );
             }
@@ -137,6 +142,7 @@ pub fn collect_records<T: Read>(
                     RADIntID::U64,
                     RADIntID::U32,
                     correct_map,
+                    expected_ori,
                     output_cache,
                 );
             }
@@ -170,6 +176,10 @@ fn read_into_u64<T: Read>(reader: &mut BufReader<T>, rt: &RADIntID) -> u64 {
 }
 
 impl ReadRecord {
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty()
+    }
+
     pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RADIntID, umit: &RADIntID) -> Self {
         let mut rbuf = [0u8; 255];
 
@@ -200,7 +210,9 @@ impl ReadRecord {
         reader: &mut BufReader<T>,
         bct: &RADIntID,
         umit: &RADIntID,
+        expected_ori: &Strand,
     ) -> Self {
+        
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -219,11 +231,20 @@ impl ReadRecord {
         for _ in 0..(na as usize) {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
             let v = rbuf.pread::<u32>(0).unwrap();
-            //let dir = (v & 0x80000000) != 0;
-            //rec.dirs.push( dir );
-            rec.refs.push(v);
-        }
 
+            // fw if the leftmost bit is 1, otherwise rc
+            let strand = if (v & utils::MASK_LOWER_31_U32) > 0 {
+                Strand::Forward
+            } else {
+                Strand::Reverse
+            };
+
+            if expected_ori.same(&strand) {
+                rec.refs.push(v & utils::MASK_TOP_BIT_U32); 
+            }
+        }
+        // make sure these are sorted in this step.
+        rec.refs.sort();
         rec
     }
 }
@@ -233,6 +254,7 @@ pub fn process_corrected_cb_chunk<T: Read>(
     bct: RADIntID,
     umit: RADIntID,
     correct_map: &HashMap<u64, u64>,
+    expected_ori: &Strand,
     output_cache: &mut HashMap<u64, CorrectedCBChunk>,
 ) {
     /*
@@ -261,17 +283,22 @@ pub fn process_corrected_cb_chunk<T: Read>(
 
     // for each record, read it
     for _ in 0..(nrec as usize) {
-        let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit);
-
+        let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&rr.bc) {
             if let Some(v) = output_cache.get_mut(corrected_id) {
                 // update the corresponding corrected chunk entry
+                v.remaining_records -= 1;
+                // if there are no alignments in the record
+                // (potentially b/c of orientation filtering)
+                // then don't push info on to the vector.
+                if rr.is_empty() {
+                    continue;
+                }
                 v.umis.push(rr.umi);
                 let ref_offset = v.ref_ids.len() as u32;
                 v.ref_offsets.push(ref_offset);
                 v.ref_ids.extend(&rr.refs);
-                v.remaining_records -= 1;
             }
         }
     }

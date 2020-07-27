@@ -5,6 +5,7 @@ extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::info;
+use bio_types::strand::Strand;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -16,6 +17,7 @@ pub fn collate(
     input_dir: String,
     rad_file: String,
     max_records: u32,
+    expected_ori: Strand,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -137,7 +139,7 @@ pub fn collate(
         last_idx += init_offset;
 
         // collect the output for the current barcode set
-        libradicl::collect_records(&mut br, &cc, &correct_map, &mut output_cache);
+        libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
 
         // dump the output we have
         libradicl::dump_output_cache(&mut owriter, &output_cache);

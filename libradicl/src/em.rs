@@ -1,11 +1,13 @@
-extern crate slog;
 extern crate fasthash;
+extern crate slog;
 
+#[allow(unused_imports)]
+use self::slog::info;
+use fasthash::sea::Hash64;
+#[allow(unused_imports)]
+use fasthash::RandomState;
 use std::collections::HashMap;
 use std::f32;
-use fasthash::RandomState;
-use fasthash::sea::Hash64;
-use self::slog::info;
 
 //#[derive(Clone, Debug)]
 //pub struct SalmonEQClass {
@@ -20,11 +22,11 @@ const MIN_ITER: u32 = 50;
 const MAX_ITER: u32 = 10_000;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
-
-pub fn em_update(alphas_in: &Vec<f32>, 
-                alphas_out: &mut Vec<f32>, 
-                eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>
-            ) {
+pub fn em_update(
+    alphas_in: &[f32],
+    alphas_out: &mut Vec<f32>,
+    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+) {
     // loop over all the eqclasses
     for (labels, count) in eqclasses {
         if labels.len() > 1 {
@@ -54,7 +56,7 @@ pub fn em_optimize(
     no_ambiguity: &mut Vec<bool>,
     num_alphas: usize,
     only_unique: bool,
-    log: &slog::Logger
+    _log: &slog::Logger,
 ) -> Vec<f32> {
     // set up starting alphas as 0.5
     let mut alphas_in: Vec<f32> = vec![0.5; num_alphas];
@@ -65,8 +67,7 @@ pub fn em_optimize(
             let idx = labels.get(0).expect("can't extract labels");
             alphas_in[*idx as usize] += *count as f32;
             unique_evidence[*idx as usize] = true;
-        }
-        else{
+        } else {
             for idx in labels {
                 no_ambiguity[*idx as usize] = false;
             }
@@ -123,13 +124,12 @@ pub fn em_optimize(
     });
 
     let alphas_sum: f32 = alphas_in.iter().sum();
-    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
     info!(log,
         "Total Molecules after EM {}",
         alphas_sum
     );
     */
-
-    return alphas_in;
+    alphas_in
 }

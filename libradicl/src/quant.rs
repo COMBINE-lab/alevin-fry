@@ -5,31 +5,31 @@ extern crate petgraph;
 extern crate serde;
 extern crate slog;
 
-use executors::*;
 use executors::crossbeam_channel_pool;
-use std::sync::mpsc::channel;
+use executors::*;
 use sprs::TriMatI;
+use std::sync::mpsc::channel;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 use self::slog::info;
+use crate as libradicl;
+use fasthash::sea;
 use scroll::Pwrite;
-use fasthash::{sea};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::BufReader;
-use std::io::Write;
+use std::io::{BufReader, BufWriter};
 use std::io::Read;
-use crate as libradicl;
+use std::io::Write;
 
+use self::libradicl::em::em_optimize;
+use self::libradicl::pugutils;
 use self::libradicl::schema::{EqMap, PUGEdgeType};
 use self::libradicl::utils::*;
-use self::libradicl::pugutils;
-use self::libradicl::em::em_optimize;
 
-/// Extracts the parsimonious UMI graphs (PUGs) from the 
+/// Extracts the parsimonious UMI graphs (PUGs) from the
 /// equivalence class map for a given cell.
 fn extract_graph(
     eqmap: &EqMap,
@@ -78,7 +78,7 @@ fn extract_graph(
 
         // get the info Vec<(UMI, frequency)>
         let eq = &eqmap.eqc_info[eqid];
-        
+
         // for each (umi, count) pair and its index
         let u1 = &eq.umis;
         for (xi, x) in u1.iter().enumerate() {
@@ -87,7 +87,7 @@ fn extract_graph(
 
             // for each (umi, freq) pair and node after this one
             for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
-            //for xi2 in (xi + 1)..u1.len() {
+                //for xi2 in (xi + 1)..u1.len() {
                 // x2 is the other (umi, freq) pair
                 //let x2 = &u1[xi2];
 
@@ -126,19 +126,18 @@ fn extract_graph(
         }
 
         let mut hset = get_set();
-        
+
         // for every reference id in this eq class
         for r in eqmap.refs_for_eqc(eqid as u32) {
-
             // find the equivalence classes sharing this reference
             for eq2id in eqmap.eq_classes_containing(*r).iter() {
-                // if eq2id <= eqid, then we already observed the relevant edges 
+                // if eq2id <= eqid, then we already observed the relevant edges
                 // when we process eq2id
                 if (*eq2id as usize) <= eqid {
                     continue;
                 }
-                // otherwise, if we have already processed this other equivalence 
-                // class because it shares _another_ reference (apart from r) with 
+                // otherwise, if we have already processed this other equivalence
+                // class because it shares _another_ reference (apart from r) with
                 // the current equivalence class, then skip it.
                 if hset.contains(eq2id) {
                     continue;
@@ -193,7 +192,7 @@ fn extract_graph(
             }
         }
     }
-    
+
     if verbose {
         info!(
             log,
@@ -205,10 +204,14 @@ fn extract_graph(
     graph
 }
 
-pub fn quantify(input_dir: String, tg_map: String, 
-                output_dir: String, num_threads: u32, 
-                no_em: bool,
-                log: &slog::Logger) -> Result<(), Box<dyn std::error::Error>> {
+pub fn quantify(
+    input_dir: String,
+    tg_map: String,
+    output_dir: String,
+    num_threads: u32,
+    no_em: bool,
+    log: &slog::Logger,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).unwrap();
     let mut br = BufReader::new(i_file);
@@ -221,31 +224,30 @@ pub fn quantify(input_dir: String, tg_map: String,
         hdr.num_chunks
     );
 
-    // now that we have the header, parse and convert the 
+    // now that we have the header, parse and convert the
     // tgmap.
 
     // first, build a hash of each transcript to it's index
-    let mut rname_to_id : HashMap<String, u32> = HashMap::with_capacity(hdr.ref_count as usize);
+    let mut rname_to_id: HashMap<String, u32> = HashMap::with_capacity(hdr.ref_count as usize);
     for (i, n) in hdr.ref_names.iter().enumerate() {
         rname_to_id.insert(n.clone(), i as u32);
     }
     //println!("{:?}", hdr.ref_names);
 
     // will hold the unique gene names in the order they are encountered
-    let mut gene_names : Vec<String> = Vec::with_capacity((hdr.ref_count / 2) as usize);
-    let mut gene_name_to_id : HashMap<String, u32> = HashMap::new();
+    let mut gene_names: Vec<String> = Vec::with_capacity((hdr.ref_count / 2) as usize);
+    let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
 
     // now read in the transcript to gene map
     type TSVRec = (String, String);
 
     // map each transcript id to the corresponding gene id
-    // the transcript name can be looked up from the id in the RAD header, 
+    // the transcript name can be looked up from the id in the RAD header,
     // and the gene name can be looked up from the id in the gene_names
     // vector.
     let mut tid_to_gid = vec![u32::MAX; hdr.ref_count as usize];
 
-    let t2g_file =
-        std::fs::File::open(tg_map).expect("couldn't open file");
+    let t2g_file = std::fs::File::open(tg_map).expect("couldn't open file");
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(false)
         .delimiter(b'\t')
@@ -258,20 +260,28 @@ pub fn quantify(input_dir: String, tg_map: String,
         // first, get the id for this gene
         let next_id = gene_name_to_id.len() as u32;
         let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
-        // if we didn't just add this, then append to the list of 
-        // gene names.
-        if gene_id != next_id { 
+        // if we haven't added this gene name already, then 
+        // append it now to the list of gene names.
+        if gene_id == next_id {
             gene_names.push(record.1);
         }
         // get the transcript id
-        if let Some(transcript_id) = rname_to_id.get(&record.0) { 
+        if let Some(transcript_id) = rname_to_id.get(&record.0) {
             found += 1;
             tid_to_gid[*transcript_id as usize] = gene_id;
         }
     }
-    assert_eq!(found, hdr.ref_count as usize, "The tg-map must contain a gene mapping for all transcripts in the header");
+    assert_eq!(
+        found, hdr.ref_count as usize,
+        "The tg-map must contain a gene mapping for all transcripts in the header"
+    );
 
-    info!(log, "tg-map contained {} genes mapping to {} transcripts.", gene_names.len(), found);
+    info!(
+        log,
+        "tg-map contained {} genes mapping to {} transcripts.",
+        gene_names.len(),
+        found
+    );
 
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
@@ -301,12 +311,12 @@ pub fn quantify(input_dir: String, tg_map: String,
     );
 
     //let mut eq_map = EqMap::new(hdr.ref_count as u32);
-    
+
     let mut _global_distinct_umis = 0usize;
-    
+
     let n_workers = num_threads as usize;
     let pool = crossbeam_channel_pool::ThreadPool::new(n_workers);
-    let ref_count = hdr.ref_count as u32; 
+    let ref_count = hdr.ref_count as u32;
     let (tx, rx) = channel();
 
     for _cell_num in 0..(hdr.num_chunks as usize) {
@@ -321,83 +331,99 @@ pub fn quantify(input_dir: String, tg_map: String,
         let log = log.clone();
         let num_genes = gene_name_to_id.len();
         //&buf[..];
-        pool.execute( move|| {
+        pool.execute(move || {
+            let mut eq_map = EqMap::new(ref_count);
+            let mut nbr = BufReader::new(&buf[..]);
+            let mut unique_evidence = vec![false; num_genes];
+            let mut no_ambiguity = vec![false; num_genes];
+            let mut bc: u64 = 0;
+            match (bct, umit) {
+                (3, 3) => {
+                    let mut c = libradicl::Chunk::from_bytes(
+                        &mut nbr,
+                        libradicl::RADIntID::U32,
+                        libradicl::RADIntID::U32,
+                    );
+                    bc = c.reads.first().expect("chunk with no reads").bc;
+                    eq_map.init_from_chunk(&mut c);
+                }
+                (3, 4) => {
+                    let mut c = libradicl::Chunk::from_bytes(
+                        &mut nbr,
+                        libradicl::RADIntID::U32,
+                        libradicl::RADIntID::U64,
+                    );
+                    bc = c.reads.first().expect("chunk with no reads").bc;
+                    eq_map.init_from_chunk(&mut c);
+                }
+                (4, 3) => {
+                    let mut c = libradicl::Chunk::from_bytes(
+                        &mut nbr,
+                        libradicl::RADIntID::U64,
+                        libradicl::RADIntID::U32,
+                    );
+                    bc = c.reads.first().expect("chunk with no reads").bc;
+                    eq_map.init_from_chunk(&mut c);
+                }
+                (4, 4) => {
+                    let mut c = libradicl::Chunk::from_bytes(
+                        &mut nbr,
+                        libradicl::RADIntID::U64,
+                        libradicl::RADIntID::U64,
+                    );
+                    bc = c.reads.first().expect("chunk with no reads").bc;
+                    eq_map.init_from_chunk(&mut c);
+                }
+                (_, _) => info!(log, "types not supported"),
+            }
 
-        let mut eq_map = EqMap::new(ref_count);
-        let mut nbr = BufReader::new(&buf[..]);
-        let mut unique_evidence = vec![false; num_genes];
-        let mut no_ambiguity = vec![false; num_genes];
-        let mut bc : u64 = 0;
-        match (bct, umit) {
-            (3, 3) => {
-                let mut c = libradicl::Chunk::from_bytes(
-                    &mut nbr,
-                    libradicl::RADIntID::U32,
-                    libradicl::RADIntID::U32,
-                );
-                bc = c.reads.first().expect("chunk with no reads").bc;
-                eq_map.init_from_chunk(&mut c);
-            }
-            (3, 4) => {
-                let mut c = libradicl::Chunk::from_bytes(
-                    &mut nbr,
-                    libradicl::RADIntID::U32,
-                    libradicl::RADIntID::U64,
-                );
-                bc = c.reads.first().expect("chunk with no reads").bc;
-                eq_map.init_from_chunk(&mut c);
-            }
-            (4, 3) => {
-                let mut c = libradicl::Chunk::from_bytes(
-                    &mut nbr,
-                    libradicl::RADIntID::U64,
-                    libradicl::RADIntID::U32,
-                );
-                bc = c.reads.first().expect("chunk with no reads").bc;
-                eq_map.init_from_chunk(&mut c);
-            }
-            (4, 4) => {
-                let mut c = libradicl::Chunk::from_bytes(
-                    &mut nbr,
-                    libradicl::RADIntID::U64,
-                    libradicl::RADIntID::U64,
-                );
-                bc = c.reads.first().expect("chunk with no reads").bc;
-                eq_map.init_from_chunk(&mut c);
-            }
-            (_, _) => info!(log, "types not supported"),
-        }
-
-        let g = extract_graph(&eq_map, &log);
-        let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-        let only_unique = no_em;
-        let counts = em_optimize(&gene_eqc, &mut unique_evidence, &mut no_ambiguity,
-                                         num_genes, only_unique, &log);
-        tx.send((bc, counts)).expect("woot");
-        //pbar.inc(1);
+            let g = extract_graph(&eq_map, &log);
+            let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+            let only_unique = no_em;
+            let counts = em_optimize(
+                &gene_eqc,
+                &mut unique_evidence,
+                &mut no_ambiguity,
+                num_genes,
+                only_unique,
+                &log,
+            );
+            tx.send((bc, counts)).expect("failed to sent cell result over channel");
+            //pbar.inc(1);
         });
     }
 
     let num_genes = gene_name_to_id.len();
+
     // TODO: guess capacity better
+    // TODO: in the future, we may not want to hold the 
+    // entire triplet matrix in memory at once?
     let mut omat = TriMatI::<f32, u32>::new((num_genes, hdr.num_chunks as usize));
 
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);
         for (i, v) in x.1.iter().enumerate() {
-            if *v > 0.0 { omat.add_triplet(i, c, *v); }
+            if *v > 0.0 {
+                omat.add_triplet(i, c, *v);
+            }
         }
         c += 1;
     });
-    
+
     let csr = omat.to_csr();
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
 
-    let save_path = output_path.join("counts.mtx");
+    let mat_path = output_path.join("counts.mtx");
+    sprs::io::write_matrix_market(&mat_path, &csr)?;
 
-    sprs::io::write_matrix_market(&save_path, &csr)?;
+    let gn_path = output_path.join("gene_names.txt");
+    let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
+    let mut gn_writer = BufWriter::new(gn_file);
+    for g in gene_names {
+        gn_writer.write(format!("{}\n",g).as_bytes())?;
+    }
     //info!(log, "processed cell {}", x));
     //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
     pbar.finish_with_message("processed all cells.");

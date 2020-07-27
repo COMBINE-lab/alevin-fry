@@ -1,9 +1,10 @@
+extern crate bio_types;
 extern crate fasthash;
 
+use crate as libradicl;
+use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
-
-use crate as libradicl;
 
 /**
 * Single-cell equivalence class
@@ -21,6 +22,14 @@ pub struct CellEQClass<'a> {
 pub(super) struct EqMapEntry {
     pub umis: Vec<(u64, u32)>,
     pub eq_num: u32,
+}
+
+#[derive(Debug)]
+pub struct ProtocolInfo {
+    // TODO: only makes sense
+    // for single-strand protocols
+    // right now.  Expand to be generic.
+    pub expected_ori: Strand,
 }
 
 pub(super) struct EqMap {
@@ -103,7 +112,6 @@ impl EqMap {
     }
 
     pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
-
         // temporary map of equivalence class label to assigned
         // index.
         let s = RandomState::<sea::Hash64>::new();
@@ -112,9 +120,10 @@ impl EqMap {
 
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
-            // TODO: ensure this is done upstream so we 
+            // TODO: ensure this is done upstream so we
             // don't have to do it here.
-            r.refs.sort();
+            // NOTE: should be done if collate was run.
+            // r.refs.sort();
 
             match eqid_map.get_mut(&r.refs) {
                 // if we've seen this equivalence class before, just add the new

@@ -1,18 +1,21 @@
 extern crate bincode;
+extern crate bio_types;
 extern crate chrono;
 extern crate clap;
 extern crate fasthash;
 extern crate needletail;
+extern crate num_cpus;
 extern crate rand;
 extern crate serde;
 extern crate slog;
 extern crate slog_term;
-extern crate num_cpus;
 
+use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
-use rand::Rng;
-use slog::{info, o, Drain};
 use mimalloc::MiMalloc;
+use rand::Rng;
+use slog::crit;
+use slog::{info, o, Drain};
 //use needletail::bitkmer::BitNuclKmer;
 use std::collections::HashMap;
 use std::fs::File;
@@ -64,6 +67,8 @@ struct Collate {
     rad_file: String,
     #[clap(short, long, default_value = "10000000")]
     max_records: u32,
+    #[clap(short, long, default_value = "fw")]
+    expected_ori: String,
 }
 
 #[derive(Clap)]
@@ -78,7 +83,7 @@ struct Quant {
     #[clap(short, long)]
     num_threads: Option<u32>,
     #[clap(short, long)]
-    no_em: bool
+    no_em: bool,
 }
 
 #[allow(dead_code)]
@@ -251,16 +256,56 @@ fn main() {
             info!(log, "total number of corrected barcodes : {}", nc);
         }
         SubCommand::Collate(t) => {
-            libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, &log)
+            let valid_ori: bool;
+            let expected_ori = match t.expected_ori.to_uppercase().as_str() {
+                "RC" => {
+                    valid_ori = true;
+                    Strand::Reverse
+                }
+                "FW" => {
+                    valid_ori = true;
+                    Strand::Forward
+                }
+                "BOTH" => {
+                    valid_ori = true;
+                    Strand::Unknown
+                }
+                "EITHER" => {
+                    valid_ori = true;
+                    Strand::Unknown
+                }
+                _ => {
+                    valid_ori = false;
+                    Strand::Unknown
+                }
+            };
+
+            if !valid_ori {
+                crit!(
+                    log,
+                    "{} is not a valid option for --expected-ori",
+                    t.expected_ori
+                );
+                std::process::exit(1);
+            }
+
+            libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, expected_ori, &log)
                 .expect("could not collate.");
         }
         SubCommand::Quant(t) => {
             let num_threads = match t.num_threads {
-                Some(nt) => { nt },
-                None => { num_cpus::get() as u32 } 
+                Some(nt) => nt,
+                None => num_cpus::get() as u32,
             };
-            libradicl::quant::quantify(t.input_dir, t.tg_map, 
-                                       t.output_dir, num_threads, t.no_em, &log).expect("could not quantify rad file.");
+            libradicl::quant::quantify(
+                t.input_dir,
+                t.tg_map,
+                t.output_dir,
+                num_threads,
+                t.no_em,
+                &log,
+            )
+            .expect("could not quantify rad file.");
         }
     }
 }
