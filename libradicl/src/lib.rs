@@ -97,12 +97,12 @@ pub struct ChunkConfig {
     pub umi_type: u8,
 }
 
-pub fn decode_int_type_tag(type_id: u8, ) -> Option<RADIntID> {
-  match type_id {
-              3 => Some(RADIntID::U32),
-              4 => Some(RADIntID::U64),
-              _ => None 
-  }
+pub fn decode_int_type_tag(type_id: u8) -> Option<RADIntID> {
+    match type_id {
+        3 => Some(RADIntID::U32),
+        4 => Some(RADIntID::U64),
+        _ => None,
+    }
 }
 
 pub fn collect_records<T: Read>(
@@ -117,9 +117,14 @@ pub fn collect_records<T: Read>(
     let umi_type = decode_int_type_tag(chunk_config.umi_type).expect("unknown barcode type id.");
 
     for _ in 0..(chunk_config.num_chunks as usize) {
-      process_corrected_cb_chunk(
-                    reader, &bc_type, &umi_type,
-                    correct_map, expected_ori, output_cache);
+        process_corrected_cb_chunk(
+            reader,
+            &bc_type,
+            &umi_type,
+            correct_map,
+            expected_ori,
+            output_cache,
+        );
     }
 }
 
@@ -184,7 +189,6 @@ impl ReadRecord {
         umit: &RADIntID,
         expected_ori: &Strand,
     ) -> Self {
-        
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -212,7 +216,7 @@ impl ReadRecord {
             };
 
             if expected_ori.same(&strand) {
-                rec.refs.push(v & utils::MASK_TOP_BIT_U32); 
+                rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }
         // make sure these are sorted in this step.

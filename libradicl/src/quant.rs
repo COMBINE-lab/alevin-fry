@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufReader, BufWriter};
 use std::io::Read;
 use std::io::Write;
+use std::io::{BufReader, BufWriter};
 
 use self::libradicl::em::em_optimize;
 use self::libradicl::pugutils;
@@ -204,7 +204,6 @@ fn extract_graph(
     graph
 }
 
-
 pub fn quantify(
     input_dir: String,
     tg_map: String,
@@ -261,7 +260,7 @@ pub fn quantify(
         // first, get the id for this gene
         let next_id = gene_name_to_id.len() as u32;
         let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
-        // if we haven't added this gene name already, then 
+        // if we haven't added this gene name already, then
         // append it now to the list of gene names.
         if gene_id == next_id {
             gene_names.push(record.1);
@@ -336,7 +335,7 @@ pub fn quantify(
         let num_genes = gene_name_to_id.len();
         let bc_type = bc_type.clone();
         let umi_type = umi_type.clone();
-        //&buf[..];
+
         pool.execute(move || {
             let mut eq_map = EqMap::new(ref_count);
             let mut nbr = BufReader::new(&buf[..]);
@@ -356,15 +355,15 @@ pub fn quantify(
                 only_unique,
                 &log,
             );
-            tx.send((bc, counts)).expect("failed to sent cell result over channel");
-            //pbar.inc(1);
+            tx.send((bc, counts))
+                .expect("failed to sent cell result over channel");
         });
     }
 
     let num_genes = gene_name_to_id.len();
 
     // TODO: guess capacity better
-    // TODO: in the future, we may not want to hold the 
+    // TODO: in the future, we may not want to hold the
     // entire triplet matrix in memory at once?
     let mut omat = TriMatI::<f32, u32>::new((num_genes, hdr.num_chunks as usize));
 
@@ -390,7 +389,7 @@ pub fn quantify(
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
     let mut gn_writer = BufWriter::new(gn_file);
     for g in gene_names {
-        gn_writer.write(format!("{}\n",g).as_bytes())?;
+        gn_writer.write(format!("{}\n", g).as_bytes())?;
     }
     //info!(log, "processed cell {}", x));
     //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);

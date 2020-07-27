@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
-
-
 pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
 

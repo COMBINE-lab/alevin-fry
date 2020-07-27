@@ -137,9 +137,9 @@ fn generate_permit_list(
     let umi_type = libradicl::decode_int_type_tag(umit).expect("unknown barcode type id.");
 
     for _ in 0..(hdr.num_chunks as usize) {
-                let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-                libradicl::update_barcode_hist(&mut hm, &c);
-                num_reads += c.reads.len();
+        let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        libradicl::update_barcode_hist(&mut hm, &c);
+        num_reads += c.reads.len();
     }
 
     info!(
