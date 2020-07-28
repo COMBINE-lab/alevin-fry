@@ -158,9 +158,9 @@ pub fn generate_permitlist_map(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashSet};
-    use crate as libradicl;
     use self::libradicl::utils::*;
+    use crate as libradicl;
+    use std::collections::HashSet;
 
     #[test]
     fn test_get_bit_mask() {

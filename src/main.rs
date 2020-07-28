@@ -1,11 +1,8 @@
-extern crate bincode;
 extern crate bio_types;
 extern crate chrono;
 extern crate clap;
-extern crate fasthash;
 extern crate num_cpus;
 extern crate rand;
-extern crate serde;
 extern crate slog;
 extern crate slog_term;
 
@@ -80,7 +77,7 @@ fn main() {
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
 
-    let opts = App::new("Radicl.")
+    let opts = App::new("Radicl")
         .version("0.0.1")
         .author("Avi Srivastava, Rob Patro")
         .about("Process RAD files from the command line")
