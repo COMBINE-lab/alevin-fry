@@ -1,6 +1,7 @@
 // scroll now, explore nom later
 extern crate fasthash;
 extern crate scroll;
+extern crate quickersort;
 
 use bio_types::strand::*;
 use scroll::Pread;
@@ -220,7 +221,7 @@ impl ReadRecord {
             }
         }
         // make sure these are sorted in this step.
-        rec.refs.sort();
+        quickersort::sort(&mut rec.refs[..]);
         rec
     }
 }

@@ -1,5 +1,6 @@
 extern crate bio_types;
 extern crate fasthash;
+extern crate quickersort;
 
 use crate as libradicl;
 use bio_types::strand::Strand;
@@ -177,7 +178,7 @@ impl EqMap {
 
             let v = &mut self.eqc_info[idx];
             // sort so dups are adjacent
-            v.umis.sort();
+            quickersort::sort(&mut v.umis[..]);
             // we need a copy of the vector b/c we
             // can't easily modify it in place
             // at least I haven't seen how (@k3yavi, help here if you can).
