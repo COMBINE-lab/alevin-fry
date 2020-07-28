@@ -125,7 +125,7 @@ pub fn collate(
         // to determine what true barcodes we will keep in memory.
         let init_offset = last_idx;
         for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
-            output_cache.insert(rec.0, libradicl::CorrectedCBChunk::from_counter(rec.1));
+            output_cache.insert(rec.0, libradicl::CorrectedCBChunk::from_label_and_counter(rec.0, rec.1));
             allocated_records += rec.1;
             last_idx = i + 1;
             if allocated_records >= (max_records as u64) {
@@ -142,7 +142,7 @@ pub fn collate(
         libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
 
         // dump the output we have
-        libradicl::dump_output_cache(&mut owriter, &output_cache);
+        libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
 
         // reset the reader to start of the chunks
         br.get_ref().seek(SeekFrom::Start(pos)).unwrap();

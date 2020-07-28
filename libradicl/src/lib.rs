@@ -76,10 +76,10 @@ pub struct CorrectedCBChunk {
 }
 
 impl CorrectedCBChunk {
-    pub fn from_counter(num_remain: u64) -> CorrectedCBChunk {
+    pub fn from_label_and_counter(corrected_bc_in: u64, num_remain: u64) -> CorrectedCBChunk {
         CorrectedCBChunk {
             remaining_records: num_remain,
-            corrected_bc: 0,
+            corrected_bc: corrected_bc_in,
             umis: Vec::<u64>::with_capacity(num_remain as usize),
             ref_offsets: Vec::<u32>::with_capacity(num_remain as usize),
             ref_ids: Vec::<u32>::with_capacity(3 * num_remain as usize),
@@ -95,14 +95,51 @@ pub enum RADIntID {
     U64,
 }
 
+impl RADIntID {
+  pub fn bytes_for_type(&self) -> usize {
+    match self {
+      Self::U8 => std::mem::size_of::<u8>(),
+      Self::U16 => std::mem::size_of::<u16>(),
+      Self::U32 => std::mem::size_of::<u32>(),
+      Self::U64 => std::mem::size_of::<u64>()
+    }
+  }
+}
+
 pub struct ChunkConfig {
     pub num_chunks: u64,
     pub bc_type: u8,
     pub umi_type: u8,
 }
 
+#[derive(Copy, Clone)]
+pub enum RADType {
+    BOOL,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64
+}
+
+pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
+  match type_id {
+    0 => Some(RADType::BOOL),
+    1 => Some(RADType::U8),
+    2 => Some(RADType::U16),
+    3 => Some(RADType::U32),
+    4 => Some(RADType::U64),
+    5 => Some(RADType::F32),
+    6 => Some(RADType::F64),
+    _ => None,
+  }
+}
+
 pub fn decode_int_type_tag(type_id: u8) -> Option<RADIntID> {
     match type_id {
+        1 => Some(RADIntID::U8),
+        2 => Some(RADIntID::U16),
         3 => Some(RADIntID::U32),
         4 => Some(RADIntID::U64),
         _ => None,
@@ -296,17 +333,27 @@ fn as_u8_slice(v: &[u32]) -> &[u8] {
 pub fn dump_output_cache(
     owriter: &mut BufWriter<File>,
     output_cache: &HashMap<u64, CorrectedCBChunk>,
+    chunk_config: &ChunkConfig
 ) {
+    // NOTE: since the chunks are independent, this part could be multithreaded
+    let bc_type = decode_int_type_tag(chunk_config.bc_type).expect("unknown barcode type id.");
+    let umi_type = decode_int_type_tag(chunk_config.umi_type).expect("unknown barcode type id.");
+
     for (_bc, chunk) in output_cache.iter() {
         // number of bytes
         let mut nbytes: u32 = 0;
-        nbytes += (chunk.ref_ids.len() * 4) as u32;
+        let bytes_for_u32 = std::mem::size_of::<u32>();
+        let bytes_for_bc = bc_type.bytes_for_type();
+        let bytes_for_umi = umi_type.bytes_for_type();
+        
+        // for reference IDs in this chunk
+        nbytes += (chunk.ref_ids.len() * bytes_for_u32) as u32;
         // umis
-        nbytes += (chunk.umis.len() * 4) as u32;
+        nbytes += (chunk.umis.len() * bytes_for_umi) as u32;
         // barcodes
-        nbytes += (chunk.umis.len() * 4) as u32;
+        nbytes += (chunk.umis.len() * bytes_for_bc) as u32;
         // num alignment fields
-        nbytes += (chunk.umis.len() * 4) as u32;
+        nbytes += (chunk.umis.len() * bytes_for_u32) as u32;
 
         let nrec = chunk.umis.len() as u32;
 
