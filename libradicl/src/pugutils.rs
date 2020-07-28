@@ -137,7 +137,9 @@ pub(super) fn get_num_molecules_trivial(
     log: &slog::Logger) -> Vec<f32> {
 
     let mut counts = vec![0.0f32; num_genes];
-    
+    let s = RandomState::<Hash64>::new();
+    let mut gene_map = HashMap::with_hasher(s);
+
     for eqinfo in &eq_map.eqc_info {
         let umis = &eqinfo.umis;
         let eqid = &eqinfo.eq_num;
@@ -154,13 +156,25 @@ pub(super) fn get_num_molecules_trivial(
             }
             prev_gene_id = gid;
         }
-        // otherwise, toss the read
+        
+        // if the read is single-gene
+        // then add this equivalence class' list 
+        // of UMIs in the gene map
         if !multi_gene {
-            // the number of distinct UMIs 
-            counts[prev_gene_id as usize] = umis.len() as f32;
+            gene_map.entry(prev_gene_id).or_insert(vec![]).extend(umis.iter().map(|x| x.0));
         }
     }
 
+    // go over the map and merge umis from different 
+    // equivalence classes that still map to the same
+    // gene.
+    for (k,v) in gene_map.iter_mut() {
+        v.sort(); v.dedup();
+        // the count is the number of distinct UMIs.
+        counts[*k as usize] += v.len() as f32;
+    }
+
+    // return the counts
     counts
 } 
 

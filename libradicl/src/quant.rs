@@ -349,9 +349,9 @@ pub fn quantify(
             eq_map.init_from_chunk(&mut c);
             let counts : Vec<f32>;
             if naive {
-                crit!(log, "The naive mode is not yet implemented.");
-                std::process::exit(1);
-                //counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log); 
+                //crit!(log, "The naive mode is not yet implemented.");
+                //std::process::exit(1);
+                counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log); 
             } else {
             let g = extract_graph(&eq_map, &log);
             let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
