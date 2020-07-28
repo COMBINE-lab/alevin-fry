@@ -4,6 +4,7 @@ extern crate indicatif;
 extern crate petgraph;
 extern crate serde;
 extern crate slog;
+extern crate needletail;
 
 use executors::crossbeam_channel_pool;
 use executors::*;
@@ -24,6 +25,7 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use needletail::bitkmer::*;
 
 use self::libradicl::em::em_optimize;
 use self::libradicl::pugutils;
@@ -379,12 +381,11 @@ pub fn quantify(
 
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
-    /*
-    let mat_path = output_path.join("counts_triplets.mtx");
-    let mat_file = fs::File::create(mat_path)?;
-    let mut mat_writer = BufWriter::new(mat_file);
-    */
-
+    
+    let bc_path = output_path.join("barcodes.txt");
+    let bc_file = fs::File::create(bc_path)?;
+    let mut bc_writer = BufWriter::new(bc_file);
+    
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);
@@ -394,6 +395,9 @@ pub fn quantify(
                 omat.add_triplet(i, c, *v);
             }
         }
+        let bc_mer : BitKmer = (x.0, ft_vals.bclen as u8);
+        bc_writer.write(&bitmer_to_bytes(bc_mer)[..]).expect("can't write to barcode file.");
+        bc_writer.write(&"\n".as_bytes()).expect("can't write to barcode file.");
         c += 1;
     });
 

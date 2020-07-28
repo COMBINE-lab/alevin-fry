@@ -325,7 +325,8 @@ pub fn dump_output_cache(
             // num alignments
             let num_aln = (e - s) as u32;
             // cb
-            let cb = chunk.corrected_bc as u32;
+            // if bc > 16, make sure this is the correct type
+            let cb = *_bc as u32;//chunk.corrected_bc as u32;
             // umi
             let umi = chunk.umis[i] as u32;
 
