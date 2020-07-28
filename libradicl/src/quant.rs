@@ -13,6 +13,7 @@ use std::sync::mpsc::channel;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
+#[allow(unused_imports)]
 use self::slog::crit;
 use self::slog::info;
 use crate as libradicl;
@@ -29,7 +30,7 @@ use std::io::{BufReader, BufWriter};
 
 use self::libradicl::em::em_optimize;
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType};
+use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -212,8 +213,9 @@ pub fn quantify(
     tg_map: String,
     output_dir: String,
     num_threads: u32,
-    no_em: bool,
-    naive: bool,
+    resolution: ResolutionStrategy,
+    //no_em: bool,
+    //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -339,7 +341,7 @@ pub fn quantify(
         let num_genes = gene_name_to_id.len();
         let bc_type = bc_type.clone();
         let umi_type = umi_type.clone();
-        //let naive = naive.clone();
+        //let resolution = resolution.clone();
 
         pool.execute(move || {
             let mut eq_map = EqMap::new(ref_count);
@@ -350,22 +352,32 @@ pub fn quantify(
             let bc = c.reads.first().expect("chunk with no reads").bc;
             eq_map.init_from_chunk(&mut c);
             let counts: Vec<f32>;
-            if naive {
-                //crit!(log, "The naive mode is not yet implemented.");
-                //std::process::exit(1);
-                counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
-            } else {
-                let g = extract_graph(&eq_map, &log);
-                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                let only_unique = no_em;
-                counts = em_optimize(
+            match resolution {
+                ResolutionStrategy::Trivial => {
+                    counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
+                },
+                ResolutionStrategy::Parsimony => {
+                    let g = extract_graph(&eq_map, &log);
+                    let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                    counts = em_optimize(
+                        &gene_eqc,
+                        &mut unique_evidence,
+                        &mut no_ambiguity,
+                        num_genes,
+                        true,
+                        &log); 
+                },
+                ResolutionStrategy::Full => {
+                    let g = extract_graph(&eq_map, &log);
+                    let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                    counts = em_optimize(
                     &gene_eqc,
                     &mut unique_evidence,
                     &mut no_ambiguity,
                     num_genes,
-                    only_unique,
-                    &log,
-                );
+                    false,
+                    &log);
+                }
             }
             tx.send((bc, counts))
                 .expect("failed to sent cell result over channel");
@@ -405,9 +417,8 @@ pub fn quantify(
         c += 1;
     });
 
-    let csr = omat.to_csr();
     let mat_path = output_path.join("counts.mtx");
-    sprs::io::write_matrix_market(&mat_path, &csr)?;
+    sprs::io::write_matrix_market(&mat_path, &omat)?;
 
     let gn_path = output_path.join("gene_names.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
@@ -415,8 +426,7 @@ pub fn quantify(
     for g in gene_names {
         gn_writer.write(format!("{}\n", g).as_bytes())?;
     }
-    //info!(log, "processed cell {}", x));
-    //info!(log, "total mapped reads : {}, total distinct UMIs : {}", _num_reads, global_distinct_umis);
+    
     pbar.finish_with_message("processed all cells.");
     Ok(())
 }

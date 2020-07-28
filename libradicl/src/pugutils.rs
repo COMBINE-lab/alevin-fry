@@ -134,7 +134,7 @@ pub(super) fn get_num_molecules_trivial(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    log: &slog::Logger,
+    _log: &slog::Logger,
 ) -> Vec<f32> {
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();

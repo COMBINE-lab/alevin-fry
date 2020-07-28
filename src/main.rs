@@ -9,6 +9,7 @@ extern crate serde;
 extern crate slog;
 extern crate slog_term;
 
+use clap::{Arg, App};
 use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use mimalloc::MiMalloc;
@@ -19,14 +20,14 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Write};
-
-use clap::Clap;
+use libradicl::schema::ResolutionStrategy;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 /// This doc string acts as a help message when the user runs '--help'
 /// as do all doc strings on fields
+/*
 #[derive(Clap)]
 #[clap(version = "0.0.1", author = "Avi Srivastava, Rob Patro")]
 struct Opts {
@@ -83,10 +84,9 @@ struct Quant {
     #[clap(short, long)]
     num_threads: Option<u32>,
     #[clap(short, long)]
-    no_em: bool,
-    #[clap(short, long)]
-    naive: bool,
+    resolution: Option<u32>
 }
+*/
 
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
@@ -102,10 +102,13 @@ fn gen_random_kmer(k: usize) -> String {
 }
 
 fn generate_permit_list(
-    t: GeneratePermitList,
+    input_file: String,
+    output_dir: String,
+    top_k: Option<usize>,
+    valid_bc_file: Option<String>,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let i_file = File::open(t.input).unwrap();
+    let i_file = File::open(input_file).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
@@ -151,8 +154,8 @@ fn generate_permit_list(
 
     let valid_bc: Vec<u64>;
 
-    if t.top_k.is_some() {
-        let top_k = t.top_k.unwrap() as usize;
+    if top_k.is_some() {
+        let top_k = top_k.unwrap() as usize;
         let mut freq: Vec<u64> = hm.values().cloned().collect();
         freq.sort_unstable();
         freq.reverse();
@@ -169,7 +172,7 @@ fn generate_permit_list(
         // >= to min_thresh.
         valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
     } else {
-        let valid_bc_file = t.valid_bc.expect("couldn't extract --valid-bc option.");
+        let valid_bc_file = valid_bc_file.expect("couldn't extract --valid-bc option.");
         valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
     }
 
@@ -190,7 +193,7 @@ fn generate_permit_list(
         }
     }
 
-    let parent = std::path::Path::new(&t.output_dir);
+    let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
     let o_path = parent.join("permit_freq.tsv");
     let output = std::fs::File::create(&o_path).expect("could not create output.");
@@ -210,7 +213,51 @@ fn generate_permit_list(
 }
 
 fn main() {
-    let opts: Opts = Opts::parse();
+    let max_num_threads : String = (num_cpus::get() as u32).to_string();
+
+    let gen_app = App::new("generate-permit-list")
+    .about("Generate a permit list of barcodes from a RAD file")
+    .version("0.0.1")
+    .author("Avi Srivastava, Rob Patro")
+    .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
+    .arg(Arg::from("-o, --output-dir=<output-dir>  'output directory'"))
+    .arg(Arg::from("-k, --top-k=<top-k>  'select the top-k most-frequent barcodes as valid (true)'"))
+    .arg(Arg::from("-b, --valid-bc=<valid-bc> 'uses true barcode collected from a provided file'")
+         .conflicts_with("top-k"));
+
+    let collate_app = App::new("collate")
+    .about("Collate a RAD file by corrected cell barcode")
+    .version("0.0.1")
+    .author("Avi Srivastava, Rob Patro")
+    .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
+    .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
+    .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
+         .default_value("10000000"))
+    .arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
+         .default_value("fw"));
+
+    let quant_app = App::new("quant")
+    .about("Quantify expression from a collated RAD file")
+    .version("0.0.1")
+    .author("Avi Srivastava, Rob Patro")
+    .arg(Arg::from("-i, --input-dir=<input-dir>  'input directory containing collated RAD file'"))
+    .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
+    .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
+    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
+        .possible_values(&["full", "trivial", "parsimony"])
+        .default_value("full")
+        .case_insensitive(true)
+        .about("the resolution strategy by which molecules will be counted"));
+
+    let opts = App::new("Radicl.")
+                    .version("0.0.1")
+                    .author("Avi Srivastava, Rob Patro")
+                    .about("Process RAD files from the command line")
+                    .subcommand(gen_app)
+                    .subcommand(collate_app)
+                    .subcommand(quant_app).get_matches();
+
 
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::CompactFormat::new(decorator)
@@ -224,82 +271,76 @@ fn main() {
 
     let log = slog::Logger::root(drain, o!());
 
-    info!(log, "I'm using the library: {:?}", libradicl::lib_name());
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
-    match opts.subcmd {
-        SubCommand::GeneratePermitList(t) => {
-            if t.top_k.is_some() && t.valid_bc.is_some() {
-                crit!(
-                    log,
-                    "cannot pass both --top-k and --valid-bc to the generate-permit-list command."
-                );
-                drop(log);
-                std::process::exit(1);
-            }
-            if t.top_k.is_none() && t.valid_bc.is_none() {
-                crit!(
-                    log,
-                    "must pass one of --top-k and --valid-bc to the generate-permit-list command."
-                );
-                drop(log);
-                std::process::exit(1);
-            }
-            let nc = generate_permit_list(t, &log).unwrap();
+    if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
+            let input_file : String = t.value_of_t("input").expect("no input directory specified");
+            let output_dir : String = t.value_of_t("output-dir").expect("no input directory specified");
+            let top_k = match t.value_of_t("top-k") {
+                Ok(v) => Some(v),
+                Err(_) => None
+            };
+            let valid_bc = match t.value_of_t("valid-bc") {
+                Ok(v) => Some(v),
+                Err(_) => None
+            };
+            let nc = generate_permit_list(input_file, output_dir, top_k, valid_bc, &log).unwrap();
             info!(log, "total number of corrected barcodes : {}", nc);
-        }
-        SubCommand::Collate(t) => {
-            let valid_ori: bool;
-            let expected_ori = match t.expected_ori.to_uppercase().as_str() {
-                "RC" => {
-                    valid_ori = true;
-                    Strand::Reverse
-                }
-                "FW" => {
-                    valid_ori = true;
-                    Strand::Forward
-                }
-                "BOTH" => {
-                    valid_ori = true;
-                    Strand::Unknown
-                }
-                "EITHER" => {
-                    valid_ori = true;
-                    Strand::Unknown
-                }
-                _ => {
-                    valid_ori = false;
-                    Strand::Unknown
-                }
-            };
+    }
 
-            if !valid_ori {
-                crit!(
-                    log,
-                    "{} is not a valid option for --expected-ori",
-                    t.expected_ori
-                );
-                std::process::exit(1);
+    if let Some(ref t) = opts.subcommand_matches("collate") {
+        let valid_ori: bool;
+        let expected_ori = match t.value_of("expected-ori").unwrap().to_uppercase().as_str() {
+            "RC" => {
+                valid_ori = true;
+                Strand::Reverse
             }
+            "FW" => {
+                valid_ori = true;
+                Strand::Forward
+            }
+            "BOTH" => {
+                valid_ori = true;
+                Strand::Unknown
+            }
+            "EITHER" => {
+                valid_ori = true;
+                Strand::Unknown
+            }
+            _ => {
+                valid_ori = false;
+                Strand::Unknown
+            }
+        };
 
-            libradicl::collate::collate(t.input_dir, t.rad_file, t.max_records, expected_ori, &log)
-                .expect("could not collate.");
+        if !valid_ori {
+            crit!(
+                log,
+                "{} is not a valid option for --expected-ori",
+                expected_ori
+            );
+            std::process::exit(1);
         }
-        SubCommand::Quant(t) => {
-            let num_threads = match t.num_threads {
-                Some(nt) => nt,
-                None => num_cpus::get() as u32,
-            };
-            libradicl::quant::quantify(
-                t.input_dir,
-                t.tg_map,
-                t.output_dir,
-                num_threads,
-                t.no_em,
-                t.naive,
-                &log,
-            )
-            .expect("could not quantify rad file.");
-        }
+
+        let input_dir : String = t.value_of_t("input-dir").unwrap();
+        let rad_file : String = t.value_of_t("rad-file").unwrap();
+        let max_records : u32 = t.value_of_t("max-records").unwrap();
+        libradicl::collate::collate(input_dir, rad_file, max_records, expected_ori, &log)
+            .expect("could not collate.");  
+    }
+
+    if let Some(ref t) = opts.subcommand_matches("quant") {
+        let num_threads = t.value_of_t("threads").unwrap();
+        let input_dir = t.value_of_t("input-dir").unwrap();
+        let output_dir = t.value_of_t("output-dir").unwrap();
+        let tg_map = t.value_of_t("tg-map").unwrap();
+        let resolution : ResolutionStrategy = t.value_of_t("resolution").unwrap();
+    libradicl::quant::quantify(
+        input_dir,
+        tg_map,
+        output_dir,
+        num_threads,
+        resolution,
+        &log).expect("could not quantify rad file.");
     }
 }

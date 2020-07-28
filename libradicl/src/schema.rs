@@ -3,6 +3,7 @@ extern crate fasthash;
 extern crate quickersort;
 
 use crate as libradicl;
+use std::str::FromStr;
 use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
@@ -31,6 +32,26 @@ pub struct ProtocolInfo {
     // for single-strand protocols
     // right now.  Expand to be generic.
     pub expected_ori: Strand,
+}
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum ResolutionStrategy {
+    Trivial,
+    Full,
+    Parsimony 
+}
+
+// Implement the trait
+impl FromStr for ResolutionStrategy {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trivial" => Ok(ResolutionStrategy::Trivial),
+            "full" => Ok(ResolutionStrategy::Full),
+            "parsimony" => Ok(ResolutionStrategy::Parsimony),
+            _ => Err("no match"),
+        }
+    }
 }
 
 pub(super) struct EqMap {
