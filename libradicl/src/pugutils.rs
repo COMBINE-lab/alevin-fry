@@ -1,6 +1,7 @@
 extern crate fasthash;
 extern crate petgraph;
 extern crate slog;
+extern crate quickersort;
 
 use self::slog::crit;
 use fasthash::sea::Hash64;
@@ -169,7 +170,7 @@ pub(super) fn get_num_molecules_trivial(
     // equivalence classes that still map to the same
     // gene.
     for (k,v) in gene_map.iter_mut() {
-        v.sort(); v.dedup();
+        quickersort::sort(&mut v[..]); v.dedup();
         // the count is the number of distinct UMIs.
         counts[*k as usize] += v.len() as f32;
     }
@@ -305,7 +306,7 @@ pub(super) fn get_num_molecules(
                     .map(|i| tid_to_gid[i as usize])
                     .collect();
                 // sort since we will be hashing the ordered vector
-                global_genes.sort();
+                quickersort::sort(&mut global_genes[..]);
                 // dedup as well since we don't care about duplicates
                 global_genes.dedup();
 
@@ -344,7 +345,7 @@ pub(super) fn get_num_molecules(
             }
 
             let mut global_genes: Vec<u32> = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
-            global_genes.sort();
+            quickersort::sort(&mut global_genes[..]);
             global_genes.dedup();
 
             // extract gene-level eqclass and increment count by 1
