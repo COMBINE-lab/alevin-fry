@@ -3,10 +3,10 @@ extern crate fasthash;
 extern crate quickersort;
 
 use crate as libradicl;
-use std::str::FromStr;
 use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 /**
 * Single-cell equivalence class
@@ -38,7 +38,7 @@ pub struct ProtocolInfo {
 pub enum ResolutionStrategy {
     Trivial,
     Full,
-    Parsimony 
+    Parsimony,
 }
 
 // Implement the trait

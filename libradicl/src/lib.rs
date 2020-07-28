@@ -13,6 +13,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::vec::Vec;
 
+pub mod cellfilter;
 pub mod collate;
 pub mod em;
 pub mod pugutils;

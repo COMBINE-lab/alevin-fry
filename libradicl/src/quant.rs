@@ -354,8 +354,9 @@ pub fn quantify(
             let counts: Vec<f32>;
             match resolution {
                 ResolutionStrategy::Trivial => {
-                    counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
-                },
+                    counts =
+                        pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
+                }
                 ResolutionStrategy::Parsimony => {
                     let g = extract_graph(&eq_map, &log);
                     let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
@@ -365,18 +366,20 @@ pub fn quantify(
                         &mut no_ambiguity,
                         num_genes,
                         true,
-                        &log); 
-                },
+                        &log,
+                    );
+                }
                 ResolutionStrategy::Full => {
                     let g = extract_graph(&eq_map, &log);
                     let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
                     counts = em_optimize(
-                    &gene_eqc,
-                    &mut unique_evidence,
-                    &mut no_ambiguity,
-                    num_genes,
-                    false,
-                    &log);
+                        &gene_eqc,
+                        &mut unique_evidence,
+                        &mut no_ambiguity,
+                        num_genes,
+                        false,
+                        &log,
+                    );
                 }
             }
             tx.send((bc, counts))
@@ -426,7 +429,7 @@ pub fn quantify(
     for g in gene_names {
         gn_writer.write(format!("{}\n", g).as_bytes())?;
     }
-    
+
     pbar.finish_with_message("processed all cells.");
     Ok(())
 }
