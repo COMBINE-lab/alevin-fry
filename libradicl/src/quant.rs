@@ -389,12 +389,10 @@ pub fn quantify(
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);
-        let mut cell_total = 0.0f32;
         for (i, v) in x.1.iter().enumerate() {
             if *v > 0.0 {
                 //&mat_writer.write(format!("{}\t{}\t{}", i, c, *v).as_bytes()).expect("can't write to output file");
                 omat.add_triplet(i, c, *v);
-                cell_total += *v;
             }
         }
         let bc_mer: BitKmer = (x.0, ft_vals.bclen as u8);
