@@ -1,7 +1,7 @@
 extern crate fasthash;
 extern crate petgraph;
-extern crate slog;
 extern crate quickersort;
+extern crate slog;
 
 use self::slog::crit;
 use fasthash::sea::Hash64;
@@ -130,13 +130,12 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
-
 pub(super) fn get_num_molecules_trivial(
-    eq_map: &EqMap, 
-    tid_to_gid: &[u32], 
+    eq_map: &EqMap,
+    tid_to_gid: &[u32],
     num_genes: usize,
-    log: &slog::Logger) -> Vec<f32> {
-
+    log: &slog::Logger,
+) -> Vec<f32> {
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();
     let mut gene_map = HashMap::with_hasher(s);
@@ -157,27 +156,31 @@ pub(super) fn get_num_molecules_trivial(
             }
             prev_gene_id = gid;
         }
-        
+
         // if the read is single-gene
-        // then add this equivalence class' list 
+        // then add this equivalence class' list
         // of UMIs in the gene map
         if !multi_gene {
-            gene_map.entry(prev_gene_id).or_insert(vec![]).extend(umis.iter().map(|x| x.0));
+            gene_map
+                .entry(prev_gene_id)
+                .or_insert(vec![])
+                .extend(umis.iter().map(|x| x.0));
         }
     }
 
-    // go over the map and merge umis from different 
+    // go over the map and merge umis from different
     // equivalence classes that still map to the same
     // gene.
-    for (k,v) in gene_map.iter_mut() {
-        quickersort::sort(&mut v[..]); v.dedup();
+    for (k, v) in gene_map.iter_mut() {
+        quickersort::sort(&mut v[..]);
+        v.dedup();
         // the count is the number of distinct UMIs.
         counts[*k as usize] += v.len() as f32;
     }
 
     // return the counts
     counts
-} 
+}
 
 /// Given the digraph `g` representing the PUGs within the current
 /// cell, the EqMap `eqmap` to decode all equivalence classes

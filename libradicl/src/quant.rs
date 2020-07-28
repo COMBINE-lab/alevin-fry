@@ -1,10 +1,10 @@
 extern crate bincode;
 extern crate fasthash;
 extern crate indicatif;
+extern crate needletail;
 extern crate petgraph;
 extern crate serde;
 extern crate slog;
-extern crate needletail;
 
 use executors::crossbeam_channel_pool;
 use executors::*;
@@ -13,10 +13,11 @@ use std::sync::mpsc::channel;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
-use self::slog::info;
 use self::slog::crit;
+use self::slog::info;
 use crate as libradicl;
 use fasthash::sea;
+use needletail::bitkmer::*;
 use scroll::Pwrite;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -25,7 +26,6 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
-use needletail::bitkmer::*;
 
 use self::libradicl::em::em_optimize;
 use self::libradicl::pugutils;
@@ -349,24 +349,24 @@ pub fn quantify(
             let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
             let bc = c.reads.first().expect("chunk with no reads").bc;
             eq_map.init_from_chunk(&mut c);
-            let counts : Vec<f32>;
+            let counts: Vec<f32>;
             if naive {
                 //crit!(log, "The naive mode is not yet implemented.");
                 //std::process::exit(1);
-                counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log); 
+                counts = pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
             } else {
-            let g = extract_graph(&eq_map, &log);
-            let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-            let only_unique = no_em;
-            counts = em_optimize(
-                &gene_eqc,
-                &mut unique_evidence,
-                &mut no_ambiguity,
-                num_genes,
-                only_unique,
-                &log,
-            );
-            }  
+                let g = extract_graph(&eq_map, &log);
+                let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                let only_unique = no_em;
+                counts = em_optimize(
+                    &gene_eqc,
+                    &mut unique_evidence,
+                    &mut no_ambiguity,
+                    num_genes,
+                    only_unique,
+                    &log,
+                );
+            }
             tx.send((bc, counts))
                 .expect("failed to sent cell result over channel");
         });
@@ -381,23 +381,29 @@ pub fn quantify(
 
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
-    
+
     let bc_path = output_path.join("barcodes.txt");
     let bc_file = fs::File::create(bc_path)?;
     let mut bc_writer = BufWriter::new(bc_file);
-    
+
     let mut c = 0usize;
     rx.iter().take(hdr.num_chunks as usize).for_each(|x| {
         pbar.inc(1);
+        let mut cell_total = 0.0f32;
         for (i, v) in x.1.iter().enumerate() {
             if *v > 0.0 {
                 //&mat_writer.write(format!("{}\t{}\t{}", i, c, *v).as_bytes()).expect("can't write to output file");
                 omat.add_triplet(i, c, *v);
+                cell_total += *v;
             }
         }
-        let bc_mer : BitKmer = (x.0, ft_vals.bclen as u8);
-        bc_writer.write(&bitmer_to_bytes(bc_mer)[..]).expect("can't write to barcode file.");
-        bc_writer.write(&"\n".as_bytes()).expect("can't write to barcode file.");
+        let bc_mer: BitKmer = (x.0, ft_vals.bclen as u8);
+        bc_writer
+            .write(&bitmer_to_bytes(bc_mer)[..])
+            .expect("can't write to barcode file.");
+        bc_writer
+            .write(&"\n".as_bytes())
+            .expect("can't write to barcode file.");
         c += 1;
     });
 

@@ -54,6 +54,8 @@ struct GeneratePermitList {
     output_dir: String,
     #[clap(short, long)]
     top_k: Option<u32>,
+    #[clap(short, long)]
+    valid_bc: Option<String>,
 }
 
 #[derive(Clap)]
@@ -83,7 +85,7 @@ struct Quant {
     #[clap(short, long)]
     no_em: bool,
     #[clap(short, long)]
-    naive: bool
+    naive: bool,
 }
 
 #[allow(dead_code)]
@@ -147,16 +149,29 @@ fn generate_permit_list(
         "observed {:?} reads in {:?} chunks", num_reads, hdr.num_chunks
     );
 
-    let mut freq: Vec<u64> = hm.values().cloned().collect();
-    freq.sort_unstable();
-    freq.reverse();
+    let valid_bc: Vec<u64>;
 
-    let num_bc = t.top_k.unwrap_or((freq.len() - 1) as u32) as usize;
-    let min_freq = freq[num_bc];
+    if t.top_k.is_some() {
+        let top_k = t.top_k.unwrap() as usize;
+        let mut freq: Vec<u64> = hm.values().cloned().collect();
+        freq.sort_unstable();
+        freq.reverse();
 
-    // collect all of the barcodes that have a frequency
-    // >= to min_thresh.
-    let valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+        let num_bc = if freq.len() < top_k {
+            freq.len() - 1
+        } else {
+            top_k - 1
+        };
+
+        let min_freq = freq[num_bc];
+
+        // collect all of the barcodes that have a frequency
+        // >= to min_thresh.
+        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+    } else {
+        let valid_bc_file = t.valid_bc.expect("couldn't extract --valid-bc option.");
+        valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
+    }
 
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
@@ -214,6 +229,22 @@ fn main() {
     // (as below), requesting just the name used, or both at the same time
     match opts.subcmd {
         SubCommand::GeneratePermitList(t) => {
+            if t.top_k.is_some() && t.valid_bc.is_some() {
+                crit!(
+                    log,
+                    "cannot pass both --top-k and --valid-bc to the generate-permit-list command."
+                );
+                drop(log);
+                std::process::exit(1);
+            }
+            if t.top_k.is_none() && t.valid_bc.is_none() {
+                crit!(
+                    log,
+                    "must pass one of --top-k and --valid-bc to the generate-permit-list command."
+                );
+                drop(log);
+                std::process::exit(1);
+            }
             let nc = generate_permit_list(t, &log).unwrap();
             info!(log, "total number of corrected barcodes : {}", nc);
         }

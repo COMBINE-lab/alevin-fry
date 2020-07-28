@@ -1,13 +1,15 @@
 // scroll now, explore nom later
 extern crate fasthash;
-extern crate scroll;
+extern crate needletail;
 extern crate quickersort;
+extern crate scroll;
 
 use bio_types::strand::*;
+use needletail::bitkmer::*;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::vec::Vec;
 
@@ -326,8 +328,8 @@ pub fn dump_output_cache(
             let num_aln = (e - s) as u32;
             // cb
             // if bc > 16, make sure this is the correct type
-            let cb = *_bc as u32;//chunk.corrected_bc as u32;
-            // umi
+            let cb = *_bc as u32; //chunk.corrected_bc as u32;
+                                  // umi
             let umi = chunk.umis[i] as u32;
 
             owriter
@@ -476,4 +478,18 @@ pub fn permit_list_from_threshold(
         .filter_map(|(k, v)| if v >= &min_freq { Some(*k) } else { None })
         .collect();
     valid_bc
+}
+
+pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
+    let f = File::open(ifile).expect("couldn't open input barcode file.");
+    let br = BufReader::new(f);
+    let mut bc = Vec::<u64>::with_capacity(10_000);
+
+    for l in br.lines() {
+        let line = l.expect("couldn't read line from barcode file.");
+        let mut bnk = BitNuclKmer::new(line.as_bytes(), bclen as u8, false);
+        let (_, k, _) = bnk.next().expect("can't extract kmer");
+        bc.push(k.0);
+    }
+    bc
 }
