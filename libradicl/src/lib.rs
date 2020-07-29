@@ -1,14 +1,12 @@
 // scroll now, explore nom later
 extern crate fasthash;
 extern crate needletail;
+extern crate num;
 extern crate quickersort;
 extern crate scroll;
-extern crate num;
-
 
 use bio_types::strand::*;
 use needletail::bitkmer::*;
-use num::Num;
 use num::cast::AsPrimitive;
 use scroll::Pread;
 use std::collections::HashMap;
@@ -100,26 +98,45 @@ pub enum RADIntID {
 }
 
 impl RADIntID {
-  pub fn bytes_for_type(&self) -> usize {
-    match self {
-      Self::U8 => std::mem::size_of::<u8>(),
-      Self::U16 => std::mem::size_of::<u16>(),
-      Self::U32 => std::mem::size_of::<u32>(),
-      Self::U64 => std::mem::size_of::<u64>()
+    pub fn bytes_for_type(&self) -> usize {
+        match self {
+            Self::U8 => std::mem::size_of::<u8>(),
+            Self::U16 => std::mem::size_of::<u16>(),
+            Self::U32 => std::mem::size_of::<u32>(),
+            Self::U64 => std::mem::size_of::<u64>(),
+        }
     }
-  }
 
-  // TODO: Figure out how to use the num crate (AsPrimitive<T>?) to deal with 
-  // this so that we can have `v` be of any numeric (integer) type.
+    // TODO: Figure out how to use the num crate (AsPrimitive<T>?) to deal with
+    // this so that we can have `v` be of any numeric (integer) type.
 
-  pub fn write_to<T: AsPrimitive<T>>(&self, v: u64, owriter: &mut BufWriter<File>) -> std::io::Result<()>  {
-    match self {
-      Self::U8 => { let vo : u8 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
-      Self::U16 => { let vo : u16 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
-      Self::U32 => { let vo : u32 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
-      Self::U64 => { let vo : u64 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
+    pub fn write_to<T>(&self, v: T, owriter: &mut BufWriter<File>) -> std::io::Result<()>
+    where
+        T: AsPrimitive<u8>
+            + AsPrimitive<u16>
+            + AsPrimitive<u32>
+            + AsPrimitive<u64>
+            + AsPrimitive<usize>,
+    {
+        match self {
+            Self::U8 => {
+                let vo: u8 = v.as_();
+                owriter.write_all(&vo.to_le_bytes())
+            }
+            Self::U16 => {
+                let vo: u16 = v.as_();
+                owriter.write_all(&vo.to_le_bytes())
+            }
+            Self::U32 => {
+                let vo: u32 = v.as_();
+                owriter.write_all(&vo.to_le_bytes())
+            }
+            Self::U64 => {
+                let vo: u64 = v.as_();
+                owriter.write_all(&vo.to_le_bytes())
+            }
+        }
     }
-  }
 }
 
 pub struct ChunkConfig {
@@ -136,20 +153,20 @@ pub enum RADType {
     U32,
     U64,
     F32,
-    F64
+    F64,
 }
 
 pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
-  match type_id {
-    0 => Some(RADType::BOOL),
-    1 => Some(RADType::U8),
-    2 => Some(RADType::U16),
-    3 => Some(RADType::U32),
-    4 => Some(RADType::U64),
-    5 => Some(RADType::F32),
-    6 => Some(RADType::F64),
-    _ => None,
-  }
+    match type_id {
+        0 => Some(RADType::BOOL),
+        1 => Some(RADType::U8),
+        2 => Some(RADType::U16),
+        3 => Some(RADType::U32),
+        4 => Some(RADType::U64),
+        5 => Some(RADType::F32),
+        6 => Some(RADType::F64),
+        _ => None,
+    }
 }
 
 pub fn decode_int_type_tag(type_id: u8) -> Option<RADIntID> {
@@ -349,7 +366,7 @@ fn as_u8_slice(v: &[u32]) -> &[u8] {
 pub fn dump_output_cache(
     mut owriter: &mut BufWriter<File>,
     output_cache: &HashMap<u64, CorrectedCBChunk>,
-    chunk_config: &ChunkConfig
+    chunk_config: &ChunkConfig,
 ) {
     // NOTE: since the chunks are independent, this part could be multithreaded
     let bc_type = decode_int_type_tag(chunk_config.bc_type).expect("unknown barcode type id.");
@@ -361,7 +378,7 @@ pub fn dump_output_cache(
         let bytes_for_u32 = std::mem::size_of::<u32>();
         let bytes_for_bc = bc_type.bytes_for_type();
         let bytes_for_umi = umi_type.bytes_for_type();
-        
+
         // for reference IDs in this chunk
         nbytes += (chunk.ref_ids.len() * bytes_for_u32) as u32;
         // umis
@@ -394,8 +411,12 @@ pub fn dump_output_cache(
                 .write_all(&num_aln.to_le_bytes())
                 .expect("couldn't write output.");
 
-            bc_type.write_to::<u64>(*_bc, &mut owriter).expect("couldn't write output.");
-            umi_type.write_to::<u64>(chunk.umis[i], &mut owriter).expect("couldn't write output.");
+            bc_type
+                .write_to(*_bc, &mut owriter)
+                .expect("couldn't write output.");
+            umi_type
+                .write_to(chunk.umis[i], &mut owriter)
+                .expect("couldn't write output.");
             owriter
                 .write_all(as_u8_slice(&chunk.ref_ids[(s as usize)..(e as usize)]))
                 .expect("couldn't write output.");
