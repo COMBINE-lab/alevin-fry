@@ -1,3 +1,7 @@
+// Copyright 2020 Rob Patro, Avi Srivastava. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 // scroll now, explore nom later
 extern crate fasthash;
 extern crate needletail;
@@ -129,6 +133,12 @@ impl RADIntID {
         }
     }
 
+    /// Based on the variant of the current enum, write the value `v`  
+    /// out using `owrite`.  Here, `v` is bound to be some primitive 
+    /// integer type.  It is the responsibility of the caller to ensure 
+    /// that, if `v` is wider than the enum type on which this function 
+    /// is called, no important information is lost by discarding the higher
+    /// order bits.
     pub fn write_to<T: PrimitiveInteger, U: Write>(&self, v: T, owriter: &mut BufWriter<U>) -> std::io::Result<()> {
         match self {
             Self::U8 => {
