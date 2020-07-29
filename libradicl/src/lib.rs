@@ -107,16 +107,18 @@ impl RADIntID {
         }
     }
 
-    // TODO: Figure out how to use the num crate (AsPrimitive<T>?) to deal with
-    // this so that we can have `v` be of any numeric (integer) type.
-
     pub fn write_to<T>(&self, v: T, owriter: &mut BufWriter<File>) -> std::io::Result<()>
     where
         T: AsPrimitive<u8>
             + AsPrimitive<u16>
             + AsPrimitive<u32>
             + AsPrimitive<u64>
-            + AsPrimitive<usize>,
+            + AsPrimitive<usize>
+            + AsPrimitive<i8>
+            + AsPrimitive<i16>
+            + AsPrimitive<i32>
+            + AsPrimitive<i64>
+            + AsPrimitive<isize>
     {
         match self {
             Self::U8 => {
