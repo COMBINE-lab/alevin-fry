@@ -112,12 +112,12 @@ impl RADIntID {
   // TODO: Figure out how to use the num crate (AsPrimitive<T>?) to deal with 
   // this so that we can have `v` be of any numeric (integer) type.
 
-  pub fn write_to(&self, v: u64, owriter: &mut BufWriter<File>) -> std::io::Result<()>  {
+  pub fn write_to<T: AsPrimitive<T>>(&self, v: u64, owriter: &mut BufWriter<File>) -> std::io::Result<()>  {
     match self {
-      Self::U8 => { let vo : u8 = v as u8; owriter.write_all(&vo.to_le_bytes()) }
-      Self::U16 => { let vo : u16 = v as u16; owriter.write_all(&vo.to_le_bytes()) }
-      Self::U32 => { let vo : u32 = v as u32; owriter.write_all(&vo.to_le_bytes()) }
-      Self::U64 => { let vo : u64 = v as u64; owriter.write_all(&vo.to_le_bytes()) }
+      Self::U8 => { let vo : u8 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
+      Self::U16 => { let vo : u16 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
+      Self::U32 => { let vo : u32 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
+      Self::U64 => { let vo : u64 = (v).as_(); owriter.write_all(&vo.to_le_bytes()) }
     }
   }
 }
@@ -394,8 +394,8 @@ pub fn dump_output_cache(
                 .write_all(&num_aln.to_le_bytes())
                 .expect("couldn't write output.");
 
-            bc_type.write_to(*_bc, &mut owriter).expect("couldn't write output.");
-            umi_type.write_to(chunk.umis[i], &mut owriter).expect("couldn't write output.");
+            bc_type.write_to::<u64>(*_bc, &mut owriter).expect("couldn't write output.");
+            umi_type.write_to::<u64>(chunk.umis[i], &mut owriter).expect("couldn't write output.");
             owriter
                 .write_all(as_u8_slice(&chunk.ref_ids[(s as usize)..(e as usize)]))
                 .expect("couldn't write output.");
