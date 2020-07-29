@@ -3,9 +3,13 @@ extern crate fasthash;
 extern crate needletail;
 extern crate quickersort;
 extern crate scroll;
+extern crate num;
+
 
 use bio_types::strand::*;
 use needletail::bitkmer::*;
+use num::Num;
+use num::cast::AsPrimitive;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
@@ -102,6 +106,18 @@ impl RADIntID {
       Self::U16 => std::mem::size_of::<u16>(),
       Self::U32 => std::mem::size_of::<u32>(),
       Self::U64 => std::mem::size_of::<u64>()
+    }
+  }
+
+  // TODO: Figure out how to use the num crate (AsPrimitive<T>?) to deal with 
+  // this so that we can have `v` be of any numeric (integer) type.
+
+  pub fn write_to(&self, v: u64, owriter: &mut BufWriter<File>) -> std::io::Result<()>  {
+    match self {
+      Self::U8 => { let vo : u8 = v as u8; owriter.write_all(&vo.to_le_bytes()) }
+      Self::U16 => { let vo : u16 = v as u16; owriter.write_all(&vo.to_le_bytes()) }
+      Self::U32 => { let vo : u32 = v as u32; owriter.write_all(&vo.to_le_bytes()) }
+      Self::U64 => { let vo : u64 = v as u64; owriter.write_all(&vo.to_le_bytes()) }
     }
   }
 }
@@ -331,7 +347,7 @@ fn as_u8_slice(v: &[u32]) -> &[u8] {
 }
 
 pub fn dump_output_cache(
-    owriter: &mut BufWriter<File>,
+    mut owriter: &mut BufWriter<File>,
     output_cache: &HashMap<u64, CorrectedCBChunk>,
     chunk_config: &ChunkConfig
 ) {
@@ -374,21 +390,12 @@ pub fn dump_output_cache(
 
             // num alignments
             let num_aln = (e - s) as u32;
-            // cb
-            // if bc > 16, make sure this is the correct type
-            let cb = *_bc as u32; //chunk.corrected_bc as u32;
-                                  // umi
-            let umi = chunk.umis[i] as u32;
-
             owriter
                 .write_all(&num_aln.to_le_bytes())
                 .expect("couldn't write output.");
-            owriter
-                .write_all(&cb.to_le_bytes())
-                .expect("couldn't write output.");
-            owriter
-                .write_all(&umi.to_le_bytes())
-                .expect("couldn't write output.");
+
+            bc_type.write_to(*_bc, &mut owriter).expect("couldn't write output.");
+            umi_type.write_to(chunk.umis[i], &mut owriter).expect("couldn't write output.");
             owriter
                 .write_all(as_u8_slice(&chunk.ref_ids[(s as usize)..(e as usize)]))
                 .expect("couldn't write output.");
