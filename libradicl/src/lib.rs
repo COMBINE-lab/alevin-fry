@@ -97,6 +97,28 @@ pub enum RADIntID {
     U64,
 }
 
+pub trait PrimitiveInteger : AsPrimitive<u8>
++ AsPrimitive<u16>
++ AsPrimitive<u32>
++ AsPrimitive<u64>
++ AsPrimitive<usize>
++ AsPrimitive<i8>
++ AsPrimitive<i16>
++ AsPrimitive<i32>
++ AsPrimitive<i64>
++ AsPrimitive<isize>{}
+
+impl<T: AsPrimitive<u8>
++ AsPrimitive<u16>
++ AsPrimitive<u32>
++ AsPrimitive<u64>
++ AsPrimitive<usize>
++ AsPrimitive<i8>
++ AsPrimitive<i16>
++ AsPrimitive<i32>
++ AsPrimitive<i64>
++ AsPrimitive<isize>> PrimitiveInteger for T {}
+
 impl RADIntID {
     pub fn bytes_for_type(&self) -> usize {
         match self {
@@ -107,19 +129,7 @@ impl RADIntID {
         }
     }
 
-    pub fn write_to<T>(&self, v: T, owriter: &mut BufWriter<File>) -> std::io::Result<()>
-    where
-        T: AsPrimitive<u8>
-            + AsPrimitive<u16>
-            + AsPrimitive<u32>
-            + AsPrimitive<u64>
-            + AsPrimitive<usize>
-            + AsPrimitive<i8>
-            + AsPrimitive<i16>
-            + AsPrimitive<i32>
-            + AsPrimitive<i64>
-            + AsPrimitive<isize>
-    {
+    pub fn write_to<T: PrimitiveInteger, U: Write>(&self, v: T, owriter: &mut BufWriter<U>) -> std::io::Result<()> {
         match self {
             Self::U8 => {
                 let vo: u8 = v.as_();
