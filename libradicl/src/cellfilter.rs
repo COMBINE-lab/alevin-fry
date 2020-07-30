@@ -15,6 +15,12 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Write};
 
+
+/// Given the input RAD file `input_file`, compute 
+/// and output (in `output_dir`) the list of valid
+/// (i.e. "permitted") barcode values, as well as 
+/// a map from each correctable barcode to the 
+/// permitted barcode to which it maps.
 pub fn generate_permit_list(
     input_file: String,
     output_dir: String,
