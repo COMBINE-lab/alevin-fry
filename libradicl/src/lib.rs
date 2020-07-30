@@ -22,6 +22,7 @@ use std::vec::Vec;
 pub mod cellfilter;
 pub mod collate;
 pub mod em;
+pub mod exit_codes;
 pub mod pugutils;
 pub mod quant;
 pub mod schema;

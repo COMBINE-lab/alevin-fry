@@ -8,6 +8,7 @@ use self::slog::crit;
 use self::slog::info;
 
 use crate as libradicl;
+use libradicl::exit_codes;
 use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use std::collections::HashMap;
@@ -53,7 +54,7 @@ pub fn generate_permit_list(
         if &rt.name == BNAME || &rt.name == UNAME {
             if libradicl::decode_int_type_tag(rt.typeid).is_none() {
                 crit!(log, "currently only RAD types 1--4 are supported for 'b' and 'u' tags.");
-                std::process::exit(1);
+                std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
             }
         }
     }
