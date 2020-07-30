@@ -4,6 +4,7 @@
 
 extern crate fasthash;
 extern crate slog;
+use self::slog::crit;
 use self::slog::info;
 
 use crate as libradicl;
@@ -37,6 +38,20 @@ pub fn generate_permit_list(
     // read-level
     let rl_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+
+    // right now, we only handle BC and UMI types of U8—U64, so validate that
+    const BNAME : &str = "b";
+    const UNAME : &str = "u";
+    for rt in &rl_tags.tags {
+        // if this is one of our tags
+        if &rt.name == BNAME || &rt.name == UNAME {
+            if libradicl::decode_int_type_tag(rt.typeid).is_none() {
+                crit!(log, "currently only RAD types 1--4 are supported for 'b' and 'u' tags.");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // alignment-level
     let al_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
