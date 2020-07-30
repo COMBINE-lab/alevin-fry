@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_generate_whitelist_hash() {
-        let neighbors: HashSet<u64> = generate_whitelist_hash(&vec![7], 3).unwrap();
+        let neighbors: HashSet<u64> = generate_whitelist_set(&vec![7], 3).unwrap();
         let mut output: Vec<u64> = neighbors.into_iter().collect();
 
         output.sort();
