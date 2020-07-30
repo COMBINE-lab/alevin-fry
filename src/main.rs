@@ -16,8 +16,7 @@ use libradicl::cellfilter::generate_permit_list;
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
-use slog::crit;
-use slog::{info, o, Drain};
+use slog::{info, warn, crit, o, Drain};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -118,7 +117,9 @@ fn main() {
             Err(_) => None,
         };
         let nc = generate_permit_list(input_file, output_dir, top_k, valid_bc, &log).unwrap();
-        info!(log, "total number of corrected barcodes : {}", nc);
+        if nc == 0 {
+            warn!(log, "found 0 corrected barcodes; please check the input.");
+        }
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {

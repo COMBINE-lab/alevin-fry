@@ -38,7 +38,7 @@ pub fn collate(
     info!(
         log,
         "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
-        hdr.is_paired,
+        hdr.is_paired != 0,
         hdr.ref_count,
         hdr.num_chunks
     );

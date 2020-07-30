@@ -11,11 +11,11 @@ use crate as libradicl;
 use libradicl::exit_codes;
 use fasthash::sea::Hash64;
 use fasthash::RandomState;
+use num_format::{Locale, ToFormattedString};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Write};
-
 
 /// Given the input RAD file `input_file`, compute 
 /// and output (in `output_dir`) the list of valid
@@ -34,10 +34,10 @@ pub fn generate_permit_list(
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
         log,
-        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
-        hdr.is_paired,
-        hdr.ref_count,
-        hdr.num_chunks
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en)
     );
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
@@ -49,6 +49,10 @@ pub fn generate_permit_list(
     // right now, we only handle BC and UMI types of U8—U64, so validate that
     const BNAME : &str = "b";
     const UNAME : &str = "u";
+
+    let mut bct : Option<u8> = None;
+    let mut umit : Option<u8> = None;
+
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if &rt.name == BNAME || &rt.name == UNAME {
@@ -56,6 +60,9 @@ pub fn generate_permit_list(
                 crit!(log, "currently only RAD types 1--4 are supported for 'b' and 'u' tags.");
                 std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
             }
+            
+            if &rt.name == BNAME { bct = Some(rt.typeid); }
+            if &rt.name == UNAME { umit = Some(rt.typeid); }
         }
     }
 
@@ -66,15 +73,12 @@ pub fn generate_permit_list(
     let ft_vals = libradicl::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
-
     let mut num_reads: usize = 0;
 
     let s = RandomState::<Hash64>::new();
     let mut hm = HashMap::with_hasher(s);
-    let bc_type = libradicl::decode_int_type_tag(bct).expect("unknown barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit).expect("unknown barcode type id.");
+    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present.")).expect("unknown barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present")).expect("unknown barcode type id.");
 
     for _ in 0..(hdr.num_chunks as usize) {
         let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
@@ -84,7 +88,9 @@ pub fn generate_permit_list(
 
     info!(
         log,
-        "observed {:?} reads in {:?} chunks", num_reads, hdr.num_chunks
+        "observed {} reads in {} chunks", 
+        num_reads.to_formatted_string(&Locale::en), 
+        hdr.num_chunks.to_formatted_string(&Locale::en)
     );
 
     let valid_bc: Vec<u64>;
@@ -144,5 +150,8 @@ pub fn generate_permit_list(
     bincode::serialize_into(&mut s_writer, &full_permit_list)
         .expect("couldn't serialize permit list.");
 
+    info!(log, "total number of corrected barcodes : {}", 
+          num_corrected.to_formatted_string(&Locale::en) 
+        );
     Ok(num_corrected)
 }
