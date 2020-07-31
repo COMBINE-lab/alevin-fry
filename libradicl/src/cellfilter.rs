@@ -113,15 +113,15 @@ fn get_knee(freq : &[u64],
               "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
     
     let mut iterations = 0;
-
+    let iter_slack = 5;
     // while our algorithm hasn't converged 
     while max_idx - prev_max != 0 {
-        // info!(log, "max_idx = {}", max_idx);
+        info!(log, "max_idx = {}", max_idx);
         prev_max = max_idx;
         iterations += 1;
         if iterations % 10 == 0 { info!(log, "knee-finding iter = {}", iterations); }
         if iterations > max_iterations{ break; }
-        let last_idx = std::cmp::min(cfreq.len()-1, max_idx*3);
+        let last_idx = std::cmp::min(cfreq.len()-1, max_idx*iter_slack);
         max_idx = get_max_distance_index(&cfreq[0..last_idx], true);
         assert_ne!(max_idx, 0, 
               "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
