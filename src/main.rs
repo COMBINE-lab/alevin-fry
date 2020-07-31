@@ -40,6 +40,9 @@ fn gen_random_kmer(k: usize) -> String {
 fn main() {
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
 
+    // [] add command for just counting barcode frequency
+    // [] add other algorithms for determining barcode cutoff
+
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
         .version(VERSION)
