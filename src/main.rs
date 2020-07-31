@@ -16,6 +16,7 @@ use libradicl::cellfilter::generate_permit_list;
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
+use std::unimplemented;
 use slog::{info, warn, crit, o, Drain};
 
 #[global_allocator]
@@ -52,13 +53,22 @@ fn main() {
             "-o, --output-dir=<output-dir>  'output directory'",
         ))
         .arg(Arg::from(
-            "-k, --top-k=<top-k>  'select the top-k most-frequent barcodes as valid (true)'",
-        ))
+            "-k, --knee-distance  'attempt to determine the number of barcodes to keep using the knee distance method."
+            ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells"])
+        )
+        .arg(Arg::from(
+            "-e, --expect-cells=<expect-cells> 'defines the expected number of cells to use in determining the (read, not UMI) based cutoff'",
+        ).conflicts_with_all(&["force-cells", "valid-bc", "knee-distance"])
+        )
+        .arg(Arg::from(
+            "-f, --force-cells=<force-cells>  'select the top-k most-frequent barcodes, based on read count, as valid (true)'"
+        ).conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance"])
+        )
         .arg(
             Arg::from(
                 "-b, --valid-bc=<valid-bc> 'uses true barcode collected from a provided file'",
             )
-            .conflicts_with("top-k"),
+            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance"]),
         );
 
     let collate_app = App::new("collate")
@@ -114,7 +124,15 @@ fn main() {
         let output_dir: String = t
             .value_of_t("output-dir")
             .expect("no input directory specified");
-        let top_k = match t.value_of_t("top-k") {
+        let expect_cells : Option<String> = match t.value_of_t("expect-cells") {
+            Ok(v) => Some(v),
+            Err(_) => None,
+        };
+        if expect_cells.is_some() { unimplemented!(); }
+
+        let use_knee_distance = t.is_present("knee-distance");
+
+        let force_cells = match t.value_of_t("force-cells") {
             Ok(v) => Some(v),
             Err(_) => None,
         };
@@ -122,7 +140,7 @@ fn main() {
             Ok(v) => Some(v),
             Err(_) => None,
         };
-        let nc = generate_permit_list(input_file, output_dir, top_k, valid_bc, &log).unwrap();
+        let nc = generate_permit_list(input_file, output_dir, force_cells, valid_bc, use_knee_distance, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
