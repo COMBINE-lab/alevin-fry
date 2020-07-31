@@ -21,6 +21,9 @@ use slog::{info, warn, crit, o, Drain};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+static VERSION: &str = "0.0.1";
+static AUTHORS: &str = "Avi Srivastava, Rob Patro";
+
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
     const CHARSET: &[u8] = b"ACGT";
@@ -39,8 +42,8 @@ fn main() {
 
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
-        .version("0.0.1")
-        .author("Avi Srivastava, Rob Patro")
+        .version(VERSION)
+        .author(AUTHORS)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
@@ -57,8 +60,8 @@ fn main() {
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
-    .version("0.0.1")
-    .author("Avi Srivastava, Rob Patro")
+    .version(VERSION)
+    .author(AUTHORS)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
@@ -68,8 +71,8 @@ fn main() {
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
-    .version("0.0.1")
-    .author("Avi Srivastava, Rob Patro")
+    .version(VERSION)
+    .author(AUTHORS)
     .arg(Arg::from("-i, --input-dir=<input-dir>  'input directory containing collated RAD file'"))
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
@@ -81,8 +84,8 @@ fn main() {
         .about("the resolution strategy by which molecules will be counted"));
 
     let opts = App::new("alevin-fry")
-        .version("0.0.1")
-        .author("Avi Srivastava, Rob Patro")
+        .version(VERSION)
+        .author(AUTHORS)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
         .subcommand(collate_app)
