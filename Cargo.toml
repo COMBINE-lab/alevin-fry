@@ -1,5 +1,5 @@
 [package]
-name = "radicl"
+name = "alevin-fry"
 version = "0.0.1"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"

@@ -80,7 +80,7 @@ fn main() {
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
 
-    let opts = App::new("Radicl")
+    let opts = App::new("alevin-fry")
         .version("0.0.1")
         .author("Avi Srivastava, Rob Patro")
         .about("Process RAD files from the command line")
