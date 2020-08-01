@@ -17,6 +17,22 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Write};
 
+
+pub enum CellFilterMethod {
+    // cut off at this cell in 
+    // the frequency sorted list
+    ForceCells(usize),
+    // use this cell as a hint in 
+    // the frequency sorted list
+    ExpectCells(usize),
+    // correct all cells in an 
+    // edit distance of 1 of these 
+    // barcodes
+    ExplicitList(String),
+    KneeFinding
+}
+
+
 struct Point {
     x : f64,
     y : f64
@@ -137,9 +153,10 @@ fn get_knee(freq : &[u64],
 pub fn generate_permit_list(
     input_file: String,
     output_dir: String,
-    top_k: Option<usize>,
-    valid_bc_file: Option<String>,
-    use_knee_distance: bool,
+    filter_meth: CellFilterMethod,
+    //top_k: Option<usize>,
+    //valid_bc_file: Option<String>,
+    //use_knee_distance: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let i_file = File::open(input_file).unwrap();
@@ -211,8 +228,9 @@ pub fn generate_permit_list(
     freq.sort_unstable();
     freq.reverse();
 
-    // TODO: better way to distpatch on different methods
-    if use_knee_distance {
+    // select from among supported filter methods
+    match filter_meth {
+        CellFilterMethod::KneeFinding => {
        let num_bc = get_knee(&freq[..], 100, &log);
        let min_freq = freq[num_bc];
        
@@ -221,8 +239,8 @@ pub fn generate_permit_list(
        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);  
        info!(log, "knee distance method resulted in the selection of {} permitted barcodes.", valid_bc.len());
 
-    } else if top_k.is_some() {
-        let top_k = top_k.unwrap() as usize;
+    },
+        CellFilterMethod::ForceCells(top_k) => {
 
         let num_bc = if freq.len() < top_k {
             freq.len() - 1
@@ -235,9 +253,13 @@ pub fn generate_permit_list(
         // collect all of the barcodes that have a frequency
         // >= to min_thresh.
         valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-    } else {
-        let valid_bc_file = valid_bc_file.expect("couldn't extract --valid-bc option.");
+    },
+        CellFilterMethod::ExplicitList(valid_bc_file) => {
         valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
+    },
+        CellFilterMethod::ExpectCells(expected_num_cells) => {
+            unimplemented!();
+        }
     }
 
     // generate the map from each permitted barcode to all barcodes within

@@ -12,7 +12,7 @@ extern crate slog_term;
 
 use bio_types::strand::Strand;
 use clap::{App, Arg};
-use libradicl::cellfilter::generate_permit_list;
+use libradicl::cellfilter::{CellFilterMethod, generate_permit_list};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
@@ -124,23 +124,29 @@ fn main() {
         let output_dir: String = t
             .value_of_t("output-dir")
             .expect("no input directory specified");
-        let expect_cells : Option<String> = match t.value_of_t("expect-cells") {
-            Ok(v) => Some(v),
+
+        let mut fmeth = CellFilterMethod::KneeFinding;
+
+        let expect_cells : Option<usize> = match t.value_of_t("expect-cells") {
+            Ok(v) => { fmeth = CellFilterMethod::ExpectCells(v); Some(v) },
             Err(_) => None,
         };
         if expect_cells.is_some() { unimplemented!(); }
 
-        let use_knee_distance = t.is_present("knee-distance");
+        if t.is_present("knee-distance") {
+            fmeth = CellFilterMethod::KneeFinding;
+        }
+        
+        let _force_cells = match t.value_of_t("force-cells") {
+            Ok(v) => { fmeth = CellFilterMethod::ForceCells(v); Some(v) },
+            Err(_) => None,
+        };
 
-        let force_cells = match t.value_of_t("force-cells") {
-            Ok(v) => Some(v),
+        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
+            Ok(v) => { fmeth = CellFilterMethod::ExplicitList(v.clone()); Some(v)},
             Err(_) => None,
         };
-        let valid_bc = match t.value_of_t("valid-bc") {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        };
-        let nc = generate_permit_list(input_file, output_dir, force_cells, valid_bc, use_knee_distance, &log).unwrap();
+        let nc = generate_permit_list(input_file, output_dir, fmeth, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
