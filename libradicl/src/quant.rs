@@ -21,6 +21,7 @@ use self::petgraph::prelude::*;
 use self::slog::crit;
 use self::slog::info;
 use crate as libradicl;
+use crossbeam_channel::bounded;
 use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
@@ -327,7 +328,7 @@ pub fn quantify(
     let n_workers = num_threads as usize;
     let pool = crossbeam_channel_pool::ThreadPool::new(n_workers);
     let ref_count = hdr.ref_count as u32;
-    let (tx, rx) = channel();
+    let (tx, rx) = bounded(n_workers);
 
     let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
     let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
@@ -387,7 +388,7 @@ pub fn quantify(
                 }
             }
             tx.send((bc, counts))
-                .expect("failed to sent cell result over channel");
+                .expect("failed to send cell result over channel");
         });
     }
 

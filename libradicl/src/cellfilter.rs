@@ -29,6 +29,9 @@ pub enum CellFilterMethod {
     // edit distance of 1 of these 
     // barcodes
     ExplicitList(String),
+    // use the distance method to 
+    // automatically find the knee
+    // in the curve
     KneeFinding
 }
 
