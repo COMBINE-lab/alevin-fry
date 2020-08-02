@@ -358,9 +358,13 @@ pub fn quantify(
             eq_map.init_from_chunk(&mut c);
             let counts: Vec<f32>;
             match resolution {
-                ResolutionStrategy::Trivial => {
+                ResolutionStrategy::CellRangerLike => {
                     counts =
-                        pugutils::get_num_molecules_trivial(&eq_map, &tid_to_gid, num_genes, &log);
+                        pugutils::get_num_molecules_cell_ranger_like(&eq_map, &tid_to_gid, num_genes, &log);
+                }
+                ResolutionStrategy::Trivial => {
+                    counts = 
+                        pugutils::get_num_molecules_trivial_discard_all_ambig(&eq_map, &tid_to_gid, num_genes, &log);
                 }
                 ResolutionStrategy::Parsimony => {
                     let g = extract_graph(&eq_map, &log);

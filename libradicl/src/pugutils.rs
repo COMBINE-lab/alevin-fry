@@ -134,12 +134,135 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
-pub(super) fn get_num_molecules_trivial(
+pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
     _log: &slog::Logger,
 ) -> Vec<f32> {
+
+    let mut counts = vec![0.0f32; num_genes];
+
+    // TODO: better capacity
+    let mut umi_gene_count_vec : Vec<(u64, u32, u32)> = vec![];
+
+    // for each equivalence clss
+    for eqinfo in &eq_map.eqc_info {
+        // get the (umi, count) pairs
+        let umis = &eqinfo.umis;
+        let eqid = &eqinfo.eq_num;
+        // project the transcript ids to gene ids
+        let mut gset : Vec<u32> = eq_map.refs_for_eqc(*eqid).iter().map(|tid| tid_to_gid[*tid as usize]).collect();
+        // and make the gene ids unique
+        quickersort::sort(&mut gset[..]);
+        gset.dedup();
+
+        // add every (umi, count), gene pair as a triplet
+        // of (umi, gene_id, count) to the output vector
+        for umi_ct in umis {
+            for g in &gset {
+                umi_gene_count_vec.push((umi_ct.0, *g, umi_ct.1));
+            }
+        }
+    }
+
+    // sort the triplets 
+    // first on umi
+    // then on gene_id
+    // then on count
+    quickersort::sort(&mut umi_gene_count_vec[..]);
+
+    // hold the current umi and gene we are examining 
+    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
+    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    // hold the gene id having the max count for this umi
+    // and the maximum count value itself
+    let mut max_count_gene = 0u32;
+    let mut max_count = 0u32;
+    // to aggregate the count should a (umi, gene) pair appear 
+    // more than once
+    let mut count_aggr = 0u32;
+    // could this UMI be assigned toa best gene or not
+    let mut unresolvable = false;
+    // to keep track of the current index in the vector
+    let mut cidx = 0usize;
+
+    // look over all sorted triplets
+    while cidx < umi_gene_count_vec.len() {
+    
+        let (umi, gn, ct) = umi_gene_count_vec[cidx];
+
+        // if this umi is different than 
+        // the one we are processing
+        // then decide what action to take
+        // on the previous umi
+        if umi != curr_umi {
+
+            // if previous was resolvable, add it to the appropriate gene
+            if !unresolvable {
+                counts[max_count_gene as usize] += 1.0f32;
+            } 
+            
+            // the next umi and gene
+            curr_umi = umi;
+            curr_gn = gn;
+
+            // the next umi will start as resolvable
+            unresolvable = false;
+            
+            // current gene is current best
+            max_count_gene = gn;
+            
+            // count aggr = max count = ct
+            count_aggr = ct;
+            max_count = ct;
+        } else { // the umi was the same
+            
+            // if the gene is the same, add the counts
+            if gn == curr_gn {
+                count_aggr += ct;
+            } else {
+            // if the gene is different, then restart the count_aggr
+            // and set the current gene id
+                count_aggr = ct;
+                curr_gn = gn;
+            }
+            // if the count aggregator exceeded the max
+            // then it is the new max, and this gene is 
+            // the new max gene.  Having a distinct max 
+            // also makes this UMI resolvable
+            if count_aggr > max_count {
+                max_count = count_aggr;
+                max_count_gene = gn;
+                unresolvable = false;
+            } else if count_aggr == max_count {
+                // if we have a tie for the max count
+                // then the current UMI becomes unresolvable 
+                // it will stay this way unless we see a bigger
+                // count for this UMI
+                unresolvable = true;
+            }
+        }
+        
+        // if this was the last UMI in the list
+        if cidx == umi_gene_count_vec.len() - 1 {
+            if !unresolvable {
+                counts[max_count_gene as usize] += 1.0f32;
+            }
+        }
+        cidx += 1;
+    }
+
+    counts
+}
+
+pub(super) fn get_num_molecules_trivial_discard_all_ambig(
+        eq_map: &EqMap,
+        tid_to_gid: &[u32],
+        num_genes: usize,
+        _log: &slog::Logger,
+    ) -> Vec<f32> {
+    
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();
     let mut gene_map = HashMap::with_hasher(s);

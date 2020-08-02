@@ -41,6 +41,7 @@ pub struct ProtocolInfo {
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum ResolutionStrategy {
     Trivial,
+    CellRangerLike,
     Full,
     Parsimony,
 }
@@ -51,6 +52,7 @@ impl FromStr for ResolutionStrategy {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "trivial" => Ok(ResolutionStrategy::Trivial),
+            "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
