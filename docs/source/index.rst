@@ -15,7 +15,8 @@ What is alevin-fry?
 
    building
    getting_started
-   generate_permit_list   
+   generate_permit_list  
+   collate 
    LICENSE.rst
 
 Indices and tables
