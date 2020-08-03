@@ -16,7 +16,7 @@ use libradicl::cellfilter::generate_permit_list;
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
-use slog::{info, warn, crit, o, Drain};
+use slog::{crit, info, o, warn, Drain};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;

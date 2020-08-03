@@ -8,19 +8,19 @@ use self::slog::crit;
 use self::slog::info;
 
 use crate as libradicl;
-use libradicl::exit_codes;
 use fasthash::sea::Hash64;
 use fasthash::RandomState;
+use libradicl::exit_codes;
 use num_format::{Locale, ToFormattedString};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Write};
 
-/// Given the input RAD file `input_file`, compute 
+/// Given the input RAD file `input_file`, compute
 /// and output (in `output_dir`) the list of valid
-/// (i.e. "permitted") barcode values, as well as 
-/// a map from each correctable barcode to the 
+/// (i.e. "permitted") barcode values, as well as
+/// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
 pub fn generate_permit_list(
     input_file: String,
@@ -47,22 +47,29 @@ pub fn generate_permit_list(
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
-    const BNAME : &str = "b";
-    const UNAME : &str = "u";
+    const BNAME: &str = "b";
+    const UNAME: &str = "u";
 
-    let mut bct : Option<u8> = None;
-    let mut umit : Option<u8> = None;
+    let mut bct: Option<u8> = None;
+    let mut umit: Option<u8> = None;
 
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if &rt.name == BNAME || &rt.name == UNAME {
             if libradicl::decode_int_type_tag(rt.typeid).is_none() {
-                crit!(log, "currently only RAD types 1--4 are supported for 'b' and 'u' tags.");
+                crit!(
+                    log,
+                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
+                );
                 std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
             }
-            
-            if &rt.name == BNAME { bct = Some(rt.typeid); }
-            if &rt.name == UNAME { umit = Some(rt.typeid); }
+
+            if &rt.name == BNAME {
+                bct = Some(rt.typeid);
+            }
+            if &rt.name == UNAME {
+                umit = Some(rt.typeid);
+            }
         }
     }
 
@@ -77,8 +84,10 @@ pub fn generate_permit_list(
 
     let s = RandomState::<Hash64>::new();
     let mut hm = HashMap::with_hasher(s);
-    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present.")).expect("unknown barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present")).expect("unknown barcode type id.");
+    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present."))
+        .expect("unknown barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present"))
+        .expect("unknown barcode type id.");
 
     for _ in 0..(hdr.num_chunks as usize) {
         let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
@@ -88,8 +97,8 @@ pub fn generate_permit_list(
 
     info!(
         log,
-        "observed {} reads in {} chunks", 
-        num_reads.to_formatted_string(&Locale::en), 
+        "observed {} reads in {} chunks",
+        num_reads.to_formatted_string(&Locale::en),
         hdr.num_chunks.to_formatted_string(&Locale::en)
     );
 
@@ -150,8 +159,10 @@ pub fn generate_permit_list(
     bincode::serialize_into(&mut s_writer, &full_permit_list)
         .expect("couldn't serialize permit list.");
 
-    info!(log, "total number of corrected barcodes : {}", 
-          num_corrected.to_formatted_string(&Locale::en) 
-        );
+    info!(
+        log,
+        "total number of corrected barcodes : {}",
+        num_corrected.to_formatted_string(&Locale::en)
+    );
     Ok(num_corrected)
 }
