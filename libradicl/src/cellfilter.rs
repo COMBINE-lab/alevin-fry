@@ -12,6 +12,8 @@ use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use libradicl::exit_codes;
 use num_format::{Locale, ToFormattedString};
+use needletail::bitkmer::*;
+use std::str::from_utf8;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -312,14 +314,16 @@ pub fn generate_permit_list(
     let mut writer = BufWriter::new(&output);
 
     for (k, v) in permitted_map {
-        writeln!(&mut writer, "{:?}\t{:?}", k, v).expect("couldn't write to output file.");
+        let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
+        writeln!(&mut writer, "{}\t{}", from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(), v).expect("couldn't write to output file.");
     }
 
     let o_path = parent.join("all_freq.tsv");
     let output = std::fs::File::create(&o_path).expect("could not create output.");
     let mut writer = BufWriter::new(&output);
-    for f in freq {
-        writeln!(&mut writer, "{}", f).expect("couldn't write to output file.");
+    for (k, v) in hm {
+        let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
+        writeln!(&mut writer, "{}\t{}", from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(), v).expect("couldn't write to output file.");
     }
 
     let s_path = parent.join("permit_map.bin");

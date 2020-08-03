@@ -30,4 +30,18 @@ exclusive options (which determines how the "true" barcodes are decided):
 * ``--valid-bc <bcfile>``: This option will read the provided file <bcfile> and treat it as an explicitly-provided list of true 
   barcodes. Barcodes appearing in this list will be considered true, and barcodes will be corrected to this list.
 
-* ``--expect-cells <ncells>``: Not currently implemnted.
+* ``--expect-cells <ncells>``: Not currently implemented.
+
+Outputs
+-------
+
+The ``generate-permit-list`` command outputs a number of different files in the output directory.  Not all files are 
+relevant to users of ``alevin-fry``, but the files are described here.
+
+1. The file ``all_freq.tsv`` is a two-column tab-separated file that lists, for each distinct barcode in the input RAD file, the number of read records that were tagged with this barcode.
+
+# The file ``permit_freq.tsv`` is a two-column tab-separated file that lists, for each barcode in the input RAD file that is determined to be a *true* barcode, the number of read records associated with this barcode.
+
+# The file ``permit_map.bin`` is a binary file (a serde serialized HashMap) that maps each barcode in the input RAD file that is within an edit distance of 1 to some *true* barcode to the barcode to which it corrects.  This allows the ``collate`` command to group together all of the read records corresponding to the same *corrected* barcode.
+
+
