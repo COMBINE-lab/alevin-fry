@@ -22,3 +22,4 @@ bio-types = "0.6.0"
 quickersort = "3.0.1"
 needletail = "0.4"
 num-format = "0.4.0"
+sce = { git = "https://github.com/k3yavi/SingleCellExperiment" }

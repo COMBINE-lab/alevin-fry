@@ -8,6 +8,7 @@ extern crate needletail;
 extern crate num;
 extern crate quickersort;
 extern crate scroll;
+extern crate sce;
 
 use bio_types::strand::*;
 use needletail::bitkmer::*;

@@ -424,8 +424,12 @@ pub fn quantify(
         c += 1;
     });
 
-    let mat_path = output_path.join("counts.mtx");
-    sprs::io::write_matrix_market(&mat_path, &omat)?;
+    //let mat_path = output_path.join("counts.mtx");
+    //sprs::io::write_matrix_market(&mat_path, &omat)?;
+
+    let mat_path = output_path.join("counts.eds.gz");
+    sce::eds::writer(&mat_path, omat.to_csr())?;
+
 
     let gn_path = output_path.join("gene_names.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
