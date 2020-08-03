@@ -12,12 +12,12 @@ extern crate slog_term;
 
 use bio_types::strand::Strand;
 use clap::{App, Arg};
-use libradicl::cellfilter::{CellFilterMethod, generate_permit_list};
+use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
+use slog::{crit, info, o, warn, Drain};
 use std::unimplemented;
-use slog::{info, warn, crit, o, Drain};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -127,23 +127,34 @@ fn main() {
 
         let mut fmeth = CellFilterMethod::KneeFinding;
 
-        let expect_cells : Option<usize> = match t.value_of_t("expect-cells") {
-            Ok(v) => { fmeth = CellFilterMethod::ExpectCells(v); Some(v) },
+        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExpectCells(v);
+                Some(v)
+            }
             Err(_) => None,
         };
-        if expect_cells.is_some() { unimplemented!(); }
+        if expect_cells.is_some() {
+            unimplemented!();
+        }
 
         if t.is_present("knee-distance") {
             fmeth = CellFilterMethod::KneeFinding;
         }
-        
+
         let _force_cells = match t.value_of_t("force-cells") {
-            Ok(v) => { fmeth = CellFilterMethod::ForceCells(v); Some(v) },
+            Ok(v) => {
+                fmeth = CellFilterMethod::ForceCells(v);
+                Some(v)
+            }
             Err(_) => None,
         };
 
         let _valid_bc = match t.value_of_t::<String>("valid-bc") {
-            Ok(v) => { fmeth = CellFilterMethod::ExplicitList(v.clone()); Some(v)},
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExplicitList(v.clone());
+                Some(v)
+            }
             Err(_) => None,
         };
         let nc = generate_permit_list(input_file, output_dir, fmeth, &log).unwrap();

@@ -359,12 +359,20 @@ pub fn quantify(
             let counts: Vec<f32>;
             match resolution {
                 ResolutionStrategy::CellRangerLike => {
-                    counts =
-                        pugutils::get_num_molecules_cell_ranger_like(&eq_map, &tid_to_gid, num_genes, &log);
+                    counts = pugutils::get_num_molecules_cell_ranger_like(
+                        &eq_map,
+                        &tid_to_gid,
+                        num_genes,
+                        &log,
+                    );
                 }
                 ResolutionStrategy::Trivial => {
-                    counts = 
-                        pugutils::get_num_molecules_trivial_discard_all_ambig(&eq_map, &tid_to_gid, num_genes, &log);
+                    counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                        &eq_map,
+                        &tid_to_gid,
+                        num_genes,
+                        &log,
+                    );
                 }
                 ResolutionStrategy::Parsimony => {
                     let g = extract_graph(&eq_map, &log);

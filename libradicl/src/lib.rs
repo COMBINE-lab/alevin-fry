@@ -102,27 +102,34 @@ pub enum RADIntID {
     U64,
 }
 
-pub trait PrimitiveInteger : AsPrimitive<u8>
-+ AsPrimitive<u16>
-+ AsPrimitive<u32>
-+ AsPrimitive<u64>
-+ AsPrimitive<usize>
-+ AsPrimitive<i8>
-+ AsPrimitive<i16>
-+ AsPrimitive<i32>
-+ AsPrimitive<i64>
-+ AsPrimitive<isize>{}
+pub trait PrimitiveInteger:
+    AsPrimitive<u8>
+    + AsPrimitive<u16>
+    + AsPrimitive<u32>
+    + AsPrimitive<u64>
+    + AsPrimitive<usize>
+    + AsPrimitive<i8>
+    + AsPrimitive<i16>
+    + AsPrimitive<i32>
+    + AsPrimitive<i64>
+    + AsPrimitive<isize>
+{
+}
 
-impl<T: AsPrimitive<u8>
-+ AsPrimitive<u16>
-+ AsPrimitive<u32>
-+ AsPrimitive<u64>
-+ AsPrimitive<usize>
-+ AsPrimitive<i8>
-+ AsPrimitive<i16>
-+ AsPrimitive<i32>
-+ AsPrimitive<i64>
-+ AsPrimitive<isize>> PrimitiveInteger for T {}
+impl<
+        T: AsPrimitive<u8>
+            + AsPrimitive<u16>
+            + AsPrimitive<u32>
+            + AsPrimitive<u64>
+            + AsPrimitive<usize>
+            + AsPrimitive<i8>
+            + AsPrimitive<i16>
+            + AsPrimitive<i32>
+            + AsPrimitive<i64>
+            + AsPrimitive<isize>,
+    > PrimitiveInteger for T
+{
+}
 
 impl RADIntID {
     pub fn bytes_for_type(&self) -> usize {
@@ -135,12 +142,16 @@ impl RADIntID {
     }
 
     /// Based on the variant of the current enum, write the value `v`  
-    /// out using `owrite`.  Here, `v` is bound to be some primitive 
-    /// integer type.  It is the responsibility of the caller to ensure 
-    /// that, if `v` is wider than the enum type on which this function 
+    /// out using `owrite`.  Here, `v` is bound to be some primitive
+    /// integer type.  It is the responsibility of the caller to ensure
+    /// that, if `v` is wider than the enum type on which this function
     /// is called, no important information is lost by discarding the higher
     /// order bits.
-    pub fn write_to<T: PrimitiveInteger, U: Write>(&self, v: T, owriter: &mut BufWriter<U>) -> std::io::Result<()> {
+    pub fn write_to<T: PrimitiveInteger, U: Write>(
+        &self,
+        v: T,
+        owriter: &mut BufWriter<U>,
+    ) -> std::io::Result<()> {
         match self {
             Self::U8 => {
                 let vo: u8 = v.as_();
