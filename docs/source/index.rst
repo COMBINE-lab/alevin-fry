@@ -21,7 +21,8 @@ It makes use of the selective-alignment and barcode processing framework of
    building
    getting_started
    generate_permit_list  
-   collate 
+   collate
+   quant
    LICENSE.rst
 
 Indices and tables

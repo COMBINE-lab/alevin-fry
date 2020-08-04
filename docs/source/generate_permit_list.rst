@@ -32,8 +32,8 @@ exclusive options (which determines how the "true" barcodes are decided):
 
 * ``--expect-cells <ncells>``: Not currently implemented.
 
-Outputs
--------
+output
+------
 
 The ``generate-permit-list`` command outputs a number of different files in the output directory.  Not all files are 
 relevant to users of ``alevin-fry``, but the files are described here.

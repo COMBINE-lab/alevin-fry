@@ -14,3 +14,9 @@ dictate how the collation and filtering will be performed.
 * ``-e, --expected-ori <expected-ori>`` : The expected orientation of valid alignments.  Many single-cell protocols generated a strand-aware library, allowing increased precision by filtering out alignments that do not occur in the prescribed orientation.  This flag will filter out alignments that do not match the provided orientation.  The options are 'fw' (filters out alignments to the reverse complement strand), 'rc' (filter out alignments to the forward strand) and 'both' or 'either' (do not filter any alignments).
 
 * ``-m, --max-records <max-records>`` : The maximum number of read records to keep in memory at once during collation. The ``collate`` command will pass over the input RAD file multiple times collecting the records associated with a set of (corrected) cellular barcodes so that they can be written out in collated format to the output RAD file.  This parameter determines (approximately) how many records will be held in memory at once, and therefore determines the memory usage of the ``collate`` command.  The larger the value used the faster the collation process will be, since fewer passes are made.  The smaller this value, the lower the memory usage will be, at the cost of more passes.  The default value is 10,000,000.  Note that this determines the number of records *approximately*, because a specific barcode will never be split across multiple collation passes.  The algorithm employed is to collect the reads associated with different cellular barcodes in the current pass until the number of reads to be collected *first exceeds* this value.
+
+output
+------
+
+The ``collate`` command only has a single output.  It will write a file name
+``map.collated.rad`` in the directory specified by ``-i``.

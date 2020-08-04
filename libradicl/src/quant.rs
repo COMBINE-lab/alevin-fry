@@ -409,7 +409,8 @@ pub fn quantify(
     // TODO: guess capacity better
     // TODO: in the future, we may not want to hold the
     // entire triplet matrix in memory at once?
-    let mut omat = TriMatI::<f32, u32>::new((num_genes, hdr.num_chunks as usize));
+    // @k3yavi: Changing this to usize for testing
+    let mut omat = TriMatI::<f32, usize>::new((num_genes, hdr.num_chunks as usize));
 
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
@@ -437,8 +438,11 @@ pub fn quantify(
         c += 1;
     });
 
-    let mat_path = output_path.join("counts.mtx");
-    sprs::io::write_matrix_market(&mat_path, &omat)?;
+    //let mat_path = output_path.join("counts.mtx");
+    //sprs::io::write_matrix_market(&mat_path, &omat)?;
+
+    let mat_path = output_path.join("counts.eds.gz");
+    sce::eds::writer(&mat_path, &omat.to_csr())?;
 
     let gn_path = output_path.join("gene_names.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
