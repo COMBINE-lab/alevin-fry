@@ -11,7 +11,7 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{App, Arg};
+use clap::{crate_authors, crate_version, App, Arg};
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
@@ -22,8 +22,8 @@ use std::unimplemented;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-static VERSION: &str = "0.0.1";
-static AUTHORS: &str = "Avi Srivastava, Rob Patro";
+// static VERSION: &str = "0.0.1";
+// static AUTHORS: &str = "Avi Srivastava, Rob Patro";
 
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
@@ -40,14 +40,15 @@ fn gen_random_kmer(k: usize) -> String {
 
 fn main() {
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
-
+    let crate_authors = crate_authors!("\n");
+    let version = crate_version!();
     // [] add command for just counting barcode frequency
     // [] add other algorithms for determining barcode cutoff
 
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
-        .version(VERSION)
-        .author(AUTHORS)
+        .version(version)
+        .author(crate_authors)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
@@ -73,8 +74,8 @@ fn main() {
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
-    .version(VERSION)
-    .author(AUTHORS)
+    .version(version)
+    .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
@@ -84,8 +85,8 @@ fn main() {
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
-    .version(VERSION)
-    .author(AUTHORS)
+    .version(version)
+    .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir>  'input directory containing collated RAD file'"))
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
@@ -97,8 +98,8 @@ fn main() {
         .about("the resolution strategy by which molecules will be counted"));
 
     let opts = App::new("alevin-fry")
-        .version(VERSION)
-        .author(AUTHORS)
+        .version(version)
+        .author(crate_authors)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
         .subcommand(collate_app)
