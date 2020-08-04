@@ -24,12 +24,13 @@ output
 ------
 
 The output of the ``quant`` command consists of 3 files: ``barcodes.txt``,
-``counts.mtx`` and ``gene_names.txt``. The ``counts.mtx`` is a matrix market
+``counts.mtx.gz`` and ``gene_names.txt``. The ``counts.mtx.gz`` is a matrix market
 coordinate format file where the number of *rows* is equal to the number of
 genes and the number of columns is equal to the number of *cells*. The header
 line encodes the number of rows, columns and non-zero entries. The subsequent
 lines (1-based indexing) encode the locations and values of the non-zero
-entries. The two other files provide the labels for the rows and columns of
+entries.  This entire ``.mtx`` format file is gzipped during output to minimize
+disk space. The two other files provide the labels for the rows and columns of
 this matrix. The ``gene_names.txt`` file is a text file that contains the
 names of the rows of the matrix, in the order in which it is written, with
 one gene name written per line. The ``barcodes.txt`` file is a text file that
