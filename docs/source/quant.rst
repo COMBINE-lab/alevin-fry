@@ -12,29 +12,20 @@ contains a transcript name and the second column contains the corresponding gene
 
 The ``quant`` command exposes a number of different resolution strategies.  They are:
 
-* ``full`` : This is the default resolution strategy.  It implements the algorithm described in the alevin_ 
-paper.  Briefly, it builds a graph among the set of reads that align to an overlapping set of transcripts 
-and that have similar (within an edit distance of 1) UMIs.  It then attempts to find a parsimonious cover 
-for this graph using the fewest number of possible transcripts.  If a unique parsimonious cover is found,
-then the (deduplicated) reads are assigned directly to the genes that yield the most parsimonious cover.
-If multiple equally-parsimonious covers exist, then the reads are considered multi-mapping at the gene 
-level and they are probabilistically resolved using an expectation maximization (EM) algorithm.
+* ``full`` : This is the default resolution strategy.  It implements the algorithm described in the alevin_ paper.  Briefly, it builds a graph among the set of reads that align to an overlapping set of transcripts 
+and that have similar (within an edit distance of 1) UMIs.  It then attempts to find a parsimonious cover for this graph using the fewest number of possible transcripts.  If a unique parsimonious cover is found,
+then the (deduplicated) reads are assigned directly to the genes that yield the most parsimonious cover. If multiple equally-parsimonious covers exist, then the reads are considered multi-mapping at the gene 
+level and they are probabilistically resolved using an expectation maximization (EM) algorithm. 
 
-* ``parsimony`` : This strategy is the same as ``full'', except that it does *not* probabilistically resolve
-reads that remain as gene-multimapping after applying the parsimony criterion.  Instead, reads that do 
-not have a unique most-parsimonious assignment are discarded.
+* ``parsimony`` : This strategy is the same as ``full'', except that it does *not* probabilistically resolve reads that remain as gene-multimapping after applying the parsimony criterion.  Instead, reads that do 
+not have a unique most-parsimonious assignment are discarded. 
 
-* ``trivial`` : This strategy does not search for 1 edit-distance neighbors of UMIs.  Instead, it first 
-discards any reads that multi-map at the gene level.  The reads that remain then all map uniquely to a 
-single gene.  These reads are deduplicated by (exact) UMI, and the number of distinct UMIs mapping to 
-each gene are taken as that gene's count in the current cell.
+* ``trivial`` : This strategy does not search for 1 edit-distance neighbors of UMIs.  Instead, it first discards any reads that multi-map at the gene level.  The reads that remain then all map uniquely to a 
+single gene.  These reads are deduplicated by (exact) UMI, and the number of distinct UMIs mapping to each gene are taken as that gene's count in the current cell.
 
-* ``cr-like`` : This strategy is like the one adopted in cell-ranger, except that it does not first 
-collapse 1-edit-distance UMIs.  Within each cell barcode, a list of (gene, UMI, count) tuples is created.
-If a read maps to more than one gene, then it generates more than one such tuple.  The tuples are then 
-sorted lexicographically (first by gene id, then by UMI, and then by count).  Any UMI that aligns to only 
-a single gene is assigned to that gene.  UMIs that align to more than one gene are assigned to the gene 
-with the highest count for this UMI.  If there is a tie for the highest count gene for this UMI, then the 
+* ``cr-like`` : This strategy is like the one adopted in cell-ranger, except that it does not first collapse 1-edit-distance UMIs.  Within each cell barcode, a list of (gene, UMI, count) tuples is created.
+If a read maps to more than one gene, then it generates more than one such tuple.  The tuples are then sorted lexicographically (first by gene id, then by UMI, and then by count).  Any UMI that aligns to only 
+a single gene is assigned to that gene.  UMIs that align to more than one gene are assigned to the gene with the highest count for this UMI.  If there is a tie for the highest count gene for this UMI, then the 
 corresponding reads are simply discarded.
 
 output
