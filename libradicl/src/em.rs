@@ -144,10 +144,10 @@ pub fn run_bootstrap(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     num_bootstraps : u32,
     gene_alpha : & Vec<f32>,
-    unique_evidence: &mut Vec<bool>,
-    no_ambiguity: &mut Vec<bool>,
-    num_alphas: usize,
-    only_unique: bool,
+    // unique_evidence: &mut Vec<bool>,
+    // no_ambiguity: &mut Vec<bool>,
+    // num_alphas: usize,
+    // only_unique: bool,
     init_uniform: bool,
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
@@ -156,8 +156,8 @@ pub fn run_bootstrap(
     
     let mut alphas: Vec<f32> = vec![0.0; gene_alpha.len()];
     let mut alphas_prime: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut square_means: Vec<f32> = vec![0.0; gene_alpha.len()];
+    // let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
+    // let mut square_means: Vec<f32> = vec![0.0; gene_alpha.len()];
 
     // make discrete distribution of the eqclass counts
     // hash map to serialize the eqclasses
