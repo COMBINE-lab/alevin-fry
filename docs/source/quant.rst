@@ -1,7 +1,7 @@
 quant
 =====
 
-The ``quant'' command takes a collated RAD file and performs feature (e.g. gene) quantification, outputting
+The ``quant`` command takes a collated RAD file and performs feature (e.g. gene) quantification, outputting
 a sparse matrix of de-duplicated counts as well as a list of labels for the rows and columns.  The ``quant``
 command takes an input directory containing the collated RAD file, a transcript-to-gene map, an output directory
 where the results will be written and a "resolution strategy" (described below).  Quantification is 
