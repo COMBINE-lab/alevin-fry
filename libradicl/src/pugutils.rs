@@ -247,8 +247,8 @@ pub(super) fn get_num_molecules_cell_ranger_like(
                     // count for this UMI
                     unresolvable = true;
                 }
-                Ordering::Less => { 
-                    // we do nothing 
+                Ordering::Less => {
+                    // we do nothing
                 }
             }
         }

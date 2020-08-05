@@ -371,7 +371,10 @@ pub fn quantify(
     let mat_path = output_path.join("counts.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
-    let bc_writer = Arc::new(Mutex::new((BufWriter::new(bc_file), BufWriter::new(buffered))));
+    let bc_writer = Arc::new(Mutex::new((
+        BufWriter::new(bc_file),
+        BufWriter::new(buffered),
+    )));
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
@@ -477,7 +480,10 @@ pub fn quantify(
                         .expect("can't write to barcode file.");
 
                         // write to matrix file
-                        writer.1.write_all(&eds_bytes).expect("can't write to matrix file.");
+                        writer
+                            .1
+                            .write_all(&eds_bytes)
+                            .expect("can't write to matrix file.");
                     }
 
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);

@@ -90,7 +90,7 @@ pub fn collate(
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
-    quickersort::sort_by_key(&mut tsv_map[..], |&a : &(u64, u64)| std::cmp::Reverse(a.1) );
+    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
     //println!("{:?}", tsv_map);
 
     // get the correction map
