@@ -12,6 +12,8 @@ use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use std::collections::HashMap;
 use std::f32;
+use statrs::distribution::Multinomial;
+use rand::{thread_rng, Rng};
 
 //#[derive(Clone, Debug)]
 //pub struct SalmonEQClass {
@@ -136,4 +138,114 @@ pub fn em_optimize(
     );
     */
     alphas_in
+}
+
+pub fn run_bootstrap(
+    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    num_bootstraps : u32,
+    gene_alpha : & Vec<f32>,
+    // unique_evidence: &mut Vec<bool>,
+    // no_ambiguity: &mut Vec<bool>,
+    // num_alphas: usize,
+    // only_unique: bool,
+    init_uniform: bool,
+    _log: &slog::Logger,
+) -> Vec<Vec<f32>> {
+
+    let mut total_fragments = 0u64;
+    
+    let mut alphas: Vec<f32> = vec![0.0; gene_alpha.len()];
+    let mut alphas_prime: Vec<f32> = vec![0.0; gene_alpha.len()];
+    // let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
+    // let mut square_means: Vec<f32> = vec![0.0; gene_alpha.len()];
+
+    // make discrete distribution of the eqclass counts
+    // hash map to serialize the eqclasses
+    // eqclasses_serialize : id -> label
+    // eqclasses : label -> count
+    let mut idx = 0usize;
+    let mut eq_counts = Vec::new();
+    let mut eqclasses_serialize: HashMap<usize, Vec<u32>> = HashMap::new();
+
+    for (labels, count) in eqclasses {
+        eq_counts.push(*count as f64);
+        total_fragments += *count as u64;
+        eqclasses_serialize.entry(idx).or_insert(labels.to_vec());
+        idx += 1;
+    }
+    
+    // a new hashmap to be updated in each bootstrap
+    let s = fasthash::RandomState::<Hash64>::new();
+    let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+        HashMap::with_hasher(s);
+    // define a multinomial
+    let dist = Multinomial::new(&eq_counts, total_fragments).unwrap();
+
+    // store bootstraps
+    let mut bootstraps = Vec::new();
+
+    // bootstrap loop starts
+    for _bs_num in 0..num_bootstraps{
+        
+        // resample from multinomial
+        let resampled_counts = thread_rng().sample(dist.clone()); 
+        for (eq_id, labels) in &eqclasses_serialize {
+            eqclass_bootstrap.entry(labels.to_vec()).or_insert(resampled_counts[*eq_id].round() as u32);
+        }
+
+        // fill new alpha
+        for i in 0..gene_alpha.len() {
+            if init_uniform {
+                alphas[i] = 1.0 / gene_alpha.len() as f32;
+            } else {
+                alphas[i] = (gene_alpha[i] + 0.5) * 1e-3;
+            }
+        }
+
+        let mut it_num: u32 = 0;
+        let mut converged: bool = false;
+        while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+            // perform one round of em update
+            em_update(&alphas, &mut alphas_prime, &eqclass_bootstrap);
+
+            converged = true;
+            let mut max_rel_diff = -f32::INFINITY;
+
+            for index in 0..gene_alpha.len() {
+                if alphas_prime[index] > ALPHA_CHECK_CUTOFF {
+                    let diff = alphas[index] - alphas_prime[index];
+                    let rel_diff = diff.abs();
+
+                    max_rel_diff = match rel_diff > max_rel_diff {
+                        true => rel_diff,
+                        false => max_rel_diff,
+                    };
+
+                    if rel_diff > REL_DIFF_TOLERANCE {
+                        converged = false;
+                    }
+                } // end- in>out if
+
+                alphas[index] = alphas_prime[index];
+                alphas_prime[index] = 0.0 as f32;
+            } //end-for
+
+            it_num += 1;
+        }
+
+        // update too small alphas
+        alphas.iter_mut().for_each(|alpha| {
+            if *alpha < MIN_ALPHA {
+                *alpha = 0.0 as f32;
+            }
+        });
+
+        let alphas_sum: f32 = alphas.iter().sum();
+        assert!(alphas_sum > 0.0, "Alpha Sum too small");
+        bootstraps.push(alphas.clone());
+        
+    }
+
+    bootstraps
+
 }

@@ -22,5 +22,7 @@ bio-types = "0.6.0"
 quickersort = "3.0.1"
 needletail = "0.4"
 num-format = "0.4.0"
+statrs = "0.13.0"
+rand = "0.7.3"
 sprs = { git = "https://github.com/k3yavi/sprs" } #"0.8"
 sce = { git = "https://github.com/k3yavi/SingleCellExperiment" }
