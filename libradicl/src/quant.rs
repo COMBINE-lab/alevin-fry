@@ -13,7 +13,6 @@ extern crate slog;
 
 //use executors::crossbeam_channel_pool;
 //use executors::*;
-use sprs::TriMatI;
 //use std::sync::mpsc::channel;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
@@ -370,20 +369,9 @@ pub fn quantify(
     let bc_file = fs::File::create(bc_path)?;
 
     let mat_path = output_path.join("counts.eds.gz");
-    let buffered = BufWriter::new(fs::File::create(mat_path)?);
-    let mat_file = GzEncoder::new(buffered, Compression::default());
+    let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
-    let bc_writer = Arc::new(Mutex::new((BufWriter::new(bc_file), mat_file)));
-
-    // TODO: guess capacity better
-    // TODO: in the future, we may not want to hold the
-    // entire triplet matrix in memory at once?
-    // @k3yavi: Changing this to usize for testing
-    // this handle is protected since threads will need to update it
-    //let omat = Arc::new(Mutex::new(TriMatI::<f32, usize>::new((
-    //    num_genes,
-    //    hdr.num_chunks as usize,
-    //))));
+    let bc_writer = Arc::new(Mutex::new((BufWriter::new(bc_file), BufWriter::new(buffered))));
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
@@ -398,9 +386,7 @@ pub fn quantify(
         // they will need to know the bc and umi type
         let bc_type = bc_type;
         let umi_type = umi_type;
-        // will need a shared handle to the count matrix
-        //let omatrix = Arc::clone(&omat);
-        // and the barcode file
+        // and the file writer
         let bcout = bc_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
@@ -412,7 +398,6 @@ pub fn quantify(
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
-            let mut omat = TriMatI::<f32, usize>::new((num_genes, 1));
 
             // pop from the work queue until everything is
             // processed
@@ -478,28 +463,21 @@ pub fn quantify(
                     no_ambiguity.resize(num_genes, false);
                     // done clearing
 
-                    // update the matrix
-                    for (i, v) in counts.into_iter().enumerate() {
-                        if v > 0.0 {
-                            omat.add_triplet(i, 0, v);
-                        }
-                    }
-
                     {
-                        let bc_mer: BitKmer = (bc, bclen as u8);
-
                         // writing the files
-                        let omat_csr = &omat.to_csr(); 
-                        let writer = &mut *bcout.lock().unwrap();
-                        sce::eds::append_writer(&mut writer.1, &omat_csr)
-                            .expect("can't write matrix");
+                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        let eds_bytes: Vec<u8> = sce::eds::as_bytes(counts, num_genes)
+                            .expect("can't conver vector to eds");
 
+                        let writer = &mut *bcout.lock().unwrap();
                         // write to barcode file
                         writeln!(&mut writer.0, "{}\t{}", cell_num, unsafe {
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
                         })
                         .expect("can't write to barcode file.");
-                        
+
+                        // write to matrix file
+                        writer.1.write_all(&eds_bytes).expect("can't write to matrix file.");
                     }
 
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
@@ -537,10 +515,5 @@ pub fn quantify(
         // waiting
     }
 
-    //let mat_path = output_path.join("counts.eds.gz");
-    //{
-    //    let omat = omat.lock().unwrap();
-    //    sce::eds::writer(&mat_path, &omat.to_csr())?;
-    //}
     Ok(())
 }
