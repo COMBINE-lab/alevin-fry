@@ -88,6 +88,11 @@ pub fn collate(
         total_to_collate += record.1;
     }
 
+    // sort this so that we deal with largest cells (by # of reads) first
+    // sort in _descending_ order by count.
+    quickersort::sort_by_key(&mut tsv_map[..], |&a : &(u64, u64)| std::cmp::Reverse(a.1) );
+    //println!("{:?}", tsv_map);
+
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: HashMap<u64, u64> = bincode::deserialize_from(&cmfile).unwrap();

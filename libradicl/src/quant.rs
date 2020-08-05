@@ -481,7 +481,7 @@ pub fn quantify(
                     // update the matrix
                     for (i, v) in counts.into_iter().enumerate() {
                         if v > 0.0 {
-                            omat.add_triplet(i, cell_num, v);
+                            omat.add_triplet(i, 0, v);
                         }
                     }
 
@@ -489,8 +489,9 @@ pub fn quantify(
                         let bc_mer: BitKmer = (bc, bclen as u8);
 
                         // writing the files
+                        let omat_csr = &omat.to_csr(); 
                         let writer = &mut *bcout.lock().unwrap();
-                        sce::eds::append_writer(&mut writer.1, &omat.to_csr())
+                        sce::eds::append_writer(&mut writer.1, &omat_csr)
                             .expect("can't write matrix");
 
                         // write to barcode file
@@ -498,6 +499,7 @@ pub fn quantify(
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
                         })
                         .expect("can't write to barcode file.");
+                        
                     }
 
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
