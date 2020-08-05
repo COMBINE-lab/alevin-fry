@@ -285,7 +285,7 @@ pub fn generate_permit_list(
         CellFilterMethod::ExplicitList(valid_bc_file) => {
             valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
         }
-        CellFilterMethod::ExpectCells(expected_num_cells) => {
+        CellFilterMethod::ExpectCells(_expected_num_cells) => {
             unimplemented!();
         }
     }

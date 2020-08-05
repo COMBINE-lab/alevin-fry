@@ -16,7 +16,7 @@ use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
-use slog::{crit, info, o, warn, Drain};
+use slog::{crit, o, warn, Drain};
 use std::unimplemented;
 
 #[global_allocator]
