@@ -509,8 +509,6 @@ pub fn quantify(
         gn_writer.write_all(format!("{}\n", g).as_bytes())?;
     }
 
-    //let mat_path = output_path.join("counts.mtx");
-    //sprs::io::write_matrix_market(&mat_path, &omat)?;
     while cells_to_process.load(Ordering::SeqCst) > 0 {
         // waiting
     }
