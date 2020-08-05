@@ -12,6 +12,7 @@ use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::iter::FromIterator;
+use std::cmp::Ordering;
 
 use petgraph::prelude::*;
 use petgraph::unionfind::*;
@@ -233,24 +234,26 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // then it is the new max, and this gene is
             // the new max gene.  Having a distinct max
             // also makes this UMI resolvable
-            if count_aggr > max_count {
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
                 max_count = count_aggr;
                 max_count_gene = gn;
                 unresolvable = false;
-            } else if count_aggr == max_count {
+                },
+                Ordering::Equal => {
                 // if we have a tie for the max count
                 // then the current UMI becomes unresolvable
                 // it will stay this way unless we see a bigger
                 // count for this UMI
                 unresolvable = true;
+                },
+                Ordering::Less => {}
             }
         }
 
         // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 {
-            if !unresolvable {
-                counts[max_count_gene as usize] += 1.0f32;
-            }
+        if cidx == umi_gene_count_vec.len() - 1 && !unresolvable  {
+            counts[max_count_gene as usize] += 1.0f32;
         }
         cidx += 1;
     }
@@ -291,7 +294,7 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
         if !multi_gene {
             gene_map
                 .entry(prev_gene_id)
-                .or_insert(vec![])
+                .or_insert_with(|| Vec::new())
                 .extend(umis.iter().map(|x| x.0));
         }
     }

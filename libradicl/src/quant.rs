@@ -3,13 +3,13 @@
 // license that can be found in the LICENSE file.
 
 extern crate bincode;
+extern crate crossbeam_queue;
 extern crate fasthash;
 extern crate indicatif;
 extern crate needletail;
 extern crate petgraph;
 extern crate serde;
 extern crate slog;
-extern crate crossbeam_queue;
 
 //use executors::crossbeam_channel_pool;
 //use executors::*;
@@ -22,13 +22,11 @@ use self::petgraph::prelude::*;
 use self::slog::crit;
 use self::slog::info;
 use crate as libradicl;
-use crossbeam_queue::{ArrayQueue};
+use crossbeam_queue::ArrayQueue;
 //use crossbeam_channel::bounded;
 use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
@@ -36,6 +34,8 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use self::libradicl::em::em_optimize;
 use self::libradicl::pugutils;
@@ -325,22 +325,26 @@ pub fn quantify(
             .progress_chars("╢▌▌░╟"),
     );
 
-    // Trying this parallelization strategy to avoid 
+    // Trying this parallelization strategy to avoid
     // many temporary data structures.
 
     // We have a work queue that contains collated chunks
-    // (i.e. data at the level of each cell).  One thread 
-    // populates the queue, and the remaining worker threads 
+    // (i.e. data at the level of each cell).  One thread
+    // populates the queue, and the remaining worker threads
     // pop a chunk, perform the quantification, and update the
-    // output.  The updating of the output requires acquiring 
-    // two locks (1) to update the data in the matrix and 
-    // (2) to write to the barcode file.  We also have to 
-    // decrement an atomic coutner for the numebr of cells that 
+    // output.  The updating of the output requires acquiring
+    // two locks (1) to update the data in the matrix and
+    // (2) to write to the barcode file.  We also have to
+    // decrement an atomic coutner for the numebr of cells that
     // remain to be processed.
 
     // create a thread-safe queue based on the number of worker threads
-    let n_workers = if num_threads > 1 { (num_threads - 1) as usize } else { 1 };
-    let q = Arc::new(ArrayQueue::<(usize, u32, u32, Vec<u8>)>::new(4*n_workers));
+    let n_workers = if num_threads > 1 {
+        (num_threads - 1) as usize
+    } else {
+        1
+    };
+    let q = Arc::new(ArrayQueue::<(usize, u32, u32, Vec<u8>)>::new(4 * n_workers));
 
     // the number of cells left to process
     let cells_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
@@ -368,12 +372,14 @@ pub fn quantify(
     // entire triplet matrix in memory at once?
     // @k3yavi: Changing this to usize for testing
     // this handle is protected since threads will need to update it
-    let omat = Arc::new(Mutex::new(TriMatI::<f32, usize>::new((num_genes, hdr.num_chunks as usize))));
+    let omat = Arc::new(Mutex::new(TriMatI::<f32, usize>::new((
+        num_genes,
+        hdr.num_chunks as usize,
+    ))));
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
-
-        // each thread will need to access the work queue 
+        // each thread will need to access the work queue
         let in_q = q.clone();
         // and the logger
         let log = log.clone();
@@ -382,8 +388,8 @@ pub fn quantify(
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
         // they will need to know the bc and umi type
-        let bc_type = bc_type.clone();
-        let umi_type = umi_type.clone();
+        let bc_type = bc_type;
+        let umi_type = umi_type;
         // will need a shared handle to the count matrix
         let omatrix = Arc::clone(&omat);
         // and the barcode file
@@ -392,100 +398,102 @@ pub fn quantify(
         let bclen = ft_vals.bclen;
 
         // now, make the worker thread
-        std::thread::spawn( move || {
-            // these can be created once and cleared after processing 
+        std::thread::spawn(move || {
+            // these can be created once and cleared after processing
             // each cell.
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
-            let mut eq_map = EqMap::new(ref_count); 
-            // pop from the work queue until everything is 
+            let mut eq_map = EqMap::new(ref_count);
+            // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-            match in_q.pop() {
-                Ok((cell_num, _nbyte, _nrec, buf)) => {
-                    let mut nbr = BufReader::new(&buf[..]);
-                    let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
-                    let bc = c.reads.first().expect("chunk with no reads").bc;
-                    eq_map.init_from_chunk(&mut c);
+                if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
+                        let mut nbr = BufReader::new(&buf[..]);
+                        let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                        let bc = c.reads.first().expect("chunk with no reads").bc;
+                        eq_map.init_from_chunk(&mut c);
 
-                    let counts: Vec<f32>;
-                    match resolution {
-                        ResolutionStrategy::CellRangerLike => {
-                            counts = pugutils::get_num_molecules_cell_ranger_like(
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &log,
-                            );
-                        }
-                        ResolutionStrategy::Trivial => {
-                            counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &log,
-                            );
-                        }
-                        ResolutionStrategy::Parsimony => {
-                            let g = extract_graph(&eq_map, &log);
-                            let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                num_genes,
-                                true,
-                                &log,
-                            );
-                        }
-                        ResolutionStrategy::Full => {
-                            let g = extract_graph(&eq_map, &log);
-                            let gene_eqc = pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                num_genes,
-                                false,
-                                &log,
-                            );
-                        }
-                    }
-                    // clear our local variables
-                    eq_map.clear();
-                    // Note: there is a fill method, but it is only on 
-                    // the nightly branch.  Use this for now:
-                    unique_evidence.clear(); unique_evidence.resize(num_genes, false);
-                    no_ambiguity.clear(); no_ambiguity.resize(num_genes, false);
-                    // done clearing
-
-                    // update the matrix 
-                    {
-                        let mut omat = omatrix.lock().unwrap();
-                        for (i, v) in counts.iter().enumerate() {
-                            if *v > 0.0 {
-                               omat.add_triplet(i, cell_num, *v);
+                        let counts: Vec<f32>;
+                        match resolution {
+                            ResolutionStrategy::CellRangerLike => {
+                                counts = pugutils::get_num_molecules_cell_ranger_like(
+                                    &eq_map,
+                                    &tid_to_gid,
+                                    num_genes,
+                                    &log,
+                                );
+                            }
+                            ResolutionStrategy::Trivial => {
+                                counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                                    &eq_map,
+                                    &tid_to_gid,
+                                    num_genes,
+                                    &log,
+                                );
+                            }
+                            ResolutionStrategy::Parsimony => {
+                                let g = extract_graph(&eq_map, &log);
+                                let gene_eqc =
+                                    pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                                counts = em_optimize(
+                                    &gene_eqc,
+                                    &mut unique_evidence,
+                                    &mut no_ambiguity,
+                                    num_genes,
+                                    true,
+                                    &log,
+                                );
+                            }
+                            ResolutionStrategy::Full => {
+                                let g = extract_graph(&eq_map, &log);
+                                let gene_eqc =
+                                    pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                                counts = em_optimize(
+                                    &gene_eqc,
+                                    &mut unique_evidence,
+                                    &mut no_ambiguity,
+                                    num_genes,
+                                    false,
+                                    &log,
+                                );
                             }
                         }
+                        // clear our local variables
+                        eq_map.clear();
+                        // Note: there is a fill method, but it is only on
+                        // the nightly branch.  Use this for now:
+                        unique_evidence.clear();
+                        unique_evidence.resize(num_genes, false);
+                        no_ambiguity.clear();
+                        no_ambiguity.resize(num_genes, false);
+                        // done clearing
+
+                        // update the matrix
+                        {
+                            let mut omat = omatrix.lock().unwrap();
+                            for (i, v) in counts.iter().enumerate() {
+                                if *v > 0.0 {
+                                    omat.add_triplet(i, cell_num, *v);
+                                }
+                            }
+                        }
+
+                        // write to barcode file
+                        {
+                            let bc_mer: BitKmer = (bc, bclen as u8);
+                            let mut bc_writer = bcout.lock().unwrap();
+                            writeln!(&mut bc_writer, "{}\t{}", cell_num, unsafe {
+                                std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
+                            })
+                            .expect("can't write to barcode file.");
+                        }
+
+                        cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     }
-                    
-                    // write to barcode file
-                    {
-                        let bc_mer: BitKmer = (bc, bclen as u8);
-                        let mut bc_writer = bcout.lock().unwrap();
-                        write!(&mut bc_writer, "{}\t{}\n", cell_num, 
-                        unsafe{ std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) }).expect("can't write to barcode file.");
-                    }
-                    
-                    cells_remaining.fetch_sub(1, Ordering::SeqCst);
-                },
-                Err(_) => {}
-            }
-        }
+                }
         });
     }
 
-    let qp = q.clone();
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(hdr.num_chunks as usize) {
         let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
@@ -494,10 +502,10 @@ pub fn quantify(
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
         loop {
-            let r = qp.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
-            match r {
-                Ok(_) => { pbar.inc(1); break;},
-                _ => {}
+            let r = q.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
+            if r.is_ok() {
+                    pbar.inc(1);
+                    break;
             }
         }
     }
@@ -506,7 +514,7 @@ pub fn quantify(
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
     let mut gn_writer = BufWriter::new(gn_file);
     for g in gene_names {
-        gn_writer.write(format!("{}\n", g).as_bytes())?;
+        gn_writer.write_all(format!("{}\n", g).as_bytes())?;
     }
 
     //let mat_path = output_path.join("counts.mtx");

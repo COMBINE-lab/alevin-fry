@@ -10,10 +10,10 @@ use self::slog::info;
 use fasthash::sea::Hash64;
 #[allow(unused_imports)]
 use fasthash::RandomState;
+use rand::{thread_rng, Rng};
+use statrs::distribution::Multinomial;
 use std::collections::HashMap;
 use std::f32;
-use statrs::distribution::Multinomial;
-use rand::{thread_rng, Rng};
 
 //#[derive(Clone, Debug)]
 //pub struct SalmonEQClass {
@@ -142,8 +142,8 @@ pub fn em_optimize(
 
 pub fn run_bootstrap(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
-    num_bootstraps : u32,
-    gene_alpha : & Vec<f32>,
+    num_bootstraps: u32,
+    gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
     // no_ambiguity: &mut Vec<bool>,
     // num_alphas: usize,
@@ -151,9 +151,8 @@ pub fn run_bootstrap(
     init_uniform: bool,
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
-
     let mut total_fragments = 0u64;
-    
+
     let mut alphas: Vec<f32> = vec![0.0; gene_alpha.len()];
     let mut alphas_prime: Vec<f32> = vec![0.0; gene_alpha.len()];
     // let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
@@ -163,17 +162,15 @@ pub fn run_bootstrap(
     // hash map to serialize the eqclasses
     // eqclasses_serialize : id -> label
     // eqclasses : label -> count
-    let mut idx = 0usize;
     let mut eq_counts = Vec::new();
     let mut eqclasses_serialize: HashMap<usize, Vec<u32>> = HashMap::new();
 
-    for (labels, count) in eqclasses {
+    for (idx, (labels, count)) in eqclasses.iter().enumerate() {
         eq_counts.push(*count as f64);
         total_fragments += *count as u64;
-        eqclasses_serialize.entry(idx).or_insert(labels.to_vec());
-        idx += 1;
+        eqclasses_serialize.entry(idx).or_insert_with(|| labels.to_vec());
     }
-    
+
     // a new hashmap to be updated in each bootstrap
     let s = fasthash::RandomState::<Hash64>::new();
     let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
@@ -185,12 +182,13 @@ pub fn run_bootstrap(
     let mut bootstraps = Vec::new();
 
     // bootstrap loop starts
-    for _bs_num in 0..num_bootstraps{
-        
+    for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts = thread_rng().sample(dist.clone()); 
+        let resampled_counts = thread_rng().sample(dist.clone());
         for (eq_id, labels) in &eqclasses_serialize {
-            eqclass_bootstrap.entry(labels.to_vec()).or_insert(resampled_counts[*eq_id].round() as u32);
+            eqclass_bootstrap
+                .entry(labels.to_vec())
+                .or_insert(resampled_counts[*eq_id].round() as u32);
         }
 
         // fill new alpha
@@ -243,9 +241,7 @@ pub fn run_bootstrap(
         let alphas_sum: f32 = alphas.iter().sum();
         assert!(alphas_sum > 0.0, "Alpha Sum too small");
         bootstraps.push(alphas.clone());
-        
     }
 
     bootstraps
-
 }

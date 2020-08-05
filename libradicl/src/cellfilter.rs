@@ -78,10 +78,10 @@ fn distance_to_line(p1: &Point, p2: &Point, q: &Point) -> f64 {
 /// having the maximum distance.
 fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> usize {
     assert!(sorted_frequencies.len() >= 2);
-    let f = sorted_frequencies
+    let first = sorted_frequencies
         .first()
         .expect("cannot process empty frequency list.");
-    let l = sorted_frequencies
+    let last = sorted_frequencies
         .last()
         .expect("cannot process empty frequency list.");
 
@@ -90,15 +90,15 @@ fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> us
 
     // if the distribution is cumulative, then the smallest y coordinate is
     // f, otherewise it is l
-    let max_y = if is_cumulative { *l as f64 } else { *f as f64 };
+    let max_y = if is_cumulative { *last as f64 } else { *first as f64 };
 
     let p1 = Point {
         x: 0.0f64,
-        y: (*f as f64) / max_y,
+        y: (*first as f64) / max_y,
     };
     let p2 = Point {
         x: 1.0f64,
-        y: (*l as f64) / max_y,
+        y: (*last as f64) / max_y,
     };
 
     let mut max_d: f64 = -1.0;
@@ -129,7 +129,7 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
     let cfreq: Vec<u64> = freq
         .iter()
         .scan(0u64, |acc, &num| {
-            *acc = *acc + num;
+            *acc += num;
             Some(*acc)
         })
         .collect();
@@ -202,7 +202,7 @@ pub fn generate_permit_list(
 
     for rt in &rl_tags.tags {
         // if this is one of our tags
-        if &rt.name == BNAME || &rt.name == UNAME {
+        if rt.name == BNAME || rt.name == UNAME {
             if libradicl::decode_int_type_tag(rt.typeid).is_none() {
                 crit!(
                     log,
@@ -211,10 +211,10 @@ pub fn generate_permit_list(
                 std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
             }
 
-            if &rt.name == BNAME {
+            if rt.name == BNAME {
                 bct = Some(rt.typeid);
             }
-            if &rt.name == UNAME {
+            if rt.name == UNAME {
                 umit = Some(rt.typeid);
             }
         }
