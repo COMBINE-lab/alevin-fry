@@ -314,11 +314,12 @@ pub fn generate_permit_list(
     let mut writer = BufWriter::new(&output);
 
     for (k, v) in permitted_map {
-        let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
+        //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
         writeln!(
             &mut writer,
             "{}\t{}",
-            from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
+            k,
+            //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
             v
         )
         .expect("couldn't write to output file.");
