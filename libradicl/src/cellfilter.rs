@@ -90,7 +90,11 @@ fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> us
 
     // if the distribution is cumulative, then the smallest y coordinate is
     // f, otherewise it is l
-    let max_y = if is_cumulative { *last as f64 } else { *first as f64 };
+    let max_y = if is_cumulative {
+        *last as f64
+    } else {
+        *first as f64
+    };
 
     let p1 = Point {
         x: 0.0f64,

@@ -168,7 +168,9 @@ pub fn run_bootstrap(
     for (idx, (labels, count)) in eqclasses.iter().enumerate() {
         eq_counts.push(*count as f64);
         total_fragments += *count as u64;
-        eqclasses_serialize.entry(idx).or_insert_with(|| labels.to_vec());
+        eqclasses_serialize
+            .entry(idx)
+            .or_insert_with(|| labels.to_vec());
     }
 
     // a new hashmap to be updated in each bootstrap

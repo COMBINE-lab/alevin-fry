@@ -408,89 +408,89 @@ pub fn quantify(
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
                 if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
-                        let mut nbr = BufReader::new(&buf[..]);
-                        let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
-                        let bc = c.reads.first().expect("chunk with no reads").bc;
-                        eq_map.init_from_chunk(&mut c);
+                    let mut nbr = BufReader::new(&buf[..]);
+                    let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                    let bc = c.reads.first().expect("chunk with no reads").bc;
+                    eq_map.init_from_chunk(&mut c);
 
-                        let counts: Vec<f32>;
-                        match resolution {
-                            ResolutionStrategy::CellRangerLike => {
-                                counts = pugutils::get_num_molecules_cell_ranger_like(
-                                    &eq_map,
-                                    &tid_to_gid,
-                                    num_genes,
-                                    &log,
-                                );
-                            }
-                            ResolutionStrategy::Trivial => {
-                                counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
-                                    &eq_map,
-                                    &tid_to_gid,
-                                    num_genes,
-                                    &log,
-                                );
-                            }
-                            ResolutionStrategy::Parsimony => {
-                                let g = extract_graph(&eq_map, &log);
-                                let gene_eqc =
-                                    pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                                counts = em_optimize(
-                                    &gene_eqc,
-                                    &mut unique_evidence,
-                                    &mut no_ambiguity,
-                                    num_genes,
-                                    true,
-                                    &log,
-                                );
-                            }
-                            ResolutionStrategy::Full => {
-                                let g = extract_graph(&eq_map, &log);
-                                let gene_eqc =
-                                    pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
-                                counts = em_optimize(
-                                    &gene_eqc,
-                                    &mut unique_evidence,
-                                    &mut no_ambiguity,
-                                    num_genes,
-                                    false,
-                                    &log,
-                                );
-                            }
+                    let counts: Vec<f32>;
+                    match resolution {
+                        ResolutionStrategy::CellRangerLike => {
+                            counts = pugutils::get_num_molecules_cell_ranger_like(
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
                         }
-                        // clear our local variables
-                        eq_map.clear();
-                        // Note: there is a fill method, but it is only on
-                        // the nightly branch.  Use this for now:
-                        unique_evidence.clear();
-                        unique_evidence.resize(num_genes, false);
-                        no_ambiguity.clear();
-                        no_ambiguity.resize(num_genes, false);
-                        // done clearing
-
-                        // update the matrix
-                        {
-                            let mut omat = omatrix.lock().unwrap();
-                            for (i, v) in counts.iter().enumerate() {
-                                if *v > 0.0 {
-                                    omat.add_triplet(i, cell_num, *v);
-                                }
-                            }
+                        ResolutionStrategy::Trivial => {
+                            counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
                         }
-
-                        // write to barcode file
-                        {
-                            let bc_mer: BitKmer = (bc, bclen as u8);
-                            let mut bc_writer = bcout.lock().unwrap();
-                            writeln!(&mut bc_writer, "{}\t{}", cell_num, unsafe {
-                                std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
-                            })
-                            .expect("can't write to barcode file.");
+                        ResolutionStrategy::Parsimony => {
+                            let g = extract_graph(&eq_map, &log);
+                            let gene_eqc =
+                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                true,
+                                &log,
+                            );
                         }
-
-                        cells_remaining.fetch_sub(1, Ordering::SeqCst);
+                        ResolutionStrategy::Full => {
+                            let g = extract_graph(&eq_map, &log);
+                            let gene_eqc =
+                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                false,
+                                &log,
+                            );
+                        }
                     }
+                    // clear our local variables
+                    eq_map.clear();
+                    // Note: there is a fill method, but it is only on
+                    // the nightly branch.  Use this for now:
+                    unique_evidence.clear();
+                    unique_evidence.resize(num_genes, false);
+                    no_ambiguity.clear();
+                    no_ambiguity.resize(num_genes, false);
+                    // done clearing
+
+                    // update the matrix
+                    {
+                        let mut omat = omatrix.lock().unwrap();
+                        for (i, v) in counts.iter().enumerate() {
+                            if *v > 0.0 {
+                                omat.add_triplet(i, cell_num, *v);
+                            }
+                        }
+                    }
+
+                    // write to barcode file
+                    {
+                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        let mut bc_writer = bcout.lock().unwrap();
+                        writeln!(&mut bc_writer, "{}\t{}", cell_num, unsafe {
+                            std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
+                        })
+                        .expect("can't write to barcode file.");
+                    }
+
+                    cells_remaining.fetch_sub(1, Ordering::SeqCst);
                 }
+            }
         });
     }
 
@@ -504,8 +504,8 @@ pub fn quantify(
         loop {
             let r = q.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
             if r.is_ok() {
-                    pbar.inc(1);
-                    break;
+                pbar.inc(1);
+                break;
             }
         }
     }
