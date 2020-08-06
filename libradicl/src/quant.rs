@@ -416,7 +416,7 @@ pub fn quantify(
                     eq_map.init_from_chunk(&mut c);
 
                     let counts: Vec<f32>;
-                    let bootstraps: Vec<Vec<f32>>;
+                    let mut bootstraps: Vec<Vec<f32>> = Vec::new();
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
                             counts = pugutils::get_num_molecules_cell_ranger_like(
@@ -495,12 +495,12 @@ pub fn quantify(
                         let eds_bytes: Vec<u8> = sce::eds::as_bytes(&counts, num_genes)
                             .expect("can't conver vector to eds");
                         
-                        let mut bt_eds_bytes : Vec<u8>;
+                        let mut bt_eds_bytes : Vec<u8> = Vec::new();
                         if num_bootstraps > 0 {
                             for i in 0..num_bootstraps {
                                 let mut bt_eds_bytes_slice = sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
                                 .expect("can't convert vector to eds");
-                                bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
+                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
                             }
                         }
 
