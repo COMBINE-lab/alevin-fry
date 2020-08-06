@@ -23,6 +23,7 @@ version = "3.0.0-beta.1"
 features = ["wrap_help"]
 
 [profile.release]
+debug = true
 #lto="thin"
 #codegen-units=1
 opt-level=3
