@@ -35,6 +35,7 @@ use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -376,6 +377,7 @@ pub fn quantify(
         BufWriter::new(buffered),
     )));
 
+    let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -395,7 +397,7 @@ pub fn quantify(
         let bclen = ft_vals.bclen;
 
         // now, make the worker thread
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             // these can be created once and cleared after processing
             // each cell.
             let mut unique_evidence = vec![false; num_genes];
@@ -406,6 +408,7 @@ pub fn quantify(
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
                 if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
+                    cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
                     let bc = c.reads.first().expect("chunk with no reads").bc;
@@ -485,11 +488,11 @@ pub fn quantify(
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
                     }
-
-                    cells_remaining.fetch_sub(1, Ordering::SeqCst);
                 }
             }
         });
+
+        thread_handles.push(handle);
     }
 
     let mut buf = vec![0u8; 65536];
@@ -500,10 +503,12 @@ pub fn quantify(
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
         loop {
-            let r = q.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
-            if r.is_ok() {
-                pbar.inc(1);
-                break;
+            if !q.is_full() {
+                let r = q.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
+                if r.is_ok() {
+                    pbar.inc(1);
+                    break;
+                }
             }
         }
     }
@@ -515,8 +520,13 @@ pub fn quantify(
         gn_writer.write_all(format!("{}\n", g).as_bytes())?;
     }
 
-    while cells_to_process.load(Ordering::SeqCst) > 0 {
-        // waiting
+    for h in thread_handles {
+        match h.join() {
+            Ok(_) => {}
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
     }
 
     Ok(())
