@@ -371,11 +371,17 @@ pub fn quantify(
     let bc_file = fs::File::create(bc_path)?;
 
     let mat_path = output_path.join("counts.eds.gz");
+    let bootstrap_path = output_path.join("bootstraps.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
+    let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
 
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
+    )));
+
+    let bt_writer = Arc::new(Mutex::new((
+        BufWriter::new(bt_buffered),
     )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -394,6 +400,8 @@ pub fn quantify(
         let umi_type = umi_type;
         // and the file writer
         let bcout = bc_writer.clone();
+        // and the bootstrap file writer
+        let btcout = bt_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
 
@@ -495,14 +503,6 @@ pub fn quantify(
                         let eds_bytes: Vec<u8> = sce::eds::as_bytes(&counts, num_genes)
                             .expect("can't conver vector to eds");
                         
-                        let mut bt_eds_bytes : Vec<u8> = Vec::new();
-                        if num_bootstraps > 0 {
-                            for i in 0..num_bootstraps {
-                                let mut bt_eds_bytes_slice = sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
-                                .expect("can't convert vector to eds");
-                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
-                            }
-                        }
 
                         let writer = &mut *bcout.lock().unwrap();
                         // write to barcode file
@@ -516,7 +516,25 @@ pub fn quantify(
                             .1
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
-                            
+
+                    }
+                    
+                    // write bootstraps
+                    if num_bootstraps > 0{
+                        // flatten the bootstraps
+                        let mut bt_eds_bytes : Vec<u8> = Vec::new();
+                        
+                        for i in 0..num_bootstraps {
+                            let bt_eds_bytes_slice = sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                            .expect("can't convert vector to eds");
+                            bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
+                        }
+                        let writer = &mut *btcout.lock().unwrap(); 
+                        writer
+                            .0
+                            .write_all(&bt_eds_bytes)
+                            .expect("can't write to matrix file.");
+                        
                     }
                 }
             }

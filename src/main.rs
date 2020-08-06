@@ -208,7 +208,7 @@ fn main() {
 
     if let Some(ref t) = opts.subcommand_matches("quant") {
         let num_threads = t.value_of_t("threads").unwrap();
-        let num_bootstraps = t.value_of_t("num_threads").unwrap();
+        let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
