@@ -469,7 +469,7 @@ pub fn quantify(
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
-                        let eds_bytes: Vec<u8> = sce::eds::as_bytes(counts, num_genes)
+                        let eds_bytes: Vec<u8> = sce::eds::as_bytes(&counts, num_genes)
                             .expect("can't conver vector to eds");
 
                         let writer = &mut *bcout.lock().unwrap();
