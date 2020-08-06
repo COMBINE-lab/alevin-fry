@@ -91,6 +91,7 @@ fn main() {
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "parsimony"])
         .default_value("full")
@@ -207,11 +208,12 @@ fn main() {
 
     if let Some(ref t) = opts.subcommand_matches("quant") {
         let num_threads = t.value_of_t("threads").unwrap();
+        let num_bootstraps = t.value_of_t("num_threads").unwrap();
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
-        libradicl::quant::quantify(input_dir, tg_map, output_dir, num_threads, resolution, &log)
+        libradicl::quant::quantify(input_dir, tg_map, output_dir, num_threads, num_bootstraps, resolution, &log)
             .expect("could not quantify rad file.");
     }
 }

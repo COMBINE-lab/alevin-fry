@@ -40,7 +40,7 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::em_optimize;
+use self::libradicl::em::{em_optimize, run_bootstrap};
 use self::libradicl::pugutils;
 use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
@@ -225,6 +225,7 @@ pub fn quantify(
     tg_map: String,
     output_dir: String,
     num_threads: u32,
+    num_bootstraps: u32,
     resolution: ResolutionStrategy,
     //no_em: bool,
     //naive: bool,
@@ -415,6 +416,7 @@ pub fn quantify(
                     eq_map.init_from_chunk(&mut c);
 
                     let counts: Vec<f32>;
+                    let bootstraps: Vec<Vec<f32>>;
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
                             counts = pugutils::get_num_molecules_cell_ranger_like(
@@ -444,6 +446,15 @@ pub fn quantify(
                                 true,
                                 &log,
                             );
+                            if num_bootstraps > 0 {
+                                bootstraps = run_bootstrap(
+                                    &gene_eqc,
+                                    num_bootstraps,
+                                    &counts,
+                                    true,
+                                    &log,
+                                );
+                            }
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
@@ -457,6 +468,15 @@ pub fn quantify(
                                 false,
                                 &log,
                             );
+                            if num_bootstraps > 0 {
+                                bootstraps = run_bootstrap(
+                                    &gene_eqc,
+                                    num_bootstraps,
+                                    &counts,
+                                    true,
+                                    &log,
+                                );
+                            }
                         }
                     }
                     // clear our local variables
@@ -474,6 +494,15 @@ pub fn quantify(
                         let bc_mer: BitKmer = (bc, bclen as u8);
                         let eds_bytes: Vec<u8> = sce::eds::as_bytes(counts, num_genes)
                             .expect("can't conver vector to eds");
+                        
+                        let mut bt_eds_bytes : Vec<u8>;
+                        if num_bootstraps > 0 {
+                            for i in 0..num_bootstraps {
+                                let mut bt_eds_bytes_slice = sce::eds::as_bytes(bootstraps[i as usize], num_genes)
+                                .expect("can't convert vector to eds");
+                                bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
+                            }
+                        }
 
                         let writer = &mut *bcout.lock().unwrap();
                         // write to barcode file
@@ -487,6 +516,7 @@ pub fn quantify(
                             .1
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
+                            
                     }
                 }
             }
