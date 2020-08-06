@@ -498,7 +498,7 @@ pub fn quantify(
                         let mut bt_eds_bytes : Vec<u8>;
                         if num_bootstraps > 0 {
                             for i in 0..num_bootstraps {
-                                let mut bt_eds_bytes_slice = sce::eds::as_bytes(bootstraps[i as usize], num_genes)
+                                let mut bt_eds_bytes_slice = sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
                                 .expect("can't convert vector to eds");
                                 bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
                             }
