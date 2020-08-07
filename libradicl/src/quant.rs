@@ -26,7 +26,7 @@ use crossbeam_queue::ArrayQueue;
 // use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -79,9 +79,9 @@ fn extract_graph(
     let mut _unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    let mut hset = Vec::with_capacity(eqmap.num_eq_classes()); 
+    let mut hset = Vec::with_capacity(eqmap.num_eq_classes());
 
-    // insert all of the nodes up front to avoid redundant 
+    // insert all of the nodes up front to avoid redundant
     // checks later.
     for eqid in 0..eqmap.num_eq_classes() {
         // get the info Vec<(UMI, frequency)>
