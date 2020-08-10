@@ -11,10 +11,6 @@ extern crate petgraph;
 extern crate serde;
 extern crate slog;
 
-//use executors::crossbeam_channel_pool;
-//use executors::*;
-//use std::sync::mpsc::channel;
-
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 #[allow(unused_imports)]
@@ -22,11 +18,11 @@ use self::slog::crit;
 use self::slog::info;
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
-//use crossbeam_channel::bounded;
-use fasthash::sea;
+
+// use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -47,15 +43,21 @@ use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
 /// equivalence class map for a given cell.
+/// The returned graph is a directed graph (potentially with 
+/// bidirected edges) where each node consists of an (equivalence 
+/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply 
+/// the rank of the UMI in the list of all distinct UMIs for this 
+/// equivalence class.  There is a directed edge between any pair of 
+/// vertices whose set of transcripts overlap and whose UMIs are within
+/// a Hamming distance of 1 of each other.  If one node has more than 
+/// twice the frequency of the other, the edge is directed from the 
+/// more frequent to the less freuqent node.  Otherwise, edges are 
+/// added in both directions.
 fn extract_graph(
     eqmap: &EqMap,
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
-
-    fn get_set() -> HashSet<u32, fasthash::sea::Hash64> {
-        HashSet::with_hasher(sea::Hash64)
-    }
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
@@ -83,6 +85,18 @@ fn extract_graph(
     let mut _unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
+    let mut hset = Vec::with_capacity(eqmap.num_eq_classes());
+
+    // insert all of the nodes up front to avoid redundant
+    // checks later.
+    for eqid in 0..eqmap.num_eq_classes() {
+        // get the info Vec<(UMI, frequency)>
+        let eq = &eqmap.eqc_info[eqid];
+        let u1 = &eq.umis;
+        for (xi, _x) in u1.iter().enumerate() {
+            graph.add_node((eqid as u32, xi as u32));
+        }
+    }
 
     // for every equivalence class in this cell
     for eqid in 0..eqmap.num_eq_classes() {
@@ -90,7 +104,6 @@ fn extract_graph(
             print!("\rprocessed {:?} eq classes", eqid);
             io::stdout().flush().expect("Could not flush stdout");
         }
-        //ctr += 1;
 
         // get the info Vec<(UMI, frequency)>
         let eq = &eqmap.eqc_info[eqid];
@@ -99,7 +112,7 @@ fn extract_graph(
         let u1 = &eq.umis;
         for (xi, x) in u1.iter().enumerate() {
             // add a node
-            graph.add_node((eqid as u32, xi as u32));
+            // graph.add_node((eqid as u32, xi as u32));
 
             // for each (umi, freq) pair and node after this one
             for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
@@ -108,7 +121,7 @@ fn extract_graph(
                 //let x2 = &u1[xi2];
 
                 // add a node for it
-                graph.add_node((eqid as u32, xi2 as u32));
+                // graph.add_node((eqid as u32, xi2 as u32));
 
                 // determine if an edge exists between x and x2, and if so, what kind
                 let et = has_edge(&x, &x2);
@@ -141,7 +154,8 @@ fn extract_graph(
             }
         }
 
-        let mut hset = get_set();
+        hset.clear();
+        hset.resize(eqmap.num_eq_classes(), 0u8);
 
         // for every reference id in this eq class
         for r in eqmap.refs_for_eqc(eqid as u32) {
@@ -155,22 +169,24 @@ fn extract_graph(
                 // otherwise, if we have already processed this other equivalence
                 // class because it shares _another_ reference (apart from r) with
                 // the current equivalence class, then skip it.
-                if hset.contains(eq2id) {
+                if hset[*eq2id as usize] > 0 {
                     continue;
                 }
 
                 // recall that we processed this eq class as a neighbor of eqid
-                hset.insert(*eq2id);
+                hset[*eq2id as usize] = 1;
                 let eq2 = &eqmap.eqc_info[*eq2id as usize];
 
                 // compare all the umis between eqid and eq2id
                 let u2 = &eq2.umis;
                 for (xi, x) in u1.iter().enumerate() {
                     // Node for equiv : eqid and umi : xi
-                    graph.add_node((eqid as u32, xi as u32));
+                    // graph.add_node((eqid as u32, xi as u32));
+
                     for (yi, y) in u2.iter().enumerate() {
                         // Node for equiv : eq2id and umi : yi
-                        graph.add_node((*eq2id as u32, yi as u32));
+                        // graph.add_node((*eq2id as u32, yi as u32));
+
                         let et = has_edge(&x, &y);
                         match et {
                             PUGEdgeType::BiDirected => {
