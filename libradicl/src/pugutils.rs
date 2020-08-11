@@ -494,12 +494,6 @@ pub(super) fn get_num_molecules(
         U32Set::with_capacity_and_hasher(cap as usize, s)
     }
 
-    /*
-    if petgraph::algo::is_cyclic_directed(g) {
-        warn!(log, "\n\ngraph contains a cycle!\n\n");
-    }
-    */
-
     let comps = weakly_connected_components(g);
     // a vector of length 2 that records at index 0
     // the number of single-node subgraphs that are
