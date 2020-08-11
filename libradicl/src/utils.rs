@@ -90,7 +90,7 @@ fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>>
     Ok(indels)
 }
 
-fn get_all_one_edit_neighbors(
+pub fn get_all_one_edit_neighbors(
     bc: u64,
     bc_length: usize,
     neighbors: &mut HashSet<u64>,
