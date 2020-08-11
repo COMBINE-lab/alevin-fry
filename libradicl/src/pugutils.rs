@@ -63,7 +63,7 @@ where
 /// equivalence class labels of all vertices in the arboresence).
 fn collapse_vertices(
     v: u32,
-    vset: &HashSet::<u32>, // the set of vertices already covered
+    vset: &HashSet<u32>, // the set of vertices already covered
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
@@ -110,14 +110,14 @@ fn collapse_vertices(
                 let n = g.to_index(nv) as u32;
 
                 // check if we should add this vertex or not
-                // vset contains the the current set of 
-                // *uncovered* vertices in this component (i.e. those 
+                // vset contains the the current set of
+                // *uncovered* vertices in this component (i.e. those
                 // that we still need to explain by some molecule).
-                // so, if n is *not* in vset, then it is not in the 
-                // uncovered set, and so it has already been 
+                // so, if n is *not* in vset, then it is not in the
+                // uncovered set, and so it has already been
                 // explained / covered.
-                // 
-                // if n hasn't been covered yet, then 
+                //
+                // if n hasn't been covered yet, then
                 // check if we've seen n in this traversal
                 // yet. The `insert()` method returns true
                 // if the set didn't have the element, false
@@ -327,44 +327,44 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     counts
 }
 
-/// given the connected component (subgraph) of `g` defined by the 
-/// vertices in `vertex_ids`, apply the cell-ranger-like algorithm 
+/// given the connected component (subgraph) of `g` defined by the
+/// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
 /// within this subgraph.
 fn get_num_molecules_large_component(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
-    eq_map: &EqMap, 
-    vertex_ids: &[u32], 
+    eq_map: &EqMap,
+    vertex_ids: &[u32],
     tid_to_gid: &[u32],
     num_genes: usize,
-    log: &slog::Logger
+    log: &slog::Logger,
 ) -> Vec<u32> {
     let mut counts = vec![0u32; num_genes];
 
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
 
-    // build a temporary hashmap from each 
-    // equivalence class id in the current subgraph 
-    // to the set of (UMI, frequency) pairs contained 
+    // build a temporary hashmap from each
+    // equivalence class id in the current subgraph
+    // to the set of (UMI, frequency) pairs contained
     // in the subgraph
     let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
-        // get the corresponding vertex which is 
+        // get the corresponding vertex which is
         // an (eq_id, UMI index) pair
         let vert = g.from_index(*vertex_id as usize);
-        // add the corresponding (UMI, frequency) pair to the map 
+        // add the corresponding (UMI, frequency) pair to the map
         // for this eq_id
         let umis = tmp_map.entry(vert.0).or_insert_with(Vec::new);
-        umis.push( eq_map.eqc_info[vert.0 as usize].umis[vert.1 as usize] );
+        umis.push(eq_map.eqc_info[vert.0 as usize].umis[vert.1 as usize]);
     }
 
     for (k, v) in tmp_map.iter() {
         // get the (umi, count) pairs
-        let umis = v;//&eqinfo.umis;
-        let eqid = k;//&eqinfo.eq_num;
-        // project the transcript ids to gene ids
+        let umis = v; //&eqinfo.umis;
+        let eqid = k; //&eqinfo.eq_num;
+                      // project the transcript ids to gene ids
         let mut gset: Vec<u32> = eq_map
             .refs_for_eqc(*eqid)
             .iter()
@@ -476,7 +476,6 @@ fn get_num_molecules_large_component(
     counts
 }
 
-
 /// Given the digraph `g` representing the PUGs within the current
 /// cell, the EqMap `eqmap` to decode all equivalence classes
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
@@ -497,7 +496,7 @@ pub(super) fn get_num_molecules(
 
     /*
     if petgraph::algo::is_cyclic_directed(g) {
-        warn!(log, "\n\ngraph contains a cycle!\n\n"); 
+        warn!(log, "\n\ngraph contains a cycle!\n\n");
     }
     */
 
@@ -532,12 +531,15 @@ pub(super) fn get_num_molecules(
 
     for (_comp_label, comp_verts) in comps.iter() {
         if comp_verts.len() > 1 {
-
             if comp_verts.len() > 1000 {
-                warn!(log, "\n\nfound connected component with {} vertices\n\n", comp_verts.len());
-                let gene_increments = 
-                    get_num_molecules_large_component(
-                        g, eqmap, comp_verts, tid_to_gid, num_genes, log);
+                warn!(
+                    log,
+                    "\n\nfound connected component with {} vertices\n\n",
+                    comp_verts.len()
+                );
+                let gene_increments = get_num_molecules_large_component(
+                    g, eqmap, comp_verts, tid_to_gid, num_genes, log,
+                );
                 for (gn, val) in gene_increments.iter().enumerate() {
                     if *val > 0 {
                         let e = gene_eqclass_hash.entry(vec![gn as u32]).or_insert(0);
@@ -546,11 +548,11 @@ pub(super) fn get_num_molecules(
                 }
                 continue;
             }
+
             // vset will hold the set of vertices that are
             // covered.
             let mut vset = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
 
-            
             // we will remove covered vertices from vset until they are
             // all gone (until all vertices have been covered)
             while !vset.is_empty() {

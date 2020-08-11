@@ -22,7 +22,7 @@ use crossbeam_queue::ArrayQueue;
 // use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -44,15 +44,15 @@ use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
 /// equivalence class map for a given cell.
-/// The returned graph is a directed graph (potentially with 
-/// bidirected edges) where each node consists of an (equivalence 
-/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply 
-/// the rank of the UMI in the list of all distinct UMIs for this 
-/// equivalence class.  There is a directed edge between any pair of 
+/// The returned graph is a directed graph (potentially with
+/// bidirected edges) where each node consists of an (equivalence
+/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply
+/// the rank of the UMI in the list of all distinct UMIs for this
+/// equivalence class.  There is a directed edge between any pair of
 /// vertices whose set of transcripts overlap and whose UMIs are within
-/// a Hamming distance of 1 of each other.  If one node has more than 
-/// twice the frequency of the other, the edge is directed from the 
-/// more frequent to the less freuqent node.  Otherwise, edges are 
+/// a Hamming distance of 1 of each other.  If one node has more than
+/// twice the frequency of the other, the edge is directed from the
+/// more frequent to the less freuqent node.  Otherwise, edges are
 /// added in both directions.
 fn extract_graph(
     eqmap: &EqMap,
@@ -87,7 +87,7 @@ fn extract_graph(
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
     let mut hset = Vec::with_capacity(eqmap.num_eq_classes());
-    let mut idxvec : SmallVec<[u32; 128]> = SmallVec::new();
+    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
 
     // insert all of the nodes up front to avoid redundant
     // checks later.
@@ -158,10 +158,14 @@ fn extract_graph(
 
         //hset.clear();
         //hset.resize(eqmap.num_eq_classes(), 0u8);
-        for i in &idxvec { hset[*i as usize] = 0u8; }
+        for i in &idxvec {
+            hset[*i as usize] = 0u8;
+        }
         let stf = idxvec.len() > 128;
         idxvec.clear();
-        if stf { idxvec.shrink_to_fit(); }
+        if stf {
+            idxvec.shrink_to_fit();
+        }
 
         // for every reference id in this eq class
         for r in eqmap.refs_for_eqc(eqid as u32) {
@@ -457,8 +461,13 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, num_genes, &log);
+                            let gene_eqc = pugutils::get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -470,8 +479,13 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, num_genes, &log);
+                            let gene_eqc = pugutils::get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
