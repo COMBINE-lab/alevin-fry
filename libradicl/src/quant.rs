@@ -22,6 +22,7 @@ use crossbeam_queue::ArrayQueue;
 // use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
+use smallvec::{SmallVec, smallvec};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -86,6 +87,7 @@ fn extract_graph(
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
     let mut hset = Vec::with_capacity(eqmap.num_eq_classes());
+    let mut idxvec : SmallVec<[u32; 128]> = SmallVec::new();
 
     // insert all of the nodes up front to avoid redundant
     // checks later.
@@ -154,8 +156,12 @@ fn extract_graph(
             }
         }
 
-        hset.clear();
-        hset.resize(eqmap.num_eq_classes(), 0u8);
+        //hset.clear();
+        //hset.resize(eqmap.num_eq_classes(), 0u8);
+        for i in &idxvec { hset[*i as usize] = 0u8; }
+        let stf = idxvec.len() > 128;
+        idxvec.clear();
+        if stf { idxvec.shrink_to_fit(); }
 
         // for every reference id in this eq class
         for r in eqmap.refs_for_eqc(eqid as u32) {
@@ -175,6 +181,7 @@ fn extract_graph(
 
                 // recall that we processed this eq class as a neighbor of eqid
                 hset[*eq2id as usize] = 1;
+                idxvec.push(*eq2id as u32);
                 let eq2 = &eqmap.eqc_info[*eq2id as usize];
 
                 // compare all the umis between eqid and eq2id
@@ -451,7 +458,7 @@ pub fn quantify(
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
                             let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, num_genes, &log);
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -464,7 +471,7 @@ pub fn quantify(
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
                             let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, num_genes, &log);
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
