@@ -11,18 +11,19 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{App, Arg};
-use libradicl::cellfilter::generate_permit_list;
+use clap::{crate_authors, crate_version, App, Arg};
+use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
-use slog::{crit, info, o, warn, Drain};
+use slog::{crit, o, warn, Drain};
+use std::unimplemented;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-static VERSION: &str = "0.0.1";
-static AUTHORS: &str = "Avi Srivastava, Rob Patro";
+// static VERSION: &str = "0.0.1";
+// static AUTHORS: &str = "Avi Srivastava, Rob Patro";
 
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
@@ -39,29 +40,42 @@ fn gen_random_kmer(k: usize) -> String {
 
 fn main() {
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let crate_authors = crate_authors!("\n");
+    let version = crate_version!();
+    // [] add command for just counting barcode frequency
+    // [] add other algorithms for determining barcode cutoff
 
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
-        .version(VERSION)
-        .author(AUTHORS)
+        .version(version)
+        .author(crate_authors)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
         ))
         .arg(Arg::from(
-            "-k, --top-k=<top-k>  'select the top-k most-frequent barcodes as valid (true)'",
-        ))
+            "-k, --knee-distance  'attempt to determine the number of barcodes to keep using the knee distance method."
+            ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells"])
+        )
+        .arg(Arg::from(
+            "-e, --expect-cells=<expect-cells> 'defines the expected number of cells to use in determining the (read, not UMI) based cutoff'",
+        ).conflicts_with_all(&["force-cells", "valid-bc", "knee-distance"])
+        )
+        .arg(Arg::from(
+            "-f, --force-cells=<force-cells>  'select the top-k most-frequent barcodes, based on read count, as valid (true)'"
+        ).conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance"])
+        )
         .arg(
             Arg::from(
                 "-b, --valid-bc=<valid-bc> 'uses true barcode collected from a provided file'",
             )
-            .conflicts_with("top-k"),
+            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance"]),
         );
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
-    .version(VERSION)
-    .author(AUTHORS)
+    .version(version)
+    .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
@@ -71,21 +85,21 @@ fn main() {
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
-    .version(VERSION)
-    .author(AUTHORS)
+    .version(version)
+    .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir>  'input directory containing collated RAD file'"))
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
-        .possible_values(&["full", "trivial", "parsimony"])
+        .possible_values(&["full", "trivial", "cr-like", "parsimony"])
         .default_value("full")
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
 
     let opts = App::new("alevin-fry")
-        .version(VERSION)
-        .author(AUTHORS)
+        .version(version)
+        .author(crate_authors)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
         .subcommand(collate_app)
@@ -111,15 +125,40 @@ fn main() {
         let output_dir: String = t
             .value_of_t("output-dir")
             .expect("no input directory specified");
-        let top_k = match t.value_of_t("top-k") {
-            Ok(v) => Some(v),
+
+        let mut fmeth = CellFilterMethod::KneeFinding;
+
+        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExpectCells(v);
+                Some(v)
+            }
             Err(_) => None,
         };
-        let valid_bc = match t.value_of_t("valid-bc") {
-            Ok(v) => Some(v),
+        if expect_cells.is_some() {
+            unimplemented!();
+        }
+
+        if t.is_present("knee-distance") {
+            fmeth = CellFilterMethod::KneeFinding;
+        }
+
+        let _force_cells = match t.value_of_t("force-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ForceCells(v);
+                Some(v)
+            }
             Err(_) => None,
         };
-        let nc = generate_permit_list(input_file, output_dir, top_k, valid_bc, &log).unwrap();
+
+        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExplicitList(v.clone());
+                Some(v)
+            }
+            Err(_) => None,
+        };
+        let nc = generate_permit_list(input_file, output_dir, fmeth, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
