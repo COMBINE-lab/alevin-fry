@@ -525,12 +525,15 @@ pub(super) fn get_num_molecules(
 
     for (_comp_label, comp_verts) in comps.iter() {
         if comp_verts.len() > 1 {
+
+            // the current parsimony resolution algorithm 
+            // can become slow for connected components that 
+            // are very large.  For components with > 1000 vertices
+            // (this should be _very_ rare) we will instead resolve
+            // the UMIs in the component using a simpler algorithm.
             if comp_verts.len() > 1000 {
-                warn!(
-                    log,
-                    "\n\nfound connected component with {} vertices\n\n",
-                    comp_verts.len()
-                );
+                let mut ng = 0u32;
+                let mut numi = 0u32;
                 let gene_increments = get_num_molecules_large_component(
                     g, eqmap, comp_verts, tid_to_gid, num_genes, log,
                 );
@@ -538,13 +541,23 @@ pub(super) fn get_num_molecules(
                     if *val > 0 {
                         let e = gene_eqclass_hash.entry(vec![gn as u32]).or_insert(0);
                         *e += *val;
+                        ng += 1;
+                        numi += *val;
                     }
                 }
+
+                warn!(
+                    log,
+                    "\n\nfound connected component with {} vertices, \
+                    resolved into {} UMIs over {} genes with trivial resolution.\n\n",
+                    comp_verts.len(),
+                    numi, ng
+                );
                 continue;
             }
 
             // vset will hold the set of vertices that are
-            // covered.
+            // *not yet* covered.
             let mut vset = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
 
             // we will remove covered vertices from vset until they are

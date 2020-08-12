@@ -86,7 +86,7 @@ fn extract_graph(
     let mut _unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    let mut hset = Vec::with_capacity(eqmap.num_eq_classes());
+    let mut hset = vec![0u8; eqmap.num_eq_classes()];
     let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
 
     // insert all of the nodes up front to avoid redundant
@@ -565,6 +565,9 @@ pub fn quantify(
             }
         }
     }
+
+    let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
+    pbar.finish_with_message(&pb_msg);
 
     Ok(())
 }
