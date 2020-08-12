@@ -10,6 +10,7 @@ use crate as libradicl;
 use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 
 /**
@@ -44,6 +45,12 @@ pub enum ResolutionStrategy {
     CellRangerLike,
     Full,
     Parsimony,
+}
+
+impl fmt::Display for ResolutionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 // Implement the trait

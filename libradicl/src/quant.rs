@@ -31,6 +31,7 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -582,13 +583,17 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     let meta_info = json!({
+        "resolution_strategy" : resolution.to_string(),
+        "num_quantified_cells" : hdr.num_chunks,
+        "num_genes" : num_genes,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
     let mut meta_info_file = File::create(output_path.join("meta_info.json"))
         .expect("couldn't create meta_info.json file.");
+    let aux_info_str = serde_json::to_string_pretty(&meta_info).expect("could not format json.");
     meta_info_file
-        .write_all(meta_info.to_string().as_bytes())
+        .write_all(aux_info_str.as_bytes())
         .expect("cannot write to meta_info.json file");
 
     Ok(())

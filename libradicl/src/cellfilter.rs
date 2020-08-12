@@ -166,7 +166,6 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
     max_idx
 }
 
-
 /// Given the input RAD file `input_file`, compute
 /// and output (in `output_dir`) the list of valid
 /// (i.e. "permitted") barcode values, as well as
