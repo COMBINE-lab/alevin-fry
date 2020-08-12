@@ -19,6 +19,7 @@ use rand::Rng;
 use slog::{crit, o, warn, Drain};
 use std::unimplemented;
 
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
