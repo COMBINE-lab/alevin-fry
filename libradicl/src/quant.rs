@@ -585,9 +585,11 @@ pub fn quantify(
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
-    let mut meta_info_file = File::create(output_path.join("meta_info.json")).expect("couldn't create meta_info.json file.");
-    meta_info_file.write_all(meta_info.to_string().as_bytes()).expect("cannot write to meta_info.json file");
-
+    let mut meta_info_file = File::create(output_path.join("meta_info.json"))
+        .expect("couldn't create meta_info.json file.");
+    meta_info_file
+        .write_all(meta_info.to_string().as_bytes())
+        .expect("cannot write to meta_info.json file");
 
     Ok(())
 }
