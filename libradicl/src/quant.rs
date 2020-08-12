@@ -401,11 +401,16 @@ pub fn quantify(
     let mat_path = output_path.join("counts.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
+    let ff_path = output_path.join("features.txt");
+    let mut ff_file = fs::File::create(ff_path)?;
+    writeln!(ff_file, "cell_num\tnum_mapped\ttot_umi\tdedup_rate\tmean_by_max\ttotal_expressed_genes\tnum_genes_over_mean")?;
+
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
+        BufWriter::new(ff_file),
     )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -439,7 +444,7 @@ pub fn quantify(
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
+                if let Ok((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
@@ -519,6 +524,32 @@ pub fn quantify(
                         alt_res_cells.lock().unwrap().push(cell_num as u64);
                     }
 
+                    //
+                    // featuresStream << "\t" << numRawReads
+                    //   << "\t" << numMappedReads
+                    let mut max_umi = 0.0f32;
+                    let mut sum_umi = 0.0f32;
+                    let num_reads = nrec;
+                    let mut num_expr: u32 = 0;
+                    for c in &counts {
+                        max_umi = if *c > max_umi { *c } else { max_umi };
+                        sum_umi += *c;
+                        if *c > 0.0 {
+                            num_expr += 1;
+                        }
+                    }
+                    let dedup_rate = sum_umi / num_reads as f32;
+                    let mean_expr = sum_umi / num_genes as f32;
+                    let num_genes_over_mean = num_genes as f32 / mean_expr;
+                    let mean_by_max = mean_expr / max_umi;
+
+                    //   << "\t" << totalUmiCount
+                    //   << "\t" << mappingRate
+                    //   << "\t" << deduplicationRate
+                    //   << "\t" << meanByMax
+                    //   << "\t" << totalExpGenes
+                    //   << "\t" << numGenesOverMean;
+
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
@@ -537,6 +568,19 @@ pub fn quantify(
                             .1
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
+
+                        writeln!(
+                            &mut writer.2,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            cell_num,
+                            num_reads,
+                            sum_umi,
+                            dedup_rate,
+                            mean_by_max,
+                            num_expr,
+                            num_genes_over_mean
+                        )
+                        .expect("can't write to feature file");
                     }
                 }
             }
