@@ -63,7 +63,7 @@ where
 /// equivalence class labels of all vertices in the arboresence).
 fn collapse_vertices(
     v: u32,
-    vset: &HashSet<u32>, // the set of vertices already covered
+    uncovered_vertices: &HashSet<u32>, // the set of vertices already covered
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
@@ -109,11 +109,11 @@ fn collapse_vertices(
             for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
                 let n = g.to_index(nv) as u32;
 
-                // check if we should add this vertex or not
-                // vset contains the the current set of
+                // check if we should add this vertex or not:
+                // uncovered_vertices contains the the current set of
                 // *uncovered* vertices in this component (i.e. those
                 // that we still need to explain by some molecule).
-                // so, if n is *not* in vset, then it is not in the
+                // so, if n is *not* in uncovered_vertices, then it is not in the
                 // uncovered set, and so it has already been
                 // explained / covered.
                 //
@@ -122,7 +122,7 @@ fn collapse_vertices(
                 // yet. The `insert()` method returns true
                 // if the set didn't have the element, false
                 // otherwise.
-                if !vset.contains(&n) || !visited_set.insert(n) {
+                if !uncovered_vertices.contains(&n) || !visited_set.insert(n) {
                     continue;
                 }
 
@@ -487,7 +487,7 @@ pub(super) fn get_num_molecules(
     tid_to_gid: &[u32],
     num_genes: usize,
     log: &slog::Logger,
-) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
+) -> (HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>, bool) {
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
     fn get_set(cap: u32) -> U32Set {
         let s = RandomState::<Hash64>::new();
@@ -522,6 +522,7 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
+    let mut alternative_resoluton = false;
 
     for (_comp_label, comp_verts) in comps.iter() {
         if comp_verts.len() > 1 {
@@ -553,29 +554,31 @@ pub(super) fn get_num_molecules(
                     numi,
                     ng
                 );
+                alternative_resoluton = true;
                 continue;
             }
 
-            // vset will hold the set of vertices that are
+            // uncovered_vertices will hold the set of vertices that are
             // *not yet* covered.
-            let mut vset = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
+            let mut uncovered_vertices = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
 
-            // we will remove covered vertices from vset until they are
+            // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
-            while !vset.is_empty() {
+            while !uncovered_vertices.is_empty() {
                 // will hold vertices in the best mcc
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
                 // best mcc covering
                 let mut best_covering_txp = std::u32::MAX;
                 // for each vertex in the vertex set
-                for v in vset.iter() {
+                for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
                     // and the transcript that covers it
                     // NOTE: what if there are multiple different mccs that
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
-                    let (new_mcc, covering_txp) = collapse_vertices(*v, &vset, g, eqmap);
+                    let (new_mcc, covering_txp) =
+                        collapse_vertices(*v, &uncovered_vertices, g, eqmap);
 
                     // if the new mcc is better than the current best, then
                     // it becomes the new best
@@ -657,9 +660,9 @@ pub(super) fn get_num_molecules(
                 *counter += 1;
 
                 // for every vertext that has been covered
-                // remove it from vset
+                // remove it from uncovered_vertices
                 for rv in best_mcc.iter() {
-                    vset.remove(rv);
+                    uncovered_vertices.remove(rv);
                 }
             } //end-while
         } else {
@@ -693,7 +696,7 @@ pub(super) fn get_num_molecules(
         //identified_txps.push(*rand_cover as u32);
     }
 
-    gene_eqclass_hash
+    (gene_eqclass_hash, alternative_resoluton)
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {

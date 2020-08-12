@@ -22,6 +22,7 @@ use crossbeam_queue::ArrayQueue;
 // use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
+use serde_json::json;
 use smallvec::{smallvec, SmallVec};
 use std::collections::HashMap;
 use std::fs;
@@ -399,6 +400,8 @@ pub fn quantify(
     let mat_path = output_path.join("counts.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
+    let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
@@ -422,6 +425,7 @@ pub fn quantify(
         let bcout = bc_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
+        let alt_res_cells = alt_res_cells.clone();
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
@@ -442,6 +446,8 @@ pub fn quantify(
                     eq_map.init_from_chunk(&mut c);
 
                     let counts: Vec<f32>;
+                    let mut alt_resolution = false;
+
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
                             counts = pugutils::get_num_molecules_cell_ranger_like(
@@ -461,13 +467,14 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc = pugutils::get_num_molecules(
+                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
+                            alt_resolution = alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -479,13 +486,14 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc = pugutils::get_num_molecules(
+                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
+                            alt_resolution = alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -505,6 +513,10 @@ pub fn quantify(
                     no_ambiguity.clear();
                     no_ambiguity.resize(num_genes, false);
                     // done clearing
+
+                    if alt_resolution {
+                        alt_res_cells.lock().unwrap().push(cell_num as u64);
+                    }
 
                     {
                         // writing the files
@@ -568,6 +580,14 @@ pub fn quantify(
 
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
     pbar.finish_with_message(&pb_msg);
+
+    let meta_info = json!({
+        "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
+    });
+
+    let mut meta_info_file = File::create(output_path.join("meta_info.json")).expect("couldn't create meta_info.json file.");
+    meta_info_file.write_all(meta_info.to_string().as_bytes()).expect("cannot write to meta_info.json file");
+
 
     Ok(())
 }
