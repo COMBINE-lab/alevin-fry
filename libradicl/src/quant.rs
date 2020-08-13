@@ -36,6 +36,7 @@ use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+//use std::ptr;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -226,6 +227,7 @@ pub fn quantify(
     output_dir: String,
     num_threads: u32,
     num_bootstraps: u32,
+    init_uniform: bool,
     resolution: ResolutionStrategy,
     //no_em: bool,
     //naive: bool,
@@ -371,6 +373,8 @@ pub fn quantify(
     let bc_file = fs::File::create(bc_path)?;
 
     let mat_path = output_path.join("counts.eds.gz");
+    //let bootstrap_path_1 = output_path.join("bootstraps_1.eds.gz");
+
     let bootstrap_path = output_path.join("bootstraps.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
     let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
@@ -459,7 +463,7 @@ pub fn quantify(
                                     &gene_eqc,
                                     num_bootstraps,
                                     &counts,
-                                    true,
+                                    init_uniform,
                                     &log,
                                 );
                             }
@@ -473,7 +477,7 @@ pub fn quantify(
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                false,
+                                init_uniform,
                                 &log,
                             );
 
