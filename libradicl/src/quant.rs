@@ -476,6 +476,7 @@ pub fn quantify(
                                 false,
                                 &log,
                             );
+
                             if num_bootstraps > 0 {
                                 bootstraps = run_bootstrap(
                                     &gene_eqc,
