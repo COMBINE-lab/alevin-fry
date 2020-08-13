@@ -440,6 +440,7 @@ pub fn quantify(
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
+            let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
 
             // pop from the work queue until everything is
             // processed
@@ -529,18 +530,26 @@ pub fn quantify(
                     //   << "\t" << numMappedReads
                     let mut max_umi = 0.0f32;
                     let mut sum_umi = 0.0f32;
-                    let num_reads = nrec;
                     let mut num_expr: u32 = 0;
+                    expressed_vec.clear();
                     for c in &counts {
                         max_umi = if *c > max_umi { *c } else { max_umi };
                         sum_umi += *c;
                         if *c > 0.0 {
                             num_expr += 1;
+                            expressed_vec.push(*c);
                         }
                     }
+
+                    let num_reads = nrec;
                     let dedup_rate = sum_umi / num_reads as f32;
-                    let mean_expr = sum_umi / num_genes as f32;
-                    let num_genes_over_mean = num_genes as f32 / mean_expr;
+
+                    // mean of the "expressed" genes
+                    let mean_expr = sum_umi / num_expr as f32;
+                    // number of genes with expression > expressed mean
+                    expressed_vec.retain(|e| e > &mean_expr);
+                    let num_genes_over_mean = expressed_vec.len();
+                    // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
 
                     //   << "\t" << totalUmiCount
