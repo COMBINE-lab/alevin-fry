@@ -92,7 +92,7 @@ fn main() {
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
-        .possible_values(&["full", "trivial", "cr-like", "parsimony"])
+        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .default_value("full")
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));

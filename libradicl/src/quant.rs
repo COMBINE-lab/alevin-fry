@@ -457,10 +457,34 @@ pub fn quantify(
 
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            counts = pugutils::get_num_molecules_cell_ranger_like(
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                true,
+                                &log,
+                            );
+                        }
+                        ResolutionStrategy::CellRangerLikeEM => {
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                false,
                                 &log,
                             );
                         }
@@ -551,13 +575,6 @@ pub fn quantify(
                     let num_genes_over_mean = expressed_vec.len();
                     // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
-
-                    //   << "\t" << totalUmiCount
-                    //   << "\t" << mappingRate
-                    //   << "\t" << deduplicationRate
-                    //   << "\t" << meanByMax
-                    //   << "\t" << totalExpGenes
-                    //   << "\t" << numGenesOverMean;
 
                     {
                         // writing the files
