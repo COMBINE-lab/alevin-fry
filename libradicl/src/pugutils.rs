@@ -153,12 +153,9 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     _num_genes: usize,
     _log: &slog::Logger,
 ) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
-    
     let s = fasthash::RandomState::<Hash64>::new();
     let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
         HashMap::with_hasher(s);
-
-    // let mut counts = vec![0.0f32; num_genes];
 
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
@@ -209,7 +206,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     let mut cidx = 0usize;
     // the vector will hold the equivalent set of best genes
     let mut best_genes = Vec::<u32>::with_capacity(16);
-    
+
     // look over all sorted triplets
     while cidx < umi_gene_count_vec.len() {
         let (umi, gn, ct) = umi_gene_count_vec[cidx];
@@ -223,10 +220,12 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             //if !unresolvable {
             //    counts[max_count_gene as usize] += 1.0f32;
             //}
-            quickersort::sort(&mut best_genes[..]);
 
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+            quickersort::sort(&mut best_genes[..]);
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-            
+
             // the next umi and gene
             curr_umi = umi;
             curr_gn = gn;
@@ -257,7 +256,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // if the count aggregator exceeded the max
             // then it is the new max, and this gene is
             // the new max gene.  Having a distinct max
-            // also makes this UMI resolvable
+            // also makes this UMI uniquely resolvable
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
@@ -268,9 +267,10 @@ pub(super) fn get_num_molecules_cell_ranger_like(
                 }
                 Ordering::Equal => {
                     // if we have a tie for the max count
-                    // then the current UMI becomes unresolvable
+                    // then the current UMI isn't uniquely-unresolvable
                     // it will stay this way unless we see a bigger
-                    // count for this UMI
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
                     // unresolvable = true;
                     best_genes.push(gn);
                 }
@@ -281,7 +281,8 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         }
 
         // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 {//&& !unresolvable {
+        if cidx == umi_gene_count_vec.len() - 1 {
+            //&& !unresolvable {
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
             //counts[max_count_gene as usize] += 1.0f32;
         }
