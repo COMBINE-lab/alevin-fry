@@ -377,16 +377,26 @@ pub fn quantify(
 
     let bootstrap_path = output_path.join("bootstraps.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
-    let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
+
+    let mut bt_writer_optional : Option<Arc<Mutex<BufWriter<GzEncoder<fs::File>>>>> = None;
+    if num_bootstraps > 0 {
+        let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
+        bt_writer_optional = Some(Arc::new(Mutex::new(
+            BufWriter::new(bt_buffered)
+        )));
+
+    }
+
+    // let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
+    // let bt_writer = Arc::new(Mutex::new(
+    //     BufWriter::new(bt_buffered),
+    // ));
 
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
     )));
 
-    let bt_writer = Arc::new(Mutex::new((
-        BufWriter::new(bt_buffered),
-    )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
@@ -405,7 +415,12 @@ pub fn quantify(
         // and the file writer
         let bcout = bc_writer.clone();
         // and the bootstrap file writer
-        let btcout = bt_writer.clone();
+        let mut btcout_optional : Option<Arc<Mutex<BufWriter<GzEncoder<fs::File>>>>> = None;
+        if num_bootstraps > 0 {
+            btcout_optional = Some(bt_writer_optional.clone().unwrap());
+        }
+        
+        //let btcout = bt_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
 
@@ -534,12 +549,12 @@ pub fn quantify(
                             .expect("can't convert vector to eds");
                             bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
                         }
-                        let writer = &mut *btcout.lock().unwrap(); 
+
+                        let writer_deref = Some(btcout_optional).unwrap();
+                        let writer = &mut *writer_deref.lock().unwrap();
                         writer
-                            .0
                             .write_all(&bt_eds_bytes)
                             .expect("can't write to matrix file.");
-                        
                     }
                 }
             }
