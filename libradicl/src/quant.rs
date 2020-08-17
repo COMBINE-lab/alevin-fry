@@ -546,13 +546,13 @@ pub fn quantify(
                         
                         for i in 0..num_bootstraps {
                             let bt_eds_bytes_slice = sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
-                            .expect("can't convert vector to eds");
+                                .expect("can't convert vector to eds");
                             bt_eds_bytes.append(& mut bt_eds_bytes_slice.clone());
                         }
 
-                        let writer_deref = Some(btcout_optional).unwrap();
-                        let writer = &mut *writer_deref.lock().unwrap();
+                        let writer = &mut *bcout.lock().unwrap();
                         writer
+                            .1
                             .write_all(&bt_eds_bytes)
                             .expect("can't write to matrix file.");
                     }
