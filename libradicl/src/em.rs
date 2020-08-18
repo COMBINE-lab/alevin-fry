@@ -177,6 +177,7 @@ pub fn run_bootstrap(
     // num_alphas: usize,
     // only_unique: bool,
     init_uniform: bool,
+    summary_stat: bool,
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
     let mut total_fragments = 0u64;
@@ -184,6 +185,10 @@ pub fn run_bootstrap(
     // println!("In bootstrapping");
 
     let mut alphas: Vec<f32> = vec![0.0; gene_alpha.len()];
+    let mut alphas_mean: Vec<f32> = vec![0.0; gene_alpha.len()];
+    let mut alphas_square: Vec<f32> = vec![0.0; gene_alpha.len()];
+    let mut sample_mean: Vec<f32> = vec![0.0; gene_alpha.len()];
+    let mut sample_var: Vec<f32> = vec![0.0; gene_alpha.len()];
     let mut alphas_prime: Vec<f32> = vec![0.0; gene_alpha.len()];
     // let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
     // let mut square_means: Vec<f32> = vec![0.0; gene_alpha.len()];
@@ -281,9 +286,26 @@ pub fn run_bootstrap(
 
         let alphas_sum: f32 = alphas.iter().sum();
         assert!(alphas_sum > 0.0, "Alpha Sum too small");
-        bootstraps.push(alphas.clone());
+        if summary_stat{
+            for i in 0..gene_alpha.len(){
+                alphas_mean[i] += alphas[i];
+                alphas_square[i] += alphas[i] * alphas[i];
+            }
+        }else {
+            bootstraps.push(alphas.clone());
+        }
         // println!("After alpha sum: {:?}, it_num: {:?}", alphas_sum, it_num);
         // old_resampled_counts = resampled_counts.clone();
+    }
+    if summary_stat {
+        for i in 0..gene_alpha.len(){
+            let mean_alpha = alphas_mean[i] / num_bootstraps as f32;
+            sample_mean[i] = mean_alpha ;
+            sample_var[i] = (alphas_square[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha); 
+        }
+
+        bootstraps.push(sample_mean.clone());
+        bootstraps.push(sample_var.clone());
     }
 
     bootstraps
