@@ -11,10 +11,6 @@ extern crate petgraph;
 extern crate serde;
 extern crate slog;
 
-//use executors::crossbeam_channel_pool;
-//use executors::*;
-//use std::sync::mpsc::channel;
-
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 #[allow(unused_imports)]
@@ -22,17 +18,20 @@ use self::slog::crit;
 use self::slog::info;
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
-//use crossbeam_channel::bounded;
-use fasthash::sea;
+
+// use fasthash::sea;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
-use std::collections::{HashMap, HashSet};
+use serde_json::json;
+use smallvec::{smallvec, SmallVec};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -47,15 +46,21 @@ use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
 /// equivalence class map for a given cell.
+/// The returned graph is a directed graph (potentially with
+/// bidirected edges) where each node consists of an (equivalence
+/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply
+/// the rank of the UMI in the list of all distinct UMIs for this
+/// equivalence class.  There is a directed edge between any pair of
+/// vertices whose set of transcripts overlap and whose UMIs are within
+/// a Hamming distance of 1 of each other.  If one node has more than
+/// twice the frequency of the other, the edge is directed from the
+/// more frequent to the less freuqent node.  Otherwise, edges are
+/// added in both directions.
 fn extract_graph(
     eqmap: &EqMap,
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
-
-    fn get_set() -> HashSet<u32, fasthash::sea::Hash64> {
-        HashSet::with_hasher(sea::Hash64)
-    }
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
@@ -83,6 +88,19 @@ fn extract_graph(
     let mut _unidirected = 0u64;
 
     let mut graph = DiGraphMap::<(u32, u32), ()>::new();
+    let mut hset = vec![0u8; eqmap.num_eq_classes()];
+    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
+
+    // insert all of the nodes up front to avoid redundant
+    // checks later.
+    for eqid in 0..eqmap.num_eq_classes() {
+        // get the info Vec<(UMI, frequency)>
+        let eq = &eqmap.eqc_info[eqid];
+        let u1 = &eq.umis;
+        for (xi, _x) in u1.iter().enumerate() {
+            graph.add_node((eqid as u32, xi as u32));
+        }
+    }
 
     // for every equivalence class in this cell
     for eqid in 0..eqmap.num_eq_classes() {
@@ -90,7 +108,6 @@ fn extract_graph(
             print!("\rprocessed {:?} eq classes", eqid);
             io::stdout().flush().expect("Could not flush stdout");
         }
-        //ctr += 1;
 
         // get the info Vec<(UMI, frequency)>
         let eq = &eqmap.eqc_info[eqid];
@@ -99,7 +116,7 @@ fn extract_graph(
         let u1 = &eq.umis;
         for (xi, x) in u1.iter().enumerate() {
             // add a node
-            graph.add_node((eqid as u32, xi as u32));
+            // graph.add_node((eqid as u32, xi as u32));
 
             // for each (umi, freq) pair and node after this one
             for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
@@ -108,7 +125,7 @@ fn extract_graph(
                 //let x2 = &u1[xi2];
 
                 // add a node for it
-                graph.add_node((eqid as u32, xi2 as u32));
+                // graph.add_node((eqid as u32, xi2 as u32));
 
                 // determine if an edge exists between x and x2, and if so, what kind
                 let et = has_edge(&x, &x2);
@@ -141,7 +158,16 @@ fn extract_graph(
             }
         }
 
-        let mut hset = get_set();
+        //hset.clear();
+        //hset.resize(eqmap.num_eq_classes(), 0u8);
+        for i in &idxvec {
+            hset[*i as usize] = 0u8;
+        }
+        let stf = idxvec.len() > 128;
+        idxvec.clear();
+        if stf {
+            idxvec.shrink_to_fit();
+        }
 
         // for every reference id in this eq class
         for r in eqmap.refs_for_eqc(eqid as u32) {
@@ -155,22 +181,25 @@ fn extract_graph(
                 // otherwise, if we have already processed this other equivalence
                 // class because it shares _another_ reference (apart from r) with
                 // the current equivalence class, then skip it.
-                if hset.contains(eq2id) {
+                if hset[*eq2id as usize] > 0 {
                     continue;
                 }
 
                 // recall that we processed this eq class as a neighbor of eqid
-                hset.insert(*eq2id);
+                hset[*eq2id as usize] = 1;
+                idxvec.push(*eq2id as u32);
                 let eq2 = &eqmap.eqc_info[*eq2id as usize];
 
                 // compare all the umis between eqid and eq2id
                 let u2 = &eq2.umis;
                 for (xi, x) in u1.iter().enumerate() {
                     // Node for equiv : eqid and umi : xi
-                    graph.add_node((eqid as u32, xi as u32));
+                    // graph.add_node((eqid as u32, xi as u32));
+
                     for (yi, y) in u2.iter().enumerate() {
                         // Node for equiv : eq2id and umi : yi
-                        graph.add_node((*eq2id as u32, yi as u32));
+                        // graph.add_node((*eq2id as u32, yi as u32));
+
                         let et = has_edge(&x, &y);
                         match et {
                             PUGEdgeType::BiDirected => {
@@ -373,9 +402,16 @@ pub fn quantify(
     let mat_path = output_path.join("counts.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
+    let ff_path = output_path.join("features.txt");
+    let mut ff_file = fs::File::create(ff_path)?;
+    writeln!(ff_file, "cell_num\tnum_mapped\ttot_umi\tdedup_rate\tmean_by_max\ttotal_expressed_genes\tnum_genes_over_mean")?;
+
+    let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
+        BufWriter::new(ff_file),
     )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -396,6 +432,7 @@ pub fn quantify(
         let bcout = bc_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
+        let alt_res_cells = alt_res_cells.clone();
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
@@ -404,11 +441,12 @@ pub fn quantify(
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
+            let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
 
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
+                if let Ok((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
@@ -417,12 +455,38 @@ pub fn quantify(
 
                     let counts: Vec<f32>;
                     let bootstraps: Vec<Vec<f32>>;
+                    let mut alt_resolution = false;
+
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            counts = pugutils::get_num_molecules_cell_ranger_like(
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                true,
+                                &log,
+                            );
+                        }
+                        ResolutionStrategy::CellRangerLikeEM => {
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                false,
                                 &log,
                             );
                         }
@@ -436,8 +500,14 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
+                            alt_resolution = alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -458,8 +528,14 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let gene_eqc =
-                                pugutils::get_num_molecules(&g, &eq_map, &tid_to_gid, &log);
+                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
+                            alt_resolution = alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -489,6 +565,37 @@ pub fn quantify(
                     no_ambiguity.resize(num_genes, false);
                     // done clearing
 
+                    if alt_resolution {
+                        alt_res_cells.lock().unwrap().push(cell_num as u64);
+                    }
+
+                    //
+                    // featuresStream << "\t" << numRawReads
+                    //   << "\t" << numMappedReads
+                    let mut max_umi = 0.0f32;
+                    let mut sum_umi = 0.0f32;
+                    let mut num_expr: u32 = 0;
+                    expressed_vec.clear();
+                    for c in &counts {
+                        max_umi = if *c > max_umi { *c } else { max_umi };
+                        sum_umi += *c;
+                        if *c > 0.0 {
+                            num_expr += 1;
+                            expressed_vec.push(*c);
+                        }
+                    }
+
+                    let num_reads = nrec;
+                    let dedup_rate = sum_umi / num_reads as f32;
+
+                    // mean of the "expressed" genes
+                    let mean_expr = sum_umi / num_expr as f32;
+                    // number of genes with expression > expressed mean
+                    expressed_vec.retain(|e| e > &mean_expr);
+                    let num_genes_over_mean = expressed_vec.len();
+                    // expressed mean / max expression
+                    let mean_by_max = mean_expr / max_umi;
+
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
@@ -517,6 +624,19 @@ pub fn quantify(
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
                             
+
+                        writeln!(
+                            &mut writer.2,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            cell_num,
+                            num_reads,
+                            sum_umi,
+                            dedup_rate,
+                            mean_by_max,
+                            num_expr,
+                            num_genes_over_mean
+                        )
+                        .expect("can't write to feature file");
                     }
                 }
             }
@@ -558,6 +678,23 @@ pub fn quantify(
             }
         }
     }
+
+    let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
+    pbar.finish_with_message(&pb_msg);
+
+    let meta_info = json!({
+        "resolution_strategy" : resolution.to_string(),
+        "num_quantified_cells" : hdr.num_chunks,
+        "num_genes" : num_genes,
+        "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
+    });
+
+    let mut meta_info_file = File::create(output_path.join("meta_info.json"))
+        .expect("couldn't create meta_info.json file.");
+    let aux_info_str = serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+    meta_info_file
+        .write_all(aux_info_str.as_bytes())
+        .expect("cannot write to meta_info.json file");
 
     Ok(())
 }

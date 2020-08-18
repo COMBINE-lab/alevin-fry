@@ -10,6 +10,7 @@ use crate as libradicl;
 use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 
 /**
@@ -42,8 +43,15 @@ pub struct ProtocolInfo {
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
+    CellRangerLikeEM,
     Full,
     Parsimony,
+}
+
+impl fmt::Display for ResolutionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 // Implement the trait
@@ -53,6 +61,7 @@ impl FromStr for ResolutionStrategy {
         match s {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
+            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEM),
             "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),

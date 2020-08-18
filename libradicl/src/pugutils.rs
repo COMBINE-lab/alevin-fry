@@ -7,7 +7,7 @@ extern crate petgraph;
 extern crate quickersort;
 extern crate slog;
 
-use self::slog::crit;
+use self::slog::{crit, warn};
 use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use std::cmp::Ordering;
@@ -63,6 +63,7 @@ where
 /// equivalence class labels of all vertices in the arboresence).
 fn collapse_vertices(
     v: u32,
+    uncovered_vertices: &HashSet<u32>, // the set of vertices already covered
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
@@ -107,13 +108,24 @@ fn collapse_vertices(
             // reach (those with outgoing, or bidirected edges)
             for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
                 let n = g.to_index(nv) as u32;
+
+                // check if we should add this vertex or not:
+                // uncovered_vertices contains the the current set of
+                // *uncovered* vertices in this component (i.e. those
+                // that we still need to explain by some molecule).
+                // so, if n is *not* in uncovered_vertices, then it is not in the
+                // uncovered set, and so it has already been
+                // explained / covered.
+                //
+                // if n hasn't been covered yet, then
                 // check if we've seen n in this traversal
                 // yet. The `insert()` method returns true
                 // if the set didn't have the element, false
                 // otherwise.
-                if !visited_set.insert(n) {
+                if !uncovered_vertices.contains(&n) || !visited_set.insert(n) {
                     continue;
                 }
+
                 // get the set of transcripts present in the
                 // label of the current node.
                 let n_labels = eqmap.refs_for_eqc(nv.0);
@@ -138,10 +150,12 @@ fn collapse_vertices(
 pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
-    num_genes: usize,
+    _num_genes: usize,
     _log: &slog::Logger,
-) -> Vec<f32> {
-    let mut counts = vec![0.0f32; num_genes];
+) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
+    let s = fasthash::RandomState::<Hash64>::new();
+    let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+        HashMap::with_hasher(s);
 
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
@@ -181,15 +195,17 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
     // hold the gene id having the max count for this umi
     // and the maximum count value itself
-    let mut max_count_gene = 0u32;
+    // let mut max_count_gene = 0u32;
     let mut max_count = 0u32;
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
     // could this UMI be assigned toa best gene or not
-    let mut unresolvable = false;
+    // let mut unresolvable = false;
     // to keep track of the current index in the vector
     let mut cidx = 0usize;
+    // the vector will hold the equivalent set of best genes
+    let mut best_genes = Vec::<u32>::with_capacity(16);
 
     // look over all sorted triplets
     while cidx < umi_gene_count_vec.len() {
@@ -201,19 +217,26 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         // on the previous umi
         if umi != curr_umi {
             // if previous was resolvable, add it to the appropriate gene
-            if !unresolvable {
-                counts[max_count_gene as usize] += 1.0f32;
-            }
+            //if !unresolvable {
+            //    counts[max_count_gene as usize] += 1.0f32;
+            //}
+
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+            quickersort::sort(&mut best_genes[..]);
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
             curr_umi = umi;
             curr_gn = gn;
 
             // the next umi will start as resolvable
-            unresolvable = false;
+            // unresolvable = false;
 
             // current gene is current best
-            max_count_gene = gn;
+            // max_count_gene = gn;
+            best_genes.clear();
+            best_genes.push(gn);
 
             // count aggr = max count = ct
             count_aggr = ct;
@@ -233,19 +256,23 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // if the count aggregator exceeded the max
             // then it is the new max, and this gene is
             // the new max gene.  Having a distinct max
-            // also makes this UMI resolvable
+            // also makes this UMI uniquely resolvable
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
-                    max_count_gene = gn;
-                    unresolvable = false;
+                    // max_count_gene = gn;
+                    // unresolvable = false;
+                    best_genes.clear();
+                    best_genes.push(gn);
                 }
                 Ordering::Equal => {
                     // if we have a tie for the max count
-                    // then the current UMI becomes unresolvable
+                    // then the current UMI isn't uniquely-unresolvable
                     // it will stay this way unless we see a bigger
-                    // count for this UMI
-                    unresolvable = true;
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
+                    // unresolvable = true;
+                    best_genes.push(gn);
                 }
                 Ordering::Less => {
                     // we do nothing
@@ -254,13 +281,16 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         }
 
         // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 && !unresolvable {
-            counts[max_count_gene as usize] += 1.0f32;
+        if cidx == umi_gene_count_vec.len() - 1 {
+            //&& !unresolvable {
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            //counts[max_count_gene as usize] += 1.0f32;
         }
         cidx += 1;
     }
 
-    counts
+    //counts
+    gene_eqclass_hash
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(
@@ -315,6 +345,155 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     counts
 }
 
+/// given the connected component (subgraph) of `g` defined by the
+/// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
+/// within this subgraph.
+fn get_num_molecules_large_component(
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eq_map: &EqMap,
+    vertex_ids: &[u32],
+    tid_to_gid: &[u32],
+    num_genes: usize,
+    log: &slog::Logger,
+) -> Vec<u32> {
+    let mut counts = vec![0u32; num_genes];
+
+    // TODO: better capacity
+    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
+
+    // build a temporary hashmap from each
+    // equivalence class id in the current subgraph
+    // to the set of (UMI, frequency) pairs contained
+    // in the subgraph
+    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
+
+    // for each vertex id in the subgraph
+    for vertex_id in vertex_ids {
+        // get the corresponding vertex which is
+        // an (eq_id, UMI index) pair
+        let vert = g.from_index(*vertex_id as usize);
+        // add the corresponding (UMI, frequency) pair to the map
+        // for this eq_id
+        let umis = tmp_map.entry(vert.0).or_insert_with(Vec::new);
+        umis.push(eq_map.eqc_info[vert.0 as usize].umis[vert.1 as usize]);
+    }
+
+    for (k, v) in tmp_map.iter() {
+        // get the (umi, count) pairs
+        let umis = v; //&eqinfo.umis;
+        let eqid = k; //&eqinfo.eq_num;
+                      // project the transcript ids to gene ids
+        let mut gset: Vec<u32> = eq_map
+            .refs_for_eqc(*eqid)
+            .iter()
+            .map(|tid| tid_to_gid[*tid as usize])
+            .collect();
+        // and make the gene ids unique
+        quickersort::sort(&mut gset[..]);
+        gset.dedup();
+
+        // add every (umi, count), gene pair as a triplet
+        // of (umi, gene_id, count) to the output vector
+        for umi_ct in umis {
+            for g in &gset {
+                umi_gene_count_vec.push((umi_ct.0, *g, umi_ct.1));
+            }
+        }
+    }
+
+    // sort the triplets
+    // first on umi
+    // then on gene_id
+    // then on count
+    quickersort::sort(&mut umi_gene_count_vec[..]);
+
+    // hold the current umi and gene we are examining
+    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
+    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    // hold the gene id having the max count for this umi
+    // and the maximum count value itself
+    let mut max_count_gene = 0u32;
+    let mut max_count = 0u32;
+    // to aggregate the count should a (umi, gene) pair appear
+    // more than once
+    let mut count_aggr = 0u32;
+    // could this UMI be assigned toa best gene or not
+    let mut unresolvable = false;
+    // to keep track of the current index in the vector
+    let mut cidx = 0usize;
+
+    // look over all sorted triplets
+    while cidx < umi_gene_count_vec.len() {
+        let (umi, gn, ct) = umi_gene_count_vec[cidx];
+
+        // if this umi is different than
+        // the one we are processing
+        // then decide what action to take
+        // on the previous umi
+        if umi != curr_umi {
+            // if previous was resolvable, add it to the appropriate gene
+            if !unresolvable {
+                counts[max_count_gene as usize] += 1;
+            }
+
+            // the next umi and gene
+            curr_umi = umi;
+            curr_gn = gn;
+
+            // the next umi will start as resolvable
+            unresolvable = false;
+
+            // current gene is current best
+            max_count_gene = gn;
+
+            // count aggr = max count = ct
+            count_aggr = ct;
+            max_count = ct;
+        } else {
+            // the umi was the same
+
+            // if the gene is the same, add the counts
+            if gn == curr_gn {
+                count_aggr += ct;
+            } else {
+                // if the gene is different, then restart the count_aggr
+                // and set the current gene id
+                count_aggr = ct;
+                curr_gn = gn;
+            }
+            // if the count aggregator exceeded the max
+            // then it is the new max, and this gene is
+            // the new max gene.  Having a distinct max
+            // also makes this UMI resolvable
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
+                    max_count = count_aggr;
+                    max_count_gene = gn;
+                    unresolvable = false;
+                }
+                Ordering::Equal => {
+                    // if we have a tie for the max count
+                    // then the current UMI becomes unresolvable
+                    // it will stay this way unless we see a bigger
+                    // count for this UMI
+                    unresolvable = true;
+                }
+                Ordering::Less => {
+                    // we do nothing
+                }
+            }
+        }
+
+        // if this was the last UMI in the list
+        if cidx == umi_gene_count_vec.len() - 1 && !unresolvable {
+            counts[max_count_gene as usize] += 1;
+        }
+        cidx += 1;
+    }
+
+    counts
+}
+
 /// Given the digraph `g` representing the PUGs within the current
 /// cell, the EqMap `eqmap` to decode all equivalence classes
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
@@ -324,8 +503,9 @@ pub(super) fn get_num_molecules(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
+    num_genes: usize,
     log: &slog::Logger,
-) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
+) -> (HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>, bool) {
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
     fn get_set(cap: u32) -> U32Set {
         let s = RandomState::<Hash64>::new();
@@ -360,29 +540,63 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
+    let mut alternative_resoluton = false;
 
     for (_comp_label, comp_verts) in comps.iter() {
         if comp_verts.len() > 1 {
-            // vset will hold the set of vertices that are
-            // covered.
-            let mut vset = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
+            // the current parsimony resolution algorithm
+            // can become slow for connected components that
+            // are very large.  For components with > 1000 vertices
+            // (this should be _very_ rare) we will instead resolve
+            // the UMIs in the component using a simpler algorithm.
+            if comp_verts.len() > 1000 {
+                let mut ng = 0u32;
+                let mut numi = 0u32;
+                let gene_increments = get_num_molecules_large_component(
+                    g, eqmap, comp_verts, tid_to_gid, num_genes, log,
+                );
+                for (gn, val) in gene_increments.iter().enumerate() {
+                    if *val > 0 {
+                        let e = gene_eqclass_hash.entry(vec![gn as u32]).or_insert(0);
+                        *e += *val;
+                        ng += 1;
+                        numi += *val;
+                    }
+                }
 
-            // we will remove covered vertices from vset until they are
+                warn!(
+                    log,
+                    "\n\nfound connected component with {} vertices, \
+                    resolved into {} UMIs over {} genes with trivial resolution.\n\n",
+                    comp_verts.len(),
+                    numi,
+                    ng
+                );
+                alternative_resoluton = true;
+                continue;
+            }
+
+            // uncovered_vertices will hold the set of vertices that are
+            // *not yet* covered.
+            let mut uncovered_vertices = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
+
+            // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
-            while !vset.is_empty() {
+            while !uncovered_vertices.is_empty() {
                 // will hold vertices in the best mcc
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
                 // best mcc covering
                 let mut best_covering_txp = std::u32::MAX;
                 // for each vertex in the vertex set
-                for v in vset.iter() {
+                for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
                     // and the transcript that covers it
                     // NOTE: what if there are multiple different mccs that
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
-                    let (new_mcc, covering_txp) = collapse_vertices(*v, g, eqmap);
+                    let (new_mcc, covering_txp) =
+                        collapse_vertices(*v, &uncovered_vertices, g, eqmap);
 
                     // if the new mcc is better than the current best, then
                     // it becomes the new best
@@ -464,9 +678,9 @@ pub(super) fn get_num_molecules(
                 *counter += 1;
 
                 // for every vertext that has been covered
-                // remove it from vset
+                // remove it from uncovered_vertices
                 for rv in best_mcc.iter() {
-                    vset.remove(rv);
+                    uncovered_vertices.remove(rv);
                 }
             } //end-while
         } else {
@@ -500,7 +714,7 @@ pub(super) fn get_num_molecules(
         //identified_txps.push(*rand_cover as u32);
     }
 
-    gene_eqclass_hash
+    (gene_eqclass_hash, alternative_resoluton)
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {

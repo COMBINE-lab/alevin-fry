@@ -7,6 +7,7 @@ extern crate fasthash;
 extern crate needletail;
 extern crate num;
 extern crate quickersort;
+extern crate sce;
 extern crate scroll;
 
 use bio_types::strand::*;
