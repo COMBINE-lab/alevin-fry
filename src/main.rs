@@ -217,12 +217,17 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
-        libradicl::quant::quantify(input_dir, tg_map, output_dir, 
-            num_threads, num_bootstraps, 
+        libradicl::quant::quantify(
+            input_dir,
+            tg_map,
+            output_dir,
+            num_threads,
+            num_bootstraps,
             init_uniform,
-            summary_stat, 
-            resolution, 
-            &log)
-            .expect("could not quantify rad file.");
+            summary_stat,
+            resolution,
+            &log,
+        )
+        .expect("could not quantify rad file.");
     }
 }

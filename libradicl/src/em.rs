@@ -43,18 +43,21 @@ fn mean(data: &[f64]) -> Option<f64> {
 fn std_deviation(data: &[f64]) -> Option<f64> {
     match (mean(data), data.len()) {
         (Some(data_mean), count) if count > 0 => {
-            let variance = data.iter().map(|value| {
-                let diff = data_mean - (*value as f64);
+            let variance = data
+                .iter()
+                .map(|value| {
+                    let diff = data_mean - (*value as f64);
 
-                diff * diff
-            }).sum::<f64>() / count as f64;
+                    diff * diff
+                })
+                .sum::<f64>()
+                / count as f64;
 
             Some(variance.sqrt())
-        },
-        _ => None
+        }
+        _ => None,
     }
 }
-
 
 pub fn em_update(
     alphas_in: &[f32],
@@ -231,7 +234,6 @@ pub fn run_bootstrap(
             // eqclass_bootstrap
             //     .entry(labels.to_vec())
             //     .or_insert(resampled_counts[*eq_id].round() as u32);
-            
         }
 
         // fill new alpha
@@ -286,22 +288,22 @@ pub fn run_bootstrap(
 
         let alphas_sum: f32 = alphas.iter().sum();
         assert!(alphas_sum > 0.0, "Alpha Sum too small");
-        if summary_stat{
-            for i in 0..gene_alpha.len(){
+        if summary_stat {
+            for i in 0..gene_alpha.len() {
                 alphas_mean[i] += alphas[i];
                 alphas_square[i] += alphas[i] * alphas[i];
             }
-        }else {
+        } else {
             bootstraps.push(alphas.clone());
         }
         // println!("After alpha sum: {:?}, it_num: {:?}", alphas_sum, it_num);
         // old_resampled_counts = resampled_counts.clone();
     }
     if summary_stat {
-        for i in 0..gene_alpha.len(){
+        for i in 0..gene_alpha.len() {
             let mean_alpha = alphas_mean[i] / num_bootstraps as f32;
-            sample_mean[i] = mean_alpha ;
-            sample_var[i] = (alphas_square[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha); 
+            sample_mean[i] = mean_alpha;
+            sample_var[i] = (alphas_square[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha);
         }
 
         bootstraps.push(sample_mean.clone());
