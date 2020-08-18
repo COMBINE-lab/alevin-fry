@@ -262,6 +262,9 @@ pub fn quantify(
     //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
+    type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).unwrap();
     let mut br = BufReader::new(i_file);
@@ -414,16 +417,10 @@ pub fn quantify(
     writeln!(ff_file, "cell_num\tnum_mapped\ttot_umi\tdedup_rate\tmean_by_max\ttotal_expressed_genes\tnum_genes_over_mean")?;
 
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
-    let mut bt_writer_optional: Arc<Mutex<Option<BufWriter<GzEncoder<fs::File>>>>> =
+    let mut bt_writer_optional: OptionalLockedHandle<BufferedGZFile> = Arc::new(Mutex::new(None));
+
+    let mut bt_summary_writer_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
         Arc::new(Mutex::new(None));
-    let mut bt_summary_writer_optional: Arc<
-        Mutex<
-            Option<(
-                BufWriter<GzEncoder<fs::File>>,
-                BufWriter<GzEncoder<fs::File>>,
-            )>,
-        >,
-    > = Arc::new(Mutex::new(None));
     if num_bootstraps > 0 {
         if summary_stat {
             let bt_mean_buffered = GzEncoder::new(
@@ -473,16 +470,10 @@ pub fn quantify(
         // and the file writer
         let bcout = bc_writer.clone();
         // and the bootstrap file writer
-        let mut btcout_optional: Arc<Mutex<Option<BufWriter<GzEncoder<fs::File>>>>> =
+        let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
             Arc::new(Mutex::new(None));
-        let mut btcout_summary_optional: Arc<
-            Mutex<
-                Option<(
-                    BufWriter<GzEncoder<fs::File>>,
-                    BufWriter<GzEncoder<fs::File>>,
-                )>,
-            >,
-        > = Arc::new(Mutex::new(None));
+        let mut btcout_summary_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
+            Arc::new(Mutex::new(None));
         if num_bootstraps > 0 {
             if summary_stat {
                 btcout_summary_optional = bt_summary_writer_optional.clone();
