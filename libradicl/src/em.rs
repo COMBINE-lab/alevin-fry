@@ -306,8 +306,8 @@ pub fn run_bootstrap(
             sample_var[i] = (alphas_square[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha);
         }
 
-        bootstraps.push(sample_mean.clone());
-        bootstraps.push(sample_var.clone());
+        bootstraps.push(sample_mean);
+        bootstraps.push(sample_var);
     }
 
     bootstraps

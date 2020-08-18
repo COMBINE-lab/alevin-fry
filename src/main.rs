@@ -50,6 +50,7 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
+        .arg(Arg::from("-d, --expected-ori=[expected-ori] 'the expected orientation of alignments'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
         ))
@@ -79,9 +80,9 @@ fn main() {
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
-         .default_value("10000000"))
-    .arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
-         .default_value("fw"));
+         .default_value("10000000"));
+    //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
+    //     .default_value("fw"));
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
@@ -129,45 +130,6 @@ fn main() {
             .value_of_t("output-dir")
             .expect("no input directory specified");
 
-        let mut fmeth = CellFilterMethod::KneeFinding;
-
-        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ExpectCells(v);
-                Some(v)
-            }
-            Err(_) => None,
-        };
-        if expect_cells.is_some() {
-            unimplemented!();
-        }
-
-        if t.is_present("knee-distance") {
-            fmeth = CellFilterMethod::KneeFinding;
-        }
-
-        let _force_cells = match t.value_of_t("force-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ForceCells(v);
-                Some(v)
-            }
-            Err(_) => None,
-        };
-
-        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ExplicitList(v.clone());
-                Some(v)
-            }
-            Err(_) => None,
-        };
-        let nc = generate_permit_list(input_file, output_dir, fmeth, &log).unwrap();
-        if nc == 0 {
-            warn!(log, "found 0 corrected barcodes; please check the input.");
-        }
-    }
-
-    if let Some(ref t) = opts.subcommand_matches("collate") {
         let valid_ori: bool;
         let expected_ori = match t.value_of("expected-ori").unwrap().to_uppercase().as_str() {
             "RC" => {
@@ -201,10 +163,49 @@ fn main() {
             std::process::exit(1);
         }
 
+        let mut fmeth = CellFilterMethod::KneeFinding;
+
+        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExpectCells(v);
+                Some(v)
+            }
+            Err(_) => None,
+        };
+        if expect_cells.is_some() {
+            unimplemented!();
+        }
+
+        if t.is_present("knee-distance") {
+            fmeth = CellFilterMethod::KneeFinding;
+        }
+
+        let _force_cells = match t.value_of_t("force-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ForceCells(v);
+                Some(v)
+            }
+            Err(_) => None,
+        };
+
+        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExplicitList(v.clone());
+                Some(v)
+            }
+            Err(_) => None,
+        };
+        let nc = generate_permit_list(input_file, output_dir, fmeth, expected_ori, &log).unwrap();
+        if nc == 0 {
+            warn!(log, "found 0 corrected barcodes; please check the input.");
+        }
+    }
+
+    if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_file: String = t.value_of_t("rad-file").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_file, max_records, expected_ori, &log)
+        libradicl::collate::collate(input_dir, rad_file, max_records, &log)
             .expect("could not collate.");
     }
 

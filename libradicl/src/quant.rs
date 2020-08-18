@@ -14,8 +14,7 @@ extern crate slog;
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 #[allow(unused_imports)]
-use self::slog::crit;
-use self::slog::info;
+use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
@@ -513,6 +512,9 @@ pub fn quantify(
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                    if c.reads.is_empty() {
+                        warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, _nbyte = {}, nrec = {}", cell_num, _nbyte, nrec);
+                    }
                     let bc = c.reads.first().expect("chunk with no reads").bc;
                     eq_map.init_from_chunk(&mut c);
 

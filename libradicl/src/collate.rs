@@ -8,8 +8,9 @@ extern crate serde;
 extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
-use self::slog::info;
+use self::slog::{crit, info};
 use bio_types::strand::Strand;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -21,13 +22,35 @@ pub fn collate(
     input_dir: String,
     rad_file: String,
     max_records: u32,
-    expected_ori: Strand,
+    //expected_ori: Strand,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
+
+    // open the metadata file and read the json
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
+        .expect("could not open the generate_permit_list.json file.");
+    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+
+    // next line is ugly — should be a better way.  We need a char to
+    // get the strand, so we get the correct field as a `str` then
+    // use the chars iterator and get the first char.
+    let ori_str: char = mdata["expected_ori"]
+        .as_str()
+        .unwrap()
+        .chars()
+        .next()
+        .unwrap();
+    let expected_ori = match Strand::from_char(&ori_str) {
+        Ok(s) => s,
+        Err(e) => {
+            crit!(log, "invalid metadata {}.", e);
+            std::process::exit(1);
+        }
+    };
+
     let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
     let i_file = File::open(&rad_file).unwrap();
-
     let mut br = BufReader::new(i_file);
 
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
@@ -37,10 +60,11 @@ pub fn collate(
 
     info!(
         log,
-        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
+        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}, expected_ori : {:?}",
         hdr.is_paired != 0,
         hdr.ref_count,
-        hdr.num_chunks
+        hdr.num_chunks,
+        expected_ori
     );
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);

@@ -328,6 +328,7 @@ impl ReadRecord {
                 rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }
+
         // make sure these are sorted in this step.
         quickersort::sort(&mut rec.refs[..]);
         rec
@@ -365,7 +366,6 @@ pub fn process_corrected_cb_chunk<T: Read>(
     reader.read_exact(&mut buf).unwrap();
     let _nbytes = buf.pread::<u32>(0).unwrap();
     let nrec = buf.pread::<u32>(4).unwrap();
-
     // for each record, read it
     for _ in 0..(nrec as usize) {
         let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
@@ -574,9 +574,28 @@ impl RADHeader {
 pub fn update_barcode_hist(
     hist: &mut HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
     chunk: &Chunk,
+    expected_ori: &Strand,
 ) {
-    for r in &chunk.reads {
-        *hist.entry(r.bc).or_insert(0) += 1;
+    match expected_ori {
+        Strand::Unknown => {
+            for r in &chunk.reads {
+                *hist.entry(r.bc).or_insert(0) += 1;
+            }
+        }
+        Strand::Forward => {
+            for r in &chunk.reads {
+                if r.dirs.iter().any(|&x| x) {
+                    *hist.entry(r.bc).or_insert(0) += 1;
+                }
+            }
+        }
+        Strand::Reverse => {
+            for r in &chunk.reads {
+                if r.dirs.iter().any(|&x| !x) {
+                    *hist.entry(r.bc).or_insert(0) += 1;
+                }
+            }
+        }
     }
 }
 
