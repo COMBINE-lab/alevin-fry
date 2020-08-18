@@ -28,37 +28,6 @@ const MIN_ITER: u32 = 50;
 const MAX_ITER: u32 = 10_000;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
-#[allow(dead_code)]
-fn mean(data: &[f64]) -> Option<f64> {
-    let sum = data.iter().sum::<f64>() as f64;
-    let count = data.len();
-
-    match count {
-        positive if positive > 0 => Some(sum / count as f64),
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn std_deviation(data: &[f64]) -> Option<f64> {
-    match (mean(data), data.len()) {
-        (Some(data_mean), count) if count > 0 => {
-            let variance = data
-                .iter()
-                .map(|value| {
-                    let diff = data_mean - (*value as f64);
-
-                    diff * diff
-                })
-                .sum::<f64>()
-                / count as f64;
-
-            Some(variance.sqrt())
-        }
-        _ => None,
-    }
-}
-
 pub fn em_update(
     alphas_in: &[f32],
     alphas_out: &mut Vec<f32>,
@@ -180,18 +149,11 @@ pub fn run_bootstrap(
     // num_alphas: usize,
     // only_unique: bool,
     init_uniform: bool,
-    summary_stat: bool,
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
     let mut total_fragments = 0u64;
 
-    // println!("In bootstrapping");
-
     let mut alphas: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut alphas_mean: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut alphas_square: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut sample_mean: Vec<f32> = vec![0.0; gene_alpha.len()];
-    let mut sample_var: Vec<f32> = vec![0.0; gene_alpha.len()];
     let mut alphas_prime: Vec<f32> = vec![0.0; gene_alpha.len()];
     // let mut means: Vec<f32> = vec![0.0; gene_alpha.len()];
     // let mut square_means: Vec<f32> = vec![0.0; gene_alpha.len()];
@@ -211,8 +173,6 @@ pub fn run_bootstrap(
             .or_insert_with(|| labels.to_vec());
     }
 
-    // println!("total fragments {:?}", total_fragments);
-
     // a new hashmap to be updated in each bootstrap
     let s = fasthash::RandomState::<Hash64>::new();
     let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
@@ -224,16 +184,13 @@ pub fn run_bootstrap(
     let mut bootstraps = Vec::new();
 
     // bootstrap loop starts
-    // let mut old_resampled_counts = Vec::new();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
         let resampled_counts = thread_rng().sample(dist.clone());
-
         for (eq_id, labels) in &eqclasses_serialize {
-            eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id].round() as u32);
-            // eqclass_bootstrap
-            //     .entry(labels.to_vec())
-            //     .or_insert(resampled_counts[*eq_id].round() as u32);
+            eqclass_bootstrap
+                .entry(labels.to_vec())
+                .or_insert(resampled_counts[*eq_id].round() as u32);
         }
 
         // fill new alpha
@@ -244,9 +201,6 @@ pub fn run_bootstrap(
                 alphas[i] = (gene_alpha[i] + 0.5) * 1e-3;
             }
         }
-
-        // let alpha_sum : f32 = alphas.iter().sum();
-        // println!("Bootstrap num ... {:?}, alpha_sum ... {:?}", _bs_num, alpha_sum);
 
         let mut it_num: u32 = 0;
         let mut converged: bool = false;
@@ -288,26 +242,7 @@ pub fn run_bootstrap(
 
         let alphas_sum: f32 = alphas.iter().sum();
         assert!(alphas_sum > 0.0, "Alpha Sum too small");
-        if summary_stat {
-            for i in 0..gene_alpha.len() {
-                alphas_mean[i] += alphas[i];
-                alphas_square[i] += alphas[i] * alphas[i];
-            }
-        } else {
-            bootstraps.push(alphas.clone());
-        }
-        // println!("After alpha sum: {:?}, it_num: {:?}", alphas_sum, it_num);
-        // old_resampled_counts = resampled_counts.clone();
-    }
-    if summary_stat {
-        for i in 0..gene_alpha.len() {
-            let mean_alpha = alphas_mean[i] / num_bootstraps as f32;
-            sample_mean[i] = mean_alpha;
-            sample_var[i] = (alphas_square[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha);
-        }
-
-        bootstraps.push(sample_mean.clone());
-        bootstraps.push(sample_var.clone());
+        bootstraps.push(alphas.clone());
     }
 
     bootstraps

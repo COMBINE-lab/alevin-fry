@@ -43,7 +43,6 @@ pub struct ProtocolInfo {
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
-    CellRangerLikeEM,
     Full,
     Parsimony,
 }
@@ -61,7 +60,6 @@ impl FromStr for ResolutionStrategy {
         match s {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
-            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEM),
             "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
