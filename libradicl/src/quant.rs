@@ -551,7 +551,7 @@ pub fn quantify(
                         }
 
                         let writer_deref = Some(btcout_optional).unwrap();
-                        let writer = &mut *writer_deref.lock().unwrap();
+                        let writer = &mut *writer_deref.unwrap().lock().unwrap();
                         writer
                             .write_all(&bt_eds_bytes)
                             .expect("can't write to matrix file.");
