@@ -2,10 +2,16 @@ generate-permit-list
 ====================
 
 This command takes as input a RAD file (created by running alevin with the ``--justAlign`` flag), and it determines what cell 
-barcodes should be associated with "true" cells, which should be corrected to some "true" barcode, and which should simply 
-be ignored / discarded. This command has 3 required arguments; the path to an input RAD file `--input`, 
-the path to an output directory ``--output-dir`` (which will be created if it doesn't exist), and then one of the following mutually 
-exclusive options (which determines how the "true" barcodes are decided):
+barcodes should be associated with "true" cells, which should be corrected to
+some "true" barcode, and which should simply be ignored / discarded. This
+command has 4 required arguments; the path to an input RAD file ``--input``,
+the path to an output directory ``--output-dir`` (which will be created if it
+doesn't exist), the expected orientation of properly mapped reads
+``--expected-ori`` (the options are 'fw' (filters out alignments to the
+reverse complement strand), 'rc' (filter out alignments to the forward
+strand) and 'both' or 'either' (do not filter any alignments)), and then one
+of the following mutually exclusive options (which determines how the "true"
+barcodes are decided):
 
 * ``--knee-distance``: This flag will use the distance method that is used in the whitelist command of 
   UMI-tools to attempt to automatically determine the number of true barcodes. Briefly, this 
@@ -44,4 +50,5 @@ relevant to users of ``alevin-fry``, but the files are described here.
 
 # The file ``permit_map.bin`` is a binary file (a serde serialized HashMap) that maps each barcode in the input RAD file that is within an edit distance of 1 to some *true* barcode to the barcode to which it corrects.  This allows the ``collate`` command to group together all of the read records corresponding to the same *corrected* barcode.
 
+# The file  ``generate_permit_list.json`` that is a JSON file containing information about the run of the command (currently, just the expected orientation).
 
