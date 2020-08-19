@@ -400,11 +400,15 @@ pub fn quantify(
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
 
+    // create sub-directory for matrix
+    let output_matrix_path = output_path.join("alevin");
+    fs::create_dir_all(&output_matrix_path)?;
+
     // well need a protected handle to write out the barcode
-    let bc_path = output_path.join("barcodes.txt");
+    let bc_path = output_matrix_path.join("quants_mat_rows.txt");
     let bc_file = fs::File::create(bc_path)?;
 
-    let mat_path = output_path.join("counts.eds.gz");
+    let mat_path = output_matrix_path.join("quants_mat.gz");
     //let bootstrap_path_1 = output_path.join("bootstraps_1.eds.gz");
 
     let bootstrap_path = output_path.join("bootstraps.eds.gz");
@@ -759,7 +763,7 @@ pub fn quantify(
         }
     }
 
-    let gn_path = output_path.join("gene_names.txt");
+    let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
     let mut gn_writer = BufWriter::new(gn_file);
     for g in gene_names {
