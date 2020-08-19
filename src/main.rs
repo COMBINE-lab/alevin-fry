@@ -50,7 +50,7 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
-        .arg(Arg::from("-d, --expected-ori=[expected-ori] 'the expected orientation of alignments'"))
+        .arg(Arg::from("-d, --expected-ori=<expected-ori> 'the expected orientation of alignments'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
         ))
