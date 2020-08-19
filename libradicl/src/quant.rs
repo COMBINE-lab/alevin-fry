@@ -796,5 +796,19 @@ pub fn quantify(
         .write_all(aux_info_str.as_bytes())
         .expect("cannot write to meta_info.json file");
 
+    // k3yavi: Todo delete after api stability
+    // creating a dummy cmd_info.json for R compatibility
+    let cmd_info = json!({
+         "salmon_version": "1.3.0",
+         "auxDir": "aux_info"
+    });
+    let mut cmd_info_file = File::create(output_path.join("cmd_info.json"))
+        .expect("couldn't create cmd_info.json file.");
+    let cmd_info_str =
+        serde_json::to_string_pretty(&cmd_info).expect("could not format cmd_info json.");
+    cmd_info_file
+        .write_all(cmd_info_str.as_bytes())
+        .expect("cannot write to cmd_info.json file");
+
     Ok(())
 }
