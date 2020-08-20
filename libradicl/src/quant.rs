@@ -14,8 +14,7 @@ extern crate slog;
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
 #[allow(unused_imports)]
-use self::slog::crit;
-use self::slog::info;
+use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
@@ -35,11 +34,12 @@ use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+//use std::ptr;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::em_optimize;
+use self::libradicl::em::{em_optimize, run_bootstrap};
 use self::libradicl::pugutils;
 use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
@@ -254,11 +254,17 @@ pub fn quantify(
     tg_map: String,
     output_dir: String,
     num_threads: u32,
+    num_bootstraps: u32,
+    init_uniform: bool,
+    summary_stat: bool,
     resolution: ResolutionStrategy,
     //no_em: bool,
     //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
+    type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).unwrap();
     let mut br = BufReader::new(i_file);
@@ -394,18 +400,61 @@ pub fn quantify(
     let output_path = std::path::Path::new(&output_dir);
     fs::create_dir_all(output_path)?;
 
+    // create sub-directory for matrix
+    let output_matrix_path = output_path.join("alevin");
+    fs::create_dir_all(&output_matrix_path)?;
+
     // well need a protected handle to write out the barcode
-    let bc_path = output_path.join("barcodes.txt");
+    let bc_path = output_matrix_path.join("quants_mat_rows.txt");
     let bc_file = fs::File::create(bc_path)?;
 
-    let mat_path = output_path.join("counts.eds.gz");
+    let mat_path = output_matrix_path.join("quants_mat.gz");
+    //let bootstrap_path_1 = output_path.join("bootstraps_1.eds.gz");
+
+    let bootstrap_path = output_path.join("bootstraps.eds.gz");
+    let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
+    let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
     let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
 
+    let ff_path = output_path.join("features.txt");
+    let mut ff_file = fs::File::create(ff_path)?;
+    writeln!(ff_file, "cell_num\tnum_mapped\ttot_umi\tdedup_rate\tmean_by_max\ttotal_expressed_genes\tnum_genes_over_mean")?;
+
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let mut bt_writer_optional: OptionalLockedHandle<BufferedGZFile> = Arc::new(Mutex::new(None));
+
+    let mut bt_summary_writer_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
+        Arc::new(Mutex::new(None));
+    if num_bootstraps > 0 {
+        if summary_stat {
+            let bt_mean_buffered = GzEncoder::new(
+                fs::File::create(bootstrap_mean_path)?,
+                Compression::default(),
+            );
+            let bt_var_buffered = GzEncoder::new(
+                fs::File::create(bootstrap_var_path)?,
+                Compression::default(),
+            );
+            bt_summary_writer_optional = Arc::new(Mutex::new(Some((
+                BufWriter::new(bt_mean_buffered),
+                BufWriter::new(bt_var_buffered),
+            ))));
+        } else {
+            let bt_buffered =
+                GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
+            bt_writer_optional = Arc::new(Mutex::new(Some(BufWriter::new(bt_buffered))));
+        }
+    }
+
+    // let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
+    // let bt_writer = Arc::new(Mutex::new(
+    //     BufWriter::new(bt_buffered),
+    // ));
 
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
+        BufWriter::new(ff_file),
     )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -424,6 +473,20 @@ pub fn quantify(
         let umi_type = umi_type;
         // and the file writer
         let bcout = bc_writer.clone();
+        // and the bootstrap file writer
+        let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
+            Arc::new(Mutex::new(None));
+        let mut btcout_summary_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
+            Arc::new(Mutex::new(None));
+        if num_bootstraps > 0 {
+            if summary_stat {
+                btcout_summary_optional = bt_summary_writer_optional.clone();
+            } else {
+                btcout_optional = bt_writer_optional.clone();
+            }
+        }
+
+        //let btcout = bt_writer.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
@@ -435,26 +498,55 @@ pub fn quantify(
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
+            let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
 
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, _nbyte, _nrec, buf)) = in_q.pop() {
+                if let Ok((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                    if c.reads.is_empty() {
+                        warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, _nbyte = {}, nrec = {}", cell_num, _nbyte, nrec);
+                    }
                     let bc = c.reads.first().expect("chunk with no reads").bc;
                     eq_map.init_from_chunk(&mut c);
 
                     let counts: Vec<f32>;
                     let mut alt_resolution = false;
 
+                    let mut bootstraps: Vec<Vec<f32>> = Vec::new();
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            counts = pugutils::get_num_molecules_cell_ranger_like(
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                true,
+                                &log,
+                            );
+                        }
+                        ResolutionStrategy::CellRangerLikeEM => {
+                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &log,
+                            );
+                            counts = em_optimize(
+                                &gene_eqc,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                num_genes,
+                                false,
                                 &log,
                             );
                         }
@@ -484,6 +576,16 @@ pub fn quantify(
                                 true,
                                 &log,
                             );
+                            if num_bootstraps > 0 {
+                                bootstraps = run_bootstrap(
+                                    &gene_eqc,
+                                    num_bootstraps,
+                                    &counts,
+                                    init_uniform,
+                                    summary_stat,
+                                    &log,
+                                );
+                            }
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
@@ -500,9 +602,20 @@ pub fn quantify(
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                false,
+                                init_uniform,
                                 &log,
                             );
+
+                            if num_bootstraps > 0 {
+                                bootstraps = run_bootstrap(
+                                    &gene_eqc,
+                                    num_bootstraps,
+                                    &counts,
+                                    init_uniform,
+                                    summary_stat,
+                                    &log,
+                                );
+                            }
                         }
                     }
                     // clear our local variables
@@ -519,13 +632,41 @@ pub fn quantify(
                         alt_res_cells.lock().unwrap().push(cell_num as u64);
                     }
 
+                    //
+                    // featuresStream << "\t" << numRawReads
+                    //   << "\t" << numMappedReads
+                    let mut max_umi = 0.0f32;
+                    let mut sum_umi = 0.0f32;
+                    let mut num_expr: u32 = 0;
+                    expressed_vec.clear();
+                    for c in &counts {
+                        max_umi = if *c > max_umi { *c } else { max_umi };
+                        sum_umi += *c;
+                        if *c > 0.0 {
+                            num_expr += 1;
+                            expressed_vec.push(*c);
+                        }
+                    }
+
+                    let num_reads = nrec;
+                    let dedup_rate = sum_umi / num_reads as f32;
+
+                    // mean of the "expressed" genes
+                    let mean_expr = sum_umi / num_expr as f32;
+                    // number of genes with expression > expressed mean
+                    expressed_vec.retain(|e| e > &mean_expr);
+                    let num_genes_over_mean = expressed_vec.len();
+                    // expressed mean / max expression
+                    let mean_by_max = mean_expr / max_umi;
+
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
                         let eds_bytes: Vec<u8> = sce::eds::as_bytes(&counts, num_genes)
                             .expect("can't conver vector to eds");
 
-                        let writer = &mut *bcout.lock().unwrap();
+                        let writer_deref = bcout.lock();
+                        let writer = &mut *writer_deref.unwrap();
                         // write to barcode file
                         writeln!(&mut writer.0, "{}\t{}", cell_num, unsafe {
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
@@ -537,6 +678,65 @@ pub fn quantify(
                             .1
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
+
+                        writeln!(
+                            &mut writer.2,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            cell_num,
+                            num_reads,
+                            sum_umi,
+                            dedup_rate,
+                            mean_by_max,
+                            num_expr,
+                            num_genes_over_mean
+                        )
+                        .expect("can't write to feature file");
+                    }
+
+                    // write bootstraps
+                    if num_bootstraps > 0 {
+                        // flatten the bootstraps
+                        if summary_stat {
+                            let eds_mean_bytes: Vec<u8> =
+                                sce::eds::as_bytes(&bootstraps[0], num_genes)
+                                    .expect("can't convert vector to eds");
+                            let eds_var_bytes: Vec<u8> =
+                                sce::eds::as_bytes(&bootstraps[1], num_genes)
+                                    .expect("can't convert vector to eds");
+
+                            let mut writer_deref = btcout_summary_optional.lock().unwrap();
+                            match &mut *writer_deref {
+                                Some(writer) => {
+                                    writer
+                                        .0
+                                        .write_all(&eds_mean_bytes)
+                                        .expect("can't write to matrix file.");
+                                    writer
+                                        .1
+                                        .write_all(&eds_var_bytes)
+                                        .expect("can't write to matrix file.");
+                                }
+                                None => {}
+                            }
+                        } else {
+                            let mut bt_eds_bytes: Vec<u8> = Vec::new();
+                            for i in 0..num_bootstraps {
+                                let bt_eds_bytes_slice =
+                                    sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                                        .expect("can't convert vector to eds");
+                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                            }
+
+                            let mut writer_deref = btcout_optional.lock().unwrap();
+                            match &mut *writer_deref {
+                                Some(writer) => {
+                                    writer
+                                        .write_all(&bt_eds_bytes)
+                                        .expect("can't write to matrix file.");
+                                }
+                                None => {}
+                            }
+                        }
                     }
                 }
             }
@@ -563,7 +763,7 @@ pub fn quantify(
         }
     }
 
-    let gn_path = output_path.join("gene_names.txt");
+    let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
     let mut gn_writer = BufWriter::new(gn_file);
     for g in gene_names {
@@ -595,6 +795,20 @@ pub fn quantify(
     meta_info_file
         .write_all(aux_info_str.as_bytes())
         .expect("cannot write to meta_info.json file");
+
+    // k3yavi: Todo delete after api stability
+    // creating a dummy cmd_info.json for R compatibility
+    let cmd_info = json!({
+         "salmon_version": "1.3.0",
+         "auxDir": "aux_info"
+    });
+    let mut cmd_info_file = File::create(output_path.join("cmd_info.json"))
+        .expect("couldn't create cmd_info.json file.");
+    let cmd_info_str =
+        serde_json::to_string_pretty(&cmd_info).expect("could not format cmd_info json.");
+    cmd_info_file
+        .write_all(cmd_info_str.as_bytes())
+        .expect("cannot write to cmd_info.json file");
 
     Ok(())
 }

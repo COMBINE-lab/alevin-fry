@@ -8,11 +8,13 @@ use self::slog::crit;
 use self::slog::info;
 
 use crate as libradicl;
+use bio_types::strand::Strand;
 use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use libradicl::exit_codes;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -175,6 +177,7 @@ pub fn generate_permit_list(
     input_file: String,
     output_dir: String,
     filter_meth: CellFilterMethod,
+    expected_ori: Strand,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
@@ -242,7 +245,7 @@ pub fn generate_permit_list(
 
     for _ in 0..(hdr.num_chunks as usize) {
         let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-        libradicl::update_barcode_hist(&mut hm, &c);
+        libradicl::update_barcode_hist(&mut hm, &c, &expected_ori);
         num_reads += c.reads.len();
     }
 
@@ -348,6 +351,19 @@ pub fn generate_permit_list(
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
         .expect("couldn't serialize permit list.");
+
+    let meta_info = json!({
+        "expected_ori" : expected_ori.strand_symbol()
+    });
+
+    let m_path = parent.join("generate_permit_list.json");
+    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
+
+    let meta_info_string =
+        serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+    m_file
+        .write_all(meta_info_string.as_bytes())
+        .expect("cannot write to generate_permit_list.json file");
 
     info!(
         log,

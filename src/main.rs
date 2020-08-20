@@ -50,6 +50,7 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
+        .arg(Arg::from("-d, --expected-ori=<expected-ori> 'the expected orientation of alignments'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
         ))
@@ -79,9 +80,9 @@ fn main() {
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
-         .default_value("10000000"))
-    .arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
-         .default_value("fw"));
+         .default_value("10000000"));
+    //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
+    //     .default_value("fw"));
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
@@ -91,8 +92,11 @@ fn main() {
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
+    .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
+    .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
-        .possible_values(&["full", "trivial", "cr-like", "parsimony"])
+        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .default_value("full")
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
@@ -126,45 +130,6 @@ fn main() {
             .value_of_t("output-dir")
             .expect("no input directory specified");
 
-        let mut fmeth = CellFilterMethod::KneeFinding;
-
-        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ExpectCells(v);
-                Some(v)
-            }
-            Err(_) => None,
-        };
-        if expect_cells.is_some() {
-            unimplemented!();
-        }
-
-        if t.is_present("knee-distance") {
-            fmeth = CellFilterMethod::KneeFinding;
-        }
-
-        let _force_cells = match t.value_of_t("force-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ForceCells(v);
-                Some(v)
-            }
-            Err(_) => None,
-        };
-
-        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ExplicitList(v.clone());
-                Some(v)
-            }
-            Err(_) => None,
-        };
-        let nc = generate_permit_list(input_file, output_dir, fmeth, &log).unwrap();
-        if nc == 0 {
-            warn!(log, "found 0 corrected barcodes; please check the input.");
-        }
-    }
-
-    if let Some(ref t) = opts.subcommand_matches("collate") {
         let valid_ori: bool;
         let expected_ori = match t.value_of("expected-ori").unwrap().to_uppercase().as_str() {
             "RC" => {
@@ -198,20 +163,72 @@ fn main() {
             std::process::exit(1);
         }
 
+        let mut fmeth = CellFilterMethod::KneeFinding;
+
+        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExpectCells(v);
+                Some(v)
+            }
+            Err(_) => None,
+        };
+        if expect_cells.is_some() {
+            unimplemented!();
+        }
+
+        if t.is_present("knee-distance") {
+            fmeth = CellFilterMethod::KneeFinding;
+        }
+
+        let _force_cells = match t.value_of_t("force-cells") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ForceCells(v);
+                Some(v)
+            }
+            Err(_) => None,
+        };
+
+        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
+            Ok(v) => {
+                fmeth = CellFilterMethod::ExplicitList(v.clone());
+                Some(v)
+            }
+            Err(_) => None,
+        };
+        let nc = generate_permit_list(input_file, output_dir, fmeth, expected_ori, &log).unwrap();
+        if nc == 0 {
+            warn!(log, "found 0 corrected barcodes; please check the input.");
+        }
+    }
+
+    if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_file: String = t.value_of_t("rad-file").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_file, max_records, expected_ori, &log)
+        libradicl::collate::collate(input_dir, rad_file, max_records, &log)
             .expect("could not collate.");
     }
 
     if let Some(ref t) = opts.subcommand_matches("quant") {
         let num_threads = t.value_of_t("threads").unwrap();
+        let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
+        let init_uniform = t.is_present("init-uniform");
+        let summary_stat = t.is_present("summary-stat");
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
-        libradicl::quant::quantify(input_dir, tg_map, output_dir, num_threads, resolution, &log)
-            .expect("could not quantify rad file.");
+        libradicl::quant::quantify(
+            input_dir,
+            tg_map,
+            output_dir,
+            num_threads,
+            num_bootstraps,
+            init_uniform,
+            summary_stat,
+            resolution,
+            &log,
+        )
+        .expect("could not quantify rad file.");
     }
 }

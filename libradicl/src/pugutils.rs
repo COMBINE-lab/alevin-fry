@@ -150,10 +150,12 @@ fn collapse_vertices(
 pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
-    num_genes: usize,
+    _num_genes: usize,
     _log: &slog::Logger,
-) -> Vec<f32> {
-    let mut counts = vec![0.0f32; num_genes];
+) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
+    let s = fasthash::RandomState::<Hash64>::new();
+    let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+        HashMap::with_hasher(s);
 
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
@@ -193,15 +195,17 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
     // hold the gene id having the max count for this umi
     // and the maximum count value itself
-    let mut max_count_gene = 0u32;
+    // let mut max_count_gene = 0u32;
     let mut max_count = 0u32;
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
     // could this UMI be assigned toa best gene or not
-    let mut unresolvable = false;
+    // let mut unresolvable = false;
     // to keep track of the current index in the vector
     let mut cidx = 0usize;
+    // the vector will hold the equivalent set of best genes
+    let mut best_genes = Vec::<u32>::with_capacity(16);
 
     // look over all sorted triplets
     while cidx < umi_gene_count_vec.len() {
@@ -213,19 +217,26 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         // on the previous umi
         if umi != curr_umi {
             // if previous was resolvable, add it to the appropriate gene
-            if !unresolvable {
-                counts[max_count_gene as usize] += 1.0f32;
-            }
+            //if !unresolvable {
+            //    counts[max_count_gene as usize] += 1.0f32;
+            //}
+
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+            quickersort::sort(&mut best_genes[..]);
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
             curr_umi = umi;
             curr_gn = gn;
 
             // the next umi will start as resolvable
-            unresolvable = false;
+            // unresolvable = false;
 
             // current gene is current best
-            max_count_gene = gn;
+            // max_count_gene = gn;
+            best_genes.clear();
+            best_genes.push(gn);
 
             // count aggr = max count = ct
             count_aggr = ct;
@@ -245,19 +256,23 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // if the count aggregator exceeded the max
             // then it is the new max, and this gene is
             // the new max gene.  Having a distinct max
-            // also makes this UMI resolvable
+            // also makes this UMI uniquely resolvable
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
-                    max_count_gene = gn;
-                    unresolvable = false;
+                    // max_count_gene = gn;
+                    // unresolvable = false;
+                    best_genes.clear();
+                    best_genes.push(gn);
                 }
                 Ordering::Equal => {
                     // if we have a tie for the max count
-                    // then the current UMI becomes unresolvable
+                    // then the current UMI isn't uniquely-unresolvable
                     // it will stay this way unless we see a bigger
-                    // count for this UMI
-                    unresolvable = true;
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
+                    // unresolvable = true;
+                    best_genes.push(gn);
                 }
                 Ordering::Less => {
                     // we do nothing
@@ -266,13 +281,16 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         }
 
         // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 && !unresolvable {
-            counts[max_count_gene as usize] += 1.0f32;
+        if cidx == umi_gene_count_vec.len() - 1 {
+            //&& !unresolvable {
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            //counts[max_count_gene as usize] += 1.0f32;
         }
         cidx += 1;
     }
 
-    counts
+    //counts
+    gene_eqclass_hash
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(

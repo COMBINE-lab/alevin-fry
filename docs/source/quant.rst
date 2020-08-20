@@ -20,23 +20,35 @@ The ``quant`` command exposes a number of different resolution strategies.  They
 
 * ``cr-like`` : This strategy is like the one adopted in cell-ranger, except that it does not first collapse 1-edit-distance UMIs.  Within each cell barcode, a list of (gene, UMI, count) tuples is created. If a read maps to more than one gene, then it generates more than one such tuple.  The tuples are then sorted lexicographically (first by gene id, then by UMI, and then by count).  Any UMI that aligns to only a single gene is assigned to that gene.  UMIs that align to more than one gene are assigned to the gene with the highest count for this UMI.  If there is a tie for the highest count gene for this UMI, then the corresponding reads are simply discarded.
 
+* ``cr-like-em`` : This strategy is like ``cr-like``, except that when a UMI has genes to which it matches with equal frequency, rather than discard the UMIs, the genes are treated as an equivalence class, and the counts for each gene are determined via an expectation maximization algorithm.
+
 output
 ------
 
-The output of the ``quant`` command consists of 3 files: ``barcodes.txt``,
-``counts.mtx.gz`` and ``gene_names.txt``. The ``counts.mtx.gz`` is a matrix market
-coordinate format file where the number of *rows* is equal to the number of
-genes and the number of columns is equal to the number of *cells*. The header
-line encodes the number of rows, columns and non-zero entries. The subsequent
-lines (1-based indexing) encode the locations and values of the non-zero
-entries.  This entire ``.mtx`` format file is gzipped during output to minimize
-disk space. The two other files provide the labels for the rows and columns of
-this matrix. The ``gene_names.txt`` file is a text file that contains the
-names of the rows of the matrix, in the order in which it is written, with
-one gene name written per line. The ``barcodes.txt`` file is a text file that
-contains the names of the columns of the matrix, in the order in which it is
-written, with one barcode name written per line.
+The output of the ``quant`` command consists of 5 files: ``barcodes.txt``,
+``counts.eds.gz``, ``gene_names.txt``, ``meta_info.json``, and ``features.txt``. 
+The ``meta_info.json`` file contains information about the quantification run,
+such as the method used for UMI resolution.  The ``features.txt`` file contains
+cell-level information designed to be useful in post-quantification cell filtering
+(better determining "true" cells from background, noise, doublets etc.).
+The other three files all correspond to quantification information.
 
-
+The ``counts.eds.gz`` is a file in EDS_ format that stores the gene-by-cell
+expression matrix. The two other files provide the labels for the rows and
+columns of this matrix. The ``gene_names.txt`` file is a text file that
+contains the names of the rows of the matrix, in the order in which it is
+written, with one gene name written per line. The ``barcodes.txt`` file is a
+text file that contains the names of the columns of the matrix, in the order
+in which it is written, with one barcode name written per line.
 
 .. _alevin: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1670-y
+.. _EDS: https://github.com/COMBINE-lab/EDS
+
+..
+  matrix market coordinate format file where the number of *rows* is equal to the number of
+  genes and the number of columns is equal to the number of *cells*. The header
+  line encodes the number of rows, columns and non-zero entries. The subsequent
+  lines (1-based indexing) encode the locations and values of the non-zero
+  entries.  This entire ``.mtx`` format file is gzipped during output to minimize
+  disk space. 
+
