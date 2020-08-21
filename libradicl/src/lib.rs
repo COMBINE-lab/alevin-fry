@@ -292,6 +292,55 @@ impl ReadRecord {
         rec
     }
 
+    pub fn from_bytes_record_header<T: Read>(
+        reader: &mut BufReader<T>,
+        bct: &RADIntID,
+        umit: &RADIntID,
+    ) -> (u64, u64, u32) {
+        let mut rbuf = [0u8; 255];
+        reader.read_exact(&mut rbuf[0..4]).unwrap();
+        let na = rbuf.pread::<u32>(0).unwrap();
+        let bc = read_into_u64(reader, bct);
+        let umi = read_into_u64(reader, umit);
+        (bc, umi, na)
+    }
+
+    pub fn from_bytes_with_header_keep_ori<T: Read>(
+        reader: &mut BufReader<T>,
+        bc: u64,
+        umi: u64,
+        na: u32,
+        expected_ori: &Strand,
+    ) -> Self {
+        let mut rbuf = [0u8; 255];
+        let mut rec = Self {
+            bc,
+            umi,
+            dirs: Vec::with_capacity(na as usize),
+            refs: Vec::with_capacity(na as usize),
+        };
+
+        for _ in 0..(na as usize) {
+            reader.read_exact(&mut rbuf[0..4]).unwrap();
+            let v = rbuf.pread::<u32>(0).unwrap();
+
+            // fw if the leftmost bit is 1, otherwise rc
+            let strand = if (v & utils::MASK_LOWER_31_U32) > 0 {
+                Strand::Forward
+            } else {
+                Strand::Reverse
+            };
+
+            if expected_ori.same(&strand) {
+                rec.refs.push(v & utils::MASK_TOP_BIT_U32);
+            }
+        }
+
+        // make sure these are sorted in this step.
+        quickersort::sort(&mut rec.refs[..]);
+        rec
+    }
+
     pub fn from_bytes_keep_ori<T: Read>(
         reader: &mut BufReader<T>,
         bct: &RADIntID,
@@ -360,6 +409,7 @@ pub fn process_corrected_cb_chunk<T: Read>(
     )
     */
     let mut buf = [0u8; 8];
+    let mut tbuf = [0u8; 65536];
 
     // get the number of bytes and records for
     // the next chunk
@@ -368,9 +418,17 @@ pub fn process_corrected_cb_chunk<T: Read>(
     let nrec = buf.pread::<u32>(4).unwrap();
     // for each record, read it
     for _ in 0..(nrec as usize) {
-        let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+        //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
-        if let Some(corrected_id) = correct_map.get(&rr.bc) {
+        if let Some(corrected_id) = correct_map.get(&tup.0) {
+            let rr = ReadRecord::from_bytes_with_header_keep_ori(
+                reader,
+                tup.0,
+                tup.1,
+                tup.2,
+                expected_ori,
+            );
             if let Some(v) = output_cache.get_mut(corrected_id) {
                 // update the corresponding corrected chunk entry
                 v.remaining_records -= 1;
@@ -385,6 +443,10 @@ pub fn process_corrected_cb_chunk<T: Read>(
                 v.ref_offsets.push(ref_offset);
                 v.ref_ids.extend(&rr.refs);
             }
+        } else {
+            reader
+                .read_exact(&mut tbuf[0..(4 * (tup.2 as usize))])
+                .unwrap();
         }
     }
 }
