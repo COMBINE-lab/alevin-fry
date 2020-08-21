@@ -11,6 +11,7 @@ extern crate sce;
 extern crate scroll;
 
 use bio_types::strand::*;
+use dashmap::DashMap;
 use needletail::bitkmer::*;
 use num::cast::AsPrimitive;
 use scroll::Pread;
@@ -219,7 +220,7 @@ pub fn collect_records<T: Read>(
     chunk_config: &ChunkConfig,
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
-    output_cache: &mut HashMap<u64, CorrectedCBChunk>,
+    output_cache: &mut DashMap<u64, CorrectedCBChunk>,
 ) {
     // NOTE: since the chunks are independent, this part could be multithreaded
     let bc_type = decode_int_type_tag(chunk_config.bc_type).expect("unknown barcode type id.");
@@ -390,24 +391,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
     umit: &RADIntID,
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
-    output_cache: &mut HashMap<u64, CorrectedCBChunk>,
+    output_cache: &DashMap<u64, CorrectedCBChunk>,
 ) {
-    /*
-    let (s, r) = unbounded();
-
-    thread::spawn(
-      |correct_map, output_cache| {
-        for c in r.iter() {
-             // update the corresponding corrected chunk entry
-             v.umis.push(rr.umi);
-             let ref_offset = v.ref_ids.len() as u32;
-             v.ref_offsets.push(ref_offset);
-             v.ref_ids.extend(&rr.refs);
-             v.remaining_records -= 1;
-        }
-      }
-    )
-    */
     let mut buf = [0u8; 8];
     let mut tbuf = [0u8; 65536];
 
@@ -418,6 +403,7 @@ pub fn process_corrected_cb_chunk<T: Read>(
     let nrec = buf.pread::<u32>(4).unwrap();
     // for each record, read it
     for _ in 0..(nrec as usize) {
+        //eprintln!("blarg");
         let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
         //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
@@ -429,7 +415,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
                 tup.2,
                 expected_ori,
             );
-            if let Some(v) = output_cache.get_mut(corrected_id) {
+
+            if let Some(mut v) = output_cache.get_mut(corrected_id) {
                 // update the corresponding corrected chunk entry
                 v.remaining_records -= 1;
                 // if there are no alignments in the record
@@ -462,14 +449,16 @@ fn as_u8_slice(v: &[u32]) -> &[u8] {
 
 pub fn dump_output_cache(
     mut owriter: &mut BufWriter<File>,
-    output_cache: &HashMap<u64, CorrectedCBChunk>,
+    output_cache: &DashMap<u64, CorrectedCBChunk>,
     chunk_config: &ChunkConfig,
 ) {
     // NOTE: since the chunks are independent, this part could be multithreaded
     let bc_type = decode_int_type_tag(chunk_config.bc_type).expect("unknown barcode type id.");
     let umi_type = decode_int_type_tag(chunk_config.umi_type).expect("unknown barcode type id.");
 
-    for (_bc, chunk) in output_cache.iter() {
+    for entry_ref/*(_bc, chunk)*/ in output_cache.iter() {
+        let _bc = entry_ref.key();
+        let chunk = entry_ref.value();
         // number of bytes
         let mut nbytes: u32 = 0;
         let bytes_for_u32 = std::mem::size_of::<u32>();

@@ -79,6 +79,7 @@ fn main() {
     .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
+    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
          .default_value("10000000"));
     //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
@@ -204,8 +205,9 @@ fn main() {
     if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_file: String = t.value_of_t("rad-file").unwrap();
+        let num_threads = t.value_of_t("threads").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_file, max_records, &log)
+        libradicl::collate::collate(input_dir, rad_file, num_threads, max_records, &log)
             .expect("could not collate.");
     }
 

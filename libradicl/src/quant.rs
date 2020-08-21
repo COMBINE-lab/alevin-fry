@@ -22,7 +22,7 @@ use crossbeam_queue::ArrayQueue;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
