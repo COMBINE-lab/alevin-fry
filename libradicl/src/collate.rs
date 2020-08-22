@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate as libradicl;
@@ -53,6 +53,15 @@ pub fn collate(
             std::process::exit(1);
         }
     };
+
+    // NOTE: for some reason we do not yet understand, overwriting
+    // an existing file is about an order of magnitude slower than
+    // writing a non-existing file.  So, to be safe here, if the requested
+    // output file already exists, we simply remove it.
+    let oname = parent.join("map.collated.rad");
+    if oname.exists() {
+        std::fs::remove_file(oname)?;
+    }
 
     let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
     let i_file = File::open(&rad_file).unwrap();
@@ -98,8 +107,6 @@ pub fn collate(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
-    let mut owriter = BufWriter::new(ofile);
-
     type TSVRec = (u64, u64);
     let mut tsv_map = Vec::<(u64, u64)>::new(); //HashMap::<u64, u64>::new();
 
@@ -138,6 +145,7 @@ pub fn collate(
         umi_type: umit,
     };
 
+    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
     let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCBChunk>::new());
     let mut allocated_records;
     let mut total_allocated_records = 0;
@@ -164,7 +172,7 @@ pub fn collate(
     } else {
         1
     };
-    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
+    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(16 * n_workers));
 
     while last_idx < tsv_map.len() {
         allocated_records = 0;
@@ -208,6 +216,7 @@ pub fn collate(
                 libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
             let umi_type =
                 libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+            let owrite = owriter.clone();
             // now, make the worker thread
             let handle = std::thread::spawn(move || {
                 // pop from the work queue until everything is
@@ -223,6 +232,7 @@ pub fn collate(
                             &correct_map,
                             &expected_ori,
                             &oc,
+                            &owrite,
                         );
                     }
                 }
@@ -273,7 +283,7 @@ pub fn collate(
         // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
 
         // dump the output we have
-        libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
+        // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
 
         // reset the reader to start of the chunks
         if total_allocated_records < total_to_collate {
@@ -286,22 +296,27 @@ pub fn collate(
     // file suggested we should.
     assert!(total_allocated_records == total_to_collate);
 
+    pbar_inner.finish_with_message("collated all records.");
+
     info!(
         log,
         "writing num output chunks ({:?}) to header", num_output_chunks
     );
-    owriter.flush()?;
+
+    owriter.lock().unwrap().flush()?;
     owriter
+        .lock()
+        .unwrap()
         .get_ref()
         .seek(SeekFrom::Start(
             end_header_pos - (std::mem::size_of::<u64>() as u64),
         ))
         .expect("couldn't seek in output file");
     owriter
+        .lock()
+        .unwrap()
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
-
-    pbar_inner.finish_with_message("collated all records.");
 
     info!(log, "finished collating input rad file {:?}.", rad_file);
     Ok(())
