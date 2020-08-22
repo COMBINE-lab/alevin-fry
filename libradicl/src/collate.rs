@@ -250,11 +250,7 @@ pub fn collate(
         let mut buf = vec![0u8; 65536];
         for cell_num in 0..(cc.num_chunks as usize) {
             let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-            // the + 8 commented out here ... sigh.  Currently there is a
-            // difference in the RAD written by alevin and the one written
-            // by fry.  Alevin *includes* the chunk header in the total number
-            // of chunk bytes, fry doesn't.  We need to rectify this difference.
-            buf.resize(nbytes_chunk as usize /*+ 8*/, 0);
+            buf.resize(nbytes_chunk as usize, 0);
             buf.pwrite::<u32>(nbytes_chunk, 0)?;
             buf.pwrite::<u32>(nrec_chunk, 4)?;
             br.read_exact(&mut buf[8..]).unwrap();

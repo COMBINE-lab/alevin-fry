@@ -400,7 +400,7 @@ impl ReadRecord {
 #[inline]
 fn dump_chunk(v: &mut CorrectedCBChunk, owriter: &Mutex<BufWriter<File>>) {
     v.data.set_position(0);
-    let nbytes = (v.data.get_ref().len() - 8usize) as u32;
+    let nbytes = (v.data.get_ref().len()) as u32;
     let nrec = v.nrec;
     v.data.write_all(&nbytes.to_le_bytes()).unwrap();
     v.data.write_all(&nrec.to_le_bytes()).unwrap();
