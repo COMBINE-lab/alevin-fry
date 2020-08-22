@@ -172,7 +172,7 @@ pub fn collate(
     } else {
         1
     };
-    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(16 * n_workers));
+    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
     while last_idx < tsv_map.len() {
         allocated_records = 0;
