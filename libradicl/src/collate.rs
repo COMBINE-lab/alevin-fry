@@ -15,7 +15,7 @@ use scroll::Pwrite;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -195,11 +195,11 @@ pub fn collate(
                 break;
             }
         }
-        info!(log, "last_idx = {}", last_idx);
 
         num_output_chunks += output_cache.len();
         total_allocated_records += allocated_records;
         last_idx += init_offset;
+
         //pbar.inc(allocated_records);
 
         let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -291,6 +291,12 @@ pub fn collate(
 
     // make sure we wrote the same number of records that our
     // file suggested we should.
+    info!(
+        log,
+        "\n\ntotal_allocated_records = {}, total_to_collate = {}\n\n",
+        total_allocated_records,
+        total_to_collate
+    );
     assert!(total_allocated_records == total_to_collate);
 
     pbar_inner.finish_with_message("collated all records.");
@@ -433,26 +439,6 @@ pub fn collate_with_temp(
         "deserialized correction map of length : {:?}",
         correct_map.len()
     );
-    /*
-    // max_records is the max size of each intermediate file 
-    let mut last_idx = 0;
-
-    // The tsv_map tells us, for each "true" barcode
-    // how many records belong to it.  We can scan this information
-    // to determine what true barcodes we will keep in memory.
-    let init_offset = last_idx;
-    for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
-        output_cache.insert(
-            rec.0,
-            libradicl::CorrectedCBChunk::from_label_and_counter(rec.0, rec.1),
-        );
-        allocated_records += rec.1;
-        last_idx = i + 1;
-        if allocated_records >= (max_records as u64) {
-
-        }
-    }
-    */
 
     let cc = libradicl::ChunkConfig {
         num_chunks: hdr.num_chunks,
@@ -461,21 +447,45 @@ pub fn collate_with_temp(
     };
 
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
-    let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCBChunk>::new());
-    let mut allocated_records;
+    // TODO: see if we can do this without the Arc
+    let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
+
+    // max_records is the max size of each intermediate file
+    let num_output_chunks = tsv_map.len() as u64;
     let mut total_allocated_records = 0;
-    let mut last_idx = 0;
-    let mut num_output_chunks = 0;
+    let mut allocated_records = 0;
+    let mut temp_buckets = vec![Arc::new(libradicl::TempBucket::from_id_and_parent(
+        0, parent,
+    ))];
+
+    // The tsv_map tells us, for each "true" barcode
+    // how many records belong to it.  We can scan this information
+    // to determine what true barcodes we will keep in memory.
+    {
+        let moutput_cache = Arc::make_mut(&mut output_cache);
+        for (i, rec) in tsv_map.iter().enumerate() {
+            // corrected barcode points to the bucket
+            // file.
+            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().clone());
+            allocated_records += rec.1;
+            if allocated_records >= (max_records as u64) {
+                let tn = temp_buckets.len() as u32;
+                temp_buckets.push(Arc::new(libradicl::TempBucket::from_id_and_parent(
+                    tn, parent,
+                )));
+                total_allocated_records += allocated_records;
+                allocated_records = 0;
+            }
+        }
+    }
+    total_allocated_records += allocated_records;
+    info!(log, "Generated {} temporary buckets.", temp_buckets.len());
 
     let sty = ProgressStyle::default_bar()
         .template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
         )
         .progress_chars("╢▌▌░╟");
-
-    //let pbar = ProgressBar::new(total_to_collate);
-    //pbar.set_style(sty.clone());
-    //pbar.tick();
 
     let pbar_inner = ProgressBar::new(cc.num_chunks);
     pbar_inner.set_style(sty.clone());
@@ -489,119 +499,110 @@ pub fn collate_with_temp(
     };
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
-    while last_idx < tsv_map.len() {
-        allocated_records = 0;
-        output_cache.clear();
-        // the number of cells left to process
-        let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
+    //while last_idx < tsv_map.len() {
 
-        // The tsv_map tells us, for each "true" barcode
-        // how many records belong to it.  We can scan this information
-        // to determine what true barcodes we will keep in memory.
-        let init_offset = last_idx;
-        for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
-            output_cache.insert(
-                rec.0,
-                libradicl::CorrectedCBChunk::from_label_and_counter(rec.0, rec.1),
-            );
-            allocated_records += rec.1;
-            last_idx = i + 1;
-            if allocated_records >= (max_records as u64) {
-                break;
-            }
-        }
+    // the number of cells left to process
+    let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
 
-        num_output_chunks += output_cache.len();
-        total_allocated_records += allocated_records;
-        last_idx += init_offset;
-        //pbar.inc(allocated_records);
-
-        let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
-        // for each worker, spawn off a thread
-        for _worker in 0..n_workers {
-            // each thread will need to access the work queue
-            let in_q = q.clone();
-            // the output cache and correction map
-            let oc = output_cache.clone();
-            let correct_map = correct_map.clone();
-            // the number of chunks remaining to be processed
-            let chunks_remaining = chunks_to_process.clone();
-            // and knowledge of the UMI and BC types
-            let bc_type =
-                libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
-            let umi_type =
-                libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
-            let owrite = owriter.clone();
-            // now, make the worker thread
-            let handle = std::thread::spawn(move || {
-                // pop from the work queue until everything is
-                // processed
-                while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                    if let Ok((_chunk_num, buf)) = in_q.pop() {
-                        chunks_remaining.fetch_sub(1, Ordering::SeqCst);
-                        let mut nbr = BufReader::new(&buf[..]);
-                        libradicl::process_corrected_cb_chunk(
-                            &mut nbr,
-                            &bc_type,
-                            &umi_type,
-                            &correct_map,
-                            &expected_ori,
-                            &oc,
-                            &owrite,
-                        );
-                    }
+    let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+    // for each worker, spawn off a thread
+    for _worker in 0..n_workers {
+        // each thread will need to access the work queue
+        let in_q = q.clone();
+        // the output cache and correction map
+        let oc = output_cache.clone();
+        let correct_map = correct_map.clone();
+        // the number of chunks remaining to be processed
+        let chunks_remaining = chunks_to_process.clone();
+        // and knowledge of the UMI and BC types
+        let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let umi_type =
+            libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+        let nbuckets = temp_buckets.len();
+        let loc_temp_buckets = temp_buckets.clone();
+        //let owrite = owriter.clone();
+        // now, make the worker thread
+        let handle = std::thread::spawn(move || {
+            let mut local_buffers = vec![Cursor::new(vec![0u8; 1048576]); nbuckets];
+            // pop from the work queue until everything is
+            // processed
+            while chunks_remaining.load(Ordering::SeqCst) > 0 {
+                if let Ok((_chunk_num, buf)) = in_q.pop() {
+                    chunks_remaining.fetch_sub(1, Ordering::SeqCst);
+                    let mut nbr = BufReader::new(&buf[..]);
+                    libradicl::dump_corrected_cb_chunk_to_temp_file(
+                        &mut nbr,
+                        &bc_type,
+                        &umi_type,
+                        &correct_map,
+                        &expected_ori,
+                        &oc,
+                        &mut local_buffers,
+                    );
                 }
-            });
+            }
 
-            thread_handles.push(handle);
-        } // for each worker
+            // empty any remaining local buffers
+            for (bucket_id, tb) in loc_temp_buckets.iter().enumerate() {
+                let len = local_buffers[bucket_id].position() as usize;
+                if len > 0 {
+                    let mut filebuf = tb.bucket_writer.lock().unwrap();
+                    filebuf
+                        .write_all(&local_buffers[bucket_id].get_ref()[0..len])
+                        .unwrap();
+                }
+            }
+        });
 
-        // read each chunk
-        pbar_inner.reset();
-        pbar_inner.set_message(&format!(
-            "processing {} / {} total records",
-            total_allocated_records, total_to_collate
-        ));
-        let mut buf = vec![0u8; 65536];
-        for cell_num in 0..(cc.num_chunks as usize) {
-            let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-            buf.resize(nbytes_chunk as usize, 0);
-            buf.pwrite::<u32>(nbytes_chunk, 0)?;
-            buf.pwrite::<u32>(nrec_chunk, 4)?;
-            br.read_exact(&mut buf[8..]).unwrap();
-            loop {
-                if !q.is_full() {
-                    let r = q.push((cell_num, buf.clone()));
-                    if r.is_ok() {
-                        pbar_inner.inc(1);
-                        break;
-                    }
+        thread_handles.push(handle);
+    } // for each worker
+
+    // read each chunk
+    pbar_inner.reset();
+    pbar_inner.set_message(&format!(
+        "processing {} / {} total records",
+        total_allocated_records, total_to_collate
+    ));
+    let mut buf = vec![0u8; 65536];
+    for cell_num in 0..(cc.num_chunks as usize) {
+        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
+        buf.resize(nbytes_chunk as usize, 0);
+        buf.pwrite::<u32>(nbytes_chunk, 0)?;
+        buf.pwrite::<u32>(nrec_chunk, 4)?;
+        br.read_exact(&mut buf[8..]).unwrap();
+        loop {
+            if !q.is_full() {
+                let r = q.push((cell_num, buf.clone()));
+                if r.is_ok() {
+                    pbar_inner.inc(1);
+                    break;
                 }
             }
         }
-        pbar_inner.finish();
-
-        for h in thread_handles {
-            match h.join() {
-                Ok(_) => {}
-                Err(_e) => {
-                    info!(log, "thread panicked");
-                }
-            }
-        }
-
-        // collect the output for the current barcode set
-        // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
-
-        // dump the output we have
-        // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
-
-        // reset the reader to start of the chunks
-        if total_allocated_records < total_to_collate {
-            br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
-        }
-        //pass_num += 1;
     }
+    pbar_inner.finish();
+
+    for h in thread_handles {
+        match h.join() {
+            Ok(_) => {}
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
+    }
+
+    // collect the output for the current barcode set
+    // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
+
+    // dump the output we have
+    // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
+
+    // reset the reader to start of the chunks
+    if total_allocated_records < total_to_collate {
+        br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
+    }
+    //pass_num += 1;
+    //}
 
     // make sure we wrote the same number of records that our
     // file suggested we should.

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::io::{BufWriter, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 pub mod cellfilter;
@@ -465,6 +465,88 @@ pub fn process_corrected_cb_chunk<T: Read>(
         } else {
             reader
                 .read_exact(&mut tbuf[0..(4 * (tup.2 as usize))])
+                .unwrap();
+        }
+    }
+}
+
+pub struct TempBucket {
+    pub bucket_id: u32,
+    pub bucket_writer: Arc<Mutex<BufWriter<File>>>,
+}
+
+impl TempBucket {
+    pub fn from_id_and_parent(bucket_id: u32, parent: &std::path::Path) -> Self {
+        TempBucket {
+            bucket_id,
+            bucket_writer: Arc::new(Mutex::new(BufWriter::new(
+                File::create(parent.join(&format!("bucket_{}.tmp", bucket_id))).unwrap(),
+            ))),
+        }
+    }
+}
+
+pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
+    reader: &mut BufReader<T>,
+    bct: &RADIntID,
+    umit: &RADIntID,
+    correct_map: &HashMap<u64, u64>,
+    expected_ori: &Strand,
+    output_cache: &HashMap<u64, Arc<TempBucket>>,
+    local_buffers: &mut [Cursor<Vec<u8>>],
+) {
+    let mut buf = [0u8; 8];
+    let tbuf = vec![0u8; 65536];
+    let mut tcursor = Cursor::new(tbuf);
+    tcursor.set_position(0);
+    // get the number of bytes and records for
+    // the next chunk
+    reader.read_exact(&mut buf).unwrap();
+    let _nbytes = buf.pread::<u32>(0).unwrap();
+    let nrec = buf.pread::<u32>(4).unwrap();
+    // for each record, read it
+    for _ in 0..(nrec as usize) {
+        //eprintln!("blarg");
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+        //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
+        // if this record had a correct or correctable barcode
+        if let Some(corrected_id) = correct_map.get(&tup.0) {
+            let rr = ReadRecord::from_bytes_with_header_keep_ori(
+                reader,
+                tup.0,
+                tup.1,
+                tup.2,
+                expected_ori,
+            );
+
+            if rr.is_empty() {
+                continue;
+            }
+            if let Some(v) = output_cache.get(corrected_id) {
+                // if this is a valid barcode, then
+                // write the corresponding entry to the
+                // thread-local buffer for this bucket
+                let buffidx = v.bucket_id as usize;
+                let bcursor = &mut local_buffers[buffidx];
+                let na = rr.refs.len() as u32;
+                bcursor.write_all(&na.to_le_bytes()).unwrap();
+                bct.write_to(*corrected_id, bcursor).unwrap();
+                umit.write_to(rr.umi, bcursor).unwrap();
+                bcursor.write_all(as_u8_slice(&rr.refs[..])).unwrap();
+                let len = bcursor.position() as usize;
+
+                // if the thread-local buffer for this bucket is
+                // greater than the flush size, then flush to file
+                if len > 262144 {
+                    let mut filebuf = v.bucket_writer.lock().unwrap();
+                    filebuf.write_all(&bcursor.get_ref()[0..len]).unwrap();
+                    // and reset the local buffer cursor
+                    bcursor.set_position(0);
+                }
+            }
+        } else {
+            reader
+                .read_exact(&mut tcursor.get_mut()[0..(4 * (tup.2 as usize))])
                 .unwrap();
         }
     }
