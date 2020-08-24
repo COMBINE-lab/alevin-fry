@@ -438,7 +438,7 @@ pub fn collate_temporary_bucket<T: Read>(
         (*v).nrec += 1;
         // write the num align
         let na = tup.2;
-        (*v).data.write(&na.to_le_bytes()).unwrap();
+        (*v).data.write_all(&na.to_le_bytes()).unwrap();
         // write the corrected barcode
         bct.write_to(tup.0, &mut (*v).data).unwrap();
         umit.write_to(tup.1, &mut (*v).data).unwrap();
@@ -495,7 +495,7 @@ pub fn process_corrected_cb_chunk<T: Read>(
                 }
                 v.nrec += 1;
                 let na = rr.refs.len() as u32;
-                v.data.write(&na.to_le_bytes()).unwrap();
+                v.data.write_all(&na.to_le_bytes()).unwrap();
                 bct.write_to(*corrected_id, &mut v.data).unwrap();
                 umit.write_to(rr.umi, &mut v.data).unwrap();
                 v.data.write_all(as_u8_slice(&rr.refs[..])).unwrap();

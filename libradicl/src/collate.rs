@@ -202,7 +202,7 @@ pub fn collate_in_memory_multipass(
     //pbar.tick();
 
     let pbar_inner = ProgressBar::new(cc.num_chunks);
-    pbar_inner.set_style(sty.clone());
+    pbar_inner.set_style(sty);
     pbar_inner.tick();
 
     // create a thread-safe queue based on the number of worker threads
@@ -637,7 +637,7 @@ pub fn collate_with_temp(
             .unwrap()
             .flush()
             .expect("could not flush temporary output file!");
-        drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
+        //drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         /*
@@ -674,7 +674,7 @@ pub fn collate_with_temp(
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
     let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
-    pbar_gather.set_style(sty.clone());
+    pbar_gather.set_style(sty);
     pbar_gather.tick();
 
     // for each worker, spawn off a thread
