@@ -20,6 +20,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::io::{BufWriter, Write};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::vec::Vec;
 
 pub mod cellfilter;
@@ -309,10 +310,15 @@ impl ReadRecord {
         reader: &mut BufReader<T>,
         bct: &RADIntID,
         umit: &RADIntID,
+        crec: usize,
+        nrec: u32
     ) -> (u64, u64, u32) {
-        let mut rbuf = [0u8; 255];
-        reader.read_exact(&mut rbuf[0..4]).unwrap();
-        let na = rbuf.pread::<u32>(0).unwrap();
+        let mut rbuf = [0u8; 4];
+        match reader.read_exact(&mut rbuf) {
+            Ok(_) => {},
+            Err(e) => { panic!("Could not read all bytes for record {} of {}", crec, nrec); }
+        };
+        let na = u32::from_le_bytes(rbuf);//.pread::<u32>(0).unwrap();
         let bc = read_into_u64(reader, bct);
         let umi = read_into_u64(reader, umit);
         (bc, umi, na)
@@ -420,21 +426,18 @@ pub fn collate_temporary_bucket<T: Read>(
     // this is just for trying to pre-allocate buffers
     // right; should not affect correctness
     let est_num_rec = (nrec / nchunks) + 1;
-
+    
     // for each record, read it
-    for _ in 0..(nrec as usize) {
+    for i in 0..(nrec as usize) {
         // read the header of the record
         // we don't bother reading the whole thing here
         // because we will just copy later as need be
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
 
         // get the entry for this chunk, or create a new one
         let v = output_cache
             .entry(tup.0)
-            .or_insert_with( || CorrectedCBChunk::from_label_and_counter(
-                tup.0,
-                est_num_rec as u64,
-            ));
+            .or_insert_with(|| CorrectedCBChunk::from_label_and_counter(tup.0, est_num_rec as u64));
 
         // keep track of the number of records we're writing
         (*v).nrec += 1;
@@ -469,9 +472,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
     let _nbytes = buf.pread::<u32>(0).unwrap();
     let nrec = buf.pread::<u32>(4).unwrap();
     // for each record, read it
-    for _ in 0..(nrec as usize) {
-        //eprintln!("blarg");
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+    for i in 0..(nrec as usize) {
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
         //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&tup.0) {
@@ -519,6 +521,8 @@ pub struct TempBucket {
     pub bucket_writer: Arc<Mutex<BufWriter<File>>>,
     pub num_chunks: u32,
     pub num_records: u32,
+    pub num_records_written: AtomicU32,
+    pub num_bytes_written: AtomicU64
 }
 
 impl TempBucket {
@@ -530,6 +534,8 @@ impl TempBucket {
             ))),
             num_chunks: 0u32,
             num_records: 0u32,
+            num_records_written: AtomicU32::new(0u32),
+            num_bytes_written: AtomicU64::new(0u64)
         }
     }
 }
@@ -544,18 +550,24 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     local_buffers: &mut [Cursor<Vec<u8>>],
 ) {
     let mut buf = [0u8; 8];
-    let tbuf = vec![0u8; 65536];
-    let mut tcursor = Cursor::new(tbuf);
-    tcursor.set_position(0);
+    let mut tbuf = vec![0u8; 65536];
+    //let mut tcursor = Cursor::new(tbuf);
+    //tcursor.set_position(0);
+
     // get the number of bytes and records for
     // the next chunk
     reader.read_exact(&mut buf).unwrap();
     let _nbytes = buf.pread::<u32>(0).unwrap();
     let nrec = buf.pread::<u32>(4).unwrap();
+
+    let bc_bytes = bct.bytes_for_type();
+    let umi_bytes = bct.bytes_for_type();
+    let na_bytes = std::mem::size_of::<u32>();
+    let target_id_bytes = std::mem::size_of::<u32>();
+
     // for each record, read it
-    for _ in 0..(nrec as usize) {
-        //eprintln!("blarg");
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+    for i in 0..(nrec as usize) {
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
         //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&tup.0) {
@@ -574,6 +586,12 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                 // if this is a valid barcode, then
                 // write the corresponding entry to the
                 // thread-local buffer for this bucket
+                
+                // update number of written records
+                v.num_records_written.fetch_add(1, Ordering::SeqCst);
+                let nb = (rr.refs.len() * target_id_bytes + na_bytes + bc_bytes + umi_bytes) as u64;
+
+                v.num_bytes_written.fetch_add(nb, Ordering::SeqCst);
                 let buffidx = v.bucket_id as usize;
                 let bcursor = &mut local_buffers[buffidx];
                 let na = rr.refs.len() as u32;
@@ -586,15 +604,18 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                 // if the thread-local buffer for this bucket is
                 // greater than the flush size, then flush to file
                 if len > 262144 {
+                    if len != bcursor.position() as usize{
+                        eprintln!("\n\n\nSHOULD NOT HAPPEN: len = {}, pos = {}\n\n\n", len, bcursor.position());
+                    }
                     let mut filebuf = v.bucket_writer.lock().unwrap();
-                    filebuf.write_all(&bcursor.get_ref()[0..len]).unwrap();
+                    filebuf.write_all(&bcursor.get_ref()[0..bcursor.position() as usize]).unwrap();
                     // and reset the local buffer cursor
                     bcursor.set_position(0);
                 }
             }
         } else {
             reader
-                .read_exact(&mut tcursor.get_mut()[0..(4 * (tup.2 as usize))])
+                .read_exact(&mut tbuf[0..(target_id_bytes * (tup.2 as usize))])
                 .unwrap();
         }
     }

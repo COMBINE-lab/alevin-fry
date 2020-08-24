@@ -334,6 +334,12 @@ pub fn collate_with_temp(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
 
+    let n_workers = if num_threads > 1 {
+        (num_threads - 1) as usize
+    } else {
+        1
+    };
+
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .expect("could not open the generate_permit_list.json file.");
@@ -460,6 +466,7 @@ pub fn collate_with_temp(
         Arc::new(libradicl::TempBucket::from_id_and_parent(0, parent)),
     )];
 
+    let max_records_per_thread = (max_records / n_workers as u32) + 1;
     // The tsv_map tells us, for each "true" barcode
     // how many records belong to it.  We can scan this information
     // to determine what true barcodes we will keep in memory.
@@ -472,7 +479,7 @@ pub fn collate_with_temp(
             moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
             allocated_records += rec.1;
             num_bucket_chunks += 1;
-            if allocated_records >= (max_records as u64) {
+            if allocated_records >= (max_records_per_thread as u64) {
                 temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
                 temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
                 let tn = temp_buckets.len() as u32;
@@ -505,11 +512,6 @@ pub fn collate_with_temp(
     pbar_inner.tick();
 
     // create a thread-safe queue based on the number of worker threads
-    let n_workers = if num_threads > 1 {
-        (num_threads - 1) as usize
-    } else {
-        1
-    };
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
     //while last_idx < tsv_map.len() {
@@ -536,7 +538,9 @@ pub fn collate_with_temp(
         //let owrite = owriter.clone();
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
-            let mut local_buffers = vec![Cursor::new(vec![0u8; 1048576]); nbuckets];
+            let mut local_buffers = vec![Cursor::new(vec![0u8; 524288]); nbuckets];
+            for lb in &mut local_buffers{ lb.set_position(0); }
+
             // pop from the work queue until everything is
             // processed
             while chunks_remaining.load(Ordering::SeqCst) > 0 {
@@ -556,12 +560,12 @@ pub fn collate_with_temp(
             }
 
             // empty any remaining local buffers
-            for (bucket_id, tb) in loc_temp_buckets.iter().enumerate() {
-                let len = local_buffers[bucket_id].position() as usize;
+            for (bucket_id, lb) in local_buffers.iter().enumerate() {
+                let len = lb.position() as usize;
                 if len > 0 {
-                    let mut filebuf = tb.2.bucket_writer.lock().unwrap();
+                    let mut filebuf = loc_temp_buckets[bucket_id].2.bucket_writer.lock().unwrap();
                     filebuf
-                        .write_all(&local_buffers[bucket_id].get_ref()[0..len])
+                        .write_all(&lb.get_ref()[0..len])
                         .unwrap();
                 }
             }
@@ -594,8 +598,7 @@ pub fn collate_with_temp(
         }
     }
     pbar_inner.finish();
-
-    for h in thread_handles {
+    for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(_) => {}
             Err(_e) => {
@@ -603,45 +606,127 @@ pub fn collate_with_temp(
             }
         }
     }
+    pbar_inner.finish_with_message("partitioned records into temporary files.");
+
+
+    for (i, temp_bucket) in temp_buckets.iter().enumerate() {
+        let expected = temp_bucket.1;
+        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        info!(log, "bucket {}, expected num rec = {}, written = {}", i, expected, observed);
+        assert!(expected == observed);
+
+        let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
+        let expected_bytes = md.len();
+        let observed_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
+        info!(log, "bucket {}, expected num bytes = {}, written = {}", i, expected_bytes, observed_bytes);
+        assert!(expected_bytes == observed_bytes);
+    }
+
 
     // collect the output for the current barcode set
     // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
 
     // dump the output we have
     // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
+    let fq = Arc::new(ArrayQueue::<(
+        u32,
+        u32,
+        std::sync::Arc<libradicl::TempBucket>,
+    )>::new(2 * n_workers));
+    // the number of cells left to process
+    let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
-    for temp_bucket in temp_buckets {
-        info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
-        // close the handle for writing
-        temp_bucket.2.bucket_writer.lock().unwrap().get_mut().flush();
-        drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
-        let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-        // create a new handle for reading
-        let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
-        let mut treader = BufReader::new(tfile);
+    let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
+    pbar_gather.set_style(sty.clone());
+    pbar_gather.tick();
 
-        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::with_capacity(temp_bucket.0 as usize);
+    // for each worker, spawn off a thread
+    for _worker in 0..n_workers {
+        // each thread will need to access the work queue
+        let in_q = fq.clone();
+        // the output cache and correction map
+        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+        // the number of chunks remaining to be processed
+        let buckets_remaining = buckets_to_process.clone();
+        // and knowledge of the UMI and BC types
         let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
         let umi_type =
             libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+        let input_dir = input_dir.clone();
+        let log = log.clone();
+        let owriter = owriter.clone();
+        // now, make the worker thread
+        let handle = std::thread::spawn(move || {
+            let parent = std::path::Path::new(&input_dir);
+            // pop from the work queue until everything is
+            // processed
+            while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                if let Ok(temp_bucket) = in_q.pop() {
+                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+                    cmap.clear();
+                    cmap.reserve(temp_bucket.0 as usize);
 
-        libradicl::collate_temporary_bucket(
-            &mut treader,
-            &bc_type,
-            &umi_type,
-            temp_bucket.0,
-            temp_bucket.1,
-            &mut cmap,
-        );
-        info!(log, "done collating chunk {}, writing", temp_bucket.2.bucket_id);
-        // go through and add a header to each chunk
-        for (k, mut v) in cmap.iter_mut() {
-            libradicl::dump_chunk(&mut v, &owriter);
+                    info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
+                    // close the handle for writing
+                    temp_bucket
+                        .2
+                        .bucket_writer
+                        .lock()
+                        .unwrap()
+                        .get_mut()
+                        .flush().expect("could not flush temporary output file!");
+                    drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
+                    let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                    // create a new handle for reading
+                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+                    let mut treader = BufReader::new(tfile);
+
+                    libradicl::collate_temporary_bucket(
+                        &mut treader,
+                        &bc_type,
+                        &umi_type,
+                        temp_bucket.0,
+                        temp_bucket.1,
+                        &mut cmap,
+                    );
+                    // don't need the file or reader anymore
+                    std::fs::remove_file(fname).expect("could not delete temporary file.");
+                    drop(treader);
+
+                    // go through and add a header to each chunk
+                    for (k, mut v) in cmap.iter_mut() {
+                        libradicl::dump_chunk(&mut v, &owriter);
+                    }
+                }
+            }
+        });
+        thread_handles.push(handle);
+    } // for each worker
+
+    for temp_bucket in temp_buckets {
+        loop {
+            if !q.is_full() {
+                let r = fq.push(temp_bucket.clone());
+                if r.is_ok() {
+                    let expected = temp_bucket.1;
+                    let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+                    assert!(expected == observed);
+                    pbar_gather.inc(1);
+                    break;
+                }
+            }
         }
-        info!(log, "done writing");
-        drop(treader);
-        std::fs::remove_file(fname).expect("could not delete temporary file.");
     }
+
+    for h in thread_handles.drain(0..) {
+        match h.join() {
+            Ok(_) => {}
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
+    }
+    pbar_gather.finish_with_message("gathered all temp files.");
 
     // reset the reader to start of the chunks
     if total_allocated_records < total_to_collate {
@@ -653,8 +738,6 @@ pub fn collate_with_temp(
     // make sure we wrote the same number of records that our
     // file suggested we should.
     assert!(total_allocated_records == total_to_collate);
-
-    pbar_inner.finish_with_message("collated all records.");
 
     info!(
         log,
