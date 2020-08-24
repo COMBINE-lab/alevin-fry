@@ -613,13 +613,14 @@ pub fn collate_with_temp(
     for temp_bucket in temp_buckets {
         info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
         // close the handle for writing
+        temp_bucket.2.bucket_writer.lock().unwrap().get_mut().flush();
         drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
         let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
         // create a new handle for reading
         let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
         let mut treader = BufReader::new(tfile);
 
-        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::with_capacity(temp_bucket.0 as usize);
         let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
         let umi_type =
             libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
@@ -632,11 +633,12 @@ pub fn collate_with_temp(
             temp_bucket.1,
             &mut cmap,
         );
+        info!(log, "done collating chunk {}, writing", temp_bucket.2.bucket_id);
         // go through and add a header to each chunk
         for (k, mut v) in cmap.iter_mut() {
             libradicl::dump_chunk(&mut v, &owriter);
         }
-        info!(log, "done collating chunk {}", temp_bucket.2.bucket_id);
+        info!(log, "done writing");
         drop(treader);
         std::fs::remove_file(fname).expect("could not delete temporary file.");
     }

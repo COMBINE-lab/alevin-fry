@@ -431,7 +431,7 @@ pub fn collate_temporary_bucket<T: Read>(
         // get the entry for this chunk, or create a new one
         let v = output_cache
             .entry(tup.0)
-            .or_insert(CorrectedCBChunk::from_label_and_counter(
+            .or_insert_with( || CorrectedCBChunk::from_label_and_counter(
                 tup.0,
                 est_num_rec as u64,
             ));
