@@ -88,7 +88,6 @@ pub fn collate_in_memory_multipass(
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    //expected_ori: Strand,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -196,10 +195,6 @@ pub fn collate_in_memory_multipass(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
         )
         .progress_chars("╢▌▌░╟");
-
-    //let pbar = ProgressBar::new(total_to_collate);
-    //pbar.set_style(sty.clone());
-    //pbar.tick();
 
     let pbar_inner = ProgressBar::new(cc.num_chunks);
     pbar_inner.set_style(sty);
@@ -403,10 +398,8 @@ pub fn collate_with_temp(
         }
     };
 
-    // NOTE: for some reason we do not yet understand, overwriting
-    // an existing file is about an order of magnitude slower than
-    // writing a non-existing file.  So, to be safe here, if the requested
-    // output file already exists, we simply remove it.
+    // because :
+    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let oname = parent.join("map.collated.rad");
     if oname.exists() {
         std::fs::remove_file(oname)?;
@@ -600,6 +593,7 @@ pub fn collate_with_temp(
         "processing {} / {} total records",
         total_allocated_records, total_to_collate
     ));
+
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(cc.num_chunks as usize) {
         let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
@@ -628,8 +622,14 @@ pub fn collate_with_temp(
     }
     pbar_inner.finish_with_message("partitioned records into temporary files.");
 
+    // At this point, we are done with the "scatter"
+    // phase of writing the records to the corresponding
+    // intermediate files.  Now, we'll begin the gather
+    // phase of collating the temporary files and merging
+    // them into the final output file.
+
     for (i, temp_bucket) in temp_buckets.iter().enumerate() {
-        // close the handle for writing
+        // make sure we flush each temp bucket
         temp_bucket
             .2
             .bucket_writer
@@ -637,34 +637,19 @@ pub fn collate_with_temp(
             .unwrap()
             .flush()
             .expect("could not flush temporary output file!");
-        //drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
+        // a sanity check that we have the correct number of records
+        // and the expected number of bytes in each file
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        /*
-        info!(
-            log,
-            "bucket {}, expected num rec = {}, written = {}", i, expected, observed
-        );
-        */
         assert!(expected == observed);
 
         let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
-        let expected_bytes = md.len();
-        let observed_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
-        /*
-        info!(
-            log,
-            "bucket {}, expected num bytes = {}, written = {}", i, expected_bytes, observed_bytes
-        );
-        */
+        let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
+        let observed_bytes = md.len();
         assert!(expected_bytes == observed_bytes);
     }
 
-    // collect the output for the current barcode set
-    // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
-
-    // dump the output we have
-    // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
+    // to hold the temp buckets threads will process
     let fq = Arc::new(ArrayQueue::<(
         u32,
         u32,
@@ -689,10 +674,14 @@ pub fn collate_with_temp(
         let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
         let umi_type =
             libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+        // have access to the input directory
         let input_dir = input_dir.clone();
+        // the output file
         let owriter = owriter.clone();
+        // and the progress bar
         let pbar_gather = pbar_gather.clone();
-        // now, make the worker thread
+
+        // now, make the worker threads
         let handle = std::thread::spawn(move || {
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
@@ -716,11 +705,14 @@ pub fn collate_with_temp(
                         temp_bucket.1,
                         &mut cmap,
                     );
-                    // don't need the file or reader anymore
+
+                    // we don't need the file or reader anymore
                     std::fs::remove_file(fname).expect("could not delete temporary file.");
                     drop(treader);
 
-                    // go through and add a header to each chunk
+                    // go through, add a header to each chunk
+                    // and flush the chunk to the global output
+                    // file
                     for (_k, mut v) in cmap.iter_mut() {
                         libradicl::dump_chunk(&mut v, &owriter);
                     }
@@ -731,6 +723,8 @@ pub fn collate_with_temp(
         thread_handles.push(handle);
     } // for each worker
 
+    // push the temporary buckets onto the work queue to be dispatched
+    // by the worker threads.
     for temp_bucket in temp_buckets {
         loop {
             if !q.is_full() {
@@ -745,6 +739,7 @@ pub fn collate_with_temp(
         }
     }
 
+    // wait for all of the workers to finish
     for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(_) => {}
@@ -759,8 +754,6 @@ pub fn collate_with_temp(
     if total_allocated_records < total_to_collate {
         br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
     }
-    //pass_num += 1;
-    //}
 
     // make sure we wrote the same number of records that our
     // file suggested we should.

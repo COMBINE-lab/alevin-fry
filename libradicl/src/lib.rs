@@ -309,7 +309,7 @@ impl ReadRecord {
     pub fn from_bytes_record_header<T: Read>(
         reader: &mut BufReader<T>,
         bct: &RADIntID,
-        umit: &RADIntID
+        umit: &RADIntID,
     ) -> (u64, u64, u32) {
         let mut rbuf = [0u8; 4];
         reader.read_exact(&mut rbuf).unwrap();
