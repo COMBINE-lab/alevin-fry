@@ -309,17 +309,10 @@ impl ReadRecord {
     pub fn from_bytes_record_header<T: Read>(
         reader: &mut BufReader<T>,
         bct: &RADIntID,
-        umit: &RADIntID,
-        crec: usize,
-        nrec: u32,
+        umit: &RADIntID
     ) -> (u64, u64, u32) {
         let mut rbuf = [0u8; 4];
-        match reader.read_exact(&mut rbuf) {
-            Ok(_) => {}
-            Err(e) => {
-                panic!("Could not read all bytes for record {} of {}", crec, nrec);
-            }
-        };
+        reader.read_exact(&mut rbuf).unwrap();
         let na = u32::from_le_bytes(rbuf); //.pread::<u32>(0).unwrap();
         let bc = read_into_u64(reader, bct);
         let umi = read_into_u64(reader, umit);
@@ -430,11 +423,11 @@ pub fn collate_temporary_bucket<T: Read>(
     let est_num_rec = (nrec / nchunks) + 1;
 
     // for each record, read it
-    for i in 0..(nrec as usize) {
+    for _ in 0..(nrec as usize) {
         // read the header of the record
         // we don't bother reading the whole thing here
         // because we will just copy later as need be
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
 
         // get the entry for this chunk, or create a new one
         let v = output_cache
@@ -474,8 +467,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
     let _nbytes = buf.pread::<u32>(0).unwrap();
     let nrec = buf.pread::<u32>(4).unwrap();
     // for each record, read it
-    for i in 0..(nrec as usize) {
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
+    for _ in 0..(nrec as usize) {
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
         //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&tup.0) {
@@ -568,8 +561,8 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     let target_id_bytes = std::mem::size_of::<u32>();
 
     // for each record, read it
-    for i in 0..(nrec as usize) {
-        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit, i, nrec);
+    for _ in 0..(nrec as usize) {
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
         //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&tup.0) {

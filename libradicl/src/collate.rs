@@ -493,7 +493,7 @@ pub fn collate_with_temp(
     let mut num_bucket_chunks = 0u32;
     {
         let moutput_cache = Arc::make_mut(&mut output_cache);
-        for (i, rec) in tsv_map.iter().enumerate() {
+        for rec in tsv_map.iter() {
             // corrected barcode points to the bucket
             // file.
             moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
@@ -690,7 +690,6 @@ pub fn collate_with_temp(
         let umi_type =
             libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
         let input_dir = input_dir.clone();
-        let log = log.clone();
         let owriter = owriter.clone();
         let pbar_gather = pbar_gather.clone();
         // now, make the worker thread
@@ -722,7 +721,7 @@ pub fn collate_with_temp(
                     drop(treader);
 
                     // go through and add a header to each chunk
-                    for (k, mut v) in cmap.iter_mut() {
+                    for (_k, mut v) in cmap.iter_mut() {
                         libradicl::dump_chunk(&mut v, &owriter);
                     }
                     pbar_gather.inc(1);
