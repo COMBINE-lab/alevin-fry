@@ -609,6 +609,15 @@ pub fn collate_with_temp(
     pbar_inner.finish_with_message("partitioned records into temporary files.");
 
     for (i, temp_bucket) in temp_buckets.iter().enumerate() {
+        // close the handle for writing
+        temp_bucket
+            .2
+            .bucket_writer
+            .lock()
+            .unwrap()
+            .flush()
+            .expect("could not flush temporary output file!");
+        drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         info!(
@@ -671,16 +680,6 @@ pub fn collate_with_temp(
                     cmap.reserve(temp_bucket.0 as usize);
 
                     info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
-                    // close the handle for writing
-                    temp_bucket
-                        .2
-                        .bucket_writer
-                        .lock()
-                        .unwrap()
-                        .get_mut()
-                        .flush()
-                        .expect("could not flush temporary output file!");
-                    drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
                     let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
