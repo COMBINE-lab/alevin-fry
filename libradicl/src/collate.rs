@@ -167,28 +167,6 @@ pub fn collate_in_memory_multipass(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-    /*
-    type TSVRec = (u64, u64);
-    let mut tsv_map = Vec::<TSVRec>::new(); //HashMap::<u64, u64>::new();
-
-    let freq_file =
-        std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .delimiter(b'\t')
-        .from_reader(freq_file);
-
-    let mut total_to_collate = 0;
-    for result in rdr.deserialize() {
-        let record: TSVRec = result?;
-        tsv_map.push(record);
-        total_to_collate += record.1;
-    }
-
-    // sort this so that we deal with largest cells (by # of reads) first
-    // sort in _descending_ order by count.
-    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
-    */
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -477,27 +455,6 @@ pub fn collate_with_temp(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-    /*
-    type TSVRec = (u64, u64);
-    let mut tsv_map = Vec::<(u64, u64)>::new(); //HashMap::<u64, u64>::new();
-
-    let freq_file =
-        std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .delimiter(b'\t')
-        .from_reader(freq_file);
-
-    let mut total_to_collate = 0;
-    for result in rdr.deserialize() {
-        let record: TSVRec = result?;
-        tsv_map.push(record);
-        total_to_collate += record.1;
-    }
-    // sort this so that we deal with largest cells (by # of reads) first
-    // sort in _descending_ order by count.
-    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
-    */
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
