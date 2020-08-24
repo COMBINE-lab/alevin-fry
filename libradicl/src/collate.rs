@@ -539,7 +539,9 @@ pub fn collate_with_temp(
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             let mut local_buffers = vec![Cursor::new(vec![0u8; 524288]); nbuckets];
-            for lb in &mut local_buffers{ lb.set_position(0); }
+            for lb in &mut local_buffers {
+                lb.set_position(0);
+            }
 
             // pop from the work queue until everything is
             // processed
@@ -564,9 +566,7 @@ pub fn collate_with_temp(
                 let len = lb.position() as usize;
                 if len > 0 {
                     let mut filebuf = loc_temp_buckets[bucket_id].2.bucket_writer.lock().unwrap();
-                    filebuf
-                        .write_all(&lb.get_ref()[0..len])
-                        .unwrap();
+                    filebuf.write_all(&lb.get_ref()[0..len]).unwrap();
                 }
             }
         });
@@ -608,20 +608,24 @@ pub fn collate_with_temp(
     }
     pbar_inner.finish_with_message("partitioned records into temporary files.");
 
-
     for (i, temp_bucket) in temp_buckets.iter().enumerate() {
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        info!(log, "bucket {}, expected num rec = {}, written = {}", i, expected, observed);
+        info!(
+            log,
+            "bucket {}, expected num rec = {}, written = {}", i, expected, observed
+        );
         assert!(expected == observed);
 
         let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
         let expected_bytes = md.len();
         let observed_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
-        info!(log, "bucket {}, expected num bytes = {}, written = {}", i, expected_bytes, observed_bytes);
+        info!(
+            log,
+            "bucket {}, expected num bytes = {}, written = {}", i, expected_bytes, observed_bytes
+        );
         assert!(expected_bytes == observed_bytes);
     }
-
 
     // collect the output for the current barcode set
     // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
@@ -674,7 +678,8 @@ pub fn collate_with_temp(
                         .lock()
                         .unwrap()
                         .get_mut()
-                        .flush().expect("could not flush temporary output file!");
+                        .flush()
+                        .expect("could not flush temporary output file!");
                     drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
                     let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading

@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::io::{BufWriter, Write};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 pub mod cellfilter;
@@ -311,14 +311,16 @@ impl ReadRecord {
         bct: &RADIntID,
         umit: &RADIntID,
         crec: usize,
-        nrec: u32
+        nrec: u32,
     ) -> (u64, u64, u32) {
         let mut rbuf = [0u8; 4];
         match reader.read_exact(&mut rbuf) {
-            Ok(_) => {},
-            Err(e) => { panic!("Could not read all bytes for record {} of {}", crec, nrec); }
+            Ok(_) => {}
+            Err(e) => {
+                panic!("Could not read all bytes for record {} of {}", crec, nrec);
+            }
         };
-        let na = u32::from_le_bytes(rbuf);//.pread::<u32>(0).unwrap();
+        let na = u32::from_le_bytes(rbuf); //.pread::<u32>(0).unwrap();
         let bc = read_into_u64(reader, bct);
         let umi = read_into_u64(reader, umit);
         (bc, umi, na)
@@ -426,7 +428,7 @@ pub fn collate_temporary_bucket<T: Read>(
     // this is just for trying to pre-allocate buffers
     // right; should not affect correctness
     let est_num_rec = (nrec / nchunks) + 1;
-    
+
     // for each record, read it
     for i in 0..(nrec as usize) {
         // read the header of the record
@@ -522,7 +524,7 @@ pub struct TempBucket {
     pub num_chunks: u32,
     pub num_records: u32,
     pub num_records_written: AtomicU32,
-    pub num_bytes_written: AtomicU64
+    pub num_bytes_written: AtomicU64,
 }
 
 impl TempBucket {
@@ -535,7 +537,7 @@ impl TempBucket {
             num_chunks: 0u32,
             num_records: 0u32,
             num_records_written: AtomicU32::new(0u32),
-            num_bytes_written: AtomicU64::new(0u64)
+            num_bytes_written: AtomicU64::new(0u64),
         }
     }
 }
@@ -586,7 +588,7 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                 // if this is a valid barcode, then
                 // write the corresponding entry to the
                 // thread-local buffer for this bucket
-                
+
                 // update number of written records
                 v.num_records_written.fetch_add(1, Ordering::SeqCst);
                 let nb = (rr.refs.len() * target_id_bytes + na_bytes + bc_bytes + umi_bytes) as u64;
@@ -604,11 +606,17 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                 // if the thread-local buffer for this bucket is
                 // greater than the flush size, then flush to file
                 if len > 262144 {
-                    if len != bcursor.position() as usize{
-                        eprintln!("\n\n\nSHOULD NOT HAPPEN: len = {}, pos = {}\n\n\n", len, bcursor.position());
+                    if len != bcursor.position() as usize {
+                        eprintln!(
+                            "\n\n\nSHOULD NOT HAPPEN: len = {}, pos = {}\n\n\n",
+                            len,
+                            bcursor.position()
+                        );
                     }
                     let mut filebuf = v.bucket_writer.lock().unwrap();
-                    filebuf.write_all(&bcursor.get_ref()[0..bcursor.position() as usize]).unwrap();
+                    filebuf
+                        .write_all(&bcursor.get_ref()[0..bcursor.position() as usize])
+                        .unwrap();
                     // and reset the local buffer cursor
                     bcursor.set_position(0);
                 }
