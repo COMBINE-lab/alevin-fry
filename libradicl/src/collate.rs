@@ -454,29 +454,42 @@ pub fn collate_with_temp(
     let num_output_chunks = tsv_map.len() as u64;
     let mut total_allocated_records = 0;
     let mut allocated_records = 0;
-    let mut temp_buckets = vec![Arc::new(libradicl::TempBucket::from_id_and_parent(
-        0, parent,
-    ))];
+    let mut temp_buckets = vec![(
+        0,
+        0,
+        Arc::new(libradicl::TempBucket::from_id_and_parent(0, parent)),
+    )];
 
     // The tsv_map tells us, for each "true" barcode
     // how many records belong to it.  We can scan this information
     // to determine what true barcodes we will keep in memory.
+    let mut num_bucket_chunks = 0u32;
     {
         let moutput_cache = Arc::make_mut(&mut output_cache);
         for (i, rec) in tsv_map.iter().enumerate() {
             // corrected barcode points to the bucket
             // file.
-            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().clone());
+            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
             allocated_records += rec.1;
+            num_bucket_chunks += 1;
             if allocated_records >= (max_records as u64) {
+                temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
+                temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
                 let tn = temp_buckets.len() as u32;
-                temp_buckets.push(Arc::new(libradicl::TempBucket::from_id_and_parent(
-                    tn, parent,
-                )));
+                temp_buckets.push((
+                    0,
+                    0,
+                    Arc::new(libradicl::TempBucket::from_id_and_parent(tn, parent)),
+                ));
                 total_allocated_records += allocated_records;
                 allocated_records = 0;
+                num_bucket_chunks = 0;
             }
         }
+    }
+    if num_bucket_chunks > 0 {
+        temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
+        temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
     }
     total_allocated_records += allocated_records;
     info!(log, "Generated {} temporary buckets.", temp_buckets.len());
@@ -546,7 +559,7 @@ pub fn collate_with_temp(
             for (bucket_id, tb) in loc_temp_buckets.iter().enumerate() {
                 let len = local_buffers[bucket_id].position() as usize;
                 if len > 0 {
-                    let mut filebuf = tb.bucket_writer.lock().unwrap();
+                    let mut filebuf = tb.2.bucket_writer.lock().unwrap();
                     filebuf
                         .write_all(&local_buffers[bucket_id].get_ref()[0..len])
                         .unwrap();
@@ -596,6 +609,37 @@ pub fn collate_with_temp(
 
     // dump the output we have
     // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
+
+    for temp_bucket in temp_buckets {
+        info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
+        // close the handle for writing
+        drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
+        let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+        // create a new handle for reading
+        let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+        let mut treader = BufReader::new(tfile);
+
+        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+        let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let umi_type =
+            libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+
+        libradicl::collate_temporary_bucket(
+            &mut treader,
+            &bc_type,
+            &umi_type,
+            temp_bucket.0,
+            temp_bucket.1,
+            &mut cmap,
+        );
+        // go through and add a header to each chunk
+        for (k, mut v) in cmap.iter_mut() {
+            libradicl::dump_chunk(&mut v, &owriter);
+        }
+        info!(log, "done collating chunk {}", temp_bucket.2.bucket_id);
+        drop(treader);
+        std::fs::remove_file(fname).expect("could not delete temporary file.");
+    }
 
     // reset the reader to start of the chunks
     if total_allocated_records < total_to_collate {

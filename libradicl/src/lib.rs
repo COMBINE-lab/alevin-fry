@@ -398,13 +398,57 @@ impl ReadRecord {
 }
 
 #[inline]
-fn dump_chunk(v: &mut CorrectedCBChunk, owriter: &Mutex<BufWriter<File>>) {
+pub fn dump_chunk(v: &mut CorrectedCBChunk, owriter: &Mutex<BufWriter<File>>) {
     v.data.set_position(0);
     let nbytes = (v.data.get_ref().len()) as u32;
     let nrec = v.nrec;
     v.data.write_all(&nbytes.to_le_bytes()).unwrap();
     v.data.write_all(&nrec.to_le_bytes()).unwrap();
     owriter.lock().unwrap().write_all(v.data.get_ref()).unwrap();
+}
+
+pub fn collate_temporary_bucket<T: Read>(
+    reader: &mut BufReader<T>,
+    bct: &RADIntID,
+    umit: &RADIntID,
+    nchunks: u32,
+    nrec: u32,
+    output_cache: &mut HashMap<u64, CorrectedCBChunk>,
+) {
+    let mut tbuf = [0u8; 65536];
+    // estimated average number of records per barcode
+    // this is just for trying to pre-allocate buffers
+    // right; should not affect correctness
+    let est_num_rec = (nrec / nchunks) + 1;
+
+    // for each record, read it
+    for _ in 0..(nrec as usize) {
+        // read the header of the record
+        // we don't bother reading the whole thing here
+        // because we will just copy later as need be
+        let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
+
+        // get the entry for this chunk, or create a new one
+        let v = output_cache
+            .entry(tup.0)
+            .or_insert(CorrectedCBChunk::from_label_and_counter(
+                tup.0,
+                est_num_rec as u64,
+            ));
+
+        // keep track of the number of records we're writing
+        (*v).nrec += 1;
+        // write the num align
+        let na = tup.2;
+        (*v).data.write(&na.to_le_bytes()).unwrap();
+        // write the corrected barcode
+        bct.write_to(tup.0, &mut (*v).data).unwrap();
+        umit.write_to(tup.1, &mut (*v).data).unwrap();
+        // read the alignment records
+        reader.read_exact(&mut tbuf[0..(4 * na as usize)]).unwrap();
+        // write them
+        (*v).data.write_all(&tbuf[..(4 * na as usize)]).unwrap();
+    }
 }
 
 pub fn process_corrected_cb_chunk<T: Read>(
@@ -473,6 +517,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
 pub struct TempBucket {
     pub bucket_id: u32,
     pub bucket_writer: Arc<Mutex<BufWriter<File>>>,
+    pub num_chunks: u32,
+    pub num_records: u32,
 }
 
 impl TempBucket {
@@ -482,6 +528,8 @@ impl TempBucket {
             bucket_writer: Arc::new(Mutex::new(BufWriter::new(
                 File::create(parent.join(&format!("bucket_{}.tmp", bucket_id))).unwrap(),
             ))),
+            num_chunks: 0u32,
+            num_records: 0u32,
         }
     }
 }
