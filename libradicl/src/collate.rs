@@ -31,6 +31,67 @@ pub fn collate(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
+    type TSVRec = (u64, u64);
+    let mut tsv_map = Vec::<TSVRec>::new(); //HashMap::<u64, u64>::new();
+
+    let freq_file =
+        std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .from_reader(freq_file);
+
+    let mut total_to_collate = 0;
+    for result in rdr.deserialize() {
+        let record: TSVRec = result?;
+        tsv_map.push(record);
+        total_to_collate += record.1;
+    }
+    // sort this so that we deal with largest cells (by # of reads) first
+    // sort in _descending_ order by count.
+    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
+
+    let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
+    info!(
+        log,
+        "estimated that collation would require {} passes over input.", est_num_rounds
+    );
+    if est_num_rounds > 2 {
+        info!(log, "executing temporary file scatter-gather strategy.");
+        collate_with_temp(
+            input_dir,
+            rad_file,
+            num_threads,
+            max_records,
+            tsv_map,
+            total_to_collate,
+            log,
+        )
+    } else {
+        info!(log, "executing multi-pass strategy.");
+        collate_in_memory_multipass(
+            input_dir,
+            rad_file,
+            num_threads,
+            max_records,
+            tsv_map,
+            total_to_collate,
+            log,
+        )
+    }
+}
+
+pub fn collate_in_memory_multipass(
+    input_dir: String,
+    rad_file: String,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    //expected_ori: Strand,
+    log: &slog::Logger,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = std::path::Path::new(&input_dir);
 
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
@@ -106,9 +167,9 @@ pub fn collate(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-
+    /*
     type TSVRec = (u64, u64);
-    let mut tsv_map = Vec::<(u64, u64)>::new(); //HashMap::<u64, u64>::new();
+    let mut tsv_map = Vec::<TSVRec>::new(); //HashMap::<u64, u64>::new();
 
     let freq_file =
         std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
@@ -127,7 +188,7 @@ pub fn collate(
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
-    //println!("{:?}", tsv_map);
+    */
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -330,6 +391,8 @@ pub fn collate_with_temp(
     rad_file: String,
     num_threads: u32,
     max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -414,7 +477,7 @@ pub fn collate_with_temp(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-
+    /*
     type TSVRec = (u64, u64);
     let mut tsv_map = Vec::<(u64, u64)>::new(); //HashMap::<u64, u64>::new();
 
@@ -431,10 +494,10 @@ pub fn collate_with_temp(
         tsv_map.push(record);
         total_to_collate += record.1;
     }
-
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
+    */
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
