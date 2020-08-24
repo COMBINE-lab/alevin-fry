@@ -114,10 +114,8 @@ pub fn collate_in_memory_multipass(
         }
     };
 
-    // NOTE: for some reason we do not yet understand, overwriting
-    // an existing file is about an order of magnitude slower than
-    // writing a non-existing file.  So, to be safe here, if the requested
-    // output file already exists, we simply remove it.
+    // because :
+    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let oname = parent.join("map.collated.rad");
     if oname.exists() {
         std::fs::remove_file(oname)?;
@@ -234,8 +232,6 @@ pub fn collate_in_memory_multipass(
         total_allocated_records += allocated_records;
         last_idx += init_offset;
 
-        //pbar.inc(allocated_records);
-
         let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
         // for each worker, spawn off a thread
         for _worker in 0..n_workers {
@@ -310,17 +306,10 @@ pub fn collate_in_memory_multipass(
             }
         }
 
-        // collect the output for the current barcode set
-        // libradicl::collect_records(&mut br, &cc, &correct_map, &expected_ori, &mut output_cache);
-
-        // dump the output we have
-        // libradicl::dump_output_cache(&mut owriter, &output_cache, &cc);
-
         // reset the reader to start of the chunks
         if total_allocated_records < total_to_collate {
             br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
         }
-        //pass_num += 1;
     }
 
     // make sure we wrote the same number of records that our
