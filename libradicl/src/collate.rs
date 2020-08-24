@@ -620,19 +620,23 @@ pub fn collate_with_temp(
         drop(temp_bucket.2.bucket_writer.lock().unwrap().get_mut());
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        /*
         info!(
             log,
             "bucket {}, expected num rec = {}, written = {}", i, expected, observed
         );
+        */
         assert!(expected == observed);
 
         let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
         let expected_bytes = md.len();
         let observed_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
+        /*
         info!(
             log,
             "bucket {}, expected num bytes = {}, written = {}", i, expected_bytes, observed_bytes
         );
+        */
         assert!(expected_bytes == observed_bytes);
     }
 
@@ -668,6 +672,7 @@ pub fn collate_with_temp(
         let input_dir = input_dir.clone();
         let log = log.clone();
         let owriter = owriter.clone();
+        let pbar_gather = pbar_gather.clone();
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             let parent = std::path::Path::new(&input_dir);
@@ -679,7 +684,6 @@ pub fn collate_with_temp(
                     cmap.clear();
                     cmap.reserve(temp_bucket.0 as usize);
 
-                    info!(log, "collating chunk {}", temp_bucket.2.bucket_id);
                     let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
@@ -701,6 +705,7 @@ pub fn collate_with_temp(
                     for (k, mut v) in cmap.iter_mut() {
                         libradicl::dump_chunk(&mut v, &owriter);
                     }
+                    pbar_gather.inc(1);
                 }
             }
         });
@@ -715,7 +720,6 @@ pub fn collate_with_temp(
                     let expected = temp_bucket.1;
                     let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
                     assert!(expected == observed);
-                    pbar_gather.inc(1);
                     break;
                 }
             }
