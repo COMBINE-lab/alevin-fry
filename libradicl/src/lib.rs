@@ -598,17 +598,10 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
 
                 // if the thread-local buffer for this bucket is
                 // greater than the flush size, then flush to file
-                if len > 262144 {
-                    if len != bcursor.position() as usize {
-                        eprintln!(
-                            "\n\n\nSHOULD NOT HAPPEN: len = {}, pos = {}\n\n\n",
-                            len,
-                            bcursor.position()
-                        );
-                    }
+                if len > 65536 {
                     let mut filebuf = v.bucket_writer.lock().unwrap();
                     filebuf
-                        .write_all(&bcursor.get_ref()[0..bcursor.position() as usize])
+                        .write_all(&bcursor.get_ref()[0..len as usize])
                         .unwrap();
                     // and reset the local buffer cursor
                     bcursor.set_position(0);
