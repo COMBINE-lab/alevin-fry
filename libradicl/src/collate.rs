@@ -81,22 +81,7 @@ pub fn collate(
     }
 }
 
-pub fn collate_in_memory_multipass(
-    input_dir: String,
-    rad_file: String,
-    num_threads: u32,
-    max_records: u32,
-    tsv_map: Vec<(u64, u64)>,
-    total_to_collate: u64,
-    log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = std::path::Path::new(&input_dir);
-
-    // open the metadata file and read the json
-    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
-        .expect("could not open the generate_permit_list.json file.");
-    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
-
+fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
     // next line is ugly — should be a better way.  We need a char to
     // get the strand, so we get the correct field as a `str` then
     // use the chars iterator and get the first char.
@@ -113,6 +98,26 @@ pub fn collate_in_memory_multipass(
             std::process::exit(1);
         }
     };
+    expected_ori
+}
+
+pub fn collate_in_memory_multipass(
+    input_dir: String,
+    rad_file: String,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    log: &slog::Logger,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = std::path::Path::new(&input_dir);
+
+    // open the metadata file and read the json
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
+        .expect("could not open the generate_permit_list.json file.");
+    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+
+    let expected_ori = get_orientation(&mdata, log);
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
@@ -370,22 +375,7 @@ pub fn collate_with_temp(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
-    // next line is ugly — should be a better way.  We need a char to
-    // get the strand, so we get the correct field as a `str` then
-    // use the chars iterator and get the first char.
-    let ori_str: char = mdata["expected_ori"]
-        .as_str()
-        .unwrap()
-        .chars()
-        .next()
-        .unwrap();
-    let expected_ori = match Strand::from_char(&ori_str) {
-        Ok(s) => s,
-        Err(e) => {
-            crit!(log, "invalid metadata {}.", e);
-            std::process::exit(1);
-        }
-    };
+    let expected_ori = get_orientation(&mdata, log);
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
@@ -516,8 +506,6 @@ pub fn collate_with_temp(
     // create a thread-safe queue based on the number of worker threads
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
-    //while last_idx < tsv_map.len() {
-
     // the number of cells left to process
     let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
 
@@ -541,9 +529,6 @@ pub fn collate_with_temp(
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             let mut local_buffers = vec![Cursor::new(vec![0u8; 524288]); nbuckets];
-            for lb in &mut local_buffers {
-                lb.set_position(0);
-            }
 
             // pop from the work queue until everything is
             // processed
@@ -583,6 +568,8 @@ pub fn collate_with_temp(
         total_allocated_records, total_to_collate
     ));
 
+    // read chunks from the input file and pass them to the
+    // worker threads.
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(cc.num_chunks as usize) {
         let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
@@ -601,6 +588,8 @@ pub fn collate_with_temp(
         }
     }
     pbar_inner.finish();
+
+    // wait for the worker threads to finish
     for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(_) => {}
@@ -702,7 +691,7 @@ pub fn collate_with_temp(
                     // go through, add a header to each chunk
                     // and flush the chunk to the global output
                     // file
-                    for (_k, mut v) in cmap.iter_mut() {
+                    for mut v in cmap.values_mut() {
                         libradicl::dump_chunk(&mut v, &owriter);
                     }
                     pbar_gather.inc(1);
