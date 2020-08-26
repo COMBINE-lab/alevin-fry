@@ -17,7 +17,6 @@ use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
-use std::unimplemented;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -166,16 +165,13 @@ fn main() {
 
         let mut fmeth = CellFilterMethod::KneeFinding;
 
-        let expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
+        let _expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
             Ok(v) => {
                 fmeth = CellFilterMethod::ExpectCells(v);
                 Some(v)
             }
             Err(_) => None,
         };
-        if expect_cells.is_some() {
-            unimplemented!();
-        }
 
         if t.is_present("knee-distance") {
             fmeth = CellFilterMethod::KneeFinding;
