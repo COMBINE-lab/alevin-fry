@@ -22,7 +22,7 @@ use crossbeam_queue::ArrayQueue;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -748,7 +748,7 @@ pub fn quantify(
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(hdr.num_chunks as usize) {
         let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-        buf.resize(nbytes_chunk as usize + 8, 0);
+        buf.resize(nbytes_chunk as usize, 0);
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
