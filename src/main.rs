@@ -95,6 +95,7 @@ fn main() {
     .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
+    .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .default_value("full")
@@ -212,6 +213,7 @@ fn main() {
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
+        let use_mtx = t.is_present("use-mtx");
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
@@ -224,6 +226,7 @@ fn main() {
             num_bootstraps,
             init_uniform,
             summary_stat,
+            use_mtx,
             resolution,
             &log,
         )

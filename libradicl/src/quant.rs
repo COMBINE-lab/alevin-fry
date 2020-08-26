@@ -257,6 +257,7 @@ pub fn quantify(
     num_bootstraps: u32,
     init_uniform: bool,
     summary_stat: bool,
+    use_mtx: bool,
     resolution: ResolutionStrategy,
     //no_em: bool,
     //naive: bool,
@@ -414,7 +415,7 @@ pub fn quantify(
     let bootstrap_path = output_path.join("bootstraps.eds.gz");
     let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
     let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
-    let buffered = GzEncoder::new(fs::File::create(mat_path)?, Compression::default());
+    let buffered = GzEncoder::new(fs::File::create(&mat_path)?, Compression::default());
 
     let ff_path = output_path.join("features.txt");
     let mut ff_file = fs::File::create(ff_path)?;
@@ -451,10 +452,23 @@ pub fn quantify(
     //     BufWriter::new(bt_buffered),
     // ));
 
+    let tmcap = if use_mtx {
+        (0.2f64 * num_genes as f64 * hdr.num_chunks as f64).round() as usize
+    } else {
+        0usize
+    };
+
+    let trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+        (hdr.num_chunks as usize, num_genes as usize),
+        tmcap,
+    );
+
     let bc_writer = Arc::new(Mutex::new((
         BufWriter::new(bc_file),
         BufWriter::new(buffered),
         BufWriter::new(ff_file),
+        trimat,
+        0usize,
     )));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
@@ -499,7 +513,8 @@ pub fn quantify(
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
-
+            let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
+            let mut eds_bytes = Vec::<u8>::new();
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -639,12 +654,14 @@ pub fn quantify(
                     let mut sum_umi = 0.0f32;
                     let mut num_expr: u32 = 0;
                     expressed_vec.clear();
-                    for c in &counts {
+                    expressed_ind.clear();
+                    for (gn, c) in counts.iter().enumerate() {
                         max_umi = if *c > max_umi { *c } else { max_umi };
                         sum_umi += *c;
                         if *c > 0.0 {
                             num_expr += 1;
                             expressed_vec.push(*c);
+                            expressed_ind.push(gn);
                         }
                     }
 
@@ -662,11 +679,19 @@ pub fn quantify(
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
-                        let eds_bytes: Vec<u8> = sce::eds::as_bytes(&counts, num_genes)
-                            .expect("can't conver vector to eds");
+
+                        if !use_mtx {
+                            eds_bytes = sce::eds::as_bytes(&counts, num_genes)
+                                .expect("can't conver vector to eds");
+                        }
 
                         let writer_deref = bcout.lock();
                         let writer = &mut *writer_deref.unwrap();
+
+                        // get the row index and then increment it
+                        let row_index = writer.4;
+                        writer.4 += 1;
+
                         // write to barcode file
                         writeln!(&mut writer.0, "{}\t{}", cell_num, unsafe {
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
@@ -674,11 +699,18 @@ pub fn quantify(
                         .expect("can't write to barcode file.");
 
                         // write to matrix file
-                        writer
-                            .1
-                            .write_all(&eds_bytes)
-                            .expect("can't write to matrix file.");
-
+                        if !use_mtx {
+                            // write in eds format
+                            writer
+                                .1
+                                .write_all(&eds_bytes)
+                                .expect("can't write to matrix file.");
+                        } else {
+                            // fill out the triplet matrix in memory
+                            for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                                writer.3.add_triplet(row_index as usize, *ind, *val);
+                            }
+                        }
                         writeln!(
                             &mut writer.2,
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -777,6 +809,18 @@ pub fn quantify(
                 info!(log, "thread panicked");
             }
         }
+    }
+
+    // write to matrix market if we are using it
+    if use_mtx {
+        let writer_deref = bc_writer.lock();
+        let writer = &mut *writer_deref.unwrap();
+        writer.1.flush().unwrap();
+        //drop(writer.1.into_inner().expect("couldn't unwrap"));
+        // now remove it
+        fs::remove_file(&mat_path)?;
+        let mtx_path = output_matrix_path.join("quants_mat.mtx");
+        sprs::io::write_matrix_market(&mtx_path, &writer.3)?;
     }
 
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
