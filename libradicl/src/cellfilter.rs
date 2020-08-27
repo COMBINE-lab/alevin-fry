@@ -15,6 +15,7 @@ use libradicl::exit_codes;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde_json::json;
+use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -292,8 +293,15 @@ pub fn generate_permit_list(
         CellFilterMethod::ExplicitList(valid_bc_file) => {
             valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
         }
-        CellFilterMethod::ExpectCells(_expected_num_cells) => {
-            unimplemented!();
+        CellFilterMethod::ExpectCells(expected_num_cells) => {
+            let robust_quantile = 0.99f64;
+            let robust_div = 10.0f64;
+            let robust_ind = (expected_num_cells as f64 * robust_quantile).round() as u64;
+            // the robust ind must be valid
+            let ind = cmp::min(freq.len() - 1, robust_ind as usize);
+            let robust_freq = freq[ind];
+            let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
+            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
         }
     }
 
