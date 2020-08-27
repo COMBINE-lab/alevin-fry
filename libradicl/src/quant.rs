@@ -693,7 +693,7 @@ pub fn quantify(
                         writer.4 += 1;
 
                         // write to barcode file
-                        writeln!(&mut writer.0, "{}\t{}", cell_num, unsafe {
+                        writeln!(&mut writer.0, "{}", unsafe {
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
                         })
                         .expect("can't write to barcode file.");
@@ -714,7 +714,7 @@ pub fn quantify(
                         writeln!(
                             &mut writer.2,
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            cell_num,
+                            row_index,
                             num_reads,
                             sum_umi,
                             dedup_rate,
