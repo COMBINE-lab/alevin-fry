@@ -298,10 +298,13 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     tid_to_gid: &[u32],
     num_genes: usize,
     _log: &slog::Logger,
-) -> Vec<f32> {
+) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();
     let mut gene_map = HashMap::with_hasher(s);
+    
+    let mut total_umis = 0u64;
+    let mut multi_gene_umis = 0u64;
 
     for eqinfo in &eq_map.eqc_info {
         let umis = &eqinfo.umis;
@@ -319,6 +322,9 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
             }
             prev_gene_id = gid;
         }
+        
+        total_umis += umis.len() as u64;
+        if multi_gene { multi_gene_umis += umis.len() as u64; }
 
         // if the read is single-gene
         // then add this equivalence class' list
@@ -342,7 +348,7 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     }
 
     // return the counts
-    counts
+    (counts, multi_gene_umis as f64 / total_umis as f64)
 }
 
 /// given the connected component (subgraph) of `g` defined by the

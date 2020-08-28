@@ -61,24 +61,26 @@ fn extract_graph(
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
+    let mut one_edit = 0u64;
+    let mut zero_edit = 0u64;
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
-    let has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
-        if x.0 == y.0 {
+    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
+        let hdist = count_diff_2_bit_packed(x.0, y.0);
+        if hdist == 0 {
+            zero_edit += 1;
             return PUGEdgeType::BiDirected;
         }
-        if x.1 > (2 * y.1 - 1) {
-            if count_diff_2_bit_packed(x.0, y.0) < 2 {
+
+        if hdist < 2 {
+            one_edit += 1;
+            if x.1 > (2 * y.1 - 1)  {
                 return PUGEdgeType::XToY;
-            } else {
-                return PUGEdgeType::NoEdge;
-            }
-        } else if y.1 > (2 * x.1 - 1) {
-            if count_diff_2_bit_packed(x.0, y.0) < 2 {
+            } else if y.1 > (2 * x.1 - 1) {
                 return PUGEdgeType::YToX;
             } else {
-                return PUGEdgeType::NoEdge;
+                return PUGEdgeType::BiDirected;
             }
         }
         PUGEdgeType::NoEdge
@@ -245,7 +247,11 @@ fn extract_graph(
             graph.node_count(),
             graph.edge_count()
         );
+        let total_edits = (one_edit + zero_edit) as f64;
+        info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
     }
+
+
     graph
 }
 
@@ -471,6 +477,8 @@ pub fn quantify(
         0usize,
     )));
 
+    let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
+
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
@@ -504,6 +512,8 @@ pub fn quantify(
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
+
+        let mmrate = mmrate.clone();
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
@@ -566,12 +576,14 @@ pub fn quantify(
                             );
                         }
                         ResolutionStrategy::Trivial => {
-                            counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
+                            counts = ct.0;
+                            mmrate.lock().unwrap()[cell_num] = ct.1;
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
@@ -588,7 +600,7 @@ pub fn quantify(
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                true,
+                                true, // only unqique evidence 
                                 &log,
                             );
                             if num_bootstraps > 0 {
@@ -617,7 +629,7 @@ pub fn quantify(
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                init_uniform,
+                                false, // only unqique evidence
                                 &log,
                             );
 
@@ -810,6 +822,11 @@ pub fn quantify(
             }
         }
     }
+
+    let mmrate_path = parent.join("mmrate.tsv");
+    let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
+    let ostr = mmrate.lock().unwrap().iter().map(|x| x.to_string()).collect::<Vec<String>>().join("\t");
+    writeln!(mmrate_file, "{}", ostr);
 
     // write to matrix market if we are using it
     if use_mtx {
