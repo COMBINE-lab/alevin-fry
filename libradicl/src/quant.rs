@@ -75,7 +75,7 @@ fn extract_graph(
 
         if hdist < 2 {
             one_edit += 1;
-            if x.1 > (2 * y.1 - 1)  {
+            if x.1 > (2 * y.1 - 1) {
                 return PUGEdgeType::XToY;
             } else if y.1 > (2 * x.1 - 1) {
                 return PUGEdgeType::YToX;
@@ -250,7 +250,6 @@ fn extract_graph(
         let total_edits = (one_edit + zero_edit) as f64;
         info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
     }
-
 
     graph
 }
@@ -600,7 +599,7 @@ pub fn quantify(
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                true, // only unqique evidence 
+                                true, // only unqique evidence
                                 &log,
                             );
                             if num_bootstraps > 0 {
@@ -825,7 +824,13 @@ pub fn quantify(
 
     let mmrate_path = parent.join("mmrate.tsv");
     let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
-    let ostr = mmrate.lock().unwrap().iter().map(|x| x.to_string()).collect::<Vec<String>>().join("\t");
+    let ostr = mmrate
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|x| x.to_string())
+        .collect::<Vec<String>>()
+        .join("\t");
     writeln!(mmrate_file, "{}", ostr);
 
     // write to matrix market if we are using it

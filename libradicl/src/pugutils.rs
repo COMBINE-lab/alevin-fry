@@ -302,7 +302,7 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();
     let mut gene_map = HashMap::with_hasher(s);
-    
+
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
 
@@ -322,9 +322,11 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
             }
             prev_gene_id = gid;
         }
-        
+
         total_umis += umis.len() as u64;
-        if multi_gene { multi_gene_umis += umis.len() as u64; }
+        if multi_gene {
+            multi_gene_umis += umis.len() as u64;
+        }
 
         // if the read is single-gene
         // then add this equivalence class' list
