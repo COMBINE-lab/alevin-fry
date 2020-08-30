@@ -262,8 +262,8 @@ pub(super) enum PUGEdgeType {
 
 #[derive(Debug)]
 pub(super) struct PUGResolutionStatistics {
-    pub used_alternative_strategy : bool,
-    pub total_mccs : u64,
-    pub ambiguous_mccs : u64,
-    pub trivial_mccs : u64
+    pub used_alternative_strategy: bool,
+    pub total_mccs: u64,
+    pub ambiguous_mccs: u64,
+    pub trivial_mccs: u64,
 }
