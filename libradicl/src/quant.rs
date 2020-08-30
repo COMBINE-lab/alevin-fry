@@ -254,12 +254,10 @@ fn extract_graph(
     graph
 }
 
+type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
 struct BootstrapHelper {
-    bsfile: Option<BufWriter<GzEncoder<fs::File>>>,
-    mean_var_files: Option<(
-        BufWriter<GzEncoder<fs::File>>,
-        BufWriter<GzEncoder<fs::File>>,
-    )>,
+    bsfile: Option<BufferedGZFile>,
+    mean_var_files: Option<(BufferedGZFile, BufferedGZFile)>,
 }
 
 impl BootstrapHelper {
@@ -330,8 +328,7 @@ pub fn quantify(
     //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
-    type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+    //type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
 
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).unwrap();
@@ -855,6 +852,7 @@ pub fn quantify(
         }
     }
 
+    /*
     let mmrate_path = parent.join("mmrate.tsv");
     let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
     let ostr = mmrate
@@ -864,7 +862,8 @@ pub fn quantify(
         .map(|x| x.to_string())
         .collect::<Vec<String>>()
         .join("\t");
-    writeln!(mmrate_file, "{}", ostr);
+    writeln!(mmrate_file, "{}", ostr).expect("couldn't write to multimapping rate file.");
+    */
 
     // write to matrix market if we are using it
     if use_mtx {
