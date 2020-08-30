@@ -41,7 +41,7 @@ use flate2::Compression;
 
 use self::libradicl::em::{em_optimize, run_bootstrap};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
+use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy, PUGResolutionStatistics};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -253,6 +253,15 @@ fn extract_graph(
 
     graph
 }
+
+
+                            struct QuantOutputInfo {
+                                barcode_file: BufWriter<fs::File>,
+                                eds_file: BufWriter<GzEncoder<fs::File>>,
+                                feature_file: BufWriter<fs::File>,
+                                trimat: sprs::TriMatI<f32, u32>,
+                                row_index: usize
+                            }
 
 pub fn quantify(
     input_dir: String,
@@ -468,13 +477,15 @@ pub fn quantify(
         tmcap,
     );
 
-    let bc_writer = Arc::new(Mutex::new((
-        BufWriter::new(bc_file),
-        BufWriter::new(buffered),
-        BufWriter::new(ff_file),
-        trimat,
-        0usize,
-    )));
+    let bc_writer = Arc::new(Mutex::new(
+        QuantOutputInfo{
+        barcode_file: BufWriter::new(bc_file),
+        eds_file: BufWriter::new(buffered),
+        feature_file: BufWriter::new(ff_file),
+        trimat: trimat,
+        row_index: 0usize
+        }
+    ));
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
 
@@ -586,14 +597,14 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
-                            alt_resolution = alt_res;
+                            alt_resolution = pug_stats.used_alternative_strategy;// alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -612,17 +623,20 @@ pub fn quantify(
                                     &log,
                                 );
                             }
+                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                            //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
+                            //);
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
-                            alt_resolution = alt_res;
+                            alt_resolution = pug_stats.used_alternative_strategy;// alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
@@ -631,6 +645,10 @@ pub fn quantify(
                                 false, // only unqique evidence
                                 &log,
                             );
+
+                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                            //100f64 * (pug_stats.ambiguous_mccs as f64 / pug_stats.total_mccs as f64)
+                            //);
 
                             if num_bootstraps > 0 {
                                 bootstraps = run_bootstrap(
@@ -700,11 +718,11 @@ pub fn quantify(
                         let writer = &mut *writer_deref.unwrap();
 
                         // get the row index and then increment it
-                        let row_index = writer.4;
-                        writer.4 += 1;
+                        let row_index = writer.row_index;//writer.4;
+                        writer.row_index += 1;
 
                         // write to barcode file
-                        writeln!(&mut writer.0, "{}", unsafe {
+                        writeln!(&mut writer.barcode_file, "{}", unsafe {
                             std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
                         })
                         .expect("can't write to barcode file.");
@@ -713,17 +731,17 @@ pub fn quantify(
                         if !use_mtx {
                             // write in eds format
                             writer
-                                .1
+                                .eds_file
                                 .write_all(&eds_bytes)
                                 .expect("can't write to matrix file.");
                         } else {
                             // fill out the triplet matrix in memory
                             for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                writer.3.add_triplet(row_index as usize, *ind, *val);
+                                writer.trimat.add_triplet(row_index as usize, *ind, *val);
                             }
                         }
                         writeln!(
-                            &mut writer.2,
+                            &mut writer.feature_file,
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             row_index,
                             num_reads,
@@ -837,12 +855,11 @@ pub fn quantify(
     if use_mtx {
         let writer_deref = bc_writer.lock();
         let writer = &mut *writer_deref.unwrap();
-        writer.1.flush().unwrap();
-        //drop(writer.1.into_inner().expect("couldn't unwrap"));
+        writer.eds_file.flush().unwrap();
         // now remove it
         fs::remove_file(&mat_path)?;
         let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        sprs::io::write_matrix_market(&mtx_path, &writer.3)?;
+        sprs::io::write_matrix_market(&mtx_path, &writer.trimat)?;
     }
 
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);

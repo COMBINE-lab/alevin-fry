@@ -18,7 +18,7 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::EqMap;
+use crate::schema::{EqMap, PUGResolutionStatistics};
 
 type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 
@@ -513,7 +513,7 @@ pub(super) fn get_num_molecules(
     tid_to_gid: &[u32],
     num_genes: usize,
     log: &slog::Logger,
-) -> (HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>, bool) {
+) -> (HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>, PUGResolutionStatistics) {
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
     fn get_set(cap: u32) -> U32Set {
         let s = RandomState::<Hash64>::new();
@@ -549,6 +549,12 @@ pub(super) fn get_num_molecules(
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
     let mut alternative_resoluton = false;
+    let mut pug_stats = PUGResolutionStatistics{
+        used_alternative_strategy: false, 
+        total_mccs: 0u64, 
+        ambiguous_mccs: 0u64,
+        trivial_mccs: 0u64
+    };
 
     for (_comp_label, comp_verts) in comps.iter() {
         if comp_verts.len() > 1 {
@@ -580,6 +586,7 @@ pub(super) fn get_num_molecules(
                     numi,
                     ng
                 );
+                pug_stats.used_alternative_strategy  = true;
                 alternative_resoluton = true;
                 continue;
             }
@@ -656,7 +663,7 @@ pub(super) fn get_num_molecules(
 
                 //} // unsafe
 
-                // project each coverting transcript to it's
+                // project each covering transcript to its
                 // corresponding gene, and dedup the list
                 let mut global_genes: Vec<u32> = global_txps
                     .iter()
@@ -667,6 +674,9 @@ pub(super) fn get_num_molecules(
                 quickersort::sort(&mut global_genes[..]);
                 // dedup as well since we don't care about duplicates
                 global_genes.dedup();
+
+                pug_stats.total_mccs += 1;
+                if global_genes.len() > 1 { pug_stats.ambiguous_mccs += 1; }
 
                 // assert the best covering gene in the global gene set
                 assert!(
@@ -712,7 +722,10 @@ pub(super) fn get_num_molecules(
                 "can't find representative gene(s) for a molecule"
             );
 
-            // incrementing the count of thie eqclass label by 1
+            pug_stats.total_mccs += 1;
+            pug_stats.trivial_mccs += 1;
+            if global_genes.len() > 1 { pug_stats.ambiguous_mccs += 1; }
+            // incrementing the count of the eqclass label by 1
             let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
             *counter += 1;
         }
@@ -722,7 +735,7 @@ pub(super) fn get_num_molecules(
         //identified_txps.push(*rand_cover as u32);
     }
 
-    (gene_eqclass_hash, alternative_resoluton)
+    (gene_eqclass_hash, pug_stats)
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {
