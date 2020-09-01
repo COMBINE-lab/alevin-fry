@@ -17,6 +17,7 @@ use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
+use std::unimplemented;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -43,6 +44,13 @@ fn main() {
     let version = crate_version!();
     // [] add command for just counting barcode frequency
     // [] add other algorithms for determining barcode cutoff
+
+    let convert_app = App::new("convert")
+        .about("Convert a BAM file to a RAD file")
+        .version(version)
+        .author(crate_authors)
+        .arg(Arg::from("-b, --bam=<bam-file> 'input SAM/BAM file'"))
+        .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
 
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
@@ -109,6 +117,7 @@ fn main() {
         .subcommand(gen_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
+        .subcommand(convert_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -197,6 +206,12 @@ fn main() {
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
+    }
+
+    if let Some(ref t) = opts.subcommand_matches("convert") {
+        let _input_file: String = t.value_of_t("bam-file").unwrap();
+        let _rad_file: String = t.value_of_t("rad-file").unwrap();
+        unimplemented!("convert command is not yet implemented.")
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {

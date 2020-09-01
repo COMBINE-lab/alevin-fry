@@ -301,7 +301,11 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
 ) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
     let s = RandomState::<Hash64>::new();
-    let mut gene_map = HashMap::with_hasher(s);
+    let mut gene_map: std::collections::HashMap<
+        u32,
+        Vec<u64>,
+        fasthash::RandomState<fasthash::sea::Hash64>,
+    > = HashMap::with_hasher(s);
 
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
@@ -334,7 +338,7 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
         if !multi_gene {
             gene_map
                 .entry(prev_gene_id)
-                .or_insert_with(|| Vec::new())
+                .or_default()
                 .extend(umis.iter().map(|x| x.0));
         }
     }
@@ -362,7 +366,7 @@ fn get_num_molecules_large_component(
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     num_genes: usize,
-    log: &slog::Logger,
+    _log: &slog::Logger,
 ) -> Vec<u32> {
     let mut counts = vec![0u32; num_genes];
 
@@ -551,7 +555,6 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
-    let mut alternative_resoluton = false;
     let mut pug_stats = PUGResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
@@ -590,7 +593,6 @@ pub(super) fn get_num_molecules(
                     ng
                 );
                 pug_stats.used_alternative_strategy = true;
-                alternative_resoluton = true;
                 continue;
             }
 

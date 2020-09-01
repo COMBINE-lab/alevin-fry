@@ -91,14 +91,13 @@ fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
         .chars()
         .next()
         .unwrap();
-    let expected_ori = match Strand::from_char(&ori_str) {
+    match Strand::from_char(&ori_str) {
         Ok(s) => s,
         Err(e) => {
             crit!(log, "invalid metadata {}.", e);
             std::process::exit(1);
         }
-    };
-    expected_ori
+    }
 }
 
 pub fn collate_in_memory_multipass(

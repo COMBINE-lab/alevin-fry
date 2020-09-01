@@ -41,7 +41,7 @@ use flate2::Compression;
 
 use self::libradicl::em::{em_optimize, run_bootstrap};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType, PUGResolutionStatistics, ResolutionStrategy};
+use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -278,29 +278,29 @@ impl BootstrapHelper {
                     fs::File::create(bootstrap_var_path).unwrap(),
                     Compression::default(),
                 );
-                return BootstrapHelper {
+                BootstrapHelper {
                     bsfile: None,
                     mean_var_files: Some((
                         BufWriter::new(bt_mean_buffered),
                         BufWriter::new(bt_var_buffered),
                     )),
-                };
+                }
             } else {
                 let bootstrap_path = output_path.join("bootstraps.eds.gz");
                 let bt_buffered = GzEncoder::new(
                     fs::File::create(bootstrap_path).unwrap(),
                     Compression::default(),
                 );
-                return BootstrapHelper {
+                BootstrapHelper {
                     bsfile: Some(BufWriter::new(bt_buffered)),
                     mean_var_files: None,
-                };
+                }
             }
         } else {
-            return BootstrapHelper {
+            BootstrapHelper {
                 bsfile: None,
                 mean_var_files: None,
-            };
+            }
         }
     }
 }
@@ -314,6 +314,9 @@ struct QuantOutputInfo {
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
+// TODO: see if we'd rather pass an structure
+// with these options
+#[allow(clippy::too_many_arguments)]
 pub fn quantify(
     input_dir: String,
     tg_map: String,
@@ -497,7 +500,7 @@ pub fn quantify(
         barcode_file: BufWriter::new(bc_file),
         eds_file: BufWriter::new(buffered),
         feature_file: BufWriter::new(ff_file),
-        trimat: trimat,
+        trimat,
         row_index: 0usize,
         bootstrap_helper: boot_helper,
     }));
@@ -802,12 +805,10 @@ pub fn quantify(
                                     varf.write_all(&eds_var_bytes)
                                         .expect("can't write to bootstrap var file.");
                                 }
-                            } else {
-                                if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                                    bsfile
-                                        .write_all(&bt_eds_bytes)
-                                        .expect("can't write to bootstrap file");
-                                }
+                            } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
+                                bsfile
+                                    .write_all(&bt_eds_bytes)
+                                    .expect("can't write to bootstrap file");
                             }
                         } // done bootstrap writing
                     }
