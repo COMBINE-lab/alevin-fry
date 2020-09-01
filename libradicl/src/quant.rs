@@ -482,7 +482,10 @@ pub fn quantify(
 
     let ff_path = output_path.join("features.txt");
     let mut ff_file = fs::File::create(ff_path)?;
-    writeln!(ff_file, "CellNum\tMappedReads\tTotUMI\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean")?;
+    writeln!(
+        ff_file,
+        "CellNum\tMappedReads\tTotUMI\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+    )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
