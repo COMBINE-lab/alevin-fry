@@ -31,6 +31,7 @@ pub mod pugutils;
 pub mod quant;
 pub mod schema;
 pub mod utils;
+pub mod bulkrad;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
@@ -105,6 +106,74 @@ impl CorrectedCBChunk {
         cc.data.write_all(&dummy.to_le_bytes()).unwrap();
         cc
     }
+}
+
+#[derive(Debug)]
+pub enum AlignmentTag {
+    RefId,
+    Pos1, Pos2,
+    Ori1, Ori2,
+    Score1, Score2,
+    Cigar1, Cigar2,
+    NotListed,
+}
+
+impl std::str::FromStr for AlignmentTag {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match &*s.to_lowercase() {
+            "refid"  => Ok(AlignmentTag::RefId),
+            "leftpos" => Ok(AlignmentTag::Pos1),            
+            "leftori" => Ok(AlignmentTag::Ori1),
+            "leftscore" => Ok(AlignmentTag::Score1),
+            "leftcigar" => Ok(AlignmentTag::Cigar1),
+            "rightpos" => Ok(AlignmentTag::Pos2),
+            "rightori" => Ok(AlignmentTag::Ori2),
+            "rightscore" => Ok(AlignmentTag::Score2),
+            "rightcigar" => Ok(AlignmentTag::Cigar2),
+
+            _ => Err(format!("'{}' is not a bulk alignment standard type", s)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PEAlignment {
+    pub ref_id: u32,
+    pub pos1: u32,
+    pub pos2: u32,
+    pub ori1: bool,
+    pub ori2: bool,
+    pub score1: f32,
+    pub score2: f32,
+    pub cigar1: String,
+    pub cigar2: String,
+    // pub extra_tags: TagSection
+}
+
+#[derive(Debug)]
+pub struct SEAlignment {
+    pub ref_id: u32,
+    pub pos: u32,
+    pub dir: bool,
+    pub score: f32,
+    pub cigar: String,
+    // pub extra_tags: TagSection
+}
+
+#[derive(Debug)]
+pub struct BulkReadRecord {
+    pub read_name: String,
+    pub read_len: u32,
+    pub alignments: Vec<PEAlignment>,
+}
+
+#[derive(Debug)]
+pub struct BulkChunk {
+    pub nbytes: u32,
+    pub nrec: u32,
+    pub reads: Vec<BulkReadRecord>,
 }
 
 #[derive(Copy, Clone)]
@@ -201,6 +270,7 @@ pub enum RADType {
     U64,
     F32,
     F64,
+    STR,
 }
 
 pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
@@ -212,6 +282,7 @@ pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
         4 => Some(RADType::U64),
         5 => Some(RADType::F32),
         6 => Some(RADType::F64),
+        7 => Some(RADType::STR),
         _ => None,
     }
 }
@@ -394,6 +465,116 @@ impl ReadRecord {
 
         // make sure these are sorted in this step.
         quickersort::sort(&mut rec.refs[..]);
+        rec
+    }
+}
+
+impl BulkReadRecord {
+    pub fn is_empty(&self) -> bool {
+        self.alignments.is_empty()
+    }
+
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, readTags: & TagSection, alignment_tags: & TagSection) -> Self {
+        let mut rbuf = [0u8; 255];
+
+        reader.read_exact(&mut rbuf[0..4]).unwrap();
+        let na = rbuf.pread::<u32>(0).unwrap();
+
+        let mut rec = Self {
+            read_name: String::from(""),
+            read_len: 0,
+            alignments: Vec::with_capacity(na as usize),
+        };
+        
+        for _ in 0..(na as usize) {
+            rec.alignments.push(PEAlignment::from_bytes(reader, alignment_tags));
+        }
+        // for _ in 0..(na as usize) {
+        //     reader.read_exact(&mut rbuf[0..4]).unwrap();
+        //     let v = rbuf.pread::<u32>(0).unwrap();
+        //     let dir = (v & 0x80000000) != 0;
+        //     rec.dirs.push(dir);
+        //     rec.refs.push(v & 0x7FFFFFFF);
+        // }
+
+        rec
+    }
+}
+
+impl PEAlignment {
+    pub fn is_empty(&self) -> bool {
+        self.score1 == 0.0
+    }
+
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, alignment_tags: & TagSection) -> Self {
+        let mut rbuf = [0u8; 255];
+        let mut rec = Self {
+            ref_id: 0,
+            pos1: 0, pos2: 0,
+            ori1: true, ori2: true,
+            score1: 0.0, score2: 0.0,
+            cigar1: String::from(""), cigar2: String::from(""),
+            // extra_tags: TagSection { tags: Vec::with_capacity(0)}
+        };
+        for idx in 0..alignment_tags.tags.len() {
+            match alignment_tags.tags[idx].name.parse().unwrap_or(AlignmentTag::NotListed) {
+                AlignmentTag::RefId => {
+                    reader.read_exact(&mut rbuf[0..4]).unwrap();
+                    rec.ref_id = rbuf.pread::<u32>(0).unwrap();
+                },
+                AlignmentTag::Pos1 => {
+                    reader.read_exact(&mut rbuf[0..4]).unwrap();
+                    rec.pos1 = rbuf.pread::<u32>(0).unwrap();
+                },
+                AlignmentTag::Pos2 => {
+                    reader.read_exact(&mut rbuf[0..4]).unwrap();
+                    rec.pos2 = rbuf.pread::<u32>(0).unwrap();
+                },
+                AlignmentTag::Ori1 => {
+                    reader.read_exact(&mut rbuf[0..1]).unwrap();
+                    rec.ori1 = rbuf.pread::<u8>(0).unwrap() == 1;
+                },
+                AlignmentTag::Ori2 => {
+                    reader.read_exact(&mut rbuf[0..1]).unwrap();
+                    rec.ori2 = rbuf.pread::<u8>(0).unwrap() == 1;
+                },
+                AlignmentTag::Score1 => {
+                    reader.read_exact(&mut rbuf[0..4]).unwrap();
+                    rec.score1 = rbuf.pread::<f32>(0).unwrap();
+                },
+                AlignmentTag::Score2 => {
+                    reader.read_exact(&mut rbuf[0..4]).unwrap();
+                    rec.score2 = rbuf.pread::<f32>(0).unwrap();
+                },
+                AlignmentTag::Cigar1 => {
+                    reader.read_exact(&mut rbuf[0..1]).unwrap();
+                    let string_len = rbuf.pread::<u8>(0).unwrap() as usize;
+                    let mut strbuf = vec![0u8; string_len]; 
+                    reader.read_exact(&mut strbuf).unwrap();
+                    rec.cigar1 = String::from_utf8(strbuf).unwrap();
+                },
+                AlignmentTag::Cigar2 => {
+                    reader.read_exact(&mut rbuf[0..1]).unwrap();
+                    let string_len = rbuf.pread::<u8>(0).unwrap() as usize;
+                    let mut strbuf = vec![0u8; string_len]; 
+                    reader.read_exact(&mut strbuf).unwrap();
+                    rec.cigar2 = String::from_utf8(strbuf).unwrap();
+                },
+                AlignmentTag::NotListed => {
+                    // rec.extra_tags.tags.push(alignmentTags.tags[idx])
+                }
+            }
+            // For any of the tags that are bulk alignment standard tags:alignmentTags
+            
+        }
+        // for _ in 0..(na as usize) {
+        //     reader.read_exact(&mut rbuf[0..4]).unwrap();
+        //     let v = rbuf.pread::<u32>(0).unwrap();
+        //     let dir = (v & 0x80000000) != 0;
+        //     rec.dirs.push(dir);
+        //     rec.refs.push(v & 0x7FFFFFFF);
+        // }
+
         rec
     }
 }
@@ -733,6 +914,37 @@ impl Chunk {
         c
     }
 }
+
+impl BulkChunk {
+    pub fn read_header<T: Read>(reader: &mut BufReader<T>) -> (u32, u32) {
+        let mut buf = [0u8; 8];
+
+        reader.read_exact(&mut buf).unwrap();
+        let nbytes = buf.pread::<u32>(0).unwrap();
+        let nrec = buf.pread::<u32>(4).unwrap();
+        (nbytes, nrec)
+    }
+
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, read_tags: & TagSection, alignment_tags: & TagSection) -> Self {
+        let mut buf = [0u8; 8];
+
+        reader.read_exact(&mut buf).unwrap();
+        let nbytes = buf.pread::<u32>(0).unwrap();
+        let nrec = buf.pread::<u32>(4).unwrap();
+        let mut c = Self {
+            nbytes,
+            nrec,
+            reads: Vec::with_capacity(nrec as usize),
+        };
+
+        for _ in 0..(nrec as usize) {
+            c.reads.push(BulkReadRecord::from_bytes(reader, read_tags, alignment_tags));
+        }
+
+        c
+    }
+}
+
 
 impl FileTags {
     pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> Self {
