@@ -32,13 +32,13 @@ pub fn read_bulkRAD(
         hdr.num_chunks
     );
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let fl_tags = libradicl::TagSection::from_bulk_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = libradicl::TagSection::from_bulk_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let al_tags = libradicl::TagSection::from_bulk_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     // let ft_vals = libradicl::FileTags::from_bytes(&mut br);

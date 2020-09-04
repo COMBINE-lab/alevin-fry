@@ -985,6 +985,23 @@ impl TagDesc {
             typeid: buf.pread(str_len).unwrap(),
         }
     }
+
+    pub fn from_bulk_bytes<T: Read>(reader: &mut BufReader<T>) -> TagDesc {
+        // space for the string length (1 byte)
+        // the longest string possible (255 char)
+        // and the typeid
+        let mut buf = [0u8; 257];
+        reader.read_exact(&mut buf[0..1]).unwrap();
+        let str_len = buf.pread::<u8>(0).unwrap() as usize;
+
+        // read str_len + 1 to get the type id that follows the string
+        reader.read_exact(&mut buf[0..str_len + 1]).unwrap();
+        TagDesc {
+            name: std::str::from_utf8(&buf[0..str_len]).unwrap().to_string(),
+            typeid: buf.pread(str_len).unwrap(),
+        }
+    }
+
 }
 
 impl TagSection {
@@ -999,6 +1016,22 @@ impl TagSection {
 
         for _ in 0..num_tags {
             ts.tags.push(TagDesc::from_bytes(reader));
+        }
+
+        ts
+    }
+
+    pub fn from_bulk_bytes<T: Read>(reader: &mut BufReader<T>) -> TagSection {
+        let mut buf = [0u8; 2];
+        reader.read_exact(&mut buf).unwrap();
+        let num_tags = buf.pread::<u16>(0).unwrap() as usize;
+
+        let mut ts = TagSection {
+            tags: Vec::with_capacity(num_tags),
+        };
+
+        for _ in 0..num_tags {
+            ts.tags.push(TagDesc::from_bulk_bytes(reader));
         }
 
         ts
@@ -1033,6 +1066,8 @@ impl RADBulkHeader {
                 .push(std::str::from_utf8(&buf[0..l]).unwrap().to_string());
             reader.read_exact(&mut buf[0..4]).unwrap();
             rh.ref_lens.push(buf.pread::<u32>(0).unwrap());
+            // println!("{:?} : {:?}", rh.ref_names.last(), rh.ref_lens.last());
+
             num_read += 1;
         }
 
