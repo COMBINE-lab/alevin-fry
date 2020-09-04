@@ -40,6 +40,14 @@ pub fn lib_name() -> &'static str {
     LIB_NAME
 }
 
+pub struct RADBulkHeader {
+    pub is_paired: u8,
+    pub ref_count: u64,
+    pub ref_names: Vec<String>,
+    pub ref_lens: Vec<u32>,
+    pub num_chunks: u64,
+}
+
 pub struct RADHeader {
     pub is_paired: u8,
     pub ref_count: u64,
@@ -925,10 +933,13 @@ impl BulkChunk {
         (nbytes, nrec)
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, read_tags: & TagSection, alignment_tags: & TagSection) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, read_tags: & TagSection, alignment_tags: & TagSection) -> Result<Self, String> {
         let mut buf = [0u8; 8];
 
-        reader.read_exact(&mut buf).unwrap();
+        if let Err(e) = reader.read_exact(&mut buf) {
+            return Err(format!("EOF"));
+        }
+        
         let nbytes = buf.pread::<u32>(0).unwrap();
         let nrec = buf.pread::<u32>(4).unwrap();
         let mut c = Self {
@@ -941,7 +952,7 @@ impl BulkChunk {
             c.reads.push(BulkReadRecord::from_bytes(reader, read_tags, alignment_tags));
         }
 
-        c
+        Ok(c)
     }
 }
 
@@ -991,6 +1002,43 @@ impl TagSection {
         }
 
         ts
+    }
+}
+
+impl RADBulkHeader {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> RADBulkHeader {
+        let mut rh = RADBulkHeader {
+            is_paired: 0,
+            ref_count: 0,
+            ref_names: vec![],
+            ref_lens: vec![],
+            num_chunks: 0,
+        };
+
+        // size of the longest allowable string.
+        let mut buf = [0u8; 65536];
+        reader.read_exact(&mut buf[0..9]).unwrap();
+        rh.is_paired = buf.pread(0).unwrap();
+        rh.ref_count = buf.pread::<u64>(1).unwrap();
+
+        // we know how many names we will read in.
+        rh.ref_names.reserve_exact(rh.ref_count as usize);
+
+        let mut num_read = 0u64;
+        while num_read < rh.ref_count {
+            reader.read_exact(&mut buf[0..1]).unwrap();
+            let l: usize = buf.pread::<u8>(0).unwrap() as usize;
+            reader.read_exact(&mut buf[0..l]).unwrap();
+            rh.ref_names
+                .push(std::str::from_utf8(&buf[0..l]).unwrap().to_string());
+            reader.read_exact(&mut buf[0..4]).unwrap();
+            rh.ref_lens.push(buf.pread::<u32>(0).unwrap());
+            num_read += 1;
+        }
+
+        reader.read_exact(&mut buf[0..8]).unwrap();
+        rh.num_chunks = buf.pread::<u64>(0).unwrap();
+        rh
     }
 }
 

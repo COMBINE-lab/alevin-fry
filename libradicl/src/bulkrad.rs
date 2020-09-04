@@ -19,10 +19,10 @@ pub fn read_bulkRAD(
     let i_file = File::open(&rad_file).unwrap();
     let mut br = BufReader::new(i_file);
 
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RADBulkHeader::from_bytes(&mut br);
 
-    let end_header_pos =
-        br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
+    // let end_header_pos =
+        // br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
 
     info!(
         log,
@@ -41,21 +41,22 @@ pub fn read_bulkRAD(
     let al_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
-    info!(log, "File-level tag values {:?}", ft_vals);
+    // let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    // info!(log, "File-level tag values {:?}", ft_vals);
 
     let mut num_reads = 0;
-    for _ in 0..(hdr.num_chunks as usize) {
-        let c = libradicl::BulkChunk::from_bytes(&mut br, & al_tags, & rl_tags);
-        num_reads += c.reads.len();
+    // for _ in 0..(hdr.num_chunks as usize) {
+        
+    // while !br.eo
+    loop {
+        match libradicl::BulkChunk::from_bytes(&mut br, & al_tags, & rl_tags) {
+            Ok(v) => num_reads += v.reads.len(),
+            Err(_) => break,
+        }
     }
 
+    // let pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
 
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
-
-    let pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
-
-    info!(log, "finished collating input rad file {:?}.", rad_file);
+    info!(log, "finished collating input rad file {:?}. Observed {:?} reads", rad_file, num_reads);
     Ok(())
 }
