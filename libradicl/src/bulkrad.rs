@@ -48,8 +48,9 @@ pub fn read_bulkRAD(
     // for _ in 0..(hdr.num_chunks as usize) {
         
     // while !br.eo
+    let mut cntr = 0;
     loop {
-        match libradicl::BulkChunk::from_bytes(&mut br, & al_tags, & rl_tags) {
+        match libradicl::BulkChunk::from_bytes(&mut br, & al_tags, & rl_tags, &mut cntr) {
             Ok(v) => num_reads += v.reads.len(),
             Err(_) => break,
         }

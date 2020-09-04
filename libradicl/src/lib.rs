@@ -482,7 +482,7 @@ impl BulkReadRecord {
         self.alignments.is_empty()
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, readTags: & TagSection, alignment_tags: & TagSection) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, readTags: & TagSection, alignment_tags: & TagSection, cntr : &mut u64) -> Self {
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -493,9 +493,11 @@ impl BulkReadRecord {
             read_len: 0,
             alignments: Vec::with_capacity(na as usize),
         };
-        
+        // read readTags
+
+        // read alignments
         for _ in 0..(na as usize) {
-            rec.alignments.push(PEAlignment::from_bytes(reader, alignment_tags));
+            rec.alignments.push(PEAlignment::from_bytes(reader, alignment_tags, cntr));
         }
         // for _ in 0..(na as usize) {
         //     reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -514,7 +516,7 @@ impl PEAlignment {
         self.score1 == 0.0
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, alignment_tags: & TagSection) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, alignment_tags: & TagSection, cntr: &mut u64) -> Self {
         let mut rbuf = [0u8; 255];
         let mut rec = Self {
             ref_id: 0,
@@ -572,6 +574,10 @@ impl PEAlignment {
                     // rec.extra_tags.tags.push(alignmentTags.tags[idx])
                 }
             }
+            if *cntr < 500 {
+                println!("{:?} => alignment {:?}", cntr, rec);
+            }
+            *cntr = *cntr + 1u64;
             // For any of the tags that are bulk alignment standard tags:alignmentTags
             
         }
@@ -933,10 +939,10 @@ impl BulkChunk {
         (nbytes, nrec)
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, read_tags: & TagSection, alignment_tags: & TagSection) -> Result<Self, String> {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, read_tags: & TagSection, alignment_tags: & TagSection, cntr : &mut u64) -> Result<Self, String> {
         let mut buf = [0u8; 8];
 
-        if let Err(e) = reader.read_exact(&mut buf) {
+        if let Err(_) = reader.read_exact(&mut buf) {
             return Err(format!("EOF"));
         }
         
@@ -949,9 +955,8 @@ impl BulkChunk {
         };
 
         for _ in 0..(nrec as usize) {
-            c.reads.push(BulkReadRecord::from_bytes(reader, read_tags, alignment_tags));
+            c.reads.push(BulkReadRecord::from_bytes(reader, read_tags, alignment_tags, cntr));
         }
-
         Ok(c)
     }
 }
