@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use needletail::bitkmer::*;
-use rust_htslib::{bam, bam::Read};
+use rust_htslib::{bam, bam::Read, bam::Record};
 use rust_htslib::bam::HeaderView;
 use std::collections::HashMap;
 use std::str;
@@ -44,8 +44,8 @@ pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
 pub fn bam2rad(
     input_file: String,
     rad_file: String,
+    num_threads: u32,
     log: &slog::Logger,
-
 ){
     let ofile = File::create(&rad_file).unwrap();
 
@@ -118,8 +118,9 @@ pub fn bam2rad(
 
     // Tags we will have
     // write the tag meta-information section
-
     {
+        // TODO: get the first record for creating flags
+
         // file-level
         let mut num_tags = 2u16;
         data
@@ -215,6 +216,13 @@ pub fn bam2rad(
     data = Cursor::new(Vec::<u8>::with_capacity((5000 * 24) as usize));
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
+
+    // calculate number of records
+    // let mut total_number_of_records = 0u64;
+    // for r in bam.records(){
+    //     total_number_of_records += 1;
+    // }
+    // info!(log, "total number of records in bam {:?}", total_number_of_records);
     
     let sty = ProgressStyle::default_bar()
         .template(
@@ -222,7 +230,7 @@ pub fn bam2rad(
         )
         .progress_chars("╢▌▌░╟");
     
-    let mut expected_bar_length = 50u64;
+    let mut expected_bar_length = 5000u64;
     // if let (_, Some(expected_size)) = bam.records().size_hint() {
     //     expected_bar_length = (expected_size as u64) / 5000;
     // }
@@ -230,8 +238,10 @@ pub fn bam2rad(
     pbar_inner.set_style(sty);
     pbar_inner.tick();
 
-    for r in bam.records(){
-        let rec = r.unwrap();
+    let mut rec = bam::Record::new();
+    //for r in bam.records(){
+    while bam.read(&mut rec).unwrap() {
+        // let rec = r.unwrap();
         let is_reverse = rec.is_reverse();
         let tid = rec.tid() as u32;
         // let tname = tid_lookup.get(&(rec.tid() as u32)).unwrap();

@@ -50,6 +50,7 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-b, --bam=<bam-file> 'input SAM/BAM file'"))
+        .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
         .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
 
     let gen_app = App::new("generate-permit-list")
@@ -211,7 +212,8 @@ fn main() {
     if let Some(ref t) = opts.subcommand_matches("convert") {
         let input_file: String = t.value_of_t("bam").unwrap();
         let rad_file: String = t.value_of_t("output").unwrap();
-        libradicl::convert::bam2rad(input_file, rad_file, &log)
+        let num_threads: u32 = t.value_of_t("threads").unwrap();
+        libradicl::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {
