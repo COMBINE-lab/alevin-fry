@@ -209,9 +209,9 @@ fn main() {
     }
 
     if let Some(ref t) = opts.subcommand_matches("convert") {
-        let _input_file: String = t.value_of_t("bam-file").unwrap();
-        let _rad_file: String = t.value_of_t("rad-file").unwrap();
-        unimplemented!("convert command is not yet implemented.")
+        let input_file: String = t.value_of_t("bam").unwrap();
+        let rad_file: String = t.value_of_t("output").unwrap();
+        libradicl::convert::bam2rad(input_file, rad_file, &log)
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {
