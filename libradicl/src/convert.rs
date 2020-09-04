@@ -92,6 +92,16 @@ pub fn bam2rad(
             .write_all(&initial_num_chunks.to_le_bytes())
             .expect("coudn't write to output file");
     }
+
+    // test the header
+    {
+        info!(
+            log,
+            "ref count: {:?} ",
+            hdrv.target_count(),
+        );
+    }
+
     // keep a pointer to header pos
     let mut end_header_pos = 
         data.seek(SeekFrom::Current(0)).unwrap()
@@ -212,10 +222,10 @@ pub fn bam2rad(
         )
         .progress_chars("╢▌▌░╟");
     
-    let mut expected_bar_length = 1000000u64;
-    if let (_, Some(expected_size)) = bam.records().size_hint() {
-        expected_bar_length = (expected_size as u64) / 5000;
-    }
+    let mut expected_bar_length = 50u64;
+    // if let (_, Some(expected_size)) = bam.records().size_hint() {
+    //     expected_bar_length = (expected_size as u64) / 5000;
+    // }
     let pbar_inner = ProgressBar::new(expected_bar_length as u64);
     pbar_inner.set_style(sty);
     pbar_inner.tick();
@@ -278,6 +288,11 @@ pub fn bam2rad(
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
         }
+
+        // for debugging
+        if num_output_chunks > expected_bar_length-1 {
+            break;
+        }
     }
 
     if local_nrec > 0 {
@@ -292,6 +307,13 @@ pub fn bam2rad(
     pbar_inner.finish_with_message("wrote all records.");
 
     // update chunk size
+    info!(
+        log,
+        "num chunks {:?}",
+        num_output_chunks,
+    );
+
+    owriter.lock().unwrap().flush();
     owriter
         .lock()
         .unwrap()
