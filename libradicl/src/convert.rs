@@ -10,10 +10,11 @@ use std::fs::File;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 use needletail::bitkmer::*;
-use rust_htslib::{bam, bam::Read, bam::Record};
+use rust_htslib::{bam, bam::Read};
 use rust_htslib::bam::HeaderView;
 use std::collections::HashMap;
 use std::str;
+use std::path::Path;
 use rand::Rng;
 
 use crate as libradicl;
@@ -47,6 +48,10 @@ pub fn bam2rad(
     num_threads: u32,
     log: &slog::Logger,
 ){
+    let oname = Path::new(&rad_file);
+    if oname.exists() {
+        std::fs::remove_file(oname);
+    }
     let ofile = File::create(&rad_file).unwrap();
 
     let mut bam  = bam::Reader::from_path(&input_file).unwrap();
@@ -209,11 +214,11 @@ pub fn bam2rad(
     owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
 
     let mut num_output_chunks = 0u64;
-
     let mut local_nrec = 0u32;
     let initial_cond : bool = false ;
     // reset data
-    data = Cursor::new(Vec::<u8>::with_capacity((5000 * 24) as usize));
+    let buf_limit = 10000u32;
+    data = Cursor::new(Vec::<u8>::with_capacity((buf_limit * 24) as usize));
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
 
@@ -224,19 +229,17 @@ pub fn bam2rad(
     // }
     // info!(log, "total number of records in bam {:?}", total_number_of_records);
     
-    let sty = ProgressStyle::default_bar()
-        .template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
-        )
-        .progress_chars("╢▌▌░╟");
+    // let sty = ProgressStyle::default_bar()
+    //     .template(
+    //         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
+    //     )
+    //     .progress_chars("╢▌▌░╟");
     
-    let mut expected_bar_length = 5000u64;
-    // if let (_, Some(expected_size)) = bam.records().size_hint() {
-    //     expected_bar_length = (expected_size as u64) / 5000;
-    // }
-    let pbar_inner = ProgressBar::new(expected_bar_length as u64);
-    pbar_inner.set_style(sty);
-    pbar_inner.tick();
+    // let mut expected_bar_length : u64 = u64::MAX;
+   
+    // let pbar_inner = ProgressBar::new(expected_bar_length as u64);
+    // pbar_inner.set_style(sty);
+    // pbar_inner.tick();
 
     let mut rec = bam::Record::new();
     //for r in bam.records(){
@@ -283,14 +286,17 @@ pub fn bam2rad(
         local_nrec += 1;
 
 
-        if local_nrec > 5000{
+        if local_nrec > buf_limit{
             data.set_position(0);
             let nbytes = (data.get_ref().len()) as u32;
             let nrec = local_nrec;
             data.write_all(&nbytes.to_le_bytes()).unwrap();
             data.write_all(&nrec.to_le_bytes()).unwrap();
             owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
-            pbar_inner.inc(1);
+            // pbar_inner.inc(1);
+            // if num_output_chunks%100 == 0 {
+                print!("Processed {} chunks\r", num_output_chunks);
+            // }
 
             num_output_chunks += 1;
             local_nrec = 0;
@@ -300,9 +306,9 @@ pub fn bam2rad(
         }
 
         // for debugging
-        if num_output_chunks > expected_bar_length-1 {
-            break;
-        }
+        // if num_output_chunks > expected_bar_length-1 {
+        //     break;
+        // }
     }
 
     if local_nrec > 0 {
@@ -314,12 +320,13 @@ pub fn bam2rad(
         owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
         num_output_chunks += 1;
     }
-    pbar_inner.finish_with_message("wrote all records.");
+    // pbar_inner.finish_with_message("wrote all records.");
 
     // update chunk size
+    println!("");
     info!(
         log,
-        "num chunks {:?}",
+        "{:?} chunks written",
         num_output_chunks,
     );
 
