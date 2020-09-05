@@ -7,10 +7,12 @@ extern crate scroll;
 use self::slog::{info};
 use self::indicatif::{ProgressBar, ProgressStyle};
 use std::fs::File;
+use std::fs;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
-use needletail::bitkmer::*;
+// use std::sync::{Arc, Mutex};
+// use needletail::bitkmer::*;
 use rust_htslib::{bam, bam::Read};
+use std::error::Error;
 use rust_htslib::bam::HeaderView;
 use std::collections::HashMap;
 use std::str;
@@ -19,6 +21,7 @@ use rand::Rng;
 
 use crate as libradicl;
 
+#[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
     let nucl = vec!["A","T","G","C"];
     let mut rng = rand::thread_rng();
@@ -32,6 +35,24 @@ fn get_random_nucl() -> &'static str {
     // }
 }
 
+#[allow(dead_code)]
+pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
+    let mut cb_id: u64 = 0;
+    for (idx, nt) in cb_str.iter().rev().enumerate() {
+        let offset = idx * 2;
+        match nt {
+            65 | 78 => (),              // A | N 00
+            67 => cb_id |= 1 << offset, // C 01
+            71 => cb_id |= 2 << offset, // G 10
+            84 => cb_id |= 3 << offset, // T 11
+            _ => panic!("unknown nucleotide {}", nt),
+        };
+    }
+
+    Ok(cb_id)
+}
+
+#[allow(dead_code)]
 pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
 	let mut dict: HashMap<u32, String> = HashMap::with_capacity(46);
 	for (i,t) in h.target_names()
@@ -50,13 +71,27 @@ pub fn bam2rad(
 ){
     let oname = Path::new(&rad_file);
     if oname.exists() {
-        std::fs::remove_file(oname);
+        std::fs::remove_file(oname).expect("could not be deleted");
     }
     let ofile = File::create(&rad_file).unwrap();
 
     let mut bam  = bam::Reader::from_path(&input_file).unwrap();
+    let bam_bytes = fs::metadata(&input_file).unwrap().len();
+    info!{
+        log,
+        "Bam file size in bytes {:?}",
+        bam_bytes
+    };
+
+    if num_threads > 1 {
+        bam.set_threads((num_threads as usize) - 1).unwrap();
+    }else {
+        bam.set_threads(1).unwrap();
+    }
+
+
     let hdrv = bam.header().to_owned();
-    let tid_lookup: HashMap<u32, String>  = tid_2_contig(&hdrv);
+    // let tid_lookup: HashMap<u32, String>  = tid_2_contig(&hdrv);
     let mut data = Cursor::new(vec![]);
     // initialize the header (do we need this ?)
     // let mut hdr = libradicl::RADHeader::from_bam_header(&hdrv);
@@ -69,7 +104,8 @@ pub fn bam2rad(
     // );
 
     // file writer
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    // let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let mut owriter = BufWriter::with_capacity(1048576, ofile);
     // intermediate buffer
 
     // write the header
@@ -83,7 +119,7 @@ pub fn bam2rad(
             .write_all(&ref_count.to_le_bytes())
             .expect("couldn't write to output file");
         // create longest buffer
-        for (i, t) in hdrv.target_names().iter().enumerate() {
+        for t in hdrv.target_names().iter() {
             let name_size = t.len() as u16 ;
             data    
                 .write_all(&name_size.to_le_bytes())
@@ -108,7 +144,7 @@ pub fn bam2rad(
     }
 
     // keep a pointer to header pos
-    let mut end_header_pos = 
+    let end_header_pos = 
         data.seek(SeekFrom::Current(0)).unwrap()
         - std::mem::size_of::<u64>() as u64;
     
@@ -211,12 +247,14 @@ pub fn bam2rad(
             .expect("coudn't write to output file");
     }
 
-    owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
+    // owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
+    owriter.write_all(data.get_ref()).unwrap();
 
     let mut num_output_chunks = 0u64;
     let mut local_nrec = 0u32;
-    let initial_cond : bool = false ;
-    // reset data
+    // let initial_cond : bool = false ;
+    
+    // allocate data
     let buf_limit = 10000u32;
     data = Cursor::new(Vec::<u8>::with_capacity((buf_limit * 24) as usize));
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
@@ -229,17 +267,17 @@ pub fn bam2rad(
     // }
     // info!(log, "total number of records in bam {:?}", total_number_of_records);
     
-    // let sty = ProgressStyle::default_bar()
-    //     .template(
-    //         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
-    //     )
-    //     .progress_chars("╢▌▌░╟");
+    let sty = ProgressStyle::default_bar()
+        .template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
+        )
+        .progress_chars("╢▌▌░╟");
     
-    // let mut expected_bar_length : u64 = u64::MAX;
+    let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);
    
-    // let pbar_inner = ProgressBar::new(expected_bar_length as u64);
-    // pbar_inner.set_style(sty);
-    // pbar_inner.tick();
+    let pbar_inner = ProgressBar::new(expected_bar_length as u64);
+    pbar_inner.set_style(sty);
+    pbar_inner.tick();
 
     let mut rec = bam::Record::new();
     //for r in bam.records(){
@@ -251,18 +289,34 @@ pub fn bam2rad(
         // let qname_string = str::from_utf8(rec.qname()).unwrap();
         let bc_string_in = str::from_utf8( rec.aux(b"CR").unwrap().string() ).unwrap();
         let umi_string_in = str::from_utf8( rec.aux(b"UR").unwrap().string() ).unwrap();
-        let bclen = bc_string_in.len();
-        let umilen = umi_string_in.len();
+        // let bclen = bc_string_in.len();
+        // let umilen = umi_string_in.len();
 
-        //println!("{:?}",qname_string);
+        // replace first occurance of 'N'
+        // if there are more than one 'N',
+        // ignore the string 
+        // non-random replacement to avoid 
+        // stochasticity
+        // https://github.com/COMBINE-lab/salmon/blob/master/src/AlevinUtils.cpp#L789
+        let bc_string = bc_string_in.replacen('N', "A", 1);
+        let umi_string = umi_string_in.replacen('N', "A", 1);
+        if let Some(_pos) = bc_string.find('N') {
+            continue;
+        }
+        if let Some(_pos) = umi_string.find('N') {
+            continue;
+        }
 
-        let bc_string = bc_string_in.replacen('N', get_random_nucl(), bclen);
-        let umi_string = umi_string_in.replacen('N', get_random_nucl(), umilen);
-        let mut bc_bytes = BitNuclKmer::new(bc_string.as_bytes(), bclen as u8, false);
-        let (_, bc, _) = bc_bytes.next().expect("can't extract barcode");
+        // convert to u64 following 
+        // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
+        let bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
+        let umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
+
+        // let mut bc_bytes = BitNuclKmer::new(bc_string.as_bytes(), bclen as u8, false);
+        // let (_, bc, _) = bc_bytes.next().expect("can't extract barcode");
         
-        let mut umi_bytes = BitNuclKmer::new(umi_string.as_bytes(), umilen as u8, false);
-        let (_, umi, _) = umi_bytes.next().expect("can't extract umi");
+        // let mut umi_bytes = BitNuclKmer::new(umi_string.as_bytes(), umilen as u8, false);
+        // let (_, umi, _) = umi_bytes.next().expect("can't extract umi");
 
         // println!("{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}",
         //      qname_string,
@@ -272,12 +326,12 @@ pub fn bam2rad(
         //      num_output_chunks,
         //      local_nrec,
         // );
-        //na
+        //na TODO: make is independed of 16-10 length criterion
         data.write_all(&(1 as u32).to_le_bytes()).unwrap();
         //bc
-        data.write_all(&(bc.0 as u32).to_le_bytes()).unwrap();
+        data.write_all(&(bc as u32).to_le_bytes()).unwrap();
         //umi        
-        data.write_all(&(umi.0 as u32).to_le_bytes()).unwrap();
+        data.write_all(&(umi as u32).to_le_bytes()).unwrap();
         let mut tid_dir = tid | 0x80000000; 
         if is_reverse{
             tid_dir = tid | 0x00000000 ;
@@ -292,10 +346,11 @@ pub fn bam2rad(
             let nrec = local_nrec;
             data.write_all(&nbytes.to_le_bytes()).unwrap();
             data.write_all(&nrec.to_le_bytes()).unwrap();
-            owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
-            // pbar_inner.inc(1);
+            //owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
+            owriter.write_all(data.get_ref()).unwrap();
+            pbar_inner.inc(1);
             // if num_output_chunks%100 == 0 {
-                print!("Processed {} chunks\r", num_output_chunks);
+            //    print!("Processed {} chunks\r", num_output_chunks);
             // }
 
             num_output_chunks += 1;
@@ -317,10 +372,11 @@ pub fn bam2rad(
         let nrec = local_nrec;
         data.write_all(&nbytes.to_le_bytes()).unwrap();
         data.write_all(&nrec.to_le_bytes()).unwrap();
-        owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
+        // owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
+        owriter.write_all(data.get_ref()).unwrap();
         num_output_chunks += 1;
     }
-    // pbar_inner.finish_with_message("wrote all records.");
+    pbar_inner.finish_with_message("wrote all records.");
 
     // update chunk size
     println!("");
@@ -330,21 +386,30 @@ pub fn bam2rad(
         num_output_chunks,
     );
 
-    owriter.lock().unwrap().flush();
+    // owriter.lock().unwrap().flush();
+    // owriter
+    //     .lock()
+    //     .unwrap()
+    //     .get_ref()
+    //     .seek(SeekFrom::Start(
+    //         end_header_pos,
+    //     ))
+    //     .expect("couldn't seek in output file");
+    // owriter
+    //     .lock()
+    //     .unwrap()
+    //     .write_all(&num_output_chunks.to_le_bytes())
+    //     .expect("couldn't write to output file.");
+    owriter.flush().expect("File buffer could not be flushed");
     owriter
-        .lock()
-        .unwrap()
-        .get_ref()
         .seek(SeekFrom::Start(
             end_header_pos,
         ))
         .expect("couldn't seek in output file");
     owriter
-        .lock()
-        .unwrap()
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
 
-    info!(log, "finished collating input rad file {:?}.", rad_file);
+    info!(log, "finished writing to {:?}.", rad_file);
     
 }
