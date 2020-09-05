@@ -49,7 +49,10 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-b, --bam=<bam-file> 'input SAM/BAM file'"))
-        .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+        .arg(
+            Arg::from("-t, --threads 'number of threads to use for processing'")
+                .default_value(&max_num_threads),
+        )
         .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
 
     let gen_app = App::new("generate-permit-list")

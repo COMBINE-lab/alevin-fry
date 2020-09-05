@@ -7,15 +7,15 @@ extern crate fasthash;
 extern crate needletail;
 extern crate num;
 extern crate quickersort;
+extern crate rust_htslib;
 extern crate sce;
 extern crate scroll;
-extern crate rust_htslib;
 
-use rust_htslib::bam::HeaderView;
 use bio_types::strand::*;
 use dashmap::DashMap;
 use needletail::bitkmer::*;
 use num::cast::AsPrimitive;
+use rust_htslib::bam::HeaderView;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
@@ -27,13 +27,13 @@ use std::vec::Vec;
 
 pub mod cellfilter;
 pub mod collate;
+pub mod convert;
 pub mod em;
 pub mod exit_codes;
 pub mod pugutils;
 pub mod quant;
 pub mod schema;
 pub mod utils;
-pub mod convert;
 
 // Name of the program, to be used in diagnostic messages.
 static LIB_NAME: &str = "libradicl";
@@ -828,23 +828,24 @@ impl RADHeader {
         rh.ref_count = header.target_count() as u64;
         // we know how many names we will read in.
         rh.ref_names.reserve_exact(rh.ref_count as usize);
-        for (_i,t) in header.target_names()
-				  .iter().map(|a| std::str::from_utf8(a).unwrap())
-				  .enumerate() {
+        for (_i, t) in header
+            .target_names()
+            .iter()
+            .map(|a| std::str::from_utf8(a).unwrap())
+            .enumerate()
+        {
             rh.ref_names.push(t.to_owned());
-	    }
+        }
         rh
     }
     pub fn get_size(&self) -> usize {
-        let mut tot_size = 0usize ;
-        tot_size += std::mem::size_of::<u8>() + 
-            std::mem::size_of::<u64>();
-        for (_i, t) in self.ref_names.iter().map(|a| a.len())
-                    .enumerate() {
-                        tot_size += t;
-                    }
+        let mut tot_size = 0usize;
+        tot_size += std::mem::size_of::<u8>() + std::mem::size_of::<u64>();
+        for (_i, t) in self.ref_names.iter().map(|a| a.len()).enumerate() {
+            tot_size += t;
+        }
         tot_size += std::mem::size_of::<u64>();
-        tot_size 
+        tot_size
     }
 }
 
@@ -901,32 +902,28 @@ pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
     bc
 }
 
-pub fn write_str_bin(
-    v: &str,
-    type_id: &RADIntID,
-    owriter: &mut Cursor<Vec<u8>>,
-){
+pub fn write_str_bin(v: &str, type_id: &RADIntID, owriter: &mut Cursor<Vec<u8>>) {
     match type_id {
         RADIntID::U8 => {
             owriter
                 .write_all(&(v.len() as u8).to_le_bytes())
                 .expect("coudn't write to output file");
-        },
+        }
         RADIntID::U16 => {
             owriter
                 .write_all(&(v.len() as u16).to_le_bytes())
                 .expect("coudn't write to output file");
-        },
+        }
         RADIntID::U32 => {
             owriter
                 .write_all(&(v.len() as u32).to_le_bytes())
                 .expect("coudn't write to output file");
-        },
+        }
         RADIntID::U64 => {
             owriter
                 .write_all(&(v.len() as u64).to_le_bytes())
                 .expect("coudn't write to output file");
-        },
+        }
     }
     owriter
         .write_all(v.as_bytes())

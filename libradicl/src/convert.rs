@@ -1,29 +1,29 @@
-extern crate rust_htslib;
-extern crate slog;
-extern crate needletail;
 extern crate indicatif;
+extern crate needletail;
+extern crate rust_htslib;
 extern crate scroll;
+extern crate slog;
 
-use self::slog::{info};
 use self::indicatif::{ProgressBar, ProgressStyle};
-use std::fs::File;
+use self::slog::info;
 use std::fs;
+use std::fs::File;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
 // use needletail::bitkmer::*;
-use rust_htslib::{bam, bam::Read};
-use std::error::Error;
-use rust_htslib::bam::HeaderView;
-use std::collections::HashMap;
-use std::str;
-use std::path::Path;
 use rand::Rng;
+use rust_htslib::bam::HeaderView;
+use rust_htslib::{bam, bam::Read};
+use std::collections::HashMap;
+use std::error::Error;
+use std::path::Path;
+use std::str;
 
 use crate as libradicl;
 
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
-    let nucl = vec!["A","T","G","C"];
+    let nucl = vec!["A", "T", "G", "C"];
     let mut rng = rand::thread_rng();
     let idx = rng.gen_range(0, 4);
     return nucl[idx];
@@ -54,21 +54,19 @@ pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
 
 #[allow(dead_code)]
 pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
-	let mut dict: HashMap<u32, String> = HashMap::with_capacity(46);
-	for (i,t) in h.target_names()
-				  .iter().map(|a| str::from_utf8(a).unwrap())
-				  .enumerate() {
-		dict.insert(i as u32, t.to_owned());
-	}
-	dict
+    let mut dict: HashMap<u32, String> = HashMap::with_capacity(46);
+    for (i, t) in h
+        .target_names()
+        .iter()
+        .map(|a| str::from_utf8(a).unwrap())
+        .enumerate()
+    {
+        dict.insert(i as u32, t.to_owned());
+    }
+    dict
 }
 
-pub fn bam2rad(
-    input_file: String,
-    rad_file: String,
-    num_threads: u32,
-    log: &slog::Logger,
-){
+pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slog::Logger) {
     let oname = Path::new(&rad_file);
     let parent = oname.parent().unwrap();
     std::fs::create_dir_all(&parent).unwrap();
@@ -78,9 +76,9 @@ pub fn bam2rad(
     }
     let ofile = File::create(&rad_file).unwrap();
 
-    let mut bam  = bam::Reader::from_path(&input_file).unwrap();
+    let mut bam = bam::Reader::from_path(&input_file).unwrap();
     let bam_bytes = fs::metadata(&input_file).unwrap().len();
-    info!{
+    info! {
         log,
         "Bam file size in bytes {:?}",
         bam_bytes
@@ -88,10 +86,9 @@ pub fn bam2rad(
 
     if num_threads > 1 {
         bam.set_threads((num_threads as usize) - 1).unwrap();
-    }else {
+    } else {
         bam.set_threads(1).unwrap();
     }
-
 
     let hdrv = bam.header().to_owned();
     // let tid_lookup: HashMap<u32, String>  = tid_2_contig(&hdrv);
@@ -113,52 +110,37 @@ pub fn bam2rad(
 
     // write the header
     {
-        let is_paired = 0u8 ;
-        data
-            .write_all(&is_paired.to_le_bytes())
+        let is_paired = 0u8;
+        data.write_all(&is_paired.to_le_bytes())
             .expect("couldn't write to output file");
-        let ref_count = hdrv.target_count() as u64 ;
-        data    
-            .write_all(&ref_count.to_le_bytes())
+        let ref_count = hdrv.target_count() as u64;
+        data.write_all(&ref_count.to_le_bytes())
             .expect("couldn't write to output file");
         // create longest buffer
         for t in hdrv.target_names().iter() {
-            let name_size = t.len() as u16 ;
-            data    
-                .write_all(&name_size.to_le_bytes())
+            let name_size = t.len() as u16;
+            data.write_all(&name_size.to_le_bytes())
                 .expect("coudn't write to output file");
-            data
-                .write_all(&t)
-                .expect("coudn't write to output file");
+            data.write_all(&t).expect("coudn't write to output file");
         }
         let initial_num_chunks = 0u64;
-        data    
-            .write_all(&initial_num_chunks.to_le_bytes())
+        data.write_all(&initial_num_chunks.to_le_bytes())
             .expect("coudn't write to output file");
     }
 
     // test the header
     {
-        info!(
-            log,
-            "ref count: {:?} ",
-            hdrv.target_count(),
-        );
+        info!(log, "ref count: {:?} ", hdrv.target_count(),);
     }
 
     // keep a pointer to header pos
-    let end_header_pos = 
-        data.seek(SeekFrom::Current(0)).unwrap()
-        - std::mem::size_of::<u64>() as u64;
-    
-    // check header position
-    info!(
-        log,
-        "end header pos: {:?}",
-        end_header_pos,
-    );
+    let end_header_pos =
+        data.seek(SeekFrom::Current(0)).unwrap() - std::mem::size_of::<u64>() as u64;
 
-    // ### start of tags 
+    // check header position
+    info!(log, "end header pos: {:?}", end_header_pos,);
+
+    // ### start of tags
 
     // Tags we will have
     // write the tag meta-information section
@@ -167,8 +149,7 @@ pub fn bam2rad(
 
         // file-level
         let mut num_tags = 2u16;
-        data
-            .write_all(&num_tags.to_le_bytes())
+        data.write_all(&num_tags.to_le_bytes())
             .expect("coudn't write to output file");
         // type-id
         let mut typeid = 2u8;
@@ -176,77 +157,48 @@ pub fn bam2rad(
         let mut umi_tag_str = "ulen";
 
         // str - type
-        libradicl::write_str_bin(
-            &cb_tag_str,
-            &libradicl::RADIntID::U16,
-            &mut data,
-        );
-        data    
-            .write_all(&typeid.to_le_bytes())
-            .expect("coudn't write to output file");
-        
-        // str - type
-        libradicl::write_str_bin(
-            &umi_tag_str,
-            &libradicl::RADIntID::U16,
-            &mut data,
-        );
-        data    
-            .write_all(&typeid.to_le_bytes())
+        libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
+        data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
+        // str - type
+        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
+        data.write_all(&typeid.to_le_bytes())
+            .expect("coudn't write to output file");
 
         // read-level
-        data    
-            .write_all(&num_tags.to_le_bytes())
+        data.write_all(&num_tags.to_le_bytes())
             .expect("coudn't write to output file");
         cb_tag_str = "b";
         umi_tag_str = "u";
         // TODO: make it conditional
         typeid = 3u8;
-        
-        libradicl::write_str_bin(
-            &cb_tag_str,
-            &libradicl::RADIntID::U16,
-            &mut data,
-        );
-        data    
-            .write_all(&typeid.to_le_bytes())
-            .expect("coudn't write to output file");
-        libradicl::write_str_bin(
-            &umi_tag_str,
-            &libradicl::RADIntID::U16,
-            &mut data,
-        );
 
-        data    
-            .write_all(&typeid.to_le_bytes())
+        libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
+        data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
-        
+        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
+
+        data.write_all(&typeid.to_le_bytes())
+            .expect("coudn't write to output file");
+
         // alignment-level
-        num_tags = 1u16 ;
+        num_tags = 1u16;
         data.write_all(&num_tags.to_le_bytes())
             .expect("couldn't write to output file");
-        
+
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        libradicl::write_str_bin(
-            &refid_str,
-            &libradicl::RADIntID::U16,
-            &mut data,
-        );
-        data    
-            .write_all(&typeid.to_le_bytes())
+        libradicl::write_str_bin(&refid_str, &libradicl::RADIntID::U16, &mut data);
+        data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
-        
+
         let bclen = 16u16;
         let umilen = 10u16;
-        data    
-            .write_all(&bclen.to_le_bytes())
+        data.write_all(&bclen.to_le_bytes())
             .expect("coudn't write to output file");
-        data    
-            .write_all(&umilen.to_le_bytes())
+        data.write_all(&umilen.to_le_bytes())
             .expect("coudn't write to output file");
     }
 
@@ -256,7 +208,7 @@ pub fn bam2rad(
     let mut num_output_chunks = 0u64;
     let mut local_nrec = 0u32;
     // let initial_cond : bool = false ;
-    
+
     // allocate data
     let buf_limit = 10000u32;
     data = Cursor::new(Vec::<u8>::with_capacity((buf_limit * 24) as usize));
@@ -269,15 +221,15 @@ pub fn bam2rad(
     //     total_number_of_records += 1;
     // }
     // info!(log, "total number of records in bam {:?}", total_number_of_records);
-    
+
     let sty = ProgressStyle::default_bar()
         .template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
         )
         .progress_chars("╢▌▌░╟");
-    
+
     let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);
-   
+
     let pbar_inner = ProgressBar::new(expected_bar_length as u64);
     pbar_inner.set_style(sty);
     pbar_inner.tick();
@@ -290,15 +242,15 @@ pub fn bam2rad(
         let tid = rec.tid() as u32;
         // let tname = tid_lookup.get(&(rec.tid() as u32)).unwrap();
         // let qname_string = str::from_utf8(rec.qname()).unwrap();
-        let bc_string_in = str::from_utf8( rec.aux(b"CR").unwrap().string() ).unwrap();
-        let umi_string_in = str::from_utf8( rec.aux(b"UR").unwrap().string() ).unwrap();
+        let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
+        let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
         // let bclen = bc_string_in.len();
         // let umilen = umi_string_in.len();
 
         // replace first occurance of 'N'
         // if there are more than one 'N',
-        // ignore the string 
-        // non-random replacement to avoid 
+        // ignore the string
+        // non-random replacement to avoid
         // stochasticity
         // https://github.com/COMBINE-lab/salmon/blob/master/src/AlevinUtils.cpp#L789
         let bc_string = bc_string_in.replacen('N', "A", 1);
@@ -310,14 +262,14 @@ pub fn bam2rad(
             continue;
         }
 
-        // convert to u64 following 
+        // convert to u64 following
         // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
         let bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
         let umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
 
         // let mut bc_bytes = BitNuclKmer::new(bc_string.as_bytes(), bclen as u8, false);
         // let (_, bc, _) = bc_bytes.next().expect("can't extract barcode");
-        
+
         // let mut umi_bytes = BitNuclKmer::new(umi_string.as_bytes(), umilen as u8, false);
         // let (_, umi, _) = umi_bytes.next().expect("can't extract umi");
 
@@ -333,17 +285,16 @@ pub fn bam2rad(
         data.write_all(&(1 as u32).to_le_bytes()).unwrap();
         //bc
         data.write_all(&(bc as u32).to_le_bytes()).unwrap();
-        //umi        
+        //umi
         data.write_all(&(umi as u32).to_le_bytes()).unwrap();
-        let mut tid_dir = tid | 0x80000000; 
-        if is_reverse{
-            tid_dir = tid | 0x00000000 ;
+        let mut tid_dir = tid | 0x80000000;
+        if is_reverse {
+            tid_dir = tid | 0x00000000;
         }
         data.write_all(&tid_dir.to_le_bytes()).unwrap();
         local_nrec += 1;
 
-
-        if local_nrec > buf_limit{
+        if local_nrec > buf_limit {
             data.set_position(0);
             let nbytes = (data.get_ref().len()) as u32;
             let nrec = local_nrec;
@@ -383,11 +334,7 @@ pub fn bam2rad(
 
     // update chunk size
     println!("");
-    info!(
-        log,
-        "{:?} chunks written",
-        num_output_chunks,
-    );
+    info!(log, "{:?} chunks written", num_output_chunks,);
 
     // owriter.lock().unwrap().flush();
     // owriter
@@ -405,14 +352,11 @@ pub fn bam2rad(
     //     .expect("couldn't write to output file.");
     owriter.flush().expect("File buffer could not be flushed");
     owriter
-        .seek(SeekFrom::Start(
-            end_header_pos,
-        ))
+        .seek(SeekFrom::Start(end_header_pos))
         .expect("couldn't seek in output file");
     owriter
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
 
     info!(log, "finished writing to {:?}.", rad_file);
-    
 }
