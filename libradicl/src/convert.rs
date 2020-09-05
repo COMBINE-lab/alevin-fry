@@ -70,6 +70,9 @@ pub fn bam2rad(
     log: &slog::Logger,
 ){
     let oname = Path::new(&rad_file);
+    let parent = oname.parent().unwrap();
+    std::fs::create_dir_all(&parent).unwrap();
+
     if oname.exists() {
         std::fs::remove_file(oname).expect("could not be deleted");
     }
