@@ -36,6 +36,12 @@ fn get_random_nucl() -> &'static str {
 }
 
 #[allow(dead_code)]
+// replace first occurance of 'N'
+// if there are more than one 'N',
+// ignore the string
+// non-random replacement to avoid
+// stochasticity
+// https://github.com/COMBINE-lab/salmon/blob/master/src/AlevinUtils.cpp#L789
 pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
     let mut cb_id: u64 = 0;
     for (idx, nt) in cb_str.iter().rev().enumerate() {
@@ -229,75 +235,57 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         .progress_chars("╢▌▌░╟");
 
     let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);
+    // let expected_bar_length = 50u64 ;// bam_bytes / ((buf_limit as u64) * 24);
 
     let pbar_inner = ProgressBar::new(expected_bar_length as u64);
     pbar_inner.set_style(sty);
     pbar_inner.tick();
 
     let mut rec = bam::Record::new();
+    // history for records that is
+    // first seen
+    let mut old_qname = String::from("");
+    let mut bc = 0u64;
+    let mut umi = 0u64;
+    let mut tid_list = Vec::<u32>::new();
     //for r in bam.records(){
     while bam.read(&mut rec).unwrap() {
         // let rec = r.unwrap();
         let is_reverse = rec.is_reverse();
-        let tid = rec.tid() as u32;
-        // let tname = tid_lookup.get(&(rec.tid() as u32)).unwrap();
-        // let qname_string = str::from_utf8(rec.qname()).unwrap();
-        let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
-        let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
-        // let bclen = bc_string_in.len();
-        // let umilen = umi_string_in.len();
-
-        // replace first occurance of 'N'
-        // if there are more than one 'N',
-        // ignore the string
-        // non-random replacement to avoid
-        // stochasticity
-        // https://github.com/COMBINE-lab/salmon/blob/master/src/AlevinUtils.cpp#L789
-        let bc_string = bc_string_in.replacen('N', "A", 1);
-        let umi_string = umi_string_in.replacen('N', "A", 1);
-        if let Some(_pos) = bc_string.find('N') {
+        let qname_str = str::from_utf8(rec.qname()).unwrap().to_owned();
+        let qname = qname_str;
+        let mut tid = rec.tid() as u32;
+        if qname == old_qname {
+            if !is_reverse {
+                tid |= 0x80000000;
+            }
+            tid_list.push(tid);
+            // local_nrec += 1;
             continue;
         }
-        if let Some(_pos) = umi_string.find('N') {
-            continue;
+        // if this is new read and we need to write info
+        // for the last read, _unless_ this is the very
+        // first read, in which case we shall continue
+        if !tid_list.is_empty() {
+            assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
+            let na = tid_list.len();
+            data.write_all(&(na as u32).to_le_bytes()).unwrap();
+            //bc
+            data.write_all(&(bc as u32).to_le_bytes()).unwrap();
+            //umi
+            data.write_all(&(umi as u32).to_le_bytes()).unwrap();
+            //write tid list
+            for t in tid_list.iter() {
+                data.write_all(&t.to_le_bytes()).unwrap();
+            }
         }
 
-        // convert to u64 following
-        // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
-        let bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
-        let umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
-
-        // let mut bc_bytes = BitNuclKmer::new(bc_string.as_bytes(), bclen as u8, false);
-        // let (_, bc, _) = bc_bytes.next().expect("can't extract barcode");
-
-        // let mut umi_bytes = BitNuclKmer::new(umi_string.as_bytes(), umilen as u8, false);
-        // let (_, umi, _) = umi_bytes.next().expect("can't extract umi");
-
-        // println!("{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}",
-        //      qname_string,
-        //      tname,
-        //      bc_string,
-        //      umi_string,
-        //      num_output_chunks,
-        //      local_nrec,
-        // );
-        //na TODO: make is independed of 16-10 length criterion
-        data.write_all(&(1 as u32).to_le_bytes()).unwrap();
-        //bc
-        data.write_all(&(bc as u32).to_le_bytes()).unwrap();
-        //umi
-        data.write_all(&(umi as u32).to_le_bytes()).unwrap();
-        let mut tid_dir = tid | 0x80000000;
-        if is_reverse {
-            tid_dir = tid | 0x00000000;
-        }
-        data.write_all(&tid_dir.to_le_bytes()).unwrap();
-        local_nrec += 1;
-
+        // dump if we reach the buf_limit
         if local_nrec > buf_limit {
             data.set_position(0);
             let nbytes = (data.get_ref().len()) as u32;
             let nrec = local_nrec;
+            // info!(log,"local nrec {:?}-{:?}", local_nrec, tid_list.len());
             data.write_all(&nbytes.to_le_bytes()).unwrap();
             data.write_all(&nrec.to_le_bytes()).unwrap();
             //owriter.lock().unwrap().write_all(data.get_ref()).unwrap();
@@ -309,11 +297,53 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
             num_output_chunks += 1;
             local_nrec = 0;
-            data = Cursor::new(Vec::<u8>::with_capacity((5000 * 24) as usize));
+            data = Cursor::new(Vec::<u8>::with_capacity((buf_limit * 24) as usize));
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
-        }
 
+            // for debugging
+            // if num_output_chunks > expected_bar_length-1 {
+            //     break;
+            // }
+        }
+        // let tname = tid_lookup.get(&(rec.tid() as u32)).unwrap();
+        // let qname_string = str::from_utf8(rec.qname()).unwrap();
+
+        // if this is a new read update the old variables
+        {
+            let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
+            let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
+
+            let bc_string = bc_string_in.replacen('N', "A", 1);
+            let umi_string = umi_string_in.replacen('N', "A", 1);
+            if let Some(_pos) = bc_string.find('N') {
+                continue;
+            }
+            if let Some(_pos) = umi_string.find('N') {
+                continue;
+            }
+
+            // convert to u64 following
+            // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
+            bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
+            umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
+            old_qname = qname.clone();
+            tid_list.clear();
+            if !is_reverse {
+                tid |= 0x80000000;
+            }
+            tid_list.push(tid);
+            local_nrec += 1;
+        }
+        // println!("{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}",
+        //      qname_string,
+        //      tname,
+        //      bc_string,
+        //      umi_string,
+        //      num_output_chunks,
+        //      local_nrec,
+        // );
+        //na TODO: make is independed of 16-10 length criterion
         // for debugging
         // if num_output_chunks > expected_bar_length-1 {
         //     break;
@@ -321,6 +351,22 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     }
 
     if local_nrec > 0 {
+        // println!("In the residual writing part");
+        // first fill the buffer with the last remaining read
+        if !tid_list.is_empty() {
+            assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
+            let na = tid_list.len();
+            data.write_all(&(na as u32).to_le_bytes()).unwrap();
+            //bc
+            data.write_all(&(bc as u32).to_le_bytes()).unwrap();
+            //umi
+            data.write_all(&(umi as u32).to_le_bytes()).unwrap();
+            //write tid list
+            for t in tid_list.iter() {
+                data.write_all(&t.to_le_bytes()).unwrap();
+            }
+        }
+
         data.set_position(0);
         let nbytes = (data.get_ref().len()) as u32;
         let nrec = local_nrec;
