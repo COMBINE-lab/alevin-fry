@@ -298,6 +298,8 @@ impl ReadRecord {
             refs: Vec::with_capacity(na as usize),
         };
 
+        //println!("number of records : {:?}",na);
+
         for _ in 0..(na as usize) {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
             let v = rbuf.pread::<u32>(0).unwrap();
