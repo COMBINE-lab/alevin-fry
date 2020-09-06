@@ -242,7 +242,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     pbar_inner.tick();
 
     let mut rec = bam::Record::new();
-    // history for records that is 
+    // history for records that is
     // first seen
     let mut old_qname = String::from("");
     let mut bc = 0u64;
@@ -266,8 +266,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // if this is new read and we need to write info
         // for the last read, _unless_ this is the very
         // first read, in which case we shall continue
-        if !tid_list.is_empty()
-        {
+        if !tid_list.is_empty() {
             assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
             let na = tid_list.len();
             data.write_all(&(na as u32).to_le_bytes()).unwrap();
@@ -280,7 +279,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
                 data.write_all(&t.to_le_bytes()).unwrap();
             }
         }
-        
+
         // dump if we reach the buf_limit
         if local_nrec > buf_limit {
             data.set_position(0);
@@ -301,7 +300,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             data = Cursor::new(Vec::<u8>::with_capacity((buf_limit * 24) as usize));
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
             data.write_all(&local_nrec.to_le_bytes()).unwrap();
-            
+
             // for debugging
             // if num_output_chunks > expected_bar_length-1 {
             //     break;
@@ -314,7 +313,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         {
             let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
             let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
-            
+
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);
             if let Some(_pos) = bc_string.find('N') {
@@ -354,8 +353,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     if local_nrec > 0 {
         // println!("In the residual writing part");
         // first fill the buffer with the last remaining read
-        if !tid_list.is_empty()
-        {
+        if !tid_list.is_empty() {
             assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
             let na = tid_list.len();
             data.write_all(&(na as u32).to_le_bytes()).unwrap();
