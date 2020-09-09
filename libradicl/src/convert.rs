@@ -278,8 +278,16 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     let mut bc = 0u64;
     let mut umi = 0u64;
     let mut tid_list = Vec::<u32>::new();
+    let mut first_pass = true;
     //for r in bam.records(){
     loop {
+
+        if !first_pass {
+            let next_record_exists = bam.read(&mut rec).unwrap();
+            if !next_record_exists { break; }
+            first_pass = false;
+        }
+
         // let rec = r.unwrap();
         let is_reverse = rec.is_reverse();
         let qname_str = str::from_utf8(rec.qname()).unwrap().to_owned();
@@ -378,9 +386,6 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // if num_output_chunks > expected_bar_length-1 {
         //     break;
         // }
-
-        let next_record_exists = bam.read(&mut rec).unwrap();
-        if !next_record_exists { break; }
     }
 
     if local_nrec > 0 {
