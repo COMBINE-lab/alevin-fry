@@ -182,8 +182,8 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // read-level
         let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
         let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
-        let bclen = bc_string_in.len();
-        let umilen = umi_string_in.len();
+        let bclen = bc_string_in.len() as u16;
+        let umilen = umi_string_in.len() as u16;
 
         data.write_all(&num_tags.to_le_bytes())
             .expect("coudn't write to output file");
@@ -212,6 +212,8 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
                 std::process::exit(1);
             }
         };
+
+        //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
         libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
@@ -281,10 +283,11 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     let mut first_pass = true;
     //for r in bam.records(){
     loop {
-
         if !first_pass {
             let next_record_exists = bam.read(&mut rec).unwrap();
-            if !next_record_exists { break; }
+            if !next_record_exists {
+                break;
+            }
         }
         first_pass = false;
 
