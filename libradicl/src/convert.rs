@@ -5,7 +5,7 @@ extern crate scroll;
 extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
-use self::slog::{crit,info};
+use self::slog::{crit, info};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
@@ -196,9 +196,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
             9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
             17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
-            l => { 
+            l => {
                 crit!(log, "cannot encode barcode of length {} > 32", l);
-                std::process::exit(1); 
+                std::process::exit(1);
             }
         };
 
@@ -207,9 +207,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
             9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
             17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
-            l => { 
+            l => {
                 crit!(log, "cannot encode umi of length {} > 32", l);
-                std::process::exit(1); 
+                std::process::exit(1);
             }
         };
 
@@ -380,7 +380,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // }
 
         let next_record_exists = bam.read(&mut rec).unwrap();
-        if !next_record_exists { break; }
+        if !next_record_exists {
+            break;
+        }
     }
 
     if local_nrec > 0 {
