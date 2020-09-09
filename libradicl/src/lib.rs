@@ -206,15 +206,15 @@ pub enum RADType {
     F64,
 }
 
-pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
-    match type_id {
-        0 => Some(RADType::BOOL),
-        1 => Some(RADType::U8),
-        2 => Some(RADType::U16),
-        3 => Some(RADType::U32),
-        4 => Some(RADType::U64),
-        5 => Some(RADType::F32),
-        6 => Some(RADType::F64),
+pub fn encode_type_tag(type_tag: RADType) -> Option<u8> {
+    match type_tag {
+        RADType::BOOL => Some(0),
+        RADType::U8 => Some(1),
+        RADType::U16 => Some(2),
+        RADType::U32 => Some(3),
+        RADType::U64 => Some(4),
+        RADType::F32 => Some(5),
+        RADType::F64 => Some(6),
         _ => None,
     }
 }

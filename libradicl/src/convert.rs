@@ -5,7 +5,7 @@ extern crate scroll;
 extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
-use self::slog::info;
+use self::slog::{crit,info};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
@@ -116,6 +116,8 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
     // write the header
     {
+        // NOTE: This is hard-coded for unpaired single-cell data
+        // consider if we should generalize this
         let is_paired = 0u8;
         data.write_all(&is_paired.to_le_bytes())
             .expect("couldn't write to output file");
@@ -147,12 +149,17 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     info!(log, "end header pos: {:?}", end_header_pos,);
 
     // ### start of tags
+    // get the first record for creating flags
+    let mut rec = bam::Record::new();
+    let first_record_exists = bam.read(&mut rec).unwrap();
+    if !first_record_exists {
+        crit!(log, "bam file had no records!");
+        std::process::exit(1);
+    }
 
     // Tags we will have
     // write the tag meta-information section
     {
-        // TODO: get the first record for creating flags
-
         // file-level
         let mut num_tags = 2u16;
         data.write_all(&num_tags.to_le_bytes())
@@ -173,19 +180,45 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             .expect("coudn't write to output file");
 
         // read-level
+        let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
+        let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
+        let bclen = bc_string_in.len();
+        let umilen = umi_string_in.len();
+
         data.write_all(&num_tags.to_le_bytes())
             .expect("coudn't write to output file");
         cb_tag_str = "b";
         umi_tag_str = "u";
-        // TODO: make it conditional
-        typeid = 3u8;
+
+        // type is conditional on barcode and umi length
+        let bc_typeid = match bclen {
+            1..=4 => libradicl::encode_type_tag(libradicl::RADType::U8).unwrap(),
+            5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
+            9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
+            17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
+            l => { 
+                crit!(log, "cannot encode barcode of length {} > 32", l);
+                std::process::exit(1); 
+            }
+        };
+
+        let umi_typeid = match umilen {
+            1..=4 => libradicl::encode_type_tag(libradicl::RADType::U8).unwrap(),
+            5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
+            9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
+            17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
+            l => { 
+                crit!(log, "cannot encode umi of length {} > 32", l);
+                std::process::exit(1); 
+            }
+        };
 
         libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
-        data.write_all(&typeid.to_le_bytes())
+        data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
-        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
 
-        data.write_all(&typeid.to_le_bytes())
+        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
+        data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // alignment-level
@@ -200,8 +233,6 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        let bclen = 16u16;
-        let umilen = 10u16;
         data.write_all(&bclen.to_le_bytes())
             .expect("coudn't write to output file");
         data.write_all(&umilen.to_le_bytes())
@@ -241,7 +272,6 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     pbar_inner.set_style(sty);
     pbar_inner.tick();
 
-    let mut rec = bam::Record::new();
     // history for records that is
     // first seen
     let mut old_qname = String::from("");
@@ -249,7 +279,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     let mut umi = 0u64;
     let mut tid_list = Vec::<u32>::new();
     //for r in bam.records(){
-    while bam.read(&mut rec).unwrap() {
+    loop {
         // let rec = r.unwrap();
         let is_reverse = rec.is_reverse();
         let qname_str = str::from_utf8(rec.qname()).unwrap().to_owned();
@@ -348,6 +378,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // if num_output_chunks > expected_bar_length-1 {
         //     break;
         // }
+
+        let next_record_exists = bam.read(&mut rec).unwrap();
+        if !next_record_exists { break; }
     }
 
     if local_nrec > 0 {
