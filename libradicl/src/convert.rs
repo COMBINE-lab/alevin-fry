@@ -285,8 +285,8 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         if !first_pass {
             let next_record_exists = bam.read(&mut rec).unwrap();
             if !next_record_exists { break; }
-            first_pass = false;
         }
+        first_pass = false;
 
         // let rec = r.unwrap();
         let is_reverse = rec.is_reverse();
