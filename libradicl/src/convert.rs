@@ -6,11 +6,12 @@ extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
+use num_format::{Locale, ToFormattedString};
 use std::fs;
 use std::fs::File;
-use std::io::{BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
-// use needletail::bitkmer::*;
+use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
 use rust_htslib::{bam, bam::Read};
@@ -18,8 +19,23 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::str;
+// use anyhow::{anyhow, Result};
 
 use crate as libradicl;
+
+// pub fn reset_signal_pipe_handler() -> Result<()> {
+//     #[cfg(target_family = "unix")]
+//     {
+//         use nix::sys::signal;
+
+//         unsafe {
+//             signal::signal(signal::Signal::SIGPIPE, signal::SigHandler::SigDfl)
+//                 .map_err(|e| Error::Other(e.to_string()))?;
+//         }
+//     }
+
+//     Ok(())
+// }
 
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
@@ -41,6 +57,7 @@ fn get_random_nucl() -> &'static str {
 // ignore the string
 // non-random replacement to avoid
 // stochasticity
+// https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
 // https://github.com/COMBINE-lab/salmon/blob/master/src/AlevinUtils.cpp#L789
 pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
     let mut cb_id: u64 = 0;
@@ -446,4 +463,111 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         .expect("couldn't write to output file.");
 
     info!(log, "finished writing to {:?}.", rad_file);
+}
+
+pub fn view(rad_file: String, out_file: String, log: &slog::Logger) {
+    let _read_num = view2(rad_file, out_file, &log).unwrap();
+}
+pub fn view2(
+    rad_file: String,
+    _out_file: String,
+    log: &slog::Logger,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let i_file = File::open(rad_file).unwrap();
+    let mut br = BufReader::new(i_file);
+    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    info!(
+        log,
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en)
+    );
+    // file-level
+    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    // read-level
+    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+
+    // right now, we only handle BC and UMI types of U8—U64, so validate that
+    const BNAME: &str = "b";
+    const UNAME: &str = "u";
+
+    let mut bct: Option<u8> = None;
+    let mut umit: Option<u8> = None;
+
+    for rt in &rl_tags.tags {
+        // if this is one of our tags
+        if rt.name == BNAME || rt.name == UNAME {
+            if libradicl::decode_int_type_tag(rt.typeid).is_none() {
+                crit!(
+                    log,
+                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
+                );
+                std::process::exit(libradicl::exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
+            }
+
+            if rt.name == BNAME {
+                bct = Some(rt.typeid);
+            }
+            if rt.name == UNAME {
+                umit = Some(rt.typeid);
+            }
+        }
+    }
+
+    // alignment-level
+    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+
+    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    info!(log, "File-level tag values {:?}", ft_vals);
+
+    let mut num_reads: u64 = 0;
+
+    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present."))
+        .expect("unknown barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present"))
+        .expect("unknown barcode type id.");
+
+    let stdout = stdout(); // get the global stdout entity
+    let mut handle = BufWriter::new(stdout); // optional: wrap that handle in a buffer
+
+    for _ in 0..(hdr.num_chunks as usize) {
+        let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        for read in c.reads.iter() {
+            let bc_mer: BitKmer = (read.bc, ft_vals.bclen as u8);
+            let umi_mer: BitKmer = (read.umi, ft_vals.umilen as u8);
+
+            // let umi = str::from_utf8(&umi_).unwrap();
+            let num_entries = read.refs.len();
+            for i in 0usize..num_entries {
+                let tid = &hdr.ref_names[read.refs[i] as usize];
+                match writeln!(
+                    handle,
+                    "CB:{} \t UMI:{} DIR:{:?} \t{}",
+                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
+                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
+                    read.dirs[i],
+                    tid,
+                ) {
+                    Ok(_) => {
+                        num_reads += 1;
+                    }
+                    Err(_) => {
+                        // head broken pipe
+                        // https://github.com/rust-lang/rust/issues/46016#issuecomment-605624865
+                        return Ok(num_reads);
+                    }
+                };
+
+                // writeln!(handle,"{:?}\t{:?}\t{:?}\t{:?}",
+                // bc,umi,read.dirs[i],
+                // str::from_utf8(&tid_),);
+            }
+        }
+    }
+
+    Ok(num_reads)
 }

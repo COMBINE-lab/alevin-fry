@@ -55,6 +55,13 @@ fn main() {
         )
         .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
 
+    let view_app = App::new("view")
+        .about("View a RAD file")
+        .version(version)
+        .author(crate_authors)
+        .arg(Arg::from("-r, --rad=<rad-file> 'input RAD file'"))
+        .arg(Arg::from("-o, --output=<rad-file> 'output plain-text-file file'").required(false));
+
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
@@ -121,6 +128,7 @@ fn main() {
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(convert_app)
+        .subcommand(view_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -216,6 +224,14 @@ fn main() {
         let rad_file: String = t.value_of_t("output").unwrap();
         let num_threads: u32 = t.value_of_t("threads").unwrap();
         libradicl::convert::bam2rad(input_file, rad_file, num_threads, &log)
+    }
+    if let Some(ref t) = opts.subcommand_matches("view") {
+        let rad_file: String = t.value_of_t("rad").unwrap();
+        let mut out_file: String = String::from("");
+        if t.is_present("output") {
+            out_file = t.value_of_t("output").unwrap();
+        }
+        libradicl::convert::view(rad_file, out_file, &log)
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {
