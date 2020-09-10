@@ -6,7 +6,7 @@ extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
-use num_format::{Locale, ToFormattedString};
+//use num_format::{Locale};
 use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
@@ -476,19 +476,19 @@ pub fn view2(
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
-    info!(
-        log,
-        "paired : {:?}, ref_count : {}, num_chunks : {}",
-        hdr.is_paired != 0,
-        hdr.ref_count.to_formatted_string(&Locale::en),
-        hdr.num_chunks.to_formatted_string(&Locale::en)
-    );
+    // info!(
+    //     log,
+    //     "paired : {:?}, ref_count : {}, num_chunks : {}",
+    //     hdr.is_paired != 0,
+    //     hdr.ref_count.to_formatted_string(&Locale::en),
+    //     hdr.num_chunks.to_formatted_string(&Locale::en)
+    // );
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
-    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    let _fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    // info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
     let rl_tags = libradicl::TagSection::from_bytes(&mut br);
-    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+    // info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
     const BNAME: &str = "b";
@@ -518,11 +518,11 @@ pub fn view2(
     }
 
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
-    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+    let _al_tags = libradicl::TagSection::from_bytes(&mut br);
+    // info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     let ft_vals = libradicl::FileTags::from_bytes(&mut br);
-    info!(log, "File-level tag values {:?}", ft_vals);
+    // info!(log, "File-level tag values {:?}", ft_vals);
 
     let mut num_reads: u64 = 0;
 
