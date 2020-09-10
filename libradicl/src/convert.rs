@@ -6,10 +6,10 @@ extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
+use num_format::{Locale, ToFormattedString};
 use std::fs;
 use std::fs::File;
-use std::io::{BufWriter, BufReader, Cursor, Seek, SeekFrom, Write, stdout};
-use num_format::{Locale, ToFormattedString};
+use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
 use needletail::bitkmer::*;
 use rand::Rng;
@@ -74,7 +74,6 @@ pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
 
     Ok(cb_id)
 }
-
 
 #[allow(dead_code)]
 pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
@@ -466,17 +465,13 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     info!(log, "finished writing to {:?}.", rad_file);
 }
 
-pub fn view(
-    rad_file: String, 
-    out_file: String, 
-    log: &slog::Logger
-) {
-    let _read_num = view2(rad_file,out_file,&log).unwrap();
+pub fn view(rad_file: String, out_file: String, log: &slog::Logger) {
+    let _read_num = view2(rad_file, out_file, &log).unwrap();
 }
 pub fn view2(
-    rad_file: String, 
-    out_file: String, 
-    log: &slog::Logger
+    rad_file: String,
+    _out_file: String,
+    log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
@@ -541,10 +536,10 @@ pub fn view2(
 
     for _ in 0..(hdr.num_chunks as usize) {
         let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-        for read in c.reads.iter(){
-            let bc_mer: BitKmer = (read.bc,  ft_vals.bclen as u8);
-            let umi_mer: BitKmer = (read.umi,  ft_vals.umilen as u8);
-            
+        for read in c.reads.iter() {
+            let bc_mer: BitKmer = (read.bc, ft_vals.bclen as u8);
+            let umi_mer: BitKmer = (read.umi, ft_vals.umilen as u8);
+
             // let umi = str::from_utf8(&umi_).unwrap();
             let num_entries = read.refs.len();
             for i in 0usize..num_entries {
@@ -552,15 +547,11 @@ pub fn view2(
                 match writeln!(
                     handle,
                     "CB:{} \t UMI:{} DIR:{:?} \t{}",
-                    unsafe {
-                        std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
-                    },
-                    unsafe {
-                        std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..])
-                    },
+                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
+                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
                     read.dirs[i],
                     tid,
-                ){
+                ) {
                     Ok(_) => {
                         num_reads += 1;
                     }
@@ -579,5 +570,4 @@ pub fn view2(
     }
 
     Ok(num_reads)
-
 }

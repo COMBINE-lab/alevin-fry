@@ -227,10 +227,9 @@ fn main() {
     }
     if let Some(ref t) = opts.subcommand_matches("view") {
         let rad_file: String = t.value_of_t("rad").unwrap();
-        let mut out_file : String = String::from("");
-        if t.is_present("output"){
+        let mut out_file: String = String::from("");
+        if t.is_present("output") {
             out_file = t.value_of_t("output").unwrap();
-
         }
         libradicl::convert::view(rad_file, out_file, &log)
     }
