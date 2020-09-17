@@ -534,6 +534,7 @@ pub fn view2(
     let stdout = stdout(); // get the global stdout entity
     let mut handle = BufWriter::new(stdout); // optional: wrap that handle in a buffer
 
+    let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
         let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
         for read in c.reads.iter() {
@@ -546,7 +547,10 @@ pub fn view2(
                 let tid = &hdr.ref_names[read.refs[i] as usize];
                 match writeln!(
                     handle,
-                    "CB:{} \t UMI:{} DIR:{:?} \t{}",
+                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}",
+                    id,
+                    i,
+                    num_entries,
                     unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
                     unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
                     read.dirs[i],
@@ -566,6 +570,7 @@ pub fn view2(
                 // bc,umi,read.dirs[i],
                 // str::from_utf8(&tid_),);
             }
+            id += 1;
         }
     }
 
