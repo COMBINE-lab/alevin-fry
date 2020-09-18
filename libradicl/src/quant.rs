@@ -334,7 +334,7 @@ pub fn quantify(
     //type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
 
     let parent = std::path::Path::new(&input_dir);
-    let i_file = File::open(parent.join("map.collated.rad")).unwrap();
+    let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
