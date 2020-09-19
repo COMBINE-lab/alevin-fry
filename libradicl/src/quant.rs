@@ -988,13 +988,14 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq && (resolution != ResolutionStrategy::Trivial) {
-        let gn_eq_path = output_matrix_path.join("gene_eqclass.txt");
-        let gn_eq_file =
-            File::create(gn_eq_path).expect("couldn't create gene equivalence class name file.");
-        let mut gn_eq_writer = BufWriter::new(gn_eq_file);
+        let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
+        let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
+            fs::File::create(gn_eq_path).unwrap(),
+            Compression::default(),
+        ));
         info!(
             log,
-            "Gene equivalence class with {:?} classes",
+            "Writing gene level equivalence class with {:?} classes",
             global_eqid.load(Ordering::SeqCst)
         );
 
