@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
 extern crate fasthash;
@@ -10,7 +11,6 @@ extern crate needletail;
 extern crate petgraph;
 extern crate serde;
 extern crate slog;
-extern crate ahash;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
@@ -20,9 +20,9 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
-use needletail::bitkmer::*;
 use dashmap::DashMap;
-use fasthash::sea::Hash64;
+use needletail::bitkmer::*;
+// use fasthash::sea::Hash64;
 use scroll::Pwrite;
 use serde_json::json;
 use smallvec::SmallVec;
@@ -34,7 +34,7 @@ use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use std::string::ToString;
-use std::sync::atomic::{AtomicUsize, Ordering, AtomicU64};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 //use std::ptr;
@@ -328,6 +328,7 @@ pub fn quantify(
     num_bootstraps: u32,
     init_uniform: bool,
     summary_stat: bool,
+    dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
     //no_em: bool,
@@ -518,8 +519,7 @@ pub fn quantify(
     // hash table containing the eqclasses to eqid
     let global_eqid = Arc::new(AtomicU64::new(0 as u64));
     let s = ahash::RandomState::new();
-    let eqid_mapd : DashMap<Vec<u32>, u64, ahash::RandomState> =
-        DashMap::with_hasher(s);
+    let eqid_mapd: DashMap<Vec<u32>, u64, ahash::RandomState> = DashMap::with_hasher(s);
     let eqid_map = Arc::new(eqid_mapd);
     // hash table that keeps a list cells
     let eqid_to_cells = Arc::new(DashMap::<u64, libradicl::GlobalEqCellList>::new());
@@ -613,32 +613,29 @@ pub fn quantify(
                                 &log,
                             );
                             // check if an equivalence class
-                            // is already added otherwise 
-                            // add that equivalence class to 
+                            // is already added otherwise
+                            // add that equivalence class to
                             // the hash
-                            for (_, (labels, count)) in gene_eqc.iter().enumerate() {
-                                let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
-                                match eqid_mapc.get(&labels.to_vec()) {
-                                    Some(_) => {
+                            if dump_eq {
+                                for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                    let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                    match eqid_mapc.get(&labels.to_vec()) {
+                                        Some(_) => {}
+                                        None => {
+                                            eqid_mapc.insert(labels.to_vec().clone(), curr_eqid);
+                                            current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                        }
                                     }
-                                    None => {
-                                        eqid_mapc.insert(
-                                            labels.to_vec().clone(),
-                                            curr_eqid
-                                        );
-                                        current_global_eqid.fetch_add(1, Ordering::SeqCst);
-                                    }
+                                    let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                    let mut obj =
+                                        eqid_to_cellsc.entry(*queried_id).or_insert_with(|| {
+                                            libradicl::GlobalEqCellList::from_umi_and_count(
+                                                cell_num, *count,
+                                            )
+                                        });
+                                    (*obj).add_element(cell_num, *count);
                                 }
-                                let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
-                                let bc_mer: BitKmer = (bc, bclen as u8);
-                                let mut obj = eqid_to_cellsc
-                                    .entry(*queried_id)
-                                    .or_insert_with(
-                                        || libradicl::GlobalEqCellList::from_umi_and_count(bc_mer, *count) 
-                                    );
-                                (*obj).add_element(bc_mer, *count);
                             }
-            
                         }
                         ResolutionStrategy::CellRangerLikeEM => {
                             let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
@@ -655,6 +652,26 @@ pub fn quantify(
                                 false,
                                 &log,
                             );
+                            if dump_eq {
+                                for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                    let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                    match eqid_mapc.get(&labels.to_vec()) {
+                                        Some(_) => {}
+                                        None => {
+                                            eqid_mapc.insert(labels.to_vec().clone(), curr_eqid);
+                                            current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    }
+                                    let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                    let mut obj =
+                                        eqid_to_cellsc.entry(*queried_id).or_insert_with(|| {
+                                            libradicl::GlobalEqCellList::from_umi_and_count(
+                                                cell_num, *count,
+                                            )
+                                        });
+                                    (*obj).add_element(cell_num, *count);
+                                }
+                            }
                         }
                         ResolutionStrategy::Trivial => {
                             let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
@@ -668,6 +685,7 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
+                            // let pug_stats : PUGResolutionStatistics;
                             let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
@@ -695,27 +713,25 @@ pub fn quantify(
                                 );
                             }
 
-                            for (_, (labels, count)) in gene_eqc.iter().enumerate() {
-                                let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
-                                match eqid_mapc.get(&labels.to_vec()) {
-                                    Some(_) => {
+                            if dump_eq {
+                                for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                    let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                    match eqid_mapc.get(&labels.to_vec()) {
+                                        Some(_) => {}
+                                        None => {
+                                            eqid_mapc.insert(labels.to_vec().clone(), curr_eqid);
+                                            current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                        }
                                     }
-                                    None => {
-                                        eqid_mapc.insert(
-                                            labels.to_vec().clone(),
-                                            curr_eqid
-                                        );
-                                        current_global_eqid.fetch_add(1, Ordering::SeqCst);
-                                    }
+                                    let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                    let mut obj =
+                                        eqid_to_cellsc.entry(*queried_id).or_insert_with(|| {
+                                            libradicl::GlobalEqCellList::from_umi_and_count(
+                                                cell_num, *count,
+                                            )
+                                        });
+                                    (*obj).add_element(cell_num, *count);
                                 }
-                                let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
-                                let bc_mer: BitKmer = (bc, bclen as u8);
-                                let mut obj = eqid_to_cellsc
-                                    .entry(*queried_id)
-                                    .or_insert_with(
-                                        || libradicl::GlobalEqCellList::from_umi_and_count(bc_mer, *count) 
-                                    );
-                                (*obj).add_element(bc_mer, *count);
                             }
                             //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
                             //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
@@ -753,6 +769,26 @@ pub fn quantify(
                                     summary_stat,
                                     &log,
                                 );
+                            }
+                            if dump_eq {
+                                for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                    let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                    match eqid_mapc.get(&labels.to_vec()) {
+                                        Some(_) => {}
+                                        None => {
+                                            eqid_mapc.insert(labels.to_vec().clone(), curr_eqid);
+                                            current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                        }
+                                    }
+                                    let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                    let mut obj =
+                                        eqid_to_cellsc.entry(*queried_id).or_insert_with(|| {
+                                            libradicl::GlobalEqCellList::from_umi_and_count(
+                                                cell_num, *count,
+                                            )
+                                        });
+                                    (*obj).add_element(cell_num, *count);
+                                }
                             }
                         }
                     }
@@ -924,7 +960,6 @@ pub fn quantify(
         }
     }
 
-
     /*
     let mmrate_path = parent.join("mmrate.tsv");
     let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
@@ -952,25 +987,40 @@ pub fn quantify(
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
     pbar.finish_with_message(&pb_msg);
 
-     
-    let gn_eq_path = output_matrix_path.join("gene_eqclass.txt");
-    let gn_eq_file = File::create(gn_eq_path).expect("couldn't create gene equivalence class name file.");
-    let mut gn_eq_writer = BufWriter::new(gn_eq_file);
+    if dump_eq && (resolution != ResolutionStrategy::Trivial) {
+        let gn_eq_path = output_matrix_path.join("gene_eqclass.txt");
+        let gn_eq_file =
+            File::create(gn_eq_path).expect("couldn't create gene equivalence class name file.");
+        let mut gn_eq_writer = BufWriter::new(gn_eq_file);
+        info!(
+            log,
+            "Gene equivalence class with {:?} classes",
+            global_eqid.load(Ordering::SeqCst)
+        );
 
-    //let eqid_map_copy = Arc::copy
-    for (gene_list, eq_id) in (*eqid_map).clone().into_iter() {
-        if let Some(cell_labels) = eqid_to_cells.get(&eq_id) {
-            for g in gene_list.iter() {
-                gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
+        //let eqid_map_copy = Arc::copy
+        for (gene_list, eq_id) in (*eqid_map).clone().into_iter() {
+            if let Some(cell_labels) = eqid_to_cells.get(&eq_id) {
+                gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
+                for g in gene_list.iter() {
+                    gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
+                }
+                gn_eq_writer
+                    .write_all(format!("{}\t", (*cell_labels).cell_ids.len()).as_bytes())?;
+                for i in 0..(*cell_labels).cell_ids.len() {
+                    gn_eq_writer
+                        .write_all(format!("{}\t", (*cell_labels).cell_ids[i]).as_bytes())?;
+                }
+                gn_eq_writer.write_all(format!("\n").as_bytes())?;
             }
-            for i in 0..(*cell_labels).cell_ids.len(){
-                gn_eq_writer.write_all(format!("{}\t", i).as_bytes())?;
-            }
-            gn_eq_writer.write_all(format!("\n").as_bytes())?; 
         }
-        
-    }    
-    
+    } else if dump_eq {
+        info!(
+            log,
+            "\nGene equivalence class is not meaningful in case of Trivial\n"
+        );
+    }
+
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : hdr.num_chunks,
