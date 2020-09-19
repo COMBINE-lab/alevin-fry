@@ -1012,6 +1012,8 @@ pub fn quantify(
                     gn_eq_writer
                         .write_all(format!("{}\t", (*cell_labels).cell_ids[i]).as_bytes())?;
                 }
+                gn_eq_writer
+                    .write_all(format!("{}\t", (*cell_labels).count).as_bytes())?;
                 gn_eq_writer.write_all(format!("\n").as_bytes())?;
             }
         }
