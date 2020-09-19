@@ -10,6 +10,7 @@ extern crate needletail;
 extern crate petgraph;
 extern crate serde;
 extern crate slog;
+extern crate ahash;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::petgraph::prelude::*;
@@ -20,6 +21,8 @@ use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
 use needletail::bitkmer::*;
+use dashmap::DashMap;
+use fasthash::sea::Hash64;
 use scroll::Pwrite;
 use serde_json::json;
 use smallvec::SmallVec;
@@ -31,7 +34,7 @@ use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use std::string::ToString;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::thread;
 //use std::ptr;
@@ -511,6 +514,16 @@ pub fn quantify(
     let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+
+    // hash table containing the eqclasses to eqid
+    let global_eqid = Arc::new(AtomicU64::new(0 as u64));
+    let s = ahash::RandomState::new();
+    let eqid_mapd : DashMap<Vec<u32>, u64, ahash::RandomState> =
+        DashMap::with_hasher(s);
+    let eqid_map = Arc::new(eqid_mapd);
+    // hash table that keeps a list cells
+    let eqid_to_cells = Arc::new(DashMap::<u64, libradicl::GlobalEqCellList>::new());
+
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -526,6 +539,10 @@ pub fn quantify(
         let umi_type = umi_type;
         // and the file writer
         let bcout = bc_writer.clone();
+        // clone global id
+        let current_global_eqid = global_eqid.clone();
+        let eqid_mapc = eqid_map.clone();
+        let eqid_to_cellsc = eqid_to_cells.clone();
         /*
         // and the bootstrap file writer
         let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
@@ -578,6 +595,7 @@ pub fn quantify(
                     let mut alt_resolution = false;
 
                     let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
                             let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
@@ -594,6 +612,33 @@ pub fn quantify(
                                 true,
                                 &log,
                             );
+                            // check if an equivalence class
+                            // is already added otherwise 
+                            // add that equivalence class to 
+                            // the hash
+                            for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                match eqid_mapc.get(&labels.to_vec()) {
+                                    Some(_) => {
+                                    }
+                                    None => {
+                                        eqid_mapc.insert(
+                                            labels.to_vec().clone(),
+                                            curr_eqid
+                                        );
+                                        current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                }
+                                let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                let bc_mer: BitKmer = (bc, bclen as u8);
+                                let mut obj = eqid_to_cellsc
+                                    .entry(*queried_id)
+                                    .or_insert_with(
+                                        || libradicl::GlobalEqCellList::from_umi_and_count(bc_mer, *count) 
+                                    );
+                                (*obj).add_element(bc_mer, *count);
+                            }
+            
                         }
                         ResolutionStrategy::CellRangerLikeEM => {
                             let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
@@ -648,6 +693,29 @@ pub fn quantify(
                                     summary_stat,
                                     &log,
                                 );
+                            }
+
+                            for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                                let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+                                match eqid_mapc.get(&labels.to_vec()) {
+                                    Some(_) => {
+                                    }
+                                    None => {
+                                        eqid_mapc.insert(
+                                            labels.to_vec().clone(),
+                                            curr_eqid
+                                        );
+                                        current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                                    }
+                                }
+                                let queried_id = eqid_mapc.get(&labels.to_vec()).unwrap();
+                                let bc_mer: BitKmer = (bc, bclen as u8);
+                                let mut obj = eqid_to_cellsc
+                                    .entry(*queried_id)
+                                    .or_insert_with(
+                                        || libradicl::GlobalEqCellList::from_umi_and_count(bc_mer, *count) 
+                                    );
+                                (*obj).add_element(bc_mer, *count);
                             }
                             //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
                             //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
@@ -856,6 +924,7 @@ pub fn quantify(
         }
     }
 
+
     /*
     let mmrate_path = parent.join("mmrate.tsv");
     let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
@@ -883,6 +952,25 @@ pub fn quantify(
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
     pbar.finish_with_message(&pb_msg);
 
+     
+    let gn_eq_path = output_matrix_path.join("gene_eqclass.txt");
+    let gn_eq_file = File::create(gn_eq_path).expect("couldn't create gene equivalence class name file.");
+    let mut gn_eq_writer = BufWriter::new(gn_eq_file);
+
+    //let eqid_map_copy = Arc::copy
+    for (gene_list, eq_id) in (*eqid_map).clone().into_iter() {
+        if let Some(cell_labels) = eqid_to_cells.get(&eq_id) {
+            for g in gene_list.iter() {
+                gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
+            }
+            for i in 0..(*cell_labels).cell_ids.len(){
+                gn_eq_writer.write_all(format!("{}\t", i).as_bytes())?;
+            }
+            gn_eq_writer.write_all(format!("\n").as_bytes())?; 
+        }
+        
+    }    
+    
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : hdr.num_chunks,
