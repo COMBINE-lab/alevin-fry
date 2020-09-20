@@ -1000,6 +1000,8 @@ pub fn quantify(
         );
 
         //let eqid_map_copy = Arc::copy
+        gn_eq_writer
+            .write_all(format!("{}\n", global_eqid.load(Ordering::SeqCst)).as_bytes())?;
         for (gene_list, eq_id) in (*eqid_map).clone().into_iter() {
             if let Some(cell_labels) = eqid_to_cells.get(&eq_id) {
                 gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
