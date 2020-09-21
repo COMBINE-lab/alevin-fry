@@ -21,8 +21,8 @@ use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
 use dashmap::DashMap;
+use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
-// use fasthash::sea::Hash64;
 use scroll::Pwrite;
 use serde_json::json;
 use smallvec::SmallVec;
@@ -602,6 +602,23 @@ pub fn quantify(
             let mut bt_eds_bytes: Vec<u8> = Vec::new();
             let mut eds_mean_bytes: Vec<u8> = Vec::new();
             let mut eds_var_bytes: Vec<u8> = Vec::new();
+
+            // the variable we will use to bind the *cell-specific* gene-level
+            // equivalence class table.
+
+            // Make gene-level eqclasses.
+            // This is a map of gene ids to the count of
+            // _de-duplicated_ reads observed for that set of genes.
+            // For every gene set (label) of length 1, these are gene
+            // unique reads.  Standard scRNA-seq counting results
+            // can be obtained by simply discarding all equivalence
+            // classes of size greater than 1, and probabilistic results
+            // will attempt to resolve gene multi-mapping reads by
+            // running and EM algorithm.
+            let s = fasthash::RandomState::<Hash64>::new();
+            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+                HashMap::with_hasher(s);
+
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -619,14 +636,14 @@ pub fn quantify(
                     let mut alt_resolution = false;
 
                     let mut bootstraps: Vec<Vec<f32>> = Vec::new();
-                    // let gene_eqc_outer : HashMap<std::vec::Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>>;
 
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -637,23 +654,13 @@ pub fn quantify(
                                 true,
                                 &log,
                             );
-                            // check if an equivalence class
-                            // is already added otherwise
-                            // add that equivalence class to
-                            // the hash
-                            fill_eq_class(
-                                &gene_eqc,
-                                &current_global_eqid,
-                                &eqid_mapc,
-                                &eqid_to_cellsc,
-                                cell_num,
-                            );
                         }
                         ResolutionStrategy::CellRangerLikeEM => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -663,13 +670,6 @@ pub fn quantify(
                                 num_genes,
                                 false,
                                 &log,
-                            );
-                            fill_eq_class(
-                                &gene_eqc,
-                                &current_global_eqid,
-                                &eqid_mapc,
-                                &eqid_to_cellsc,
-                                cell_num,
                             );
                         }
                         ResolutionStrategy::Trivial => {
@@ -684,12 +684,12 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            // let pug_stats : PUGResolutionStatistics;
-                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -711,24 +711,18 @@ pub fn quantify(
                                     &log,
                                 );
                             }
-                            fill_eq_class(
-                                &gene_eqc,
-                                &current_global_eqid,
-                                &eqid_mapc,
-                                &eqid_to_cellsc,
-                                cell_num,
-                            );
                             //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
                             //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
                             //);
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -755,17 +749,29 @@ pub fn quantify(
                                     &log,
                                 );
                             }
-                            fill_eq_class(
-                                &gene_eqc,
-                                &current_global_eqid,
-                                &eqid_mapc,
-                                &eqid_to_cellsc,
-                                cell_num,
-                            );
                         }
                     }
+
+                    // if we are dumping eq classes, then
+                    // update the global classes here.
+                    if dump_eq {
+                        // check if an equivalence class
+                        // is already added otherwise
+                        // add that equivalence class to
+                        // the hash
+                        fill_eq_class(
+                            &gene_eqc,
+                            &current_global_eqid,
+                            &eqid_mapc,
+                            &eqid_to_cellsc,
+                            cell_num,
+                        );
+                    }
+
                     // clear our local variables
                     eq_map.clear();
+                    gene_eqc.clear();
+
                     // Note: there is a fill method, but it is only on
                     // the nightly branch.  Use this for now:
                     unique_evidence.clear();
@@ -992,7 +998,7 @@ pub fn quantify(
     } else if dump_eq {
         info!(
             log,
-            "\nGene equivalence class is not meaningful in case of Trivial\n"
+            "\nGene equivalence classes are not meaningful in case of Trivial resolution.\n"
         );
     }
 
@@ -1000,6 +1006,7 @@ pub fn quantify(
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : hdr.num_chunks,
         "num_genes" : num_genes,
+        "dump_eq" : dump_eq,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
