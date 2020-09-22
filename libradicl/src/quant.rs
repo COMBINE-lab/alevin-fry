@@ -320,7 +320,7 @@ struct QuantOutputInfo {
 struct EQCMap {
     global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
     cell_level_count: Vec<(u64, u32)>,
-    cell_offset: Vec<(usize,usize)>,
+    cell_offset: Vec<(usize, usize)>,
 }
 
 pub fn fill_eq_class(
@@ -1013,7 +1013,7 @@ pub fn quantify(
             .expect("couldn't create eqc_offsets.txt file.");
 
         let mut offset_buf = BufWriter::new(offset_file);
-        for (cell_id,o) in geqmap.cell_offset.iter() {
+        for (cell_id, o) in geqmap.cell_offset.iter() {
             writeln!(offset_buf, "{}\t{}", cell_id, o)?;
         }
 
