@@ -1015,10 +1015,10 @@ pub fn quantify(
 
         let mut offset_buf = BufWriter::new(offset_file);
         for (bc_mer, o) in geqmap.cell_offset.iter() {
-            writeln!(offset_buf, "{}\t{}", 
-                unsafe {
-                    std::str::from_utf8_unchecked(&bitmer_to_bytes(*bc_mer)[..])
-                }, 
+            writeln!(
+                offset_buf,
+                "{}\t{}",
+                unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(*bc_mer)[..]) },
                 o
             )?;
         }
