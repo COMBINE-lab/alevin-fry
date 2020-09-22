@@ -1007,6 +1007,15 @@ pub fn quantify(
             "Writing gene level equivalence class with {:?} classes",
             geqmap.global_eqc.len()
         );
+
+        let mut offset_file = File::create(output_path.join("eqc_offsets.txt"))
+        .expect("couldn't create eqc_offsets.txt file."); 
+
+        let mut offset_buf = BufWriter::new(offset_file);
+        for o in geqmap.cell_offset.iter() {
+            writeln!(offset_buf, o);
+        }
+        
     // let num_eqclasses = eqid_map.len();
     // let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
     // let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
