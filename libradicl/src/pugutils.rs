@@ -286,6 +286,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
             //&& !unresolvable {
+            quickersort::sort(&mut best_genes[..]);
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
             //counts[max_count_gene as usize] += 1.0f32;
         }
