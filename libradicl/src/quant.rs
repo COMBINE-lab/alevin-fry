@@ -317,6 +317,12 @@ struct QuantOutputInfo {
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
+struct EQCMap {
+    global_eqc : HashMap<Vec<u32>, u64, ahash::RandomState>,
+    cell_level_count: Vec<(u64,u32)>,
+    cell_offset: Vec<usize>,
+}
+
 pub fn fill_eq_class(
     gene_eqc: &HashMap<Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>>,
     // current_global_eqid: &AtomicU64,
@@ -545,9 +551,20 @@ pub fn quantify(
 
     // hash table containing the eqclasses to eqid
     // let global_eqid = Arc::new(AtomicU64::new(0 as u64));
+    let mut global_eqid = Arc::new(0u64);
     let s = ahash::RandomState::new();
     let eqid_mapd: DashMap<Vec<u32>, libradicl::GlobalEqCellList, ahash::RandomState> = DashMap::with_hasher(s);
     let eqid_map = Arc::new(eqid_mapd);
+
+    let so = ahash::RandomState::new();
+    // let so = fasthash::RandomState::<Hash64>::new();
+    // let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+    //     HashMap::with_hasher(so);
+    let eqid_map_lock = Arc::new(Mutex::new(EQCMap {
+        global_eqc : HashMap::with_hasher(so),
+        cell_level_count: Vec::new(),
+        cell_offset: Vec::new(),
+    }));
     // hash table that keeps a list cells
     // let eqid_to_cells = Arc::new(DashMap::<u64, libradicl::GlobalEqCellList>::new());
 
@@ -569,6 +586,8 @@ pub fn quantify(
         // clone global id
         // let current_global_eqid = global_eqid.clone();
         let eqid_mapc = eqid_map.clone();
+        let eqid_map_lockc = eqid_map_lock.clone();
+        let mut gid = global_eqid.clone();
         // let eqid_to_cellsc = eqid_to_cells.clone();
         /*
         // and the bootstrap file writer
@@ -755,22 +774,26 @@ pub fn quantify(
                         }
                     }
 
-                    // if we are dumping eq classes, then
-                    // update the global classes here.
                     if dump_eq {
-                        // check if an equivalence class
-                        // is already added otherwise
-                        // add that equivalence class to
-                        // the hash
-                        fill_eq_class(
-                            &gene_eqc,
-                            // &current_global_eqid,
-                            &eqid_mapc,
-                            // &eqid_to_cellsc,
-                            cell_num,
-                        );
+                        let eqmap_deref = eqid_map_lockc.lock();
+                        let geqmap = &mut *eqmap_deref.unwrap();
+                        for (_, (labels, count)) in gene_eqc.iter().enumerate() {
+                            let mut found = true;
+                            match geqmap.global_eqc.get(&labels.to_vec()) {
+                                Some(eqid) => {geqmap.cell_level_count.push((*eqid,*count));}
+                                None => {
+                                    found = false ;
+                                    geqmap.cell_level_count.push((*gid,*count));
+                                    *Arc::make_mut(&mut gid) += 1; 
+                                }
+                            }    
+                            if !found {
+                                geqmap.global_eqc.insert(labels.to_vec().clone(),*gid);
+                            }
+                        }
+                        geqmap.cell_offset.push(gene_eqc.len());
                     }
-
+                    
                     // clear our local variables
                     eq_map.clear();
                     gene_eqc.clear();
@@ -969,35 +992,42 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq && (resolution != ResolutionStrategy::Trivial) {
-        let num_eqclasses = eqid_map.len();
-        let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
-        let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
-            fs::File::create(gn_eq_path).unwrap(),
-            Compression::default(),
-        ));
+        let eqmap_deref = eqid_map_lock.lock();
+        let geqmap = eqmap_deref.unwrap(); 
         info!(
             log,
             "Writing gene level equivalence class with {:?} classes",
-            eqid_map.len()
-        );
+            geqmap.global_eqc.len()
+        ); 
+        // let num_eqclasses = eqid_map.len();
+        // let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
+        // let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
+        //     fs::File::create(gn_eq_path).unwrap(),
+        //     Compression::default(),
+        // ));
+        // info!(
+        //     log,
+        //     "Writing gene level equivalence class with {:?} classes",
+        //     eqid_map.len()
+        // );
 
-        //let eqid_map_copy = Arc::copy
-        // gn_eq_writer.write_all(format!("{}\n", global_eqid.load(Ordering::SeqCst)).as_bytes())?;
-        gn_eq_writer.write_all(format!("{}\n", num_eqclasses).as_bytes())?;
-        for (gene_list, cell_labels) in (*eqid_map).clone().into_iter() {
-            gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
-            for g in gene_list.iter() {
-                gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
-            }
-            gn_eq_writer
-                .write_all(format!("{}\t", cell_labels.cell_ids.len()).as_bytes())?;
-            for i in 0..cell_labels.cell_ids.len() {
-                gn_eq_writer
-                    .write_all(format!("{}\t", cell_labels.cell_ids[i]).as_bytes())?;
-            }
-            gn_eq_writer.write_all(format!("{}\t", cell_labels.count).as_bytes())?;
-            gn_eq_writer.write_all(format!("\n").as_bytes())?;
-        }
+        // //let eqid_map_copy = Arc::copy
+        // // gn_eq_writer.write_all(format!("{}\n", global_eqid.load(Ordering::SeqCst)).as_bytes())?;
+        // gn_eq_writer.write_all(format!("{}\n", num_eqclasses).as_bytes())?;
+        // for (gene_list, cell_labels) in (*eqid_map).clone().into_iter() {
+        //     gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
+        //     for g in gene_list.iter() {
+        //         gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
+        //     }
+        //     gn_eq_writer
+        //         .write_all(format!("{}\t", cell_labels.cell_ids.len()).as_bytes())?;
+        //     for i in 0..cell_labels.cell_ids.len() {
+        //         gn_eq_writer
+        //             .write_all(format!("{}\t", cell_labels.cell_ids[i]).as_bytes())?;
+        //     }
+        //     gn_eq_writer.write_all(format!("{}\t", cell_labels.count).as_bytes())?;
+        //     gn_eq_writer.write_all(format!("\n").as_bytes())?;
+        // }
     } else if dump_eq {
         info!(
             log,
