@@ -320,7 +320,7 @@ struct QuantOutputInfo {
 struct EQCMap {
     global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
     cell_level_count: Vec<(u64, u32)>,
-    cell_offset: Vec<(usize, usize)>,
+    cell_offset: Vec<(BitKmer, usize)>,
 }
 
 pub fn fill_eq_class(
@@ -798,7 +798,8 @@ pub fn quantify(
                                 next_id += 1;
                             }
                         }
-                        geqmap.cell_offset.push((cell_num, gene_eqc.len()));
+                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        geqmap.cell_offset.push((bc_mer, gene_eqc.len()));
                     }
 
                     // clear our local variables
@@ -1013,8 +1014,13 @@ pub fn quantify(
             .expect("couldn't create eqc_offsets.txt file.");
 
         let mut offset_buf = BufWriter::new(offset_file);
-        for (cell_id, o) in geqmap.cell_offset.iter() {
-            writeln!(offset_buf, "{}\t{}", cell_id, o)?;
+        for (bc_mer, o) in geqmap.cell_offset.iter() {
+            writeln!(offset_buf, "{}\t{}", 
+                unsafe {
+                    std::str::from_utf8_unchecked(&bitmer_to_bytes(*bc_mer)[..])
+                }, 
+                o
+            )?;
         }
 
         let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
