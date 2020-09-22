@@ -319,25 +319,28 @@ struct QuantOutputInfo {
 
 pub fn fill_eq_class(
     gene_eqc: &HashMap<Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>>,
-    current_global_eqid: &AtomicU64,
-    eqid_map: &DashMap<Vec<u32>, u64, ahash::RandomState>,
-    eqid_to_cells: &DashMap<u64, libradicl::GlobalEqCellList>,
+    // current_global_eqid: &AtomicU64,
+    eqid_map: &DashMap<Vec<u32>, libradicl::GlobalEqCellList, ahash::RandomState>,
+    // eqid_to_cells: &DashMap<u64, libradicl::GlobalEqCellList>,
     cell_num: usize,
 ) {
     for (_, (labels, count)) in gene_eqc.iter().enumerate() {
-        let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
-        match eqid_map.get(&labels.to_vec()) {
-            Some(_) => {}
+        // let curr_eqid = current_global_eqid.load(Ordering::SeqCst);
+        match eqid_map.get_mut(&labels.to_vec()) {
+            Some(mut obj) => {
+                obj.add_element(cell_num, *count);
+            }
             None => {
-                eqid_map.insert(labels.to_vec().clone(), curr_eqid);
-                current_global_eqid.fetch_add(1, Ordering::SeqCst);
+                eqid_map.insert(labels.to_vec().clone(), libradicl::GlobalEqCellList::from_umi_and_count(cell_num, *count));
+                // current_global_eqid.fetch_add(1, Ordering::SeqCst);
             }
         }
-        let queried_id = eqid_map.get(&labels.to_vec()).unwrap();
-        let mut obj = eqid_to_cells
-            .entry(*queried_id)
-            .or_insert_with(|| libradicl::GlobalEqCellList::from_umi_and_count(cell_num, *count));
-        (*obj).add_element(cell_num, *count);
+        // let queried_id = eqid_map.get(&labels.to_vec()).unwrap();
+
+        // let mut obj = eqid_to_cells
+        //     .entry(*queried_id)
+        //     .or_insert_with(|| libradicl::GlobalEqCellList::from_umi_and_count(cell_num, *count));
+        // (*obj).add_element(cell_num, *count);
     }
 }
 
@@ -541,12 +544,12 @@ pub fn quantify(
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
 
     // hash table containing the eqclasses to eqid
-    let global_eqid = Arc::new(AtomicU64::new(0 as u64));
+    // let global_eqid = Arc::new(AtomicU64::new(0 as u64));
     let s = ahash::RandomState::new();
-    let eqid_mapd: DashMap<Vec<u32>, u64, ahash::RandomState> = DashMap::with_hasher(s);
+    let eqid_mapd: DashMap<Vec<u32>, libradicl::GlobalEqCellList, ahash::RandomState> = DashMap::with_hasher(s);
     let eqid_map = Arc::new(eqid_mapd);
     // hash table that keeps a list cells
-    let eqid_to_cells = Arc::new(DashMap::<u64, libradicl::GlobalEqCellList>::new());
+    // let eqid_to_cells = Arc::new(DashMap::<u64, libradicl::GlobalEqCellList>::new());
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
@@ -564,9 +567,9 @@ pub fn quantify(
         // and the file writer
         let bcout = bc_writer.clone();
         // clone global id
-        let current_global_eqid = global_eqid.clone();
+        // let current_global_eqid = global_eqid.clone();
         let eqid_mapc = eqid_map.clone();
-        let eqid_to_cellsc = eqid_to_cells.clone();
+        // let eqid_to_cellsc = eqid_to_cells.clone();
         /*
         // and the bootstrap file writer
         let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
@@ -761,9 +764,9 @@ pub fn quantify(
                         // the hash
                         fill_eq_class(
                             &gene_eqc,
-                            &current_global_eqid,
+                            // &current_global_eqid,
                             &eqid_mapc,
-                            &eqid_to_cellsc,
+                            // &eqid_to_cellsc,
                             cell_num,
                         );
                     }
@@ -966,6 +969,7 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq && (resolution != ResolutionStrategy::Trivial) {
+        let num_eqclasses = eqid_map.len();
         let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
         let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
             fs::File::create(gn_eq_path).unwrap(),
@@ -974,26 +978,25 @@ pub fn quantify(
         info!(
             log,
             "Writing gene level equivalence class with {:?} classes",
-            global_eqid.load(Ordering::SeqCst)
+            eqid_map.len()
         );
 
         //let eqid_map_copy = Arc::copy
-        gn_eq_writer.write_all(format!("{}\n", global_eqid.load(Ordering::SeqCst)).as_bytes())?;
-        for (gene_list, eq_id) in (*eqid_map).clone().into_iter() {
-            if let Some(cell_labels) = eqid_to_cells.get(&eq_id) {
-                gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
-                for g in gene_list.iter() {
-                    gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
-                }
-                gn_eq_writer
-                    .write_all(format!("{}\t", (*cell_labels).cell_ids.len()).as_bytes())?;
-                for i in 0..(*cell_labels).cell_ids.len() {
-                    gn_eq_writer
-                        .write_all(format!("{}\t", (*cell_labels).cell_ids[i]).as_bytes())?;
-                }
-                gn_eq_writer.write_all(format!("{}\t", (*cell_labels).count).as_bytes())?;
-                gn_eq_writer.write_all(format!("\n").as_bytes())?;
+        // gn_eq_writer.write_all(format!("{}\n", global_eqid.load(Ordering::SeqCst)).as_bytes())?;
+        gn_eq_writer.write_all(format!("{}\n", num_eqclasses).as_bytes())?;
+        for (gene_list, cell_labels) in (*eqid_map).clone().into_iter() {
+            gn_eq_writer.write_all(format!("{}\t", gene_list.len()).as_bytes())?;
+            for g in gene_list.iter() {
+                gn_eq_writer.write_all(format!("{}\t", g).as_bytes())?;
             }
+            gn_eq_writer
+                .write_all(format!("{}\t", cell_labels.cell_ids.len()).as_bytes())?;
+            for i in 0..cell_labels.cell_ids.len() {
+                gn_eq_writer
+                    .write_all(format!("{}\t", cell_labels.cell_ids[i]).as_bytes())?;
+            }
+            gn_eq_writer.write_all(format!("{}\t", cell_labels.count).as_bytes())?;
+            gn_eq_writer.write_all(format!("\n").as_bytes())?;
         }
     } else if dump_eq {
         info!(
