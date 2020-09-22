@@ -551,7 +551,7 @@ pub fn quantify(
 
     // hash table containing the eqclasses to eqid
     // let global_eqid = Arc::new(AtomicU64::new(0 as u64));
-    let mut global_eqid = Arc::new(0u64);
+    //let mut global_eqid = Arc::new(0u64);
     let s = ahash::RandomState::new();
     let eqid_mapd: DashMap<Vec<u32>, libradicl::GlobalEqCellList, ahash::RandomState> = DashMap::with_hasher(s);
     let eqid_map = Arc::new(eqid_mapd);
@@ -587,7 +587,7 @@ pub fn quantify(
         // let current_global_eqid = global_eqid.clone();
         let eqid_mapc = eqid_map.clone();
         let eqid_map_lockc = eqid_map_lock.clone();
-        let mut gid = global_eqid.clone();
+        //let mut gid = global_eqid.clone();
         // let eqid_to_cellsc = eqid_to_cells.clone();
         /*
         // and the bootstrap file writer
@@ -777,18 +777,19 @@ pub fn quantify(
                     if dump_eq {
                         let eqmap_deref = eqid_map_lockc.lock();
                         let geqmap = &mut *eqmap_deref.unwrap();
+                        let mut next_id = geqmap.global_eqc.len() as u64;
                         for (_, (labels, count)) in gene_eqc.iter().enumerate() {
                             let mut found = true;
                             match geqmap.global_eqc.get(&labels.to_vec()) {
                                 Some(eqid) => {geqmap.cell_level_count.push((*eqid,*count));}
                                 None => {
                                     found = false ;
-                                    geqmap.cell_level_count.push((*gid,*count));
-                                    *Arc::make_mut(&mut gid) += 1; 
+                                    geqmap.cell_level_count.push((next_id,*count));
                                 }
                             }    
                             if !found {
-                                geqmap.global_eqc.insert(labels.to_vec().clone(),*gid);
+                                geqmap.global_eqc.insert(labels.to_vec().clone(),next_id);
+                                next_id += 1;
                             }
                         }
                         geqmap.cell_offset.push(gene_eqc.len());
@@ -994,6 +995,7 @@ pub fn quantify(
     if dump_eq && (resolution != ResolutionStrategy::Trivial) {
         let eqmap_deref = eqid_map_lock.lock();
         let geqmap = eqmap_deref.unwrap(); 
+//        assert_eq!(geqmap.global_eqc.len() as u64, *global_eqid);
         info!(
             log,
             "Writing gene level equivalence class with {:?} classes",
