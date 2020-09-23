@@ -227,6 +227,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // update the count of the equivalence class of genes
             // that gets this UMI
             quickersort::sort(&mut best_genes[..]);
+            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
@@ -287,6 +288,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         if cidx == umi_gene_count_vec.len() - 1 {
             //&& !unresolvable {
             quickersort::sort(&mut best_genes[..]);
+            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
             //counts[max_count_gene as usize] += 1.0f32;
         }

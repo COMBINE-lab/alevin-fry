@@ -255,6 +255,15 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+
+        if dump_eq && (resolution == ResolutionStrategy::Trivial) {
+            crit!(
+                log,
+                "Gene equivalence classes are not meaningful in case of Trivial resolution."
+            );
+            std::process::exit(1);
+        }
+
         libradicl::quant::quantify(
             input_dir,
             tg_map,
