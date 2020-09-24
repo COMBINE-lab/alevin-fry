@@ -374,7 +374,7 @@ fn write_eqc_counts(
         .write_all(format!("{}\n", num_eqclasses).as_bytes())
         .expect("could not write to gene_eqclass.txt.gz");
 
-    // each line describes a class in terms of 
+    // each line describes a class in terms of
     // the tab-separated tokens
     // g_1 g_2 ... g_k eqid
     for (gene_list, eqid) in geqmap.global_eqc.iter() {
