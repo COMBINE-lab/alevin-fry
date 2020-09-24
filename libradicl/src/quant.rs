@@ -343,11 +343,13 @@ fn write_eqc_counts(
         geqmap.global_eqc.len()
     );
 
+    // the sparse matrix that will hold the equivalence class counts
     let mut eqmat = sprs::TriMatI::<f32, u32>::with_capacity(
         (geqmap.cell_offset.len(), num_eqclasses), // cells x eq-classes
         geqmap.cell_level_count.len(),             // num non-zero entries
     );
 
+    // fill in the matrix
     let mut global_offset = 0usize;
     for (row_index, num_cell_eqs) in geqmap.cell_offset.iter() {
         let slice = (global_offset..(global_offset + num_cell_eqs));
@@ -357,7 +359,7 @@ fn write_eqc_counts(
         global_offset += num_cell_eqs;
     }
 
-    // write the equivalence class count matrix
+    // and write it to file.
     let mtx_path = output_path.join("geqc_counts.mtx");
     sprs::io::write_matrix_market(&mtx_path, &eqmat).expect("could not write geqc_counts.mtx");
 
@@ -367,9 +369,14 @@ fn write_eqc_counts(
         fs::File::create(gn_eq_path).unwrap(),
         Compression::default(),
     ));
+    // number of classes
     gn_eq_writer
         .write_all(format!("{}\n", num_eqclasses).as_bytes())
         .expect("could not write to gene_eqclass.txt.gz");
+
+    // each line describes a class in terms of 
+    // the tab-separated tokens
+    // g_1 g_2 ... g_k eqid
     for (gene_list, eqid) in geqmap.global_eqc.iter() {
         for g in gene_list.iter() {
             gn_eq_writer
@@ -380,34 +387,6 @@ fn write_eqc_counts(
             .write_all(format!("{}\n", eqid).as_bytes())
             .expect("could not write to gene_eqclass.txt.gz");
     }
-    /*
-    let offset_file = File::create(output_path.join("eqc_offsets.txt"))
-        .expect("couldn't create eqc_offsets.txt file.");
-
-    let mut offset_buf = BufWriter::new(offset_file);
-    for (bc_mer, o) in geqmap.cell_offset.iter() {
-        writeln!(
-            offset_buf,
-            "{}\t{}",
-            unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(*bc_mer)[..]) },
-            o
-        )?;
-    }
-    */
-
-    /*
-    let cell_count_path = output_path.join("cell_count.txt.gz");
-    let mut cc_writer = BufWriter::new(GzEncoder::new(
-        fs::File::create(cell_count_path).unwrap(),
-        Compression::default(),
-    ));
-    */
-
-    /*
-    for (eqid, count) in geqmap.cell_level_count.iter() {
-        cc_writer.write_all(format!("{}\t{}\n", eqid, count).as_bytes())?;
-    }
-    */
     true
 }
 
@@ -1003,19 +982,6 @@ pub fn quantify(
             }
         }
     }
-
-    /*
-    let mmrate_path = parent.join("mmrate.tsv");
-    let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
-    let ostr = mmrate
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|x| x.to_string())
-        .collect::<Vec<String>>()
-        .join("\t");
-    writeln!(mmrate_file, "{}", ostr).expect("couldn't write to multimapping rate file.");
-    */
 
     // write to matrix market if we are using it
     if use_mtx {
