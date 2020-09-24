@@ -151,12 +151,15 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     _log: &slog::Logger,
-) -> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> {
+) /*-> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>*/
+{
+    /*
     let s = fasthash::RandomState::<Hash64>::new();
     let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
         HashMap::with_hasher(s);
-
+    */
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
 
@@ -224,6 +227,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             // update the count of the equivalence class of genes
             // that gets this UMI
             quickersort::sort(&mut best_genes[..]);
+            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
@@ -283,6 +287,8 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
             //&& !unresolvable {
+            quickersort::sort(&mut best_genes[..]);
+            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
             //counts[max_count_gene as usize] += 1.0f32;
         }
@@ -290,7 +296,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     }
 
     //counts
-    gene_eqclass_hash
+    //gene_eqclass_hash
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(
@@ -516,11 +522,11 @@ pub(super) fn get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     log: &slog::Logger,
-) -> (
-    HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
-    PUGResolutionStatistics,
-) {
+) -> PUGResolutionStatistics
+//,)
+{
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
     fn get_set(cap: u32) -> U32Set {
         let s = RandomState::<Hash64>::new();
@@ -544,9 +550,9 @@ pub(super) fn get_num_molecules(
     // classes of size greater than 1, and probabilistic results
     // will attempt to resolve gene multi-mapping reads by
     // running and EM algorithm.
-    let s = fasthash::RandomState::<Hash64>::new();
-    let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-        HashMap::with_hasher(s);
+    //let s = fasthash::RandomState::<Hash64>::new();
+    //let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+    //    HashMap::with_hasher(s);
 
     // Get the genes that could potentially explain all
     // of the vertices in this mcc.
@@ -744,7 +750,9 @@ pub(super) fn get_num_molecules(
         //identified_txps.push(*rand_cover as u32);
     }
 
-    (gene_eqclass_hash, pug_stats)
+    /*(gene_eqclass_hash,*/
+    pug_stats
+    //)
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {

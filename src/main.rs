@@ -110,6 +110,7 @@ fn main() {
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-d, --dump-eqclasses 'flag for dumping equivalence classes'").takes_value(false).required(false))
     .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
@@ -248,11 +249,21 @@ fn main() {
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
+        let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = t.is_present("use-mtx");
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+
+        if dump_eq && (resolution == ResolutionStrategy::Trivial) {
+            crit!(
+                log,
+                "Gene equivalence classes are not meaningful in case of Trivial resolution."
+            );
+            std::process::exit(1);
+        }
+
         libradicl::quant::quantify(
             input_dir,
             tg_map,
@@ -261,6 +272,7 @@ fn main() {
             num_bootstraps,
             init_uniform,
             summary_stat,
+            dump_eq,
             use_mtx,
             resolution,
             &log,

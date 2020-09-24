@@ -110,6 +110,28 @@ impl CorrectedCBChunk {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct GlobalEqCellList {
+    cell_ids: Vec<usize>,
+    count: u32,
+}
+
+impl GlobalEqCellList {
+    pub fn from_umi_and_count(bc_mer: usize, count: u32) -> GlobalEqCellList {
+        let mut cc = GlobalEqCellList {
+            cell_ids: Vec::new(),
+            count: 0,
+        };
+        cc.cell_ids.push(bc_mer);
+        cc.count += count;
+        cc
+    }
+    pub fn add_element(&mut self, bc_mer: usize, count: u32) {
+        self.cell_ids.push(bc_mer);
+        self.count += count;
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum RADIntID {
     U8,

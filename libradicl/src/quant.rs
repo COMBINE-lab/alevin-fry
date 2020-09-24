@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
 extern crate fasthash;
@@ -19,6 +20,8 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
+use dashmap::DashMap;
+use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
@@ -31,7 +34,7 @@ use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use std::string::ToString;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 //use std::ptr;
@@ -314,6 +317,79 @@ struct QuantOutputInfo {
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
+struct EQCMap {
+    // the *global* gene-level equivalence class map
+    global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
+    // the list of equivalence classes (and corresponding umi count)
+    // that occurs in each cell.
+    cell_level_count: Vec<(u64, u32)>,
+    // a vector of tuples that contains pairs of the form
+    // (row offset, number of equivalence classes in this cell)
+    cell_offset: Vec<(usize, usize)>,
+}
+
+fn write_eqc_counts(
+    eqid_map_lock: &Arc<Mutex<EQCMap>>,
+    output_path: &std::path::Path,
+    log: &slog::Logger,
+) -> bool {
+    let eqmap_deref = eqid_map_lock.lock();
+    let geqmap = eqmap_deref.unwrap();
+    let num_eqclasses = geqmap.global_eqc.len();
+
+    info!(
+        log,
+        "Writing gene level equivalence class with {:?} classes",
+        geqmap.global_eqc.len()
+    );
+
+    // the sparse matrix that will hold the equivalence class counts
+    let mut eqmat = sprs::TriMatI::<f32, u32>::with_capacity(
+        (geqmap.cell_offset.len(), num_eqclasses), // cells x eq-classes
+        geqmap.cell_level_count.len(),             // num non-zero entries
+    );
+
+    // fill in the matrix
+    let mut global_offset = 0usize;
+    for (row_index, num_cell_eqs) in geqmap.cell_offset.iter() {
+        let slice = (global_offset..(global_offset + num_cell_eqs));
+        for (eqid, umi_count) in geqmap.cell_level_count[slice].iter() {
+            eqmat.add_triplet(*row_index, *eqid as usize, *umi_count as f32);
+        }
+        global_offset += num_cell_eqs;
+    }
+
+    // and write it to file.
+    let mtx_path = output_path.join("geqc_counts.mtx");
+    sprs::io::write_matrix_market(&mtx_path, &eqmat).expect("could not write geqc_counts.mtx");
+
+    // write the sets of genes that define each eqc
+    let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
+    let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
+        fs::File::create(gn_eq_path).unwrap(),
+        Compression::default(),
+    ));
+    // number of classes
+    gn_eq_writer
+        .write_all(format!("{}\n", num_eqclasses).as_bytes())
+        .expect("could not write to gene_eqclass.txt.gz");
+
+    // each line describes a class in terms of 
+    // the tab-separated tokens
+    // g_1 g_2 ... g_k eqid
+    for (gene_list, eqid) in geqmap.global_eqc.iter() {
+        for g in gene_list.iter() {
+            gn_eq_writer
+                .write_all(format!("{}\t", g).as_bytes())
+                .expect("could not write to gene_eqclass.txt.gz");
+        }
+        gn_eq_writer
+            .write_all(format!("{}\n", eqid).as_bytes())
+            .expect("could not write to gene_eqclass.txt.gz");
+    }
+    true
+}
+
 // TODO: see if we'd rather pass an structure
 // with these options
 #[allow(clippy::too_many_arguments)]
@@ -325,16 +401,13 @@ pub fn quantify(
     num_bootstraps: u32,
     init_uniform: bool,
     summary_stat: bool,
+    dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
-    //no_em: bool,
-    //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    //type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
-
     let parent = std::path::Path::new(&input_dir);
-    let i_file = File::open(parent.join("map.collated.rad")).unwrap();
+    let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
@@ -511,6 +584,20 @@ pub fn quantify(
     let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+
+    // This is the hash table that will hold the global
+    // (i.e. across all cells) gene-level equivalence
+    // classes.  We have _not_ yet figured out an efficient
+    // way to do this in a lock-free manner, so this
+    // structure is protected by a lock for now.
+    // This will only be used if the `dump_eq` paramater is true.
+    let so = ahash::RandomState::new();
+    let eqid_map_lock = Arc::new(Mutex::new(EQCMap {
+        global_eqc: HashMap::with_hasher(so),
+        cell_level_count: Vec::new(),
+        cell_offset: Vec::new(),
+    }));
+
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -526,22 +613,8 @@ pub fn quantify(
         let umi_type = umi_type;
         // and the file writer
         let bcout = bc_writer.clone();
-        /*
-        // and the bootstrap file writer
-        let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
-            Arc::new(Mutex::new(None));
-        let mut btcout_summary_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
-            Arc::new(Mutex::new(None));
-        if num_bootstraps > 0 {
-            if summary_stat {
-                btcout_summary_optional = bt_summary_writer_optional.clone();
-            } else {
-                btcout_optional = bt_writer_optional.clone();
-            }
-        }
-        */
-
-        //let btcout = bt_writer.clone();
+        // global gene-level eqc map
+        let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
@@ -561,6 +634,22 @@ pub fn quantify(
             let mut bt_eds_bytes: Vec<u8> = Vec::new();
             let mut eds_mean_bytes: Vec<u8> = Vec::new();
             let mut eds_var_bytes: Vec<u8> = Vec::new();
+
+            // the variable we will use to bind the *cell-specific* gene-level
+            // equivalence class table.
+            // Make gene-level eqclasses.
+            // This is a map of gene ids to the count of
+            // _de-duplicated_ reads observed for that set of genes.
+            // For every gene set (label) of length 1, these are gene
+            // unique reads.  Standard scRNA-seq counting results
+            // can be obtained by simply discarding all equivalence
+            // classes of size greater than 1, and probabilistic results
+            // will attempt to resolve gene multi-mapping reads by
+            // running an EM algorithm.
+            let s = fasthash::RandomState::<Hash64>::new();
+            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+                HashMap::with_hasher(s);
+
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -578,12 +667,14 @@ pub fn quantify(
                     let mut alt_resolution = false;
 
                     let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -596,10 +687,11 @@ pub fn quantify(
                             );
                         }
                         ResolutionStrategy::CellRangerLikeEM => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -623,11 +715,12 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -655,11 +748,12 @@ pub fn quantify(
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, pug_stats) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -688,8 +782,10 @@ pub fn quantify(
                             }
                         }
                     }
+
                     // clear our local variables
                     eq_map.clear();
+
                     // Note: there is a fill method, but it is only on
                     // the nightly branch.  Use this for now:
                     unique_evidence.clear();
@@ -731,6 +827,7 @@ pub fn quantify(
                     // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
 
+                    let row_index: usize; // the index for this row (cell)
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
@@ -762,7 +859,7 @@ pub fn quantify(
                         let writer = &mut *writer_deref.unwrap();
 
                         // get the row index and then increment it
-                        let row_index = writer.row_index; //writer.4;
+                        row_index = writer.row_index;
                         writer.row_index += 1;
 
                         // write to barcode file
@@ -815,8 +912,38 @@ pub fn quantify(
                             }
                         } // done bootstrap writing
                     }
-                }
-            }
+
+                    // if we are dumping the equivalence class output, fill in
+                    // the in-memory representation here.
+                    if dump_eq {
+                        let eqmap_deref = eqid_map_lockc.lock();
+                        let geqmap = &mut *eqmap_deref.unwrap();
+                        // the next available global id for a gene-level
+                        // equivalence class
+                        let mut next_id = geqmap.global_eqc.len() as u64;
+                        for (labels, count) in gene_eqc.iter() {
+                            let mut found = true;
+                            match geqmap.global_eqc.get(&labels.to_vec()) {
+                                Some(eqid) => {
+                                    geqmap.cell_level_count.push((*eqid, *count));
+                                }
+                                None => {
+                                    found = false;
+                                    geqmap.cell_level_count.push((next_id, *count));
+                                }
+                            }
+                            if !found {
+                                geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
+                                next_id += 1;
+                            }
+                        }
+                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        geqmap.cell_offset.push((row_index, gene_eqc.len()));
+                    }
+                    // clear the gene eqc map
+                    gene_eqc.clear();
+                } // while we can get work
+            } // while cells remain
         });
 
         thread_handles.push(handle);
@@ -856,19 +983,6 @@ pub fn quantify(
         }
     }
 
-    /*
-    let mmrate_path = parent.join("mmrate.tsv");
-    let mut mmrate_file = File::create(mmrate_path).expect("couldn't open mmrate file");
-    let ostr = mmrate
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|x| x.to_string())
-        .collect::<Vec<String>>()
-        .join("\t");
-    writeln!(mmrate_file, "{}", ostr).expect("couldn't write to multimapping rate file.");
-    */
-
     // write to matrix market if we are using it
     if use_mtx {
         let writer_deref = bc_writer.lock();
@@ -883,10 +997,15 @@ pub fn quantify(
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
     pbar.finish_with_message(&pb_msg);
 
+    if dump_eq {
+        write_eqc_counts(&eqid_map_lock, &output_path, &log);
+    }
+
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : hdr.num_chunks,
         "num_genes" : num_genes,
+        "dump_eq" : dump_eq,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
