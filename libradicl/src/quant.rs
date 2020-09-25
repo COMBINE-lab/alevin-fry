@@ -822,8 +822,13 @@ pub fn quantify(
                     // mean of the "expressed" genes
                     let mean_expr = sum_umi / num_expr as f32;
                     // number of genes with expression > expressed mean
-                    expressed_vec.retain(|e| e > &mean_expr);
-                    let num_genes_over_mean = expressed_vec.len();
+                    let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
+                        if x > &mean_expr {
+                            acc
+                        } else {
+                            acc + 1u32
+                        }
+                    });
                     // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
 
