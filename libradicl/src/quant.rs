@@ -824,9 +824,9 @@ pub fn quantify(
                     // number of genes with expression > expressed mean
                     let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
                         if x > &mean_expr {
-                            acc
-                        } else {
                             acc + 1u32
+                        } else {
+                            acc
                         }
                     });
                     // expressed mean / max expression
