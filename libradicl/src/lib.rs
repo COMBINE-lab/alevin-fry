@@ -372,7 +372,7 @@ impl ReadRecord {
                 Strand::Reverse
             };
 
-            if expected_ori.same(&strand) {
+            if expected_ori.same(&strand) || expected_ori.is_unknown() {
                 rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }
@@ -414,7 +414,7 @@ impl ReadRecord {
                 Strand::Reverse
             };
 
-            if expected_ori.same(&strand) {
+            if expected_ori.same(&strand) || expected_ori.is_unknown() {
                 rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }

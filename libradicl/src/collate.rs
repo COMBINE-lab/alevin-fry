@@ -117,7 +117,7 @@ pub fn collate_in_memory_multipass(
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
     let expected_ori = get_orientation(&mdata, log);
-
+    info!(log, "expected_ori = {:?}", expected_ori);
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let oname = parent.join("map.collated.rad");
