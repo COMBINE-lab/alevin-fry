@@ -447,6 +447,12 @@ pub fn quantify(
         .delimiter(b'\t')
         .from_reader(t2g_file);
 
+    let toi = vec!["ENST00000335295",
+    "ENST00000380315",
+    "ENST00000475226",
+    "ENST00000485743",
+    "ENST00000633227",
+    "ENST00000647020"];
     // now, map each transcript index to it's corresponding gene index
     let mut found = 0usize;
     for result in rdr.deserialize() {
@@ -457,11 +463,17 @@ pub fn quantify(
         // if we haven't added this gene name already, then
         // append it now to the list of gene names.
         if gene_id == next_id {
-            gene_names.push(record.1);
+            gene_names.push(record.1.clone());
         }
         // get the transcript id
         if let Some(transcript_id) = rname_to_id.get(&record.0) {
             found += 1;
+            if toi.contains(&record.0.as_str()) {
+                println!("len when inserting {} is {}, gene id is {}", &record.1, gene_names.len(), gene_id);
+            }
+            //if (&record.0 == "ENST00000390237") {
+            //    println!("TID = {}, GID = {}, GN = {}", transcript_id, gene_id, &record.1.clone());
+            //}
             tid_to_gid[*transcript_id as usize] = gene_id;
         }
     }
