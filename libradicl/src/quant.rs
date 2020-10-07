@@ -20,7 +20,6 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
-use dashmap::DashMap;
 use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
@@ -34,7 +33,7 @@ use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
 use std::string::ToString;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 //use std::ptr;
@@ -352,7 +351,7 @@ fn write_eqc_counts(
     // fill in the matrix
     let mut global_offset = 0usize;
     for (row_index, num_cell_eqs) in geqmap.cell_offset.iter() {
-        let slice = (global_offset..(global_offset + num_cell_eqs));
+        let slice = global_offset..(global_offset + num_cell_eqs);
         for (eqid, umi_count) in geqmap.cell_level_count[slice].iter() {
             eqmat.add_triplet(*row_index, *eqid as usize, *umi_count as f32);
         }
@@ -447,12 +446,6 @@ pub fn quantify(
         .delimiter(b'\t')
         .from_reader(t2g_file);
 
-    let toi = vec!["ENST00000335295",
-    "ENST00000380315",
-    "ENST00000475226",
-    "ENST00000485743",
-    "ENST00000633227",
-    "ENST00000647020"];
     // now, map each transcript index to it's corresponding gene index
     let mut found = 0usize;
     for result in rdr.deserialize() {
@@ -468,12 +461,6 @@ pub fn quantify(
         // get the transcript id
         if let Some(transcript_id) = rname_to_id.get(&record.0) {
             found += 1;
-            if toi.contains(&record.0.as_str()) {
-                println!("len when inserting {} is {}, gene id is {}", &record.1, gene_names.len(), gene_id);
-            }
-            //if (&record.0 == "ENST00000390237") {
-            //    println!("TID = {}, GID = {}, GN = {}", transcript_id, gene_id, &record.1.clone());
-            //}
             tid_to_gid[*transcript_id as usize] = gene_id;
         }
     }
@@ -488,6 +475,12 @@ pub fn quantify(
         gene_names.len(),
         found
     );
+
+    // read the map for the number of unmapped reads per corrected barcode
+    let bc_unmapped_file =
+        std::fs::File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
+    let bc_unmapped_map: Arc<HashMap<u64, u32>> =
+        Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
@@ -569,7 +562,7 @@ pub fn quantify(
     let mut ff_file = fs::File::create(ff_path)?;
     writeln!(
         ff_file,
-        "CellNum\tMappedReads\tTotUMI\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+        "CellNum\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
     )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
@@ -630,7 +623,7 @@ pub fn quantify(
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
-
+        let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
         // now, make the worker thread
@@ -828,8 +821,13 @@ pub fn quantify(
                         }
                     }
 
-                    let num_reads = nrec;
-                    let dedup_rate = sum_umi / num_reads as f32;
+                    let num_mapped = nrec;
+                    let dedup_rate = sum_umi / num_mapped as f32;
+
+                    let num_unmapped = unmapped_count
+                        .get(&bc)
+                        .expect("should not be searching for non-existant corrected barcode.");
+                    let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
 
                     // mean of the "expressed" genes
                     let mean_expr = sum_umi / num_expr as f32;
@@ -900,10 +898,12 @@ pub fn quantify(
                         }
                         writeln!(
                             &mut writer.feature_file,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             row_index,
-                            num_reads,
+                            (num_mapped + num_unmapped),
+                            num_mapped,
                             sum_umi,
+                            mapping_rate,
                             dedup_rate,
                             mean_by_max,
                             num_expr,
@@ -954,7 +954,7 @@ pub fn quantify(
                                 next_id += 1;
                             }
                         }
-                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        //let bc_mer: BitKmer = (bc, bclen as u8);
                         geqmap.cell_offset.push((row_index, gene_eqc.len()));
                     }
                     // clear the gene eqc map

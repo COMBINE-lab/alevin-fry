@@ -66,7 +66,7 @@ fn main() {
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
+        .arg(Arg::from("-i, --input=<input>  'input directory containing the map.rad RAD file'"))
         .arg(Arg::from("-d, --expected-ori=<expected-ori> 'the expected orientation of alignments'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
@@ -95,7 +95,7 @@ fn main() {
     .version(version)
     .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
-    .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
+    .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
          .default_value("50000000"));
@@ -147,7 +147,7 @@ fn main() {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
-        let input_file: String = t.value_of_t("input").expect("no input directory specified");
+        let input_dir: String = t.value_of_t("input").expect("no input directory specified");
         let output_dir: String = t
             .value_of_t("output-dir")
             .expect("no input directory specified");
@@ -214,7 +214,7 @@ fn main() {
             }
             Err(_) => None,
         };
-        let nc = generate_permit_list(input_file, output_dir, fmeth, expected_ori, &log).unwrap();
+        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
@@ -237,10 +237,10 @@ fn main() {
 
     if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
-        let rad_file: String = t.value_of_t("rad-file").unwrap();
+        let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_file, num_threads, max_records, &log)
+        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &log)
             .expect("could not collate.");
     }
 

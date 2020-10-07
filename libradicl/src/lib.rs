@@ -237,7 +237,7 @@ pub fn encode_type_tag(type_tag: RADType) -> Option<u8> {
         RADType::U64 => Some(4),
         RADType::F32 => Some(5),
         RADType::F64 => Some(6),
-        _ => None,
+        //_ => None,
     }
 }
 

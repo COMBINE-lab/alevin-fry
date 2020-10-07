@@ -11,7 +11,7 @@ use self::slog::{crit, info};
 use bio_types::strand::Strand;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
-use scroll::Pwrite;
+use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -24,7 +24,7 @@ use crate as libradicl;
 
 pub fn collate(
     input_dir: String,
-    rad_file: String,
+    rad_dir: String,
     num_threads: u32,
     max_records: u32,
     //expected_ori: Strand,
@@ -60,7 +60,7 @@ pub fn collate(
         info!(log, "executing temporary file scatter-gather strategy.");
         collate_with_temp(
             input_dir,
-            rad_file,
+            rad_dir,
             num_threads,
             max_records,
             tsv_map,
@@ -71,7 +71,7 @@ pub fn collate(
         info!(log, "executing multi-pass strategy.");
         collate_in_memory_multipass(
             input_dir,
-            rad_file,
+            rad_dir,
             num_threads,
             max_records,
             tsv_map,
@@ -100,9 +100,40 @@ fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
     }
 }
 
+fn correct_unmapped_counts(
+    correct_map: &Arc<HashMap<u64, u64>>,
+    unmapped_file: &std::path::Path,
+    parent: &std::path::Path,
+) {
+    let i_file = File::open(&unmapped_file).unwrap();
+    let mut br = BufReader::new(i_file);
+
+    // enough to hold a key value pair (a u64 key and u32 value)
+    let mut rbuf = [0u8; std::mem::size_of::<u64>() + std::mem::size_of::<u32>()];
+
+    let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
+
+    // collect all of the information from the existing
+    // serialized map (that may contain repeats)
+    while br.read_exact(&mut rbuf[..]).is_ok() {
+        let k = rbuf.pread::<u64>(0).unwrap();
+        let v = rbuf.pread::<u32>(std::mem::size_of::<u64>()).unwrap();
+        // get the corrected key for the raw key
+        if let Some((&_rk, &ck)) = correct_map.get_key_value(&k) {
+            *unmapped_count.entry(ck).or_insert(0) += v;
+        }
+    }
+
+    let s_path = parent.join("unmapped_bc_count_collated.bin");
+    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
+    let mut s_writer = BufWriter::new(&s_file);
+    bincode::serialize_into(&mut s_writer, &unmapped_count)
+        .expect("couldn't serialize corrected unmapped bc count.");
+}
+
 pub fn collate_in_memory_multipass(
     input_dir: String,
-    rad_file: String,
+    rad_dir: String,
     num_threads: u32,
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
@@ -126,7 +157,14 @@ pub fn collate_in_memory_multipass(
     }
 
     let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
-    let i_file = File::open(&rad_file).unwrap();
+    let i_dir = std::path::Path::new(&rad_dir);
+
+    if !i_dir.exists() {
+        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        std::process::exit(1);
+    }
+
+    let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
@@ -172,6 +210,9 @@ pub fn collate_in_memory_multipass(
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
+
+    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
+    correct_unmapped_counts(&correct_map, &unmapped_file, &parent);
 
     info!(
         log,
@@ -348,13 +389,17 @@ pub fn collate_in_memory_multipass(
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
 
-    info!(log, "finished collating input rad file {:?}.", rad_file);
+    info!(
+        log,
+        "finished collating input rad file {:?}.",
+        i_dir.join("map.rad")
+    );
     Ok(())
 }
 
 pub fn collate_with_temp(
     input_dir: String,
-    rad_file: String,
+    rad_dir: String,
     num_threads: u32,
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
@@ -384,7 +429,14 @@ pub fn collate_with_temp(
     }
 
     let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
-    let i_file = File::open(&rad_file).unwrap();
+    let i_dir = std::path::Path::new(&rad_dir);
+
+    if !i_dir.exists() {
+        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        std::process::exit(1);
+    }
+
+    let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
@@ -430,6 +482,11 @@ pub fn collate_with_temp(
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
+
+    // NOTE: the assumption of where the unmapped file will be
+    // should be robustified
+    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
+    correct_unmapped_counts(&correct_map, &unmapped_file, &parent);
 
     info!(
         log,
@@ -756,6 +813,10 @@ pub fn collate_with_temp(
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
 
-    info!(log, "finished collating input rad file {:?}.", rad_file);
+    info!(
+        log,
+        "finished collating input rad file {:?}.",
+        i_dir.join("map.rad")
+    );
     Ok(())
 }

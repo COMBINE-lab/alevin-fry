@@ -169,11 +169,6 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         let umis = &eqinfo.umis;
         let eqid = &eqinfo.eq_num;
 
-        let t = eq_map.refs_for_eqc(*eqid);
-        //if t.len() == 1 && t[0] == 146948 {
-        //    println!("seeing transcript = 146948; umis len = {}", umis.len());
-        //    println!("gene id = {}", tid_to_gid[146948]);
-        //}
         // project the transcript ids to gene ids
         let mut gset: Vec<u32> = eq_map
             .refs_for_eqc(*eqid)
@@ -183,7 +178,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         // and make the gene ids unique
         quickersort::sort(&mut gset[..]);
         gset.dedup();
-        
+
         // add every (umi, count), gene pair as a triplet
         // of (umi, gene_id, count) to the output vector
         for umi_ct in umis {
@@ -300,8 +295,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
         }
         cidx += 1;
     }
-    
-    println!("FOR GENE : {:?}", gene_eqclass_hash.entry(vec![11374]));
+
     //counts
     //gene_eqclass_hash
 }

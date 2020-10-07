@@ -175,7 +175,7 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
 pub fn generate_permit_list(
-    input_file: String,
+    rad_dir: String,
     output_dir: String,
     filter_meth: CellFilterMethod,
     expected_ori: Strand,
@@ -184,7 +184,14 @@ pub fn generate_permit_list(
     //use_knee_distance: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
-    let i_file = File::open(input_file).unwrap();
+    let i_dir = std::path::Path::new(&rad_dir);
+
+    if !i_dir.exists() {
+        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        std::process::exit(1);
+    }
+
+    let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
