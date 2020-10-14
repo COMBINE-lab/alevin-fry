@@ -60,8 +60,8 @@ impl BootstrapHelper {
     ) -> BootstrapHelper {
         if num_bootstraps > 0 {
             if summary_stat {
-                let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
-                let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
+                let bootstrap_mean_path = output_path.join("group_bootstraps_mean.eds.gz");
+                let bootstrap_var_path = output_path.join("group_bootstraps_var.eds.gz");
                 let bt_mean_buffered = GzEncoder::new(
                     File::create(bootstrap_mean_path).unwrap(),
                     Compression::default(),
@@ -78,7 +78,7 @@ impl BootstrapHelper {
                     )),
                 }
             } else {
-                let bootstrap_path = output_path.join("bootstraps.eds.gz");
+                let bootstrap_path = output_path.join("group_bootstraps.eds.gz");
                 let bt_buffered = GzEncoder::new(
                     File::create(bootstrap_path).unwrap(),
                     Compression::default(),
@@ -101,9 +101,10 @@ impl BootstrapHelper {
 pub fn calc_diff(
     input_dir: String,
     _num_threads: u32,
-    _num_bootstraps : u32,
-    _summary_stat: bool,
+    num_bootstraps : u32,
+    summary_stat: bool,
     group_file_name: String,
+    init_uniform: bool,
     num_rep: u32,
     log: &slog::Logger,
 ){
@@ -276,6 +277,7 @@ pub fn calc_diff(
                 Compression::default()
             )
         );
+        let boot_helper = BootstrapHelper::new(input_path, num_bootstraps, summary_stat);
         for group_id in 0..num_groups {
             // let group_name = groups.ids[group_id].clone();
 
@@ -293,6 +295,7 @@ pub fn calc_diff(
             }
             // run em on the merged equivalence classes
             let counts : Vec<f32>;
+            let mut bootstraps: Vec<Vec<f32>> = Vec::new();
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
             counts = em_optimize(
@@ -303,6 +306,17 @@ pub fn calc_diff(
                 true,
                 &log,
             );
+            if num_bootstraps > 0 {
+                bootstraps = run_bootstrap(
+                    &gene_eqc,
+                    num_bootstraps,
+                    &counts,
+                    init_uniform,
+                    summary_stat,
+                    &log,
+                );
+            }
+
             let eds_bytes = sce::eds::as_bytes(&counts, num_genes)
                 .expect("can't convert vector to eds");
             group_eds_file.write_all(&eds_bytes).expect("can't write matrix file");

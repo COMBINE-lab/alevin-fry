@@ -64,6 +64,7 @@ fn main() {
         .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
         .arg(Arg::from("--num-rep 'number of bootstraps to use'").default_value("0"))
         .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
+        .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
         .arg(
             Arg::from("-t, --threads 'number of threads to use for processing'")
                 .default_value(&max_num_threads),
@@ -266,12 +267,14 @@ fn main() {
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let num_rep = t.value_of_t("num-rep").unwrap();
         let summary_stat = t.is_present("summary-stat");
+        let init_uniform = t.is_present("init-uniform");
         libradicl::diff::calc_diff(
             input_dir, 
             num_threads,
             num_bootstraps,
             summary_stat,
             group_file, 
+            init_uniform,
             num_rep,
             &log
         )
