@@ -28,6 +28,7 @@ use std::vec::Vec;
 pub mod cellfilter;
 pub mod collate;
 pub mod convert;
+pub mod diff;
 pub mod em;
 pub mod exit_codes;
 pub mod pugutils;

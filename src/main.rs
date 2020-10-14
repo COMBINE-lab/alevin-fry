@@ -55,6 +55,17 @@ fn main() {
         )
         .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
 
+    let diff_app = App::new("diff")
+        .about("In-house differential expression between the groups")
+        .version(version)
+        .author(crate_authors)
+        .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory that contains fry output'"))
+        .arg(Arg::from("-g, --group-file=<group-file> 'file containing groups of cells'"))
+        .arg(
+            Arg::from("-t, --threads 'number of threads to use for processing'")
+                .default_value(&max_num_threads),
+        );
+
     let view_app = App::new("view")
         .about("View a RAD file")
         .version(version)
@@ -129,6 +140,7 @@ fn main() {
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(convert_app)
+        .subcommand(diff_app)
         .subcommand(view_app)
         .get_matches();
 
@@ -242,6 +254,22 @@ fn main() {
         let max_records: u32 = t.value_of_t("max-records").unwrap();
         libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &log)
             .expect("could not collate.");
+    }
+    
+    if let Some(ref t) = opts.subcommand_matches("diff") {
+        let input_dir: String = t.value_of_t("input-dir").unwrap();
+        let num_threads = t.value_of_t("threads").unwrap();
+        let group_file: String = t.value_of_t("group-file").unwrap();
+        let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
+        let summary_stat = t.is_present("summary-stat");
+        libradicl::diff::calc_diff(
+            input_dir, 
+            num_threads,
+            num_bootstraps,
+            summary_stat, 
+            group_file, 
+            &log
+        )
     }
 
     if let Some(ref t) = opts.subcommand_matches("quant") {
