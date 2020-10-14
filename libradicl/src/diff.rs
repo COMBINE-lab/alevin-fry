@@ -4,17 +4,17 @@ extern crate sce;
 extern crate sprs;
 extern crate fasthash;
 
+#[allow(unused_imports)]
 use fasthash::sea::Hash64;
 use serde::{Deserialize, Serialize};
 use self::slog::{crit, info};
 use std::fs::File;
-use std::io::{prelude::*, stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{prelude::*, BufReader, BufWriter, Write};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use std::path::Path;
 use std::str;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate as libradicl;
 use self::libradicl::em::{em_optimize, run_bootstrap};
@@ -26,11 +26,14 @@ struct Group {
     groups: Vec<Vec<String>>,
 }
 
+#[allow(dead_code)]
 type BufferedGZFile = BufWriter<GzEncoder<File>>;
+#[allow(dead_code)]
 struct BootstrapHelper {
     bsfile: Option<BufferedGZFile>,
     mean_var_files: Option<(BufferedGZFile, BufferedGZFile)>,
 }
+#[allow(dead_code)]
 impl BootstrapHelper {
     fn new(
         output_path: &std::path::Path,
@@ -79,9 +82,9 @@ impl BootstrapHelper {
 
 pub fn calc_diff(
     input_dir: String,
-    num_threads: u32,
-    num_bootstraps : u32,
-    summary_stat: bool,
+    _num_threads: u32,
+    _num_bootstraps : u32,
+    _summary_stat: bool,
     group_file_name: String,
     log: &slog::Logger,
 ){
@@ -101,7 +104,7 @@ pub fn calc_diff(
     let gn_path = input_matrix_path.join("quants_mat_cols.txt");
     let mat_path = input_matrix_path.join("quants_mat.gz");
 
-    let boot_helper = BootstrapHelper::new(input_path, num_bootstraps, summary_stat);
+    // let boot_helper = BootstrapHelper::new(input_path, num_bootstraps, summary_stat);
 
     let mut bc_list = Vec::<String>::new();
     let mut gn_list = Vec::<String>::new();
@@ -142,7 +145,7 @@ pub fn calc_diff(
     assert_eq!(eq_mat.rows(), bc_list.len());
     let num_eq_classes = eq_mat.cols();
     let num_genes = gn_list.clone().len();
-    let num_cells = bc_list.clone().len();
+    // let num_cells = bc_list.clone().len();
 
     info!(
         log,
@@ -174,57 +177,78 @@ pub fn calc_diff(
     // Segementing the global eqclass vec
     // make a vector of global vectors
     //let mut global_eq_vec = vec![Vec::new(); groups.ids.len()];
+    let num_groups = groups.ids.len();
     let mut global_eq_hash : HashMap<usize,Vec<f32>> = HashMap::new();
     {
         let eq_csc = eq_mat.to_csc();
-        let cell_sets = Vec::new();
-        let cell_to_group : HashMap<usize,usize> = HashMap::new();
+        let mut cell_to_group : HashMap<usize,usize> = HashMap::new();
         for (group_id, cell_vec) in groups.groups.iter().enumerate() {
-            // merge the count of all cells
-            let mut cell_set = HashSet::<usize>::new();
             for cell_name in cell_vec.iter(){
                 let cell_id = cell_id_map.get(cell_name).unwrap();
-                cell_set.insert(*cell_id);
                 cell_to_group.insert(*cell_id, group_id);
             }
-            cell_sets.push(cell_set.clone());
         }
 
         // let mut eq_vec = vec![0f32;num_eq_classes];
-        for row in eq_csc.outer_iterator(){
-            for (col_ind, x) in row.iter() {
-                //let mut eq_vec = vec![0f32;num_eq_classes];
-                // Which group
-                eq_vec[col_ind] += *x ;
+        for (row_ind, row) in eq_csc.outer_iterator().enumerate(){
+            // Which group this cell belongs belongs to?
+            if let Some(group_id) = cell_to_group.get(&row_ind) {
+                if let Some(mut eq_vec) = global_eq_hash.get_mut(&group_id){
+                    for (col_ind, x) in row.iter() {
+                        // merge the count of all cells
+                        eq_vec[col_ind] += *x ;
+                    }
+                }else{
+                    let mut eq_vec = vec![0f32; num_eq_classes];
+                    for (col_ind, x) in row.iter() {
+                        // merge the count of all cells
+                        eq_vec[col_ind] = *x ;
+                    }
+                    global_eq_hash.insert(*group_id, eq_vec.clone());
+                }
             }
         }
     }
 
-    // re-run the EM algorithm for a group of cells on the joint equivalence classes
     {
-        // create the hashmap so that we can call em::em_optimize
-        let s = fasthash::RandomState::<Hash64>::new();
-        let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-            HashMap::with_hasher(s);
-        for (eq_id, umi_count) in global_eq_vec.iter().enumerate(){
-            gene_eqc.insert(global_eqc[eq_id].clone(), (*umi_count) as u32);
-        }
-
-
-        // run em on the merged equivalence classes
-        let counts : Vec<f32>;
-        let mut unique_evidence = vec![false; num_genes];
-        let mut no_ambiguity = vec![false; num_genes];
-        counts = em_optimize(
-            &gene_eqc,
-            &mut unique_evidence,
-            &mut no_ambiguity,
-            num_genes,
-            true,
-            &log,
+        // For each group we need to re-run
+        let mat_path = input_path.join("group_mat.gz");
+        let mut group_eds_file = BufWriter::new(
+            GzEncoder::new(
+                File::create(&mat_path).unwrap(), 
+                Compression::default()
+            )
         );
+        for group_id in 0..num_groups {
+            // let group_name = groups.ids[group_id].clone();
 
+            // let boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
+            // let buffered = GzEncoder::new(fs::File::create(&mat_path)?, Compression::default());
+
+            let eq_vec = global_eq_hash.get(&group_id).unwrap();
+            // re-run the EM algorithm for a group of cells on the joint equivalence classes
+            // create the hashmap so that we can call em::em_optimize
+            let s = fasthash::RandomState::<Hash64>::new();
+            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+                HashMap::with_hasher(s);
+            for (eq_id, umi_count) in eq_vec.iter().enumerate(){
+                gene_eqc.insert(global_eqc[eq_id].clone(), (*umi_count) as u32);
+            }
+            // run em on the merged equivalence classes
+            let counts : Vec<f32>;
+            let mut unique_evidence = vec![false; num_genes];
+            let mut no_ambiguity = vec![false; num_genes];
+            counts = em_optimize(
+                &gene_eqc,
+                &mut unique_evidence,
+                &mut no_ambiguity,
+                num_genes,
+                true,
+                &log,
+            );
+            let eds_bytes = sce::eds::as_bytes(&counts, num_genes)
+                .expect("can't convert vector to eds");
+            group_eds_file.write_all(&eds_bytes).expect("can't write matrix file");
+        }
     }
-
-
 }

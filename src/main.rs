@@ -61,6 +61,8 @@ fn main() {
         .author(crate_authors)
         .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory that contains fry output'"))
         .arg(Arg::from("-g, --group-file=<group-file> 'file containing groups of cells'"))
+        .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
+        .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
         .arg(
             Arg::from("-t, --threads 'number of threads to use for processing'")
                 .default_value(&max_num_threads),
