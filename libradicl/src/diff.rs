@@ -19,6 +19,24 @@ use std::collections::HashMap;
 use crate as libradicl;
 use self::libradicl::em::{em_optimize, run_bootstrap};
 
+// found here 
+// https://www.reddit.com/r/rust/comments/dnvpxy/splitting_vec_into_k_unique_sub_sets/
+pub fn rand_k_split<T>(mut v: Vec<T>, k: usize) -> Vec<Vec<T>> {
+    use rand::seq::SliceRandom;
+    v.shuffle(&mut rand::thread_rng());
+    let n = v.len();
+    let mut v = v.into_iter();
+    let in_ref = &mut v;
+    let out: Vec<Vec<T>> = (0..k)
+            .into_iter()
+            .map(move |i| in_ref
+                .by_ref()
+                .take((i+1)*n/k - i*n/k)
+                .collect())
+            .collect();
+    return out;
+}
+
 
 #[derive(Serialize, Deserialize)]
 struct Group {
@@ -86,15 +104,28 @@ pub fn calc_diff(
     _num_bootstraps : u32,
     _summary_stat: bool,
     group_file_name: String,
+    num_rep: u32,
     log: &slog::Logger,
 ){
 
     // reading the group file
     let reader = BufReader::new(File::open(group_file_name)
-        .expect("error")); 
+        .expect("error")
+    ); 
     let groups : Group = serde_json::from_reader(reader).unwrap();
   
     assert_eq!(groups.ids.len(),groups.groups.len());
+    let group_sizes : Vec<usize> = groups.groups.iter().map(|x| x.len()).collect();
+    info!(
+        log,
+        "Group sizes {:?}",
+        group_sizes,
+    );
+    let min_bio_rep = (group_sizes.iter().min().unwrap() / 2) as u32;
+    let mut num_bio_rep = 2u32;
+    if (num_rep < min_bio_rep) && (num_rep > 1) {
+        num_bio_rep = num_rep;
+    }
 
     // reading matrix file
     let input_path = std::path::Path::new(&input_dir);
@@ -173,7 +204,33 @@ pub fn calc_diff(
             global_eqc[eq_id] = tokens_u32.clone();
         }
     }
-
+    
+    // let mut bio_rep_map : HashMap<usize,Vec<usize>> = HashMap::new();
+    let mut bio_rep_map = Vec::new();
+    {
+        let mut gid = 0usize;
+        // println!("num_bio_rep {}",num_bio_rep);
+        for (_group_id, cell_vec) in groups.groups.iter().enumerate() {
+            let cell_id_vec : Vec<usize> = cell_vec.iter().map(
+                |x| *(cell_id_map.get(x).unwrap())
+            ).collect();
+            let cell_sub_vecs = rand_k_split(cell_id_vec.clone(), num_bio_rep as usize);
+            for cell_sub_vec in cell_sub_vecs.iter() {
+                bio_rep_map.push(cell_sub_vec.clone());
+                gid += 1;
+            }
+            
+            // for cell_name in cell_vec.iter(){
+            //     let cell_id = cell_id_map.get(cell_name).unwrap();
+            //     cell_to_group.insert(*cell_id, group_id);
+            // }
+        }
+        info!(
+            log,
+            "Total number of replicates {}",
+            gid,
+        );
+    }
     // Segementing the global eqclass vec
     // make a vector of global vectors
     //let mut global_eq_vec = vec![Vec::new(); groups.ids.len()];
@@ -182,9 +239,9 @@ pub fn calc_diff(
     {
         let eq_csc = eq_mat.to_csc();
         let mut cell_to_group : HashMap<usize,usize> = HashMap::new();
-        for (group_id, cell_vec) in groups.groups.iter().enumerate() {
-            for cell_name in cell_vec.iter(){
-                let cell_id = cell_id_map.get(cell_name).unwrap();
+        for (group_id, cell_vec) in bio_rep_map.iter().enumerate() {
+            for cell_id in cell_vec.iter(){
+                // let cell_id = cell_id_map.get(cell_name).unwrap();
                 cell_to_group.insert(*cell_id, group_id);
             }
         }
