@@ -7,6 +7,7 @@ extern crate fasthash;
 extern crate needletail;
 extern crate num;
 extern crate quickersort;
+extern crate rust_htslib;
 extern crate sce;
 extern crate scroll;
 
@@ -14,6 +15,7 @@ use bio_types::strand::*;
 use dashmap::DashMap;
 use needletail::bitkmer::*;
 use num::cast::AsPrimitive;
+use rust_htslib::bam::HeaderView;
 use scroll::Pread;
 use std::collections::HashMap;
 use std::fs::File;
@@ -25,6 +27,7 @@ use std::vec::Vec;
 
 pub mod cellfilter;
 pub mod collate;
+pub mod convert;
 pub mod em;
 pub mod exit_codes;
 pub mod pugutils;
@@ -104,6 +107,28 @@ impl CorrectedCBChunk {
         cc.data.write_all(&dummy.to_le_bytes()).unwrap();
         cc.data.write_all(&dummy.to_le_bytes()).unwrap();
         cc
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GlobalEqCellList {
+    cell_ids: Vec<usize>,
+    count: u32,
+}
+
+impl GlobalEqCellList {
+    pub fn from_umi_and_count(bc_mer: usize, count: u32) -> GlobalEqCellList {
+        let mut cc = GlobalEqCellList {
+            cell_ids: Vec::new(),
+            count: 0,
+        };
+        cc.cell_ids.push(bc_mer);
+        cc.count += count;
+        cc
+    }
+    pub fn add_element(&mut self, bc_mer: usize, count: u32) {
+        self.cell_ids.push(bc_mer);
+        self.count += count;
     }
 }
 
@@ -203,16 +228,16 @@ pub enum RADType {
     F64,
 }
 
-pub fn decode_type_tag(type_id: u8) -> Option<RADType> {
-    match type_id {
-        0 => Some(RADType::BOOL),
-        1 => Some(RADType::U8),
-        2 => Some(RADType::U16),
-        3 => Some(RADType::U32),
-        4 => Some(RADType::U64),
-        5 => Some(RADType::F32),
-        6 => Some(RADType::F64),
-        _ => None,
+pub fn encode_type_tag(type_tag: RADType) -> Option<u8> {
+    match type_tag {
+        RADType::BOOL => Some(0),
+        RADType::U8 => Some(1),
+        RADType::U16 => Some(2),
+        RADType::U32 => Some(3),
+        RADType::U64 => Some(4),
+        RADType::F32 => Some(5),
+        RADType::F64 => Some(6),
+        //_ => None,
     }
 }
 
@@ -295,6 +320,8 @@ impl ReadRecord {
             refs: Vec::with_capacity(na as usize),
         };
 
+        //println!("number of records : {:?}",na);
+
         for _ in 0..(na as usize) {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
             let v = rbuf.pread::<u32>(0).unwrap();
@@ -345,7 +372,7 @@ impl ReadRecord {
                 Strand::Reverse
             };
 
-            if expected_ori.same(&strand) {
+            if expected_ori.same(&strand) || expected_ori.is_unknown() {
                 rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }
@@ -387,7 +414,7 @@ impl ReadRecord {
                 Strand::Reverse
             };
 
-            if expected_ori.same(&strand) {
+            if expected_ori.same(&strand) || expected_ori.is_unknown() {
                 rec.refs.push(v & utils::MASK_TOP_BIT_U32);
             }
         }
@@ -814,6 +841,36 @@ impl RADHeader {
         rh.num_chunks = buf.pread::<u64>(0).unwrap();
         rh
     }
+    pub fn from_bam_header(header: &HeaderView) -> RADHeader {
+        let mut rh = RADHeader {
+            is_paired: 0,
+            ref_count: 0,
+            ref_names: vec![],
+            num_chunks: 0,
+        };
+
+        rh.ref_count = header.target_count() as u64;
+        // we know how many names we will read in.
+        rh.ref_names.reserve_exact(rh.ref_count as usize);
+        for (_i, t) in header
+            .target_names()
+            .iter()
+            .map(|a| std::str::from_utf8(a).unwrap())
+            .enumerate()
+        {
+            rh.ref_names.push(t.to_owned());
+        }
+        rh
+    }
+    pub fn get_size(&self) -> usize {
+        let mut tot_size = 0usize;
+        tot_size += std::mem::size_of::<u8>() + std::mem::size_of::<u64>();
+        for (_i, t) in self.ref_names.iter().map(|a| a.len()).enumerate() {
+            tot_size += t;
+        }
+        tot_size += std::mem::size_of::<u64>();
+        tot_size
+    }
 }
 
 pub fn update_barcode_hist(
@@ -867,4 +924,32 @@ pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
         bc.push(k.0);
     }
     bc
+}
+
+pub fn write_str_bin(v: &str, type_id: &RADIntID, owriter: &mut Cursor<Vec<u8>>) {
+    match type_id {
+        RADIntID::U8 => {
+            owriter
+                .write_all(&(v.len() as u8).to_le_bytes())
+                .expect("coudn't write to output file");
+        }
+        RADIntID::U16 => {
+            owriter
+                .write_all(&(v.len() as u16).to_le_bytes())
+                .expect("coudn't write to output file");
+        }
+        RADIntID::U32 => {
+            owriter
+                .write_all(&(v.len() as u32).to_le_bytes())
+                .expect("coudn't write to output file");
+        }
+        RADIntID::U64 => {
+            owriter
+                .write_all(&(v.len() as u64).to_le_bytes())
+                .expect("coudn't write to output file");
+        }
+    }
+    owriter
+        .write_all(v.as_bytes())
+        .expect("coudn't write to output file");
 }

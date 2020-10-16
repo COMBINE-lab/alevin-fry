@@ -44,11 +44,29 @@ fn main() {
     // [] add command for just counting barcode frequency
     // [] add other algorithms for determining barcode cutoff
 
+    let convert_app = App::new("convert")
+        .about("Convert a BAM file to a RAD file")
+        .version(version)
+        .author(crate_authors)
+        .arg(Arg::from("-b, --bam=<bam-file> 'input SAM/BAM file'"))
+        .arg(
+            Arg::from("-t, --threads 'number of threads to use for processing'")
+                .default_value(&max_num_threads),
+        )
+        .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
+
+    let view_app = App::new("view")
+        .about("View a RAD file")
+        .version(version)
+        .author(crate_authors)
+        .arg(Arg::from("-r, --rad=<rad-file> 'input RAD file'"))
+        .arg(Arg::from("-o, --output=<rad-file> 'output plain-text-file file'").required(false));
+
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(Arg::from("-i, --input=<input>  'input RAD file'"))
+        .arg(Arg::from("-i, --input=<input>  'input directory containing the map.rad RAD file'"))
         .arg(Arg::from("-d, --expected-ori=<expected-ori> 'the expected orientation of alignments'"))
         .arg(Arg::from(
             "-o, --output-dir=<output-dir>  'output directory'",
@@ -77,7 +95,7 @@ fn main() {
     .version(version)
     .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
-    .arg(Arg::from("-r, --rad-file=<rad-file> 'the RAD file to be collated'"))
+    .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
          .default_value("50000000"));
@@ -92,6 +110,7 @@ fn main() {
     .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-d, --dump-eqclasses 'flag for dumping equivalence classes'").takes_value(false).required(false))
     .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
@@ -109,6 +128,8 @@ fn main() {
         .subcommand(gen_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
+        .subcommand(convert_app)
+        .subcommand(view_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -126,7 +147,7 @@ fn main() {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
-        let input_file: String = t.value_of_t("input").expect("no input directory specified");
+        let input_dir: String = t.value_of_t("input").expect("no input directory specified");
         let output_dir: String = t
             .value_of_t("output-dir")
             .expect("no input directory specified");
@@ -193,18 +214,33 @@ fn main() {
             }
             Err(_) => None,
         };
-        let nc = generate_permit_list(input_file, output_dir, fmeth, expected_ori, &log).unwrap();
+        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
     }
 
+    if let Some(ref t) = opts.subcommand_matches("convert") {
+        let input_file: String = t.value_of_t("bam").unwrap();
+        let rad_file: String = t.value_of_t("output").unwrap();
+        let num_threads: u32 = t.value_of_t("threads").unwrap();
+        libradicl::convert::bam2rad(input_file, rad_file, num_threads, &log)
+    }
+    if let Some(ref t) = opts.subcommand_matches("view") {
+        let rad_file: String = t.value_of_t("rad").unwrap();
+        let mut out_file: String = String::from("");
+        if t.is_present("output") {
+            out_file = t.value_of_t("output").unwrap();
+        }
+        libradicl::convert::view(rad_file, out_file, &log)
+    }
+
     if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
-        let rad_file: String = t.value_of_t("rad-file").unwrap();
+        let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_file, num_threads, max_records, &log)
+        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &log)
             .expect("could not collate.");
     }
 
@@ -213,11 +249,21 @@ fn main() {
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
+        let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = t.is_present("use-mtx");
         let input_dir = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+
+        if dump_eq && (resolution == ResolutionStrategy::Trivial) {
+            crit!(
+                log,
+                "Gene equivalence classes are not meaningful in case of Trivial resolution."
+            );
+            std::process::exit(1);
+        }
+
         libradicl::quant::quantify(
             input_dir,
             tg_map,
@@ -226,6 +272,7 @@ fn main() {
             num_bootstraps,
             init_uniform,
             summary_stat,
+            dump_eq,
             use_mtx,
             resolution,
             &log,

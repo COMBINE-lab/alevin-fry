@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
 extern crate fasthash;
@@ -19,6 +20,7 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
+use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
@@ -61,24 +63,26 @@ fn extract_graph(
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
+    let mut one_edit = 0u64;
+    let mut zero_edit = 0u64;
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
-    let has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
-        if x.0 == y.0 {
+    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
+        let hdist = count_diff_2_bit_packed(x.0, y.0);
+        if hdist == 0 {
+            zero_edit += 1;
             return PUGEdgeType::BiDirected;
         }
-        if x.1 > (2 * y.1 - 1) {
-            if count_diff_2_bit_packed(x.0, y.0) < 2 {
+
+        if hdist < 2 {
+            one_edit += 1;
+            if x.1 > (2 * y.1 - 1) {
                 return PUGEdgeType::XToY;
-            } else {
-                return PUGEdgeType::NoEdge;
-            }
-        } else if y.1 > (2 * x.1 - 1) {
-            if count_diff_2_bit_packed(x.0, y.0) < 2 {
+            } else if y.1 > (2 * x.1 - 1) {
                 return PUGEdgeType::YToX;
             } else {
-                return PUGEdgeType::NoEdge;
+                return PUGEdgeType::BiDirected;
             }
         }
         PUGEdgeType::NoEdge
@@ -245,10 +249,149 @@ fn extract_graph(
             graph.node_count(),
             graph.edge_count()
         );
+        let total_edits = (one_edit + zero_edit) as f64;
+        info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
     }
+
     graph
 }
 
+type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+struct BootstrapHelper {
+    bsfile: Option<BufferedGZFile>,
+    mean_var_files: Option<(BufferedGZFile, BufferedGZFile)>,
+}
+
+impl BootstrapHelper {
+    fn new(
+        output_path: &std::path::Path,
+        num_bootstraps: u32,
+        summary_stat: bool,
+    ) -> BootstrapHelper {
+        if num_bootstraps > 0 {
+            if summary_stat {
+                let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
+                let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
+                let bt_mean_buffered = GzEncoder::new(
+                    fs::File::create(bootstrap_mean_path).unwrap(),
+                    Compression::default(),
+                );
+                let bt_var_buffered = GzEncoder::new(
+                    fs::File::create(bootstrap_var_path).unwrap(),
+                    Compression::default(),
+                );
+                BootstrapHelper {
+                    bsfile: None,
+                    mean_var_files: Some((
+                        BufWriter::new(bt_mean_buffered),
+                        BufWriter::new(bt_var_buffered),
+                    )),
+                }
+            } else {
+                let bootstrap_path = output_path.join("bootstraps.eds.gz");
+                let bt_buffered = GzEncoder::new(
+                    fs::File::create(bootstrap_path).unwrap(),
+                    Compression::default(),
+                );
+                BootstrapHelper {
+                    bsfile: Some(BufWriter::new(bt_buffered)),
+                    mean_var_files: None,
+                }
+            }
+        } else {
+            BootstrapHelper {
+                bsfile: None,
+                mean_var_files: None,
+            }
+        }
+    }
+}
+
+struct QuantOutputInfo {
+    barcode_file: BufWriter<fs::File>,
+    eds_file: BufWriter<GzEncoder<fs::File>>,
+    feature_file: BufWriter<fs::File>,
+    trimat: sprs::TriMatI<f32, u32>,
+    row_index: usize,
+    bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
+}
+
+struct EQCMap {
+    // the *global* gene-level equivalence class map
+    global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
+    // the list of equivalence classes (and corresponding umi count)
+    // that occurs in each cell.
+    cell_level_count: Vec<(u64, u32)>,
+    // a vector of tuples that contains pairs of the form
+    // (row offset, number of equivalence classes in this cell)
+    cell_offset: Vec<(usize, usize)>,
+}
+
+fn write_eqc_counts(
+    eqid_map_lock: &Arc<Mutex<EQCMap>>,
+    output_path: &std::path::Path,
+    log: &slog::Logger,
+) -> bool {
+    let eqmap_deref = eqid_map_lock.lock();
+    let geqmap = eqmap_deref.unwrap();
+    let num_eqclasses = geqmap.global_eqc.len();
+
+    info!(
+        log,
+        "Writing gene level equivalence class with {:?} classes",
+        geqmap.global_eqc.len()
+    );
+
+    // the sparse matrix that will hold the equivalence class counts
+    let mut eqmat = sprs::TriMatI::<f32, u32>::with_capacity(
+        (geqmap.cell_offset.len(), num_eqclasses), // cells x eq-classes
+        geqmap.cell_level_count.len(),             // num non-zero entries
+    );
+
+    // fill in the matrix
+    let mut global_offset = 0usize;
+    for (row_index, num_cell_eqs) in geqmap.cell_offset.iter() {
+        let slice = global_offset..(global_offset + num_cell_eqs);
+        for (eqid, umi_count) in geqmap.cell_level_count[slice].iter() {
+            eqmat.add_triplet(*row_index, *eqid as usize, *umi_count as f32);
+        }
+        global_offset += num_cell_eqs;
+    }
+
+    // and write it to file.
+    let mtx_path = output_path.join("geqc_counts.mtx");
+    sprs::io::write_matrix_market(&mtx_path, &eqmat).expect("could not write geqc_counts.mtx");
+
+    // write the sets of genes that define each eqc
+    let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
+    let mut gn_eq_writer = BufWriter::new(GzEncoder::new(
+        fs::File::create(gn_eq_path).unwrap(),
+        Compression::default(),
+    ));
+    // number of classes
+    gn_eq_writer
+        .write_all(format!("{}\n", num_eqclasses).as_bytes())
+        .expect("could not write to gene_eqclass.txt.gz");
+
+    // each line describes a class in terms of
+    // the tab-separated tokens
+    // g_1 g_2 ... g_k eqid
+    for (gene_list, eqid) in geqmap.global_eqc.iter() {
+        for g in gene_list.iter() {
+            gn_eq_writer
+                .write_all(format!("{}\t", g).as_bytes())
+                .expect("could not write to gene_eqclass.txt.gz");
+        }
+        gn_eq_writer
+            .write_all(format!("{}\n", eqid).as_bytes())
+            .expect("could not write to gene_eqclass.txt.gz");
+    }
+    true
+}
+
+// TODO: see if we'd rather pass an structure
+// with these options
+#[allow(clippy::too_many_arguments)]
 pub fn quantify(
     input_dir: String,
     tg_map: String,
@@ -257,17 +400,13 @@ pub fn quantify(
     num_bootstraps: u32,
     init_uniform: bool,
     summary_stat: bool,
+    dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
-    //no_em: bool,
-    //naive: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    type OptionalLockedHandle<T> = Arc<Mutex<Option<T>>>;
-    type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
-
     let parent = std::path::Path::new(&input_dir);
-    let i_file = File::open(parent.join("map.collated.rad")).unwrap();
+    let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
@@ -317,7 +456,7 @@ pub fn quantify(
         // if we haven't added this gene name already, then
         // append it now to the list of gene names.
         if gene_id == next_id {
-            gene_names.push(record.1);
+            gene_names.push(record.1.clone());
         }
         // get the transcript id
         if let Some(transcript_id) = rname_to_id.get(&record.0) {
@@ -336,6 +475,12 @@ pub fn quantify(
         gene_names.len(),
         found
     );
+
+    // read the map for the number of unmapped reads per corrected barcode
+    let bc_unmapped_file =
+        std::fs::File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
+    let bc_unmapped_map: Arc<HashMap<u64, u32>> =
+        Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
@@ -410,47 +555,16 @@ pub fn quantify(
     let bc_file = fs::File::create(bc_path)?;
 
     let mat_path = output_matrix_path.join("quants_mat.gz");
-    //let bootstrap_path_1 = output_path.join("bootstraps_1.eds.gz");
-
-    let bootstrap_path = output_path.join("bootstraps.eds.gz");
-    let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
-    let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
+    let boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
     let buffered = GzEncoder::new(fs::File::create(&mat_path)?, Compression::default());
 
-    let ff_path = output_path.join("features.txt");
+    let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
-    writeln!(ff_file, "cell_num\tnum_mapped\ttot_umi\tdedup_rate\tmean_by_max\ttotal_expressed_genes\tnum_genes_over_mean")?;
-
+    writeln!(
+        ff_file,
+        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+    )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
-    let mut bt_writer_optional: OptionalLockedHandle<BufferedGZFile> = Arc::new(Mutex::new(None));
-
-    let mut bt_summary_writer_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
-        Arc::new(Mutex::new(None));
-    if num_bootstraps > 0 {
-        if summary_stat {
-            let bt_mean_buffered = GzEncoder::new(
-                fs::File::create(bootstrap_mean_path)?,
-                Compression::default(),
-            );
-            let bt_var_buffered = GzEncoder::new(
-                fs::File::create(bootstrap_var_path)?,
-                Compression::default(),
-            );
-            bt_summary_writer_optional = Arc::new(Mutex::new(Some((
-                BufWriter::new(bt_mean_buffered),
-                BufWriter::new(bt_var_buffered),
-            ))));
-        } else {
-            let bt_buffered =
-                GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
-            bt_writer_optional = Arc::new(Mutex::new(Some(BufWriter::new(bt_buffered))));
-        }
-    }
-
-    // let bt_buffered = GzEncoder::new(fs::File::create(bootstrap_path)?, Compression::default());
-    // let bt_writer = Arc::new(Mutex::new(
-    //     BufWriter::new(bt_buffered),
-    // ));
 
     let tmcap = if use_mtx {
         (0.2f64 * num_genes as f64 * hdr.num_chunks as f64).round() as usize
@@ -463,15 +577,32 @@ pub fn quantify(
         tmcap,
     );
 
-    let bc_writer = Arc::new(Mutex::new((
-        BufWriter::new(bc_file),
-        BufWriter::new(buffered),
-        BufWriter::new(ff_file),
+    let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
+        barcode_file: BufWriter::new(bc_file),
+        eds_file: BufWriter::new(buffered),
+        feature_file: BufWriter::new(ff_file),
         trimat,
-        0usize,
-    )));
+        row_index: 0usize,
+        bootstrap_helper: boot_helper,
+    }));
+
+    let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+
+    // This is the hash table that will hold the global
+    // (i.e. across all cells) gene-level equivalence
+    // classes.  We have _not_ yet figured out an efficient
+    // way to do this in a lock-free manner, so this
+    // structure is protected by a lock for now.
+    // This will only be used if the `dump_eq` paramater is true.
+    let so = ahash::RandomState::new();
+    let eqid_map_lock = Arc::new(Mutex::new(EQCMap {
+        global_eqc: HashMap::with_hasher(so),
+        cell_level_count: Vec::new(),
+        cell_offset: Vec::new(),
+    }));
+
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -487,23 +618,13 @@ pub fn quantify(
         let umi_type = umi_type;
         // and the file writer
         let bcout = bc_writer.clone();
-        // and the bootstrap file writer
-        let mut btcout_optional: OptionalLockedHandle<BufWriter<GzEncoder<fs::File>>> =
-            Arc::new(Mutex::new(None));
-        let mut btcout_summary_optional: OptionalLockedHandle<(BufferedGZFile, BufferedGZFile)> =
-            Arc::new(Mutex::new(None));
-        if num_bootstraps > 0 {
-            if summary_stat {
-                btcout_summary_optional = bt_summary_writer_optional.clone();
-            } else {
-                btcout_optional = bt_writer_optional.clone();
-            }
-        }
-
-        //let btcout = bt_writer.clone();
+        // global gene-level eqc map
+        let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
+        let unmapped_count = bc_unmapped_map.clone();
+        let mmrate = mmrate.clone();
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
@@ -515,6 +636,25 @@ pub fn quantify(
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
             let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
             let mut eds_bytes = Vec::<u8>::new();
+            let mut bt_eds_bytes: Vec<u8> = Vec::new();
+            let mut eds_mean_bytes: Vec<u8> = Vec::new();
+            let mut eds_var_bytes: Vec<u8> = Vec::new();
+
+            // the variable we will use to bind the *cell-specific* gene-level
+            // equivalence class table.
+            // Make gene-level eqclasses.
+            // This is a map of gene ids to the count of
+            // _de-duplicated_ reads observed for that set of genes.
+            // For every gene set (label) of length 1, these are gene
+            // unique reads.  Standard scRNA-seq counting results
+            // can be obtained by simply discarding all equivalence
+            // classes of size greater than 1, and probabilistic results
+            // will attempt to resolve gene multi-mapping reads by
+            // running an EM algorithm.
+            let s = fasthash::RandomState::<Hash64>::new();
+            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
+                HashMap::with_hasher(s);
+
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -532,12 +672,14 @@ pub fn quantify(
                     let mut alt_resolution = false;
 
                     let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+
                     match resolution {
                         ResolutionStrategy::CellRangerLike => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -550,10 +692,11 @@ pub fn quantify(
                             );
                         }
                         ResolutionStrategy::CellRangerLikeEM => {
-                            let gene_eqc = pugutils::get_num_molecules_cell_ranger_like(
+                            pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
                             counts = em_optimize(
@@ -566,29 +709,32 @@ pub fn quantify(
                             );
                         }
                         ResolutionStrategy::Trivial => {
-                            counts = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
                                 &log,
                             );
+                            counts = ct.0;
+                            mmrate.lock().unwrap()[cell_num] = ct.1;
                         }
                         ResolutionStrategy::Parsimony => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
-                            alt_resolution = alt_res;
+                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                true,
+                                true, // only unqique evidence
                                 &log,
                             );
                             if num_bootstraps > 0 {
@@ -601,25 +747,33 @@ pub fn quantify(
                                     &log,
                                 );
                             }
+                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                            //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
+                            //);
                         }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
-                            let (gene_eqc, alt_res) = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules(
                                 &g,
                                 &eq_map,
                                 &tid_to_gid,
                                 num_genes,
+                                &mut gene_eqc,
                                 &log,
                             );
-                            alt_resolution = alt_res;
+                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                             counts = em_optimize(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
                                 num_genes,
-                                init_uniform,
+                                false, // only unqique evidence
                                 &log,
                             );
+
+                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                            //100f64 * (pug_stats.ambiguous_mccs as f64 / pug_stats.total_mccs as f64)
+                            //);
 
                             if num_bootstraps > 0 {
                                 bootstraps = run_bootstrap(
@@ -633,8 +787,10 @@ pub fn quantify(
                             }
                         }
                     }
+
                     // clear our local variables
                     eq_map.clear();
+
                     // Note: there is a fill method, but it is only on
                     // the nightly branch.  Use this for now:
                     unique_evidence.clear();
@@ -665,17 +821,28 @@ pub fn quantify(
                         }
                     }
 
-                    let num_reads = nrec;
-                    let dedup_rate = sum_umi / num_reads as f32;
+                    let num_mapped = nrec;
+                    let dedup_rate = sum_umi / num_mapped as f32;
+
+                    let num_unmapped = unmapped_count
+                        .get(&bc)
+                        .expect("should not be searching for non-existant corrected barcode.");
+                    let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
 
                     // mean of the "expressed" genes
                     let mean_expr = sum_umi / num_expr as f32;
                     // number of genes with expression > expressed mean
-                    expressed_vec.retain(|e| e > &mean_expr);
-                    let num_genes_over_mean = expressed_vec.len();
+                    let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
+                        if x > &mean_expr {
+                            acc + 1u32
+                        } else {
+                            acc
+                        }
+                    });
                     // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
 
+                    let row_index: usize; // the index for this row (cell)
                     {
                         // writing the files
                         let bc_mer: BitKmer = (bc, bclen as u8);
@@ -685,16 +852,35 @@ pub fn quantify(
                                 .expect("can't conver vector to eds");
                         }
 
+                        // write bootstraps
+                        if num_bootstraps > 0 {
+                            // flatten the bootstraps
+                            if summary_stat {
+                                eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_genes)
+                                    .expect("can't convert vector to eds");
+                                eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_genes)
+                                    .expect("can't convert vector to eds");
+                            } else {
+                                for i in 0..num_bootstraps {
+                                    let bt_eds_bytes_slice =
+                                        sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                                            .expect("can't convert vector to eds");
+                                    bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                                }
+                            }
+                        }
+
                         let writer_deref = bcout.lock();
                         let writer = &mut *writer_deref.unwrap();
 
                         // get the row index and then increment it
-                        let row_index = writer.4;
-                        writer.4 += 1;
+                        row_index = writer.row_index;
+                        writer.row_index += 1;
 
                         // write to barcode file
-                        writeln!(&mut writer.0, "{}", unsafe {
-                            std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
+                        let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
+                        writeln!(&mut writer.barcode_file, "{}", unsafe {
+                            std::str::from_utf8_unchecked(&bc_bytes)
                         })
                         .expect("can't write to barcode file.");
 
@@ -702,76 +888,80 @@ pub fn quantify(
                         if !use_mtx {
                             // write in eds format
                             writer
-                                .1
+                                .eds_file
                                 .write_all(&eds_bytes)
                                 .expect("can't write to matrix file.");
                         } else {
                             // fill out the triplet matrix in memory
                             for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                writer.3.add_triplet(row_index as usize, *ind, *val);
+                                writer.trimat.add_triplet(row_index as usize, *ind, *val);
                             }
                         }
                         writeln!(
-                            &mut writer.2,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            row_index,
-                            num_reads,
+                            &mut writer.feature_file,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
+                            (num_mapped + num_unmapped),
+                            num_mapped,
                             sum_umi,
+                            mapping_rate,
                             dedup_rate,
                             mean_by_max,
                             num_expr,
                             num_genes_over_mean
                         )
                         .expect("can't write to feature file");
+
+                        if num_bootstraps > 0 {
+                            if summary_stat {
+                                if let Some((meanf, varf)) =
+                                    &mut writer.bootstrap_helper.mean_var_files
+                                {
+                                    meanf
+                                        .write_all(&eds_mean_bytes)
+                                        .expect("can't write to bootstrap mean file.");
+                                    varf.write_all(&eds_var_bytes)
+                                        .expect("can't write to bootstrap var file.");
+                                }
+                            } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
+                                bsfile
+                                    .write_all(&bt_eds_bytes)
+                                    .expect("can't write to bootstrap file");
+                            }
+                        } // done bootstrap writing
                     }
 
-                    // write bootstraps
-                    if num_bootstraps > 0 {
-                        // flatten the bootstraps
-                        if summary_stat {
-                            let eds_mean_bytes: Vec<u8> =
-                                sce::eds::as_bytes(&bootstraps[0], num_genes)
-                                    .expect("can't convert vector to eds");
-                            let eds_var_bytes: Vec<u8> =
-                                sce::eds::as_bytes(&bootstraps[1], num_genes)
-                                    .expect("can't convert vector to eds");
-
-                            let mut writer_deref = btcout_summary_optional.lock().unwrap();
-                            match &mut *writer_deref {
-                                Some(writer) => {
-                                    writer
-                                        .0
-                                        .write_all(&eds_mean_bytes)
-                                        .expect("can't write to matrix file.");
-                                    writer
-                                        .1
-                                        .write_all(&eds_var_bytes)
-                                        .expect("can't write to matrix file.");
+                    // if we are dumping the equivalence class output, fill in
+                    // the in-memory representation here.
+                    if dump_eq {
+                        let eqmap_deref = eqid_map_lockc.lock();
+                        let geqmap = &mut *eqmap_deref.unwrap();
+                        // the next available global id for a gene-level
+                        // equivalence class
+                        let mut next_id = geqmap.global_eqc.len() as u64;
+                        for (labels, count) in gene_eqc.iter() {
+                            let mut found = true;
+                            match geqmap.global_eqc.get(&labels.to_vec()) {
+                                Some(eqid) => {
+                                    geqmap.cell_level_count.push((*eqid, *count));
                                 }
-                                None => {}
-                            }
-                        } else {
-                            let mut bt_eds_bytes: Vec<u8> = Vec::new();
-                            for i in 0..num_bootstraps {
-                                let bt_eds_bytes_slice =
-                                    sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
-                                        .expect("can't convert vector to eds");
-                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
-                            }
-
-                            let mut writer_deref = btcout_optional.lock().unwrap();
-                            match &mut *writer_deref {
-                                Some(writer) => {
-                                    writer
-                                        .write_all(&bt_eds_bytes)
-                                        .expect("can't write to matrix file.");
+                                None => {
+                                    found = false;
+                                    geqmap.cell_level_count.push((next_id, *count));
                                 }
-                                None => {}
+                            }
+                            if !found {
+                                geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
+                                next_id += 1;
                             }
                         }
+                        //let bc_mer: BitKmer = (bc, bclen as u8);
+                        geqmap.cell_offset.push((row_index, gene_eqc.len()));
                     }
-                }
-            }
+                    // clear the gene eqc map
+                    gene_eqc.clear();
+                } // while we can get work
+            } // while cells remain
         });
 
         thread_handles.push(handle);
@@ -815,21 +1005,25 @@ pub fn quantify(
     if use_mtx {
         let writer_deref = bc_writer.lock();
         let writer = &mut *writer_deref.unwrap();
-        writer.1.flush().unwrap();
-        //drop(writer.1.into_inner().expect("couldn't unwrap"));
+        writer.eds_file.flush().unwrap();
         // now remove it
         fs::remove_file(&mat_path)?;
         let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        sprs::io::write_matrix_market(&mtx_path, &writer.3)?;
+        sprs::io::write_matrix_market(&mtx_path, &writer.trimat)?;
     }
 
     let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
     pbar.finish_with_message(&pb_msg);
 
+    if dump_eq {
+        write_eqc_counts(&eqid_map_lock, &output_path, &log);
+    }
+
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : hdr.num_chunks,
         "num_genes" : num_genes,
+        "dump_eq" : dump_eq,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
