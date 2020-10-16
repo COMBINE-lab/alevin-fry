@@ -28,7 +28,7 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``-b, --num-bootstraps`` : This flag will cause bootstrap inferential replicate information to be written to the output directory.  This provides a measure of the inferential uncertainty in the gene-level estimates provided by ``alevin-fry`` when run with a method using the EM algorithm for gene-level abundance estimation.  This information can be used with downstream testing, like differential expression testing using swish.
 
-* ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring _much less_ storage space than the full bootstrap replicate information.
+* ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring much less storage space than the full bootstrap replicate information.
 
 * ``--use-mtx`` : This flag will cause the output to be written in matrix market coordinate format rather than in EDS format.
 

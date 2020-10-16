@@ -46,9 +46,9 @@ relevant to users of ``alevin-fry``, but the files are described here.
 
 1. The file ``all_freq.tsv`` is a two-column tab-separated file that lists, for each distinct barcode in the input RAD file, the number of read records that were tagged with this barcode.
 
-# The file ``permit_freq.tsv`` is a two-column tab-separated file that lists, for each barcode in the input RAD file that is determined to be a *true* barcode, the number of read records associated with this barcode.
+2. The file ``permit_freq.tsv`` is a two-column tab-separated file that lists, for each barcode in the input RAD file that is determined to be a *true* barcode, the number of read records associated with this barcode.
 
-# The file ``permit_map.bin`` is a binary file (a serde serialized HashMap) that maps each barcode in the input RAD file that is within an edit distance of 1 to some *true* barcode to the barcode to which it corrects.  This allows the ``collate`` command to group together all of the read records corresponding to the same *corrected* barcode.
+3. The file ``permit_map.bin`` is a binary file (a serde serialized HashMap) that maps each barcode in the input RAD file that is within an edit distance of 1 to some *true* barcode to the barcode to which it corrects.  This allows the ``collate`` command to group together all of the read records corresponding to the same *corrected* barcode.
 
-# The file  ``generate_permit_list.json`` that is a JSON file containing information about the run of the command (currently, just the expected orientation).
+4. The file  ``generate_permit_list.json`` that is a JSON file containing information about the run of the command (currently, just the expected orientation).
 
