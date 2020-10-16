@@ -1,10 +1,10 @@
 generate-permit-list
 ====================
 
-This command takes as input a RAD file (created by running alevin with the ``--justAlign`` flag), and it determines what cell 
-barcodes should be associated with "true" cells, which should be corrected to
+This command takes as input an output directory containing a RAD file (created by running alevin with the ``--justAlign`` flag), 
+and it determines what cell barcodes should be associated with "true" cells, which should be corrected to
 some "true" barcode, and which should simply be ignored / discarded. This
-command has 4 required arguments; the path to an input RAD file ``--input``,
+command has 4 required arguments; the path to an input directory ``--input``,
 the path to an output directory ``--output-dir`` (which will be created if it
 doesn't exist), the expected orientation of properly mapped reads
 ``--expected-ori`` (the options are 'fw' (filters out alignments to the
