@@ -22,6 +22,16 @@ The ``quant`` command exposes a number of different resolution strategies.  They
 
 * ``cr-like-em`` : This strategy is like ``cr-like``, except that when a UMI has genes to which it matches with equal frequency, rather than discard the UMIs, the genes are treated as an equivalence class, and the counts for each gene are determined via an expectation maximization algorithm.
 
+Additionally, this command can optionally take the following flags (note that not all resolution strategies are compatible with these flags):
+
+* ``-d, --dump-eqclasses`` : This flag will cause a gene-level, UMI-deduplicated, equivalence class counts file to be written to the output directory in addition to the gene-level count matrix.  This can be used for subsequent analyses where gene-ambiguous reads have been neither resovled nor discarded.
+
+* ``-b, --num-bootstraps`` : This flag will cause bootstrap inferential replicate information to be written to the output directory.  This provides a measure of the inferential uncertainty in the gene-level estimates provided by ``alevin-fry`` when run with a method using the EM algorithm for gene-level abundance estimation.  This information can be used with downstream testing, like differential expression testing using swish.
+
+* ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring much less storage space than the full bootstrap replicate information.
+
+* ``--use-mtx`` : This flag will cause the output to be written in matrix market coordinate format rather than in EDS format.
+
 output
 ------
 
