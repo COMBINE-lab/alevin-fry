@@ -826,7 +826,7 @@ pub fn quantify(
 
                     let num_unmapped = match unmapped_count.get(&bc) {
                         Some(nu) => *nu,
-                        None => 0u32
+                        None => 0u32,
                     };
 
                     let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
