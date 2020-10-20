@@ -113,6 +113,13 @@ fn correct_unmapped_counts(
 
     let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
 
+    // pre-populate the output map with all valid keys
+    // keys (corrected barcodes) with no unmapped reads
+    // will simply have a value of 0.
+    //for (&_ubc, &cbc) in correct_map.iter() {
+    //    unmapped_count.entry(cbc).or_insert(0);
+    //}
+
     // collect all of the information from the existing
     // serialized map (that may contain repeats)
     while br.read_exact(&mut rbuf[..]).is_ok() {
