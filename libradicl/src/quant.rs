@@ -824,9 +824,11 @@ pub fn quantify(
                     let num_mapped = nrec;
                     let dedup_rate = sum_umi / num_mapped as f32;
 
-                    let num_unmapped = unmapped_count
-                        .get(&bc)
-                        .expect("should not be searching for non-existant corrected barcode.");
+                    let num_unmapped = match unmapped_count.get(&bc) {
+                        Some(nu) => *nu,
+                        None => 0u32
+                    };
+
                     let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
 
                     // mean of the "expressed" genes
