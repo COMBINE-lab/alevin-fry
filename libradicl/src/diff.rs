@@ -277,7 +277,7 @@ pub fn calc_diff(
                 Compression::default()
             )
         );
-        let boot_helper = BootstrapHelper::new(input_path, num_bootstraps, summary_stat);
+        let mut bootstrap_helper = BootstrapHelper::new(input_path, num_bootstraps, summary_stat);
         for group_id in 0..num_groups {
             // let group_name = groups.ids[group_id].clone();
 
@@ -295,9 +295,12 @@ pub fn calc_diff(
             }
             // run em on the merged equivalence classes
             let counts : Vec<f32>;
-            let mut bootstraps: Vec<Vec<f32>> = Vec::new();
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
+            //let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+            //let mut eds_mean_bytes: Vec<u8> = Vec::new();
+            //let mut eds_var_bytes: Vec<u8> = Vec::new();
+            //let mut bt_eds_bytes: Vec<u8> = Vec::new();
             counts = em_optimize(
                 &gene_eqc,
                 &mut unique_evidence,
@@ -307,7 +310,7 @@ pub fn calc_diff(
                 &log,
             );
             if num_bootstraps > 0 {
-                bootstraps = run_bootstrap(
+                let bootstraps = run_bootstrap(
                     &gene_eqc,
                     num_bootstraps,
                     &counts,
@@ -315,6 +318,37 @@ pub fn calc_diff(
                     summary_stat,
                     &log,
                 );
+                let mut bt_eds_bytes: Vec<u8> = Vec::new();
+                
+                // flatten the bootstraps
+                if summary_stat {
+                    let eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_genes)
+                        .expect("can't convert vector to eds");
+                    let eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_genes)
+                        .expect("can't convert vector to eds");
+
+                    if let Some((meanf, varf)) =
+                        &mut bootstrap_helper.mean_var_files
+                    {
+                        meanf
+                            .write_all(&eds_mean_bytes)
+                            .expect("can't write to bootstrap mean file.");
+                        varf.write_all(&eds_var_bytes)
+                            .expect("can't write to bootstrap var file.");
+                    }
+                } else {
+                    for i in 0..num_bootstraps {
+                        let bt_eds_bytes_slice =
+                            sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                                .expect("can't convert vector to eds");
+                        bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                    }
+                    if let Some(bsfile) = &mut bootstrap_helper.bsfile {
+                        bsfile
+                            .write_all(&bt_eds_bytes)
+                            .expect("can't write to bootstrap file");
+                    }
+                }
             }
 
             let eds_bytes = sce::eds::as_bytes(&counts, num_genes)
