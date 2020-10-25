@@ -558,11 +558,11 @@ pub fn quantify(
     let boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
     let buffered = GzEncoder::new(fs::File::create(&mat_path)?, Compression::default());
 
-    let ff_path = output_path.join("features.txt");
+    let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
     writeln!(
         ff_file,
-        "CellNum\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
     )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
@@ -824,9 +824,11 @@ pub fn quantify(
                     let num_mapped = nrec;
                     let dedup_rate = sum_umi / num_mapped as f32;
 
-                    let num_unmapped = unmapped_count
-                        .get(&bc)
-                        .expect("should not be searching for non-existant corrected barcode.");
+                    let num_unmapped = match unmapped_count.get(&bc) {
+                        Some(nu) => *nu,
+                        None => 0u32,
+                    };
+
                     let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
 
                     // mean of the "expressed" genes
@@ -878,8 +880,9 @@ pub fn quantify(
                         writer.row_index += 1;
 
                         // write to barcode file
+                        let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
                         writeln!(&mut writer.barcode_file, "{}", unsafe {
-                            std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..])
+                            std::str::from_utf8_unchecked(&bc_bytes)
                         })
                         .expect("can't write to barcode file.");
 
@@ -899,7 +902,7 @@ pub fn quantify(
                         writeln!(
                             &mut writer.feature_file,
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            row_index,
+                            unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
                             (num_mapped + num_unmapped),
                             num_mapped,
                             sum_umi,
