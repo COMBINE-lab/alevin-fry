@@ -32,4 +32,4 @@ smallvec = "1.4.1"
 serde_json = "1.0.57"
 sprs = "0.8.1"
 rust-htslib = "*"
-sce = { git = "https://github.com/k3yavi/SingleCellExperiment" }
+sce = { git = "https://github.com/parazodiac/SingleCellExperiment" }
