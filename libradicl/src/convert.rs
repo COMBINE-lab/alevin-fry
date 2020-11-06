@@ -168,7 +168,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     // ### start of tags
     // get the first record for creating flags
     let mut rec = bam::Record::new();
-    let first_record_exists = bam.read(&mut rec).unwrap();
+    let first_record_exists = bam.read(&mut rec).is_some();
     if !first_record_exists {
         crit!(log, "bam file had no records!");
         std::process::exit(1);
@@ -301,7 +301,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     //for r in bam.records(){
     loop {
         if !first_pass {
-            let next_record_exists = bam.read(&mut rec).unwrap();
+            let next_record_exists = bam.read(&mut rec).is_some();
             if !next_record_exists {
                 break;
             }
