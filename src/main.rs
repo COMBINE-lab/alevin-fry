@@ -60,6 +60,11 @@ fn main() {
         .version(version)
         .author(crate_authors)
         .arg(Arg::from("-r, --rad=<rad-file> 'input RAD file'"))
+        .arg(
+            Arg::from("-h, --header 'flag for printing header'")
+                .takes_value(false)
+                .required(false),
+        )
         .arg(Arg::from("-o, --output=<rad-file> 'output plain-text-file file'").required(false));
 
     let gen_app = App::new("generate-permit-list")
@@ -228,11 +233,12 @@ fn main() {
     }
     if let Some(ref t) = opts.subcommand_matches("view") {
         let rad_file: String = t.value_of_t("rad").unwrap();
+        let print_header = t.is_present("header");
         let mut out_file: String = String::from("");
         if t.is_present("output") {
             out_file = t.value_of_t("output").unwrap();
         }
-        libradicl::convert::view(rad_file, out_file, &log)
+        libradicl::convert::view(rad_file, print_header, out_file, &log)
     }
 
     if let Some(ref t) = opts.subcommand_matches("collate") {

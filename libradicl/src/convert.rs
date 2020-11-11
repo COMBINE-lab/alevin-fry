@@ -465,11 +465,12 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     info!(log, "finished writing to {:?}.", rad_file);
 }
 
-pub fn view(rad_file: String, out_file: String, log: &slog::Logger) {
-    let _read_num = view2(rad_file, out_file, &log).unwrap();
+pub fn view(rad_file: String, print_header: bool, out_file: String, log: &slog::Logger) {
+    let _read_num = view2(rad_file, print_header, out_file, &log).unwrap();
 }
 pub fn view2(
     rad_file: String,
+    print_header: bool,
     _out_file: String,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
@@ -533,6 +534,17 @@ pub fn view2(
 
     let stdout = stdout(); // get the global stdout entity
     let mut handle = BufWriter::new(stdout); // optional: wrap that handle in a buffer
+
+    if print_header {
+        for i in 0usize..hdr.ref_names.len() {
+            match writeln!(handle, "{}:{}", i, hdr.ref_names[i]) {
+                Ok(_) => {}
+                Err(_) => {
+                    return Ok(i as u64);
+                }
+            };
+        }
+    }
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
