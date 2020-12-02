@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.0.1"
+version = "0.1.0"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 
