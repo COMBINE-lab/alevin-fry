@@ -11,6 +11,7 @@ env:
 
 jobs:
   Formatting:
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -27,6 +28,7 @@ jobs:
         run: cargo fmt -- --check
 
   build:
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +39,7 @@ jobs:
       run: cargo test --verbose
 
   Linting:
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -55,6 +58,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   Coverage:
+    if: "!contains(github.event.head_commit.message, 'skip ci')"
     needs: Formatting
     runs-on: ubuntu-latest
     steps:
