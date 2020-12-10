@@ -126,6 +126,17 @@ fn main() {
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
 
+    let infer_app = App::new("infer")
+    .about("Perform inference on equivalence class count data")
+    .version(version)
+    .author(crate_authors)
+    .arg(Arg::from("-c, --count-mat=<eqc-mat> 'matrix of cells by equivalence class counts'").takes_value(true).required(true))
+    //.arg(Arg::from("-b, --barcodes=<barcodes> 'file containing the barcodes labeling the matrix rows'").takes_value(true).required(true))
+    .arg(Arg::from("-e, --eq-labels=<eq-labels> 'file containing the gene labels of the equivalence classes'").takes_value(true).required(true))
+    .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'").takes_value(true).required(true))
+    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
+
     let opts = App::new("alevin-fry")
         .version(version)
         .author(crate_authors)
@@ -133,6 +144,7 @@ fn main() {
         .subcommand(gen_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
+        .subcommand(infer_app)
         .subcommand(convert_app)
         .subcommand(view_app)
         .get_matches();
@@ -284,5 +296,31 @@ fn main() {
             &log,
         )
         .expect("could not quantify rad file.");
+    }
+
+    if let Some(ref t) = opts.subcommand_matches("infer") {
+        let num_threads = t.value_of_t("threads").unwrap();
+        //let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
+        //let init_uniform = t.is_present("init-uniform");
+        //let summary_stat = t.is_present("summary-stat");
+        let use_mtx = t.is_present("use-mtx");
+        let output_dir = t.value_of_t("output-dir").unwrap();
+        let count_mat = t.value_of_t("count-mat").unwrap();
+        let eq_label_file = t.value_of_t("eq-labels").unwrap();
+        //let bc_file = t.value_of_t("barcodes").unwrap();
+
+        libradicl::infer::infer(
+            //num_bootstraps,
+            //init_uniform,
+            //summary_stat,
+            count_mat,
+            eq_label_file,
+            //bc_file,
+            use_mtx,
+            num_threads,
+            output_dir,
+            &log,
+        )
+        .expect("could not perform inference from equivalence class counts.");
     }
 }

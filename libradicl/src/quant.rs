@@ -329,6 +329,7 @@ struct EQCMap {
 
 fn write_eqc_counts(
     eqid_map_lock: &Arc<Mutex<EQCMap>>,
+    num_genes: usize,
     output_path: &std::path::Path,
     log: &slog::Logger,
 ) -> bool {
@@ -368,6 +369,12 @@ fn write_eqc_counts(
         fs::File::create(gn_eq_path).unwrap(),
         Compression::default(),
     ));
+
+    // number of genes
+    gn_eq_writer
+        .write_all(format!("{}\n", num_genes).as_bytes())
+        .expect("could not write to gene_eqclass.txt.gz");
+
     // number of classes
     gn_eq_writer
         .write_all(format!("{}\n", num_eqclasses).as_bytes())
@@ -1018,7 +1025,7 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq {
-        write_eqc_counts(&eqid_map_lock, &output_path, &log);
+        write_eqc_counts(&eqid_map_lock, num_genes, &output_path, &log);
     }
 
     let meta_info = json!({

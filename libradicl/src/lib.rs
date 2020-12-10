@@ -30,6 +30,7 @@ pub mod collate;
 pub mod convert;
 pub mod em;
 pub mod exit_codes;
+pub mod infer;
 pub mod pugutils;
 pub mod quant;
 pub mod schema;

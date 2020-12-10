@@ -11,6 +11,7 @@ use bio_types::strand::Strand;
 use fasthash::{sea, RandomState};
 use std::collections::HashMap;
 use std::fmt;
+use std::io::BufRead;
 use std::str::FromStr;
 
 /**
@@ -66,6 +67,102 @@ impl FromStr for ResolutionStrategy {
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
         }
+    }
+}
+
+// NOTE: this is _clearly_ redundant with the EqMap below.
+// we should re-factor so that EqMap makes use of this class
+// rather than replicates its members
+pub(super) struct IndexedEqList {
+    pub num_genes: usize,
+    // the total size of the list of all reference
+    // ids over all equivalence classes that occur in this
+    // cell
+    pub label_list_size: usize,
+    // concatenated lists of the labels of all equivalence classes
+    pub eq_labels: Vec<u32>,
+    // vector that deliniates where each equivalence class label
+    // begins and ends.  The label for equivalence class i begins
+    // at offset eq_label_starts[i], and it ends at
+    // eq_label_starts[i+1].  The length of this vector is 1 greater
+    // than the number of equivalence classes.
+    pub eq_label_starts: Vec<u32>,
+}
+
+impl IndexedEqList {
+    pub(super) fn num_eq_classes(&self) -> usize {
+        if !self.eq_label_starts.is_empty() {
+            self.eq_label_starts.len() - 1
+        } else {
+            0usize
+        }
+    }
+
+    //pub(super) fn num_genes(&self) -> usize {
+    //    self.num_genes;
+    //}
+
+    #[allow(dead_code)]
+    pub(super) fn clear(&mut self) {
+        self.label_list_size = 0usize;
+        self.eq_labels.clear();
+        self.eq_label_starts.clear();
+    }
+
+    pub(super) fn init_from_eqc_file<P: AsRef<std::path::Path>>(eqc_path: P) -> IndexedEqList {
+        let file = flate2::read::GzDecoder::new(std::fs::File::open(eqc_path).unwrap());
+        let reader = std::io::BufReader::new(file);
+
+        let mut lit = reader.lines();
+
+        let num_genes = lit.next().unwrap().unwrap().parse::<u32>().unwrap() as usize;
+        let num_eqc = lit.next().unwrap().unwrap().parse::<u32>().unwrap();
+
+        let mut eqid_map: Vec<Vec<u32>> = vec![vec![]; num_eqc as usize];
+
+        let mut label_list_size = 0usize;
+
+        // go over all other lines and fill in our equivalence class map
+        for l in lit {
+            let v = l
+                .unwrap()
+                .split_whitespace()
+                .map(|y| y.parse::<u32>().unwrap())
+                .collect::<Vec<u32>>();
+            if let Some((id, ev)) = v.split_last() {
+                label_list_size += ev.len();
+                eqid_map[*id as usize] = ev.to_vec();
+            }
+        }
+
+        // concatenated lists of the labels of all equivalence classes
+        let mut eq_labels = Vec::<u32>::with_capacity(label_list_size);
+
+        // vector that deliniates where each equivalence class label
+        // begins and ends.  The label for equivalence class i begins
+        // at offset eq_label_starts[i], and it ends at
+        // eq_label_starts[i+1].  The length of this vector is 1 greater
+        // than the number of equivalence classes.
+        let mut eq_label_starts = Vec::<u32>::with_capacity(eqid_map.len() + 1);
+
+        eq_label_starts.push(0);
+        // now we have everything in order, we need to flatten it
+        for v in eqid_map.iter() {
+            eq_labels.extend(v);
+            eq_label_starts.push(eq_labels.len() as u32);
+        }
+
+        IndexedEqList {
+            num_genes,
+            label_list_size,
+            eq_labels,
+            eq_label_starts,
+        }
+    }
+
+    pub(super) fn refs_for_eqc(&self, idx: u32) -> &[u32] {
+        &self.eq_labels[(self.eq_label_starts[idx as usize] as usize)
+            ..(self.eq_label_starts[(idx + 1) as usize] as usize)]
     }
 }
 
