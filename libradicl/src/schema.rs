@@ -90,6 +90,7 @@ pub(super) struct IndexedEqList {
 }
 
 impl IndexedEqList {
+    /// returns the number of equivalence classes represented in this `IndexedEqList`
     pub(super) fn num_eq_classes(&self) -> usize {
         if !self.eq_label_starts.is_empty() {
             self.eq_label_starts.len() - 1
@@ -102,6 +103,7 @@ impl IndexedEqList {
     //    self.num_genes;
     //}
 
+    /// clears out the contents of this `IndexedEqList`
     #[allow(dead_code)]
     pub(super) fn clear(&mut self) {
         self.label_list_size = 0usize;
@@ -109,6 +111,7 @@ impl IndexedEqList {
         self.eq_label_starts.clear();
     }
 
+    /// Loads the `IndexedEqList` from a gzip compressed file
     pub(super) fn init_from_eqc_file<P: AsRef<std::path::Path>>(eqc_path: P) -> IndexedEqList {
         let file = flate2::read::GzDecoder::new(std::fs::File::open(eqc_path).unwrap());
         let reader = std::io::BufReader::new(file);
@@ -160,6 +163,8 @@ impl IndexedEqList {
         }
     }
 
+    /// Returns a slice of gene IDs corresponding to the
+    /// label for equivalence class `idx`.
     pub(super) fn refs_for_eqc(&self, idx: u32) -> &[u32] {
         &self.eq_labels[(self.eq_label_starts[idx as usize] as usize)
             ..(self.eq_label_starts[(idx + 1) as usize] as usize)]

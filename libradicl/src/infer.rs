@@ -35,7 +35,14 @@ pub fn infer(
     output_dir: String,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    info!(
+        log,
+        "inferring abundances from equivalence class count input."
+    );
+
+    // get the path for the equivalence class count matrix
     let count_mat_path = std::path::Path::new(&count_mat_file);
+    // read the file and convert it to csr (rows are *cells*)
     let count_mat = match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path)
     {
         Ok(t) => t.to_csr(),
@@ -52,6 +59,7 @@ pub fn infer(
         count_mat.cols()
     );
 
+    // read in the global equivalence class representation
     let eq_label_path = std::path::Path::new(&eq_label_file);
     let global_eq_classes = Arc::new(libradicl::schema::IndexedEqList::init_from_eqc_file(
         eq_label_path,
@@ -63,8 +71,10 @@ pub fn infer(
         global_eq_classes.num_eq_classes()
     );
 
+    // the number of genes (columns) that the output (gene-level) matrix will have
     let num_genes = global_eq_classes.num_genes;
 
+    // the progress bar we'll use to monitor progress of the EM
     let pbar = ProgressBar::new(count_mat.rows() as u64);
     pbar.set_style(
         ProgressStyle::default_bar()
@@ -80,12 +90,16 @@ pub fn infer(
     } else {
         1
     };
+    // the queue will hold tuples of the
+    // cell id (so that the output matrix is in the same order as input)
+    // vector of eq_id and count for each cell
     let q = Arc::new(ArrayQueue::<(usize, Vec<(u32, u32)>)>::new(4 * n_workers));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
 
     // the number of cells left to process
     let cells_to_process = Arc::new(AtomicUsize::new(count_mat.rows()));
+    // the output cell-by-gene matrix
     let trimat = Arc::new(Mutex::new(TriMatI::<f32, u32>::with_capacity(
         (count_mat.rows(), num_genes),
         count_mat.nnz(),
@@ -99,8 +113,11 @@ pub fn infer(
         let log = log.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
+        // and the output matrix
         let matout = trimat.clone();
+        // and the global set of eq class labels
         let global_eq_classes = global_eq_classes.clone();
+
         //let unmapped_count = bc_unmapped_map.clone();
         //let mmrate = mmrate.clone();
 
@@ -110,6 +127,7 @@ pub fn infer(
             // each cell.
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
+
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
             let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
             //let mut eds_bytes = Vec::<u8>::new();
@@ -122,6 +140,10 @@ pub fn infer(
             while cells_remaining.load(Ordering::SeqCst) > 0 {
                 if let Ok((cell_num, cell_data)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
+
+                    // given the set of equivalence classes and counts for
+                    // this cell (coming from the input matrix), perform
+                    // inference to obtain gene-level counts.
                     let counts = em_optimize_subset(
                         &global_eq_classes,
                         &cell_data,
@@ -131,6 +153,7 @@ pub fn infer(
                         false,
                         &log,
                     );
+
                     // Note: there is a fill method, but it is only on
                     // the nightly branch.  Use this for now:
                     unique_evidence.clear();
@@ -139,14 +162,13 @@ pub fn infer(
                     no_ambiguity.resize(num_genes, false);
                     // done clearing
 
-                    //
-                    // featuresStream << "\t" << numRawReads
-                    //   << "\t" << numMappedReads
                     let mut max_umi = 0.0f32;
                     let mut _sum_umi = 0.0f32;
                     let mut _num_expr: u32 = 0;
                     expressed_vec.clear();
                     expressed_ind.clear();
+                    // go over the output counts and fill in the vector of
+                    // expressed gene ids and their corresponding counts
                     for (gn, c) in counts.iter().enumerate() {
                         max_umi = if *c > max_umi { *c } else { max_umi };
                         _sum_umi += *c;
@@ -234,11 +256,19 @@ pub fn infer(
         thread_handles.push(handle);
     }
 
+    // iterate over the rows (cells) of the equivalence class count
+    // matrix.  The iterator will yield a pair of the row index and
+    // an iterator over the row data.
     for (row_ind, row_vec) in count_mat.outer_iterator().enumerate() {
+        // gather the data from the row's iterator into a vector of
+        // (eq_id, count) tuples.
         let cell_data: Vec<(u32, u32)> = row_vec.iter().map(|e| (e.0 as u32, *e.1)).collect();
+        // keep pushing this data onto our work queue while we can.
         loop {
             if !q.is_full() {
                 let r = q.push((row_ind, cell_data.clone()));
+                // if we were successful in pushing, then increment
+                // the progress bar.
                 if r.is_ok() {
                     pbar.inc(1);
                     break;
@@ -247,9 +277,10 @@ pub fn infer(
         }
     }
 
+    // finally, we write our output matrix of gene
+    // counts.
     let writer_deref = trimat.lock();
     let writer = &*writer_deref.unwrap();
-    // create our output directory
     let output_path = std::path::Path::new(&output_dir);
     sprs::io::write_matrix_market(&output_path, writer)?;
 
