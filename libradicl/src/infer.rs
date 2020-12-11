@@ -277,6 +277,18 @@ pub fn infer(
         }
     }
 
+    for h in thread_handles {
+        match h.join() {
+            Ok(_) => {}
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
+    }
+
+    let pb_msg = format!("finished quantifying {} cells.", count_mat.rows());
+    pbar.finish_with_message(&pb_msg);
+
     // finally, we write our output matrix of gene
     // counts.
     let writer_deref = trimat.lock();
