@@ -8,7 +8,7 @@ extern crate quickersort;
 
 use crate as libradicl;
 use bio_types::strand::Strand;
-use fasthash::{sea, RandomState};
+use fasthash::{sea, RandomState, sea::Hash64};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::BufRead;
@@ -109,6 +109,40 @@ impl IndexedEqList {
         self.label_list_size = 0usize;
         self.eq_labels.clear();
         self.eq_label_starts.clear();
+    }
+
+    /// Creates an `IndexedEqList` from a HashMap of eq labels to counts
+    pub(super) fn init_from_hash(
+        eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+        num_genes: usize,
+    ) -> IndexedEqList {
+        let num_eqc = eqclasses.len();
+
+        let mut label_list_size = 0usize;
+
+        // concatenated lists of the labels of all equivalence classes
+        let mut eq_labels = Vec::<u32>::with_capacity(2 * num_eqc);
+
+        // vector that deliniates where each equivalence class label
+        // begins and ends.  The label for equivalence class i begins
+        // at offset eq_label_starts[i], and it ends at
+        // eq_label_starts[i+1].  The length of this vector is 1 greater
+        // than the number of equivalence classes.
+        let mut eq_label_starts = Vec::<u32>::with_capacity(num_eqc + 1);
+
+        eq_label_starts.push(0);
+        for (labels, _count) in eqclasses.iter() {
+            label_list_size += labels.len();
+            eq_labels.extend(labels.clone());
+            eq_label_starts.push(eq_labels.len() as u32);
+        }
+
+        IndexedEqList {
+            num_genes,
+            label_list_size,
+            eq_labels,
+            eq_label_starts,
+        }
     }
 
     /// Loads the `IndexedEqList` from a gzip compressed file

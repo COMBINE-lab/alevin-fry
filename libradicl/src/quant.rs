@@ -41,7 +41,7 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, run_bootstrap};
+use self::libradicl::em::{em_optimize, run_bootstrap, EMInitType};
 use self::libradicl::pugutils;
 use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
@@ -662,6 +662,12 @@ pub fn quantify(
             let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
                 HashMap::with_hasher(s);
 
+            let em_init_type = if init_uniform {
+                EMInitType::Uniform
+            } else {
+                EMInitType::Informative
+            };
+
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -693,6 +699,7 @@ pub fn quantify(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
+                                em_init_type,
                                 num_genes,
                                 true,
                                 &log,
@@ -710,6 +717,7 @@ pub fn quantify(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
+                                em_init_type,
                                 num_genes,
                                 false,
                                 &log,
@@ -740,6 +748,7 @@ pub fn quantify(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
+                                em_init_type,
                                 num_genes,
                                 true, // only unqique evidence
                                 &log,
@@ -773,6 +782,7 @@ pub fn quantify(
                                 &gene_eqc,
                                 &mut unique_evidence,
                                 &mut no_ambiguity,
+                                em_init_type,
                                 num_genes,
                                 false, // only unqique evidence
                                 &log,

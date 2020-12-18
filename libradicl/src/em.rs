@@ -30,6 +30,13 @@ const MIN_ITER: u32 = 50;
 const MAX_ITER: u32 = 10_000;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
+#[derive(Copy, Clone)]
+pub(crate) enum EMInitType {
+    Informative,
+    Uniform,
+    Random,
+}
+
 #[allow(dead_code)]
 fn mean(data: &[f64]) -> Option<f64> {
     let sum = data.iter().sum::<f64>() as f64;
@@ -96,12 +103,12 @@ pub(crate) fn em_optimize_subset(
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
+    init_type: EMInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
 ) -> Vec<f32> {
-    // set up starting alphas as 0.5
-    let mut alphas_in: Vec<f32> = vec![0.5; num_alphas];
+    let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
     for (i, count) in cell_data {
@@ -117,16 +124,31 @@ pub(crate) fn em_optimize_subset(
         }
     }
 
+    // if we are just pulling out unique counts, then we
+    // are done here
     if only_unique {
-        alphas_in.iter_mut().for_each(|alpha| {
-            *alpha -= 0.5;
-        });
-
         return alphas_in;
     }
 
+    // fill in the alphas based on the initialization strategy
+    let mut rng = rand::thread_rng();
+    let uni_prior = 1.0 / (num_alphas as f32);
+    for i in 0..num_alphas {
+        match init_type {
+            EMInitType::Uniform => {
+                alphas_in[i] = uni_prior;
+            }
+            EMInitType::Informative => {
+                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+            }
+            EMInitType::Random => {
+                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+            }
+        }
+    }
+
     // TODO: is it even necessary?
-    alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+    // alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
 
     let mut it_num: u32 = 0;
     let mut converged: bool = true;
@@ -205,16 +227,16 @@ pub fn em_update(
     }
 }
 
-pub fn em_optimize(
+pub(crate) fn em_optimize(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
+    init_type: EMInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
 ) -> Vec<f32> {
-    // set up starting alphas as 0.5
-    let mut alphas_in: Vec<f32> = vec![0.5; num_alphas];
+    let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
     for (labels, count) in eqclasses {
@@ -230,15 +252,28 @@ pub fn em_optimize(
     }
 
     if only_unique {
-        alphas_in.iter_mut().for_each(|alpha| {
-            *alpha -= 0.5;
-        });
-
         return alphas_in;
     }
 
+    // fill in the alphas based on the initialization strategy
+    let mut rng = rand::thread_rng();
+    let uni_prior = 1.0 / (num_alphas as f32);
+    for i in 0..num_alphas {
+        match init_type {
+            EMInitType::Uniform => {
+                alphas_in[i] = uni_prior;
+            }
+            EMInitType::Informative => {
+                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+            }
+            EMInitType::Random => {
+                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+            }
+        }
+    }
+
     // TODO: is it even necessary?
-    alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+    //alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
 
     let mut it_num: u32 = 0;
     let mut converged: bool = true;
@@ -288,7 +323,7 @@ pub fn em_optimize(
     */
     alphas_in
 }
-#[allow(dead_code)]
+
 pub(crate) fn run_bootstrap_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // (eq_id, count) vec for classes relevant for this cell
@@ -347,6 +382,7 @@ pub(crate) fn run_bootstrap_subset(
             &bootstrap_counts[..], // indices into eqclasses relevant for this cell
             &mut unique_evidence,
             &mut no_ambiguity,
+            EMInitType::Random,
             num_alphas_us,
             false, // only unique
             &_log,
@@ -387,6 +423,50 @@ pub(crate) fn run_bootstrap_subset(
 }
 
 pub fn run_bootstrap(
+    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    num_bootstraps: u32,
+    gene_alpha: &[f32],
+    // unique_evidence: &mut Vec<bool>,
+    // no_ambiguity: &mut Vec<bool>,
+    // num_alphas: usize,
+    // only_unique: bool,
+    _init_uniform: bool,
+    summary_stat: bool,
+    _log: &slog::Logger,
+) -> Vec<Vec<f32>> {
+    // This function is just a thin wrapper around run_bootstrap_subset.
+    // Here, we convert the hashmap to an `IndexedEqList`, we map the
+    // counts to a `Vec<(u32, u32)>` representing the equivalence class
+    // indices and counts for this cell's data.
+
+    // NOTE: This working properly relies on iteration over a static hash
+    // yielding the key value pairs in the same order.  This isn't generally
+    // true between runs (b/c of how rust initalizes hashes), but within the
+    // same run and over the same hash table (as here), it should always hold.
+    let eql = IndexedEqList::init_from_hash(eqclasses, gene_alpha.len());
+
+    // since this is a local (not global) eq-list, the cell data is just
+    // the indices of all equivalence classes and their corresponding counts.
+    let cell_data: Vec<(u32, u32)> = eqclasses
+        .iter()
+        .enumerate()
+        .map(|(idx, (_labels, count))| (idx as u32, *count)).collect();
+
+    // now that we have the `IndexedEqList` representation of this data, just
+    // run that version of the bootstrap function and return the result.
+    run_bootstrap_subset(
+        &eql,
+        &cell_data[..],
+        gene_alpha.len() as u32,
+        num_bootstraps,
+        _init_uniform,
+        summary_stat,
+        _log,
+    )
+}
+
+#[allow(dead_code)]
+pub fn run_bootstrap_old(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
