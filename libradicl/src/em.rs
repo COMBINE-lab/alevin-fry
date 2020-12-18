@@ -450,7 +450,8 @@ pub fn run_bootstrap(
     let cell_data: Vec<(u32, u32)> = eqclasses
         .iter()
         .enumerate()
-        .map(|(idx, (_labels, count))| (idx as u32, *count)).collect();
+        .map(|(idx, (_labels, count))| (idx as u32, *count))
+        .collect();
 
     // now that we have the `IndexedEqList` representation of this data, just
     // run that version of the bootstrap function and return the result.

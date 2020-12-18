@@ -8,7 +8,7 @@ extern crate quickersort;
 
 use crate as libradicl;
 use bio_types::strand::Strand;
-use fasthash::{sea, RandomState, sea::Hash64};
+use fasthash::{sea, sea::Hash64, RandomState};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::BufRead;
