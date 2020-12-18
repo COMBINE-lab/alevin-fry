@@ -288,6 +288,103 @@ pub fn em_optimize(
     */
     alphas_in
 }
+#[allow(dead_code)]
+pub(crate) fn run_bootstrap_subset(
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)], // (eq_id, count) vec for classes relevant for this cell
+    num_alphas: u32,          // number of genes
+    num_bootstraps: u32,      // number of bootstraps to draw
+    _init_uniform: bool,
+    summary_stat: bool, // if true, the output will simply be a vector of means and variances
+    _log: &slog::Logger,
+) -> Vec<Vec<f32>> {
+    // the population sample size
+    let total_fragments: u32 = cell_data.iter().map(|x| x.1).sum();
+    assert!(
+        total_fragments > 0,
+        "Cannot bootstrap from a sample with 0 counts."
+    );
+
+    let num_alphas_us = num_alphas as usize;
+    let mut unique_evidence = vec![false; num_alphas_us];
+    let mut no_ambiguity = vec![false; num_alphas_us];
+
+    let mut alphas_sum: Vec<f32> = vec![0.0; num_alphas_us];
+    let mut alphas_square_sum: Vec<f32> = vec![0.0; num_alphas_us];
+    let mut sample_mean: Vec<f32> = vec![0.0; num_alphas_us];
+    let mut sample_var: Vec<f32> = vec![0.0; num_alphas_us];
+
+    // define a multinomial with the probabilities given by the
+    // original equivalence class counts
+    let eq_counts: Vec<f64> = cell_data
+        .iter()
+        .map(|x| (x.1 as f64) / (total_fragments as f64))
+        .collect();
+    let dist = Multinomial::new(&eq_counts[..], total_fragments as u64).unwrap();
+
+    // store bootstraps
+    let mut bootstrap_counts = Vec::with_capacity(cell_data.len());
+
+    // store bootstraps
+    let num_output_bs = if summary_stat {
+        2usize
+    } else {
+        num_bootstraps as usize
+    };
+    let mut bootstraps = Vec::with_capacity(num_output_bs);
+
+    // bootstrap loop starts
+    // let mut old_resampled_counts = Vec::new();
+    for _bs_num in 0..num_bootstraps {
+        // resample from multinomial
+        let resampled_counts = thread_rng().sample(dist.clone());
+        for (idx, (eq_id, _orig_count)) in cell_data.iter().enumerate() {
+            bootstrap_counts.push((*eq_id, resampled_counts[idx].round() as u32));
+        }
+
+        let alphas = em_optimize_subset(
+            &eqclasses,
+            &bootstrap_counts[..], // indices into eqclasses relevant for this cell
+            &mut unique_evidence,
+            &mut no_ambiguity,
+            num_alphas_us,
+            false, // only unique
+            &_log,
+        );
+
+        // clear out for the next iteration.
+        bootstrap_counts.clear();
+
+        let est_frags: f32 = alphas.iter().sum();
+        assert!(est_frags > 0.0, "Alpha sum is too small");
+        // if we are collecting summary stats, we'll need these
+        if summary_stat {
+            for i in 0..num_alphas_us {
+                alphas_sum[i] += alphas[i];
+                alphas_square_sum[i] += alphas[i] * alphas[i];
+            }
+        } else {
+            // otherwise, just push the bootstrap
+            bootstraps.push(alphas.clone());
+        }
+    }
+
+    // if we are only providing summary stats, then
+    // do that computation here.
+    if summary_stat {
+        for i in 0..num_alphas_us {
+            let mean_alpha = alphas_sum[i] / num_bootstraps as f32;
+            sample_mean[i] = mean_alpha;
+            sample_var[i] =
+                (alphas_square_sum[i] / num_bootstraps as f32) - (mean_alpha * mean_alpha);
+        }
+
+        bootstraps.push(sample_mean);
+        bootstraps.push(sample_var);
+    }
+
+    bootstraps
+}
 
 pub fn run_bootstrap(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
