@@ -30,7 +30,7 @@ fn gen_random_kmer(k: usize) -> String {
     let mut rng = rand::thread_rng();
     let s: String = (0..k)
         .map(|_| {
-            let idx = rng.gen_range(0, CHARSET.len());
+            let idx = rng.gen_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect();
