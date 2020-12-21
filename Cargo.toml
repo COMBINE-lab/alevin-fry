@@ -13,7 +13,7 @@ slog-term = "2.6.0"
 slog-async = "2.5.0"
 rand = "*"
 chrono = "0.4.13"
-mimalloc = { version = "0.1.19", default-features = false }
+mimalloc = { version = "0.1.22", default-features = false }
 num_cpus = "1.13.0"
 bio-types = "0.6.0"
 statrs = "0.13.0"
