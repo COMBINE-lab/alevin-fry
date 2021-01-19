@@ -633,9 +633,9 @@ pub(super) fn get_num_molecules(
                         best_mcc = new_mcc;
                         best_covering_txp = covering_txp;
                     }
-                    // we can't do better than covering all 
+                    // we can't do better than covering all
                     // remaining uncovered vertices.  So, if we
-                    // accomplish that, then quit here. 
+                    // accomplish that, then quit here.
                     if mcc_len == num_remaining {
                         break;
                     }
