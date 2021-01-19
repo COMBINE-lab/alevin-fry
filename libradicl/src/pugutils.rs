@@ -610,6 +610,7 @@ pub(super) fn get_num_molecules(
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
             while !uncovered_vertices.is_empty() {
+                let num_remaining = uncovered_vertices.len();
                 // will hold vertices in the best mcc
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
@@ -625,11 +626,18 @@ pub(super) fn get_num_molecules(
                     let (new_mcc, covering_txp) =
                         collapse_vertices(*v, &uncovered_vertices, g, eqmap);
 
+                    let mcc_len = new_mcc.len();
                     // if the new mcc is better than the current best, then
                     // it becomes the new best
-                    if best_mcc.len() < new_mcc.len() {
+                    if best_mcc.len() < mcc_len {
                         best_mcc = new_mcc;
                         best_covering_txp = covering_txp;
+                    }
+                    // we can't do better than covering all 
+                    // remaining uncovered vertices.  So, if we
+                    // accomplish that, then quit here. 
+                    if mcc_len == num_remaining {
+                        break;
                     }
                 }
 
