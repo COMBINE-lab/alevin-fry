@@ -18,8 +18,8 @@
 # -- Project information -----------------------------------------------------
 
 project = 'alevin-fry'
-copyright = '2020, Avi Srivastava, Hiark Sarkar, Rob Patro'
-author = 'Avi Srivastava, Hirak Sarkar, Rob Patro'
+copyright = '2021, Avi Srivastava, Hiark Sarkar, Mohsen Zakeri, Rob Patro'
+author = 'Avi Srivastava, Hirak Sarkar, Mohsen Zakeri, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
 release = '0.1.0'
