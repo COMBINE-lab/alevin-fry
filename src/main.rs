@@ -12,7 +12,7 @@ extern crate slog_term;
 
 use bio_types::strand::Strand;
 use clap::{crate_authors, crate_version, App, Arg};
-use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
+use libradicl::cellfilter::{test_external_parse, generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
@@ -137,11 +137,18 @@ fn main() {
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
+    let test_app = App::new("test")
+    .about("test")
+    .version(version)
+    .author(crate_authors)
+    .arg(Arg::from("-i, --input=<input-file> 'input file'").takes_value(true).required(true));
+
     let opts = App::new("alevin-fry")
         .version(version)
         .author(crate_authors)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
+        .subcommand(test_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(infer_app)
@@ -163,6 +170,11 @@ fn main() {
 
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
+    if let Some(ref t) = opts.subcommand_matches("test") {
+        let input_file: String = t.value_of_t("input").expect("no input string specified");
+        let r = test_external_parse(input_file);
+    }
+
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
         let input_dir: String = t.value_of_t("input").expect("no input directory specified");
         let output_dir: String = t

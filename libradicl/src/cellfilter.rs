@@ -19,8 +19,12 @@ use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
+//use std::io::BufRead;
+use bstr::io::{BufReadExt, ByteLines};
 use std::io::{BufWriter, Write};
 use std::str::from_utf8;
+use std::time::Instant;
+use rand::{thread_rng, Rng};
 
 pub enum CellFilterMethod {
     // cut off at this cell in
@@ -167,6 +171,171 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
               "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
     }
     max_idx
+}
+
+struct BarcodeLookupMap {
+    barcodes: Vec::<u64>,
+    offsets: Vec::<usize>,
+    bclen: u32,
+}
+
+impl BarcodeLookupMap {
+    fn find(&self, query: u64) -> Option<u8> {
+        let mut ret : Option<u8> = None;
+        
+        // extract the prefix we will use to search 
+        // the pref_len = (bclen / 2) * 2 = bclen
+        let pref_len = self.bclen;
+        let pref_mask = (2u64.pow(pref_len) - 1) << pref_len;
+        let query_pref = (query & pref_mask) >> pref_len;
+
+        let qrange = std::ops::Range{ 
+                        start: self.offsets[query_pref as usize],
+                        end: self.offsets[(query_pref+1) as usize]};
+        
+        //println!("looking for query {} with prefix {} in range {:?}", query, query_pref, qrange);
+
+        // first, we try to find exactly.
+        if let Ok(res) = self.barcodes[qrange].binary_search(&query) {
+            ret = Some(1u8);
+            return ret;
+        }
+
+        // othwerwise, we fall back to the 1mm search
+        
+        // if we match the prefix exactly, we assume the error is in the second half 
+        // of the barcode 
+        // NOTE: This is an approximation / simplification, since the first half could
+        // match *because* of the error.  Consider relaxining this simplification later.
+
+        if !(std::ops::Range::<usize>::is_empty(&qrange)) {
+            // for each position in the suffix 
+            for i in (0..pref_len).step_by(2) {
+                let bit_mask = 3 << (i);
+                // for each nucleotide
+                for nmod in 1..4 {
+                    let nucl = 0x3 & ((query >> i) + nmod);
+                    let nquery = (query & (!bit_mask)) | (nucl << i);
+                
+                    if let Ok(res) = self.barcodes[qrange].binary_search(&query) {
+                        ret = Some(1u8);
+                        return ret;
+                    }
+                }
+            }
+        } else {
+            // otherwise, we have no match in the prefix so we will assume an error free 
+            // suffix and consider possible mutations of the prefix.
+            let qp_copy = query_pref;
+            let qcopy = query;
+            // for each position in the prefix
+            for i in (pref_len..(2*pref_len)).step_by(2) {
+                let bit_mask = 3 << i;
+
+                for nmod in 1..4 {
+                    let nucl = 0x3 & ((query >> i) + nmod);
+                    let nquery = (query & (!bit_mask)) | (nucl << i );
+                
+                    query_pref = nquery >> pref_len;
+        
+                    let qrange = std::ops::Range{ 
+                            start: self.offsets[query_pref as usize],
+                            end: self.offsets[(query_pref+1) as usize]};
+
+                     if let Ok(res) = self.barcodes[qrange].binary_search(&nquery) {
+                         ret = Some(1u8);
+                         return ret;
+                     }
+                }
+            }
+        }
+
+        ret
+    }
+}
+
+pub fn test_external_parse(
+    filename: String
+) {
+    let i_file = File::open(filename).expect("could not open input file");
+    let mut br = BufReader::new(i_file); 
+
+    let mut kv = Vec::<u64>::new();
+
+    for line in br.byte_lines() {
+        match line {
+            Ok(l) => {
+            match needletail::bitkmer::BitNuclKmer::new(&l[..], 16, false).next() {
+                Some((_, km, _)) => kv.push(km.0),
+                None => {},
+            } },
+          Err(_) => {}
+        }
+    }
+
+    println!("Number of barcodes read = {}", kv.len());
+
+    kv.sort_unstable();
+
+    println!("sorted");
+
+    let mut offsets = vec![0; 4usize.pow(8)+1];
+
+    let mut prev_ind = 0xFFFF;
+    let mut prev_n = 0usize;                   
+    for (n, &v) in kv.iter().enumerate() {
+        let ind = ((v & 0x00000000FFFF0000) >> 16) as usize;
+        if ind != prev_ind { 
+            for i in (prev_ind+1)..ind {
+                offsets[i] = n;
+            }
+            offsets[ind] = n;
+            prev_ind = ind;
+            prev_n = n;
+        }
+    }
+    for i in (prev_ind+1)..offsets.len() {
+        offsets[i] = kv.len();
+    }
+ 
+    
+    println!("Size of lookup table {}", offsets.len());
+    //println!("offsets = {:?}", offsets);
+
+    let bcc = kv.clone();
+    let bcmap = BarcodeLookupMap{ barcodes: kv, offsets: offsets, bclen: 16};
+    let mut found = 0usize;
+    let now = Instant::now();
+    for &bc in bcc.iter() {
+        match bcmap.find(bc) {
+            Some(x) => found +=1,
+            None => {
+                println!("every present barcode should be found");
+                panic!("oh noes");
+            },
+        }
+    }
+    let now2 = Instant::now();
+    println!("found {} of {}", found, bcc.len());
+    println!("took {:?} ", now2.duration_since(now));
+
+    let mut rng = rand::thread_rng();
+    for &bc in bcc.iter() {
+
+        let ri = 2*rng.gen_range(0..16);
+        let ra = rng.gen_range(1..4);
+        let mask = 3 << ri;
+        let new_nuc = 0x3 & ((bc >> ri) + ra);
+        let nbc = (bc & (!mask)) | (new_nuc << ri);
+        match bcmap.find(nbc) {
+            Some(x) => found +=1,
+            None => {
+                println!("every 1-mm barcode should be found");
+                panic!("oh noes");
+            },
+        }
+    }
+
 }
 
 /// Given the input RAD file `input_file`, compute
