@@ -141,6 +141,7 @@ fn main() {
     .about("test")
     .version(version)
     .author(crate_authors)
+    .arg(Arg::from("-r, --rad-dir=<rad-dir> 'rad directory'").takes_value(true).required(true))
     .arg(Arg::from("-i, --input=<input-file> 'input file'").takes_value(true).required(true));
 
     let opts = App::new("alevin-fry")
@@ -172,7 +173,8 @@ fn main() {
     // (as below), requesting just the name used, or both at the same time
     if let Some(ref t) = opts.subcommand_matches("test") {
         let input_file: String = t.value_of_t("input").expect("no input string specified");
-        let r = test_external_parse(input_file);
+        let rad_dir: String = t.value_of_t("rad-dir").expect("no input string specified");
+        let r = test_external_parse(input_file, rad_dir, &log);
     }
 
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {

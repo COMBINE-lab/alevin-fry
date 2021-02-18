@@ -25,6 +25,7 @@ use std::io::{BufWriter, Write};
 use std::str::from_utf8;
 use std::time::Instant;
 use rand::{thread_rng, Rng};
+use libradicl::utils::count_diff_2_bit_packed;
 
 pub enum CellFilterMethod {
     // cut off at this cell in
@@ -174,56 +175,96 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
 }
 
 struct BarcodeLookupMap {
-    barcodes: Vec::<u64>,
+    pub barcodes: Vec::<u64>,
     offsets: Vec::<usize>,
     bclen: u32,
 }
 
 impl BarcodeLookupMap {
-    fn find(&self, query: u64) -> Option<u8> {
-        let mut ret : Option<u8> = None;
+
+    fn new(mut kv : Vec::<u64>, bclen : u32) -> BarcodeLookupMap {
+        //println!("Number of barcodes read = {}", kv.len());
+        kv.sort_unstable();
+        let mut offsets = vec![0; 4usize.pow(8)+1];
+        let mut prev_ind = 0xFFFF;
+        let mut prev_n = 0usize;                   
+        for (n, &v) in kv.iter().enumerate() {
+            let ind = ((v & 0x00000000FFFF0000) >> 16) as usize;
+            if ind != prev_ind { 
+                for i in (prev_ind+1)..ind {
+                    offsets[i] = n;
+                }
+                offsets[ind] = n;
+                prev_ind = ind;
+                prev_n = n;
+            }
+        }
+        for i in (prev_ind+1)..offsets.len() {
+            offsets[i] = kv.len();
+        }
+        println!("Size of lookup table {}", offsets.len());
+
+        BarcodeLookupMap{barcodes: kv, offsets: offsets, bclen : bclen}
+    }
+
+    fn find(&self, query: u64) -> (Option<u64>, usize) {
+        let mut ret : Option<u64> = None;
         
         // extract the prefix we will use to search 
         // the pref_len = (bclen / 2) * 2 = bclen
         let pref_len = self.bclen;
-        let pref_mask = (2u64.pow(pref_len) - 1) << pref_len;
-        let query_pref = (query & pref_mask) >> pref_len;
+        //let pref_mask = (2u64.pow(pref_len) - 1) << pref_len;
+        let mut query_pref = query >> pref_len;//(query & pref_mask) >> pref_len;
 
+        // the range of entries having query_pref as their prefix
         let qrange = std::ops::Range{ 
                         start: self.offsets[query_pref as usize],
                         end: self.offsets[(query_pref+1) as usize]};
         
-        //println!("looking for query {} with prefix {} in range {:?}", query, query_pref, qrange);
+        let qs = qrange.start;
 
-        // first, we try to find exactly.
-        if let Ok(res) = self.barcodes[qrange].binary_search(&query) {
-            ret = Some(1u8);
-            return ret;
-        }
+        // first, we try to find exactly. 
+        // if we can, then we return the found barcode and that there was 1 best hit
+        if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&query) {
+            ret = Some(self.barcodes[qrange.start + res]);
+            return (ret, 1);
+        } /*else {
+            return (ret, 0);
+        }*/
 
-        // othwerwise, we fall back to the 1mm search
-        
-        // if we match the prefix exactly, we assume the error is in the second half 
-        // of the barcode 
-        // NOTE: This is an approximation / simplification, since the first half could
-        // match *because* of the error.  Consider relaxining this simplification later.
+        // othwerwise, we fall back to the 1 mismatch search
+ 
+        // NOTE: We stop here as soon as we find *a* match for the barcode.
+        // if there is more than 1 single-mismatch neighbor, we will only find 
+        // the first.
+        let mut num_neighbors = 0usize;
 
+        // if we match the prefix exactly, we will look for possible matches 
+        // that are 1 mismatch off in the suffix.
         if !(std::ops::Range::<usize>::is_empty(&qrange)) {
+            // the initial offset of suffixes for this prefix 
+            let qs = qrange.start;
+
             // for each position in the suffix 
             for i in (0..pref_len).step_by(2) {
                 let bit_mask = 3 << (i);
+
                 // for each nucleotide
                 for nmod in 1..4 {
                     let nucl = 0x3 & ((query >> i) + nmod);
                     let nquery = (query & (!bit_mask)) | (nucl << i);
                 
-                    if let Ok(res) = self.barcodes[qrange].binary_search(&query) {
-                        ret = Some(1u8);
-                        return ret;
+                    if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&nquery) {
+                        ret = Some(self.barcodes[qs + res]);
+                        num_neighbors += 1;
+                        //if num_neighbors >= 2 { return (ret, num_neighbors); }
+                        //return ret;
                     }
                 }
             }
-        } else {
+        } 
+        
+        {
             // otherwise, we have no match in the prefix so we will assume an error free 
             // suffix and consider possible mutations of the prefix.
             let qp_copy = query_pref;
@@ -232,6 +273,7 @@ impl BarcodeLookupMap {
             for i in (pref_len..(2*pref_len)).step_by(2) {
                 let bit_mask = 3 << i;
 
+                // for each nucleotide
                 for nmod in 1..4 {
                     let nucl = 0x3 & ((query >> i) + nmod);
                     let nquery = (query & (!bit_mask)) | (nucl << i );
@@ -240,22 +282,25 @@ impl BarcodeLookupMap {
         
                     let qrange = std::ops::Range{ 
                             start: self.offsets[query_pref as usize],
-                            end: self.offsets[(query_pref+1) as usize]};
-
+                            end: self.offsets[(query_pref+1) as usize]};                        
+                    let qs = qrange.start;
                      if let Ok(res) = self.barcodes[qrange].binary_search(&nquery) {
-                         ret = Some(1u8);
-                         return ret;
+                         ret = Some(self.barcodes[qs + res]);
+                         num_neighbors += 1;
+                         //if num_neighbors >= 2 { return (ret, num_neighbors); }
                      }
                 }
             }
         }
 
-        ret
+        (ret, num_neighbors)
     }
 }
 
 pub fn test_external_parse(
-    filename: String
+    filename: String,
+    rad_dir: String,
+    log: &slog::Logger
 ) {
     let i_file = File::open(filename).expect("could not open input file");
     let mut br = BufReader::new(i_file); 
@@ -273,43 +318,15 @@ pub fn test_external_parse(
         }
     }
 
-    println!("Number of barcodes read = {}", kv.len());
-
-    kv.sort_unstable();
-
-    println!("sorted");
-
-    let mut offsets = vec![0; 4usize.pow(8)+1];
-
-    let mut prev_ind = 0xFFFF;
-    let mut prev_n = 0usize;                   
-    for (n, &v) in kv.iter().enumerate() {
-        let ind = ((v & 0x00000000FFFF0000) >> 16) as usize;
-        if ind != prev_ind { 
-            for i in (prev_ind+1)..ind {
-                offsets[i] = n;
-            }
-            offsets[ind] = n;
-            prev_ind = ind;
-            prev_n = n;
-        }
-    }
-    for i in (prev_ind+1)..offsets.len() {
-        offsets[i] = kv.len();
-    }
- 
+    let bcmap = BarcodeLookupMap::new(kv, 16);
+    let bcc = bcmap.barcodes.clone();
     
-    println!("Size of lookup table {}", offsets.len());
-    //println!("offsets = {:?}", offsets);
-
-    let bcc = kv.clone();
-    let bcmap = BarcodeLookupMap{ barcodes: kv, offsets: offsets, bclen: 16};
     let mut found = 0usize;
     let now = Instant::now();
     for &bc in bcc.iter() {
         match bcmap.find(bc) {
-            Some(x) => found +=1,
-            None => {
+            (Some(x), n) =>  { found += if (x == bc) { 1 } else { 0 } },
+            (None, _) => {
                 println!("every present barcode should be found");
                 panic!("oh noes");
             },
@@ -319,23 +336,160 @@ pub fn test_external_parse(
     println!("found {} of {}", found, bcc.len());
     println!("took {:?} ", now2.duration_since(now));
 
+
     let mut rng = rand::thread_rng();
+    found = 0;
+    let now3 = Instant::now();
     for &bc in bcc.iter() {
 
-        let ri = 2*rng.gen_range(0..16);
-        let ra = rng.gen_range(1..4);
+        let ri = 2*rng.gen_range(0, 16);
+        let ra = rng.gen_range(1, 4);
         let mask = 3 << ri;
         let new_nuc = 0x3 & ((bc >> ri) + ra);
         let nbc = (bc & (!mask)) | (new_nuc << ri);
         match bcmap.find(nbc) {
-            Some(x) => found +=1,
-            None => {
-                println!("every 1-mm barcode should be found");
-                panic!("oh noes");
+            (Some(x), n) => { 
+                if x == bc { 
+                    found += 1;
+                } else { 
+                    let r = count_diff_2_bit_packed(x, bc);
+                    if (r > 2) { 
+                     // write to barcode file
+                     let nbc_bytes = &bitmer_to_bytes((nbc,16))[..];
+                     let bc_bytes = &bitmer_to_bytes((bc,16))[..];
+                     let x_bytes = &bitmer_to_bytes((x, 16) )[..];
+                     println!("searched for {}, which is 1-edit of {}, but found {} :: edit dist={}", 
+                        unsafe {std::str::from_utf8_unchecked(&nbc_bytes)},
+                        unsafe {std::str::from_utf8_unchecked(&bc_bytes)},
+                        unsafe {std::str::from_utf8_unchecked(&x_bytes)},
+                        r,
+                     );
+                     panic!("stop here");
+                    }
+                } 
+            },
+            (None, _) => {
+                //println!("modified {} to {} by setting {} to {}", bc, nbc, ri/2, new_nuc);
+                //println!("every 1-mm barcode should be found");
+                //panic!("oh noes");
             },
         }
     }
+    let now4 = Instant::now();
+    println!("found {} of {}", found, bcc.len());
+    println!("took {:?} ", now4.duration_since(now3));
 
+    let i_dir = std::path::Path::new(&rad_dir);
+    let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
+    let mut br = BufReader::new(i_file);
+    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    info!(
+        log,
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en)
+    );
+    // file-level
+    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    // read-level
+    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+
+    // right now, we only handle BC and UMI types of U8—U64, so validate that
+    const BNAME: &str = "b";
+    const UNAME: &str = "u";
+
+    let mut bct: Option<u8> = None;
+    let mut umit: Option<u8> = None;
+
+    for rt in &rl_tags.tags {
+        // if this is one of our tags
+        if rt.name == BNAME || rt.name == UNAME {
+            if libradicl::decode_int_type_tag(rt.typeid).is_none() {
+                crit!(
+                    log,
+                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
+                );
+                std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
+            }
+
+            if rt.name == BNAME {
+                bct = Some(rt.typeid);
+            }
+            if rt.name == UNAME {
+                umit = Some(rt.typeid);
+            }
+        }
+    }
+
+    // alignment-level
+    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+
+    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    info!(log, "File-level tag values {:?}", ft_vals);
+
+    let mut num_reads: usize = 0;
+
+    //let s = RandomState::<Hash64>::new();
+    //let mut hm = HashMap::with_hasher(s);
+    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present."))
+        .expect("unknown barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present"))
+        .expect("unknown barcode type id.");
+
+    let mut found_exact = 0usize;
+    let mut found_approx = 0usize;
+    let mut not_found = 0usize;
+    let mut value_counts : HashMap<u64, u32> = HashMap::new();
+    let mut nn_freq = vec![0usize; 16*3];
+    for _ in 0..(hdr.num_chunks as usize) {
+        let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        for r in &c.reads {
+            match bcmap.find(r.bc) {
+                (Some(x), n) =>  {
+                    nn_freq[n] += 1; 
+                    if x == r.bc {
+                        found_exact += 1;
+                    } else {
+                        *value_counts.entry(x).or_insert(0) += 1;
+                        found_approx += 1;
+                    }
+                }
+                (None, _) => {
+                    not_found += 1;
+                },
+            } 
+        }
+        //libradicl::update_barcode_hist(&mut hm, &c, &expected_ori);
+        num_reads += c.reads.len();
+    }
+
+    println!("found exact = {}\nfound approx = {}\nnot found = {}\n",
+        found_exact, found_approx, not_found
+    );
+    
+    println!("freq hist = {:?}", nn_freq);
+
+    println!("num unique = {}", value_counts.len());
+
+    let mut maxv = 0usize;
+    let mut minv = 99999usize;
+    let mut totv = 0usize;
+    let mut num_g_100 = 0usize;
+    let mut num_g_1000 = 0usize;
+    for (k, v) in &value_counts {
+        maxv = maxv.max(*v as usize);
+        minv = minv.min(*v as usize);
+        totv += *v as usize;
+        num_g_100 += if *v >= 500 { 1 } else { 0 };
+        num_g_1000 += if *v >= 1000 { 1 } else { 0 };
+    }
+
+    println!("max = {}\nmin={}\navg={}\nnum > 500 = {}\nnum > 500 = {}\n", 
+        maxv, minv, (totv as f64)/(value_counts.len() as f64), num_g_100, num_g_1000);
 }
 
 /// Given the input RAD file `input_file`, compute
