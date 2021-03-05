@@ -364,7 +364,24 @@ fn main() {
             use_mtx,
             resolution,
             &log,
-        )
+        ) {
+            // if we're all good; then great!
+            Ok(_) => {},
+            // if we have an error, see if it's an error parsing 
+            // the CSV or something else.
+            Err(e) => match e.downcast_ref::<CSVError>() {
+                Some(error) => {
+                    match *error.kind() {
+                        // if a deserialize error, we already complained about it
+                        ErrorKind::Deserialize{..} => {},
+                        // if another type of error, just panic for now
+                        _ => { panic!("could not quantify rad file."); },
+                    }
+                },
+                // if something else, just panic
+                None => { panic!("could not quantify rad file."); },
+            }
+        }
         .expect("could not quantify rad file.");
     }
 
