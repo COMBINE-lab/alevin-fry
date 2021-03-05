@@ -17,6 +17,8 @@ use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
+use csv::Error as CSVError;
+use csv::ErrorKind;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -381,8 +383,7 @@ fn main() {
                 // if something else, just panic
                 None => { panic!("could not quantify rad file."); },
             }
-        }
-        .expect("could not quantify rad file.");
+        };
     }
 
     if let Some(ref t) = opts.subcommand_matches("infer") {
