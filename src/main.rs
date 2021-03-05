@@ -352,7 +352,7 @@ fn main() {
             std::process::exit(1);
         }
 
-        libradicl::quant::quantify(
+        match libradicl::quant::quantify(
             input_dir,
             tg_map,
             output_dir,
