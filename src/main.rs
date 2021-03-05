@@ -12,7 +12,7 @@ extern crate slog_term;
 
 use bio_types::strand::Strand;
 use clap::{crate_authors, crate_version, App, Arg};
-use libradicl::cellfilter::{test_external_parse, generate_permit_list, CellFilterMethod};
+use libradicl::cellfilter::{generate_permit_list, test_external_parse, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
@@ -78,22 +78,34 @@ fn main() {
         ))
         .arg(Arg::from(
             "-k, --knee-distance  'attempt to determine the number of barcodes to keep using the knee distance method."
-            ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells"])
+            ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells", "unfiltered-pl"])
         )
         .arg(Arg::from(
             "-e, --expect-cells=<expect-cells> 'defines the expected number of cells to use in determining the (read, not UMI) based cutoff'",
-        ).conflicts_with_all(&["force-cells", "valid-bc", "knee-distance"])
+        ).conflicts_with_all(&["force-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
         )
         .arg(Arg::from(
             "-f, --force-cells=<force-cells>  'select the top-k most-frequent barcodes, based on read count, as valid (true)'"
-        ).conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance"])
+        ).conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
         )
         .arg(
             Arg::from(
                 "-b, --valid-bc=<valid-bc> 'uses true barcode collected from a provided file'",
             )
-            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance"]),
-        );
+            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"]),
+        )
+        .arg(
+            Arg::from(
+                "-u, --unfiltered-pl=<unfiltered-pl> 'uses an unfiltered external permit list'",
+            )
+            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "valid-bc"])
+            .requires("min-reads")
+        )
+        .arg(
+            Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold; only used with --unfiltered-pl'")
+                .default_value("10")
+                .takes_value(true)
+                .required(true));
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
@@ -138,11 +150,25 @@ fn main() {
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
     let test_app = App::new("test")
-    .about("test")
-    .version(version)
-    .author(crate_authors)
-    .arg(Arg::from("-r, --rad-dir=<rad-dir> 'rad directory'").takes_value(true).required(true))
-    .arg(Arg::from("-i, --input=<input-file> 'input file'").takes_value(true).required(true));
+        .about("test")
+        .version(version)
+        .author(crate_authors)
+        .arg(
+            Arg::from("-r, --rad-dir=<rad-dir> 'rad directory'")
+                .takes_value(true)
+                .required(true),
+        )
+        .arg(
+            Arg::from("-i, --input=<input-file> 'input file'")
+                .takes_value(true)
+                .required(true),
+        )
+        .arg(
+            Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold'")
+                .default_value("10")
+                .takes_value(true)
+                .required(true),
+        );
 
     let opts = App::new("alevin-fry")
         .version(version)
@@ -174,7 +200,18 @@ fn main() {
     if let Some(ref t) = opts.subcommand_matches("test") {
         let input_file: String = t.value_of_t("input").expect("no input string specified");
         let rad_dir: String = t.value_of_t("rad-dir").expect("no input string specified");
-        let r = test_external_parse(input_file, rad_dir, &log);
+        let min_reads: usize = t
+            .value_of_t("min-reads")
+            .expect("min-reads must be a valid integer");
+        if min_reads < 1 {
+            crit!(
+                log,
+                "min-reads < 1 is not supported, the value {} was provided",
+                min_reads
+            );
+            std::process::exit(1);
+        }
+        let _r = test_external_parse(input_file, rad_dir, min_reads, &log);
     }
 
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
@@ -245,6 +282,25 @@ fn main() {
             }
             Err(_) => None,
         };
+
+        let _unfiltered_pl = match t.value_of_t::<String>("unfiltered-pl") {
+            Ok(v) => {
+                let min_reads: usize = t
+                    .value_of_t("min-reads")
+                    .expect("min-reads must be a valid integer");
+                if min_reads < 1 {
+                    crit!(
+                        log,
+                        "min-reads < 1 is not supported, the value {} was provided",
+                        min_reads
+                    );
+                    std::process::exit(1);
+                }
+                fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
+            }
+            Err(_) => {}
+        };
+
         let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");

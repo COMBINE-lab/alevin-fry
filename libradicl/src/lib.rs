@@ -17,6 +17,7 @@ use needletail::bitkmer::*;
 use num::cast::AsPrimitive;
 use rust_htslib::bam::HeaderView;
 use scroll::Pread;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
@@ -91,6 +92,168 @@ pub struct CorrectedCBChunk {
                            ref_offsets: Vec<u32>,
                            ref_ids: Vec<u32>,
                            */
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct BarcodeLookupMap {
+    pub barcodes: Vec<u64>,
+    //pub counts: Vec<usize>,
+    offsets: Vec<usize>,
+    bclen: u32,
+    prefix_len: u32,
+    suffix_len: u32,
+}
+
+impl BarcodeLookupMap {
+    pub fn new(mut kv: Vec<u64>, bclen: u32) -> BarcodeLookupMap {
+        let prefix_len = ((bclen + 1) / 2) as u64;
+        let suffix_len = bclen - prefix_len as u32;
+
+        let prefix_bits = 2 * prefix_len;
+        let suffix_bits = 2 * suffix_len;
+
+        kv.sort_unstable();
+
+        let pref_mask = ((4usize.pow(prefix_len as u32) - 1) as u64) << (suffix_bits);
+        let mut offsets = vec![0; 4usize.pow(prefix_len as u32) + 1];
+        let mut prev_ind = 0xFFFF;
+
+        for (n, &v) in kv.iter().enumerate() {
+            let ind = ((v & pref_mask) >> (prefix_bits)) as usize;
+            if ind != prev_ind {
+                for i in (prev_ind + 1)..ind {
+                    offsets[i] = n;
+                }
+                offsets[ind] = n;
+                prev_ind = ind;
+            }
+        }
+        for i in (prev_ind + 1)..offsets.len() {
+            offsets[i] = kv.len();
+        }
+
+        //let nbc = kv.len();
+        BarcodeLookupMap {
+            barcodes: kv,
+            //counts: vec![0usize; nbc],
+            offsets: offsets,
+            bclen: bclen,
+            prefix_len: prefix_len as u32,
+            suffix_len: suffix_len,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn barcode_for_idx(&self, idx: usize) -> u64 {
+        return self.barcodes[idx];
+    }
+
+    /// The find function searches for the barcode `query` in the
+    /// BarcodeLookupMap.  It returns a tuple `(Option<usize>, usize)` where
+    /// the first element is either Some(usize) or None.  If
+    /// Some(usize) is returned, this is the *index* of a matching/neighboring barcode
+    /// if None is returned, then no match was found.  The second element is either
+    /// 0, 1 or 2.  If 0, no match was found; if 1 a unique match was found, if 2
+    /// then 2 or more equally good matches were found.
+    ///
+    /// The parameter `exact_only` controls whether a 1 mismatch search is
+    /// performed or not.  If `exact_only` is `true`, then only an exact
+    /// match for `query` will be considered a match and no search will be performed
+    /// for a 1-mismatch neighbor.  If `exact_only` is `false`, then a 1-mismatch
+    /// search will be performed if an exact match is not found.
+    pub fn find(&self, query: u64, exact_only: bool) -> (Option<usize>, usize) {
+        let mut ret: Option<usize> = None;
+
+        // extract the prefix we will use to search
+        let pref_bits = 2 * self.prefix_len;
+        let suffix_bits = 2 * self.suffix_len;
+        let mut query_pref = query >> suffix_bits;
+        let mut num_neighbors = 0usize;
+
+        // the range of entries having query_pref as their prefix
+        let qrange = std::ops::Range {
+            start: self.offsets[query_pref as usize],
+            end: self.offsets[(query_pref + 1) as usize],
+        };
+
+        let qs = qrange.start as usize;
+
+        // first, we try to find exactly.
+        // if we can, then we return the found barcode and that there was 1 best hit
+        if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&query) {
+            ret = Some(qs + res);
+            num_neighbors += 1;
+            return (ret, num_neighbors);
+        }
+        if exact_only {
+            return (ret, num_neighbors);
+        }
+
+        // othwerwise, we fall back to the 1 mismatch search
+        // NOTE: We stop here as soon as we find at most 2 neighbors
+        // for the query.  Thus, we only distinguish between the
+        // the cases where the query has 1 neighbor, or 2 or more neighbors.
+
+        // if we match the prefix exactly, we will look for possible matches
+        // that are 1 mismatch off in the suffix.
+        if !(std::ops::Range::<usize>::is_empty(&qrange)) {
+            // the initial offset of suffixes for this prefix
+            let qs = qrange.start as usize;
+
+            // for each position in the suffix
+            for i in (0..suffix_bits).step_by(2) {
+                let bit_mask = 3 << (i);
+
+                // for each nucleotide
+                for nmod in 1..4 {
+                    let nucl = 0x3 & ((query >> i) + nmod);
+                    let nquery = (query & (!bit_mask)) | (nucl << i);
+
+                    if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&nquery) {
+                        ret = Some(qs + res);
+                        num_neighbors += 1;
+                        if num_neighbors >= 2 {
+                            return (ret, num_neighbors);
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            // if we get here we've had either 0 or 1 matches holding the prefix fixed
+            // so we will now hold the suffix fixed and consider possible mutations of the prefix.
+
+            // for each position in the prefix
+            for i in (suffix_bits..(suffix_bits + pref_bits)).step_by(2) {
+                let bit_mask = 3 << i;
+
+                // for each nucleotide
+                for nmod in 1..4 {
+                    let nucl = 0x3 & ((query >> i) + nmod);
+                    let nquery = (query & (!bit_mask)) | (nucl << i);
+
+                    query_pref = nquery >> suffix_bits;
+
+                    let qrange = std::ops::Range {
+                        start: self.offsets[query_pref as usize],
+                        end: self.offsets[(query_pref + 1) as usize],
+                    };
+                    let qs = qrange.start as usize;
+                    if let Ok(res) = self.barcodes[qrange].binary_search(&nquery) {
+                        ret = Some(qs + res);
+                        num_neighbors += 1;
+                        if num_neighbors >= 2 {
+                            return (ret, num_neighbors);
+                        }
+                    }
+                }
+            }
+        }
+
+        (ret, num_neighbors)
+    }
 }
 
 impl CorrectedCBChunk {
@@ -872,6 +1035,67 @@ impl RADHeader {
         tot_size += std::mem::size_of::<u64>();
         tot_size
     }
+}
+
+pub fn update_barcode_hist_unfiltered(
+    hist: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
+    unmatched_bc: &mut Vec<u64>,
+    chunk: &Chunk,
+    expected_ori: &Strand,
+) -> usize {
+    let mut num_strand_compat_reads = 0usize;
+    match expected_ori {
+        Strand::Unknown => {
+            for r in &chunk.reads {
+                num_strand_compat_reads += 1;
+                // lookup the barcode in the map of unfiltered known
+                // barcodes
+                match hist.get_mut(&r.bc) {
+                    // if we find a match, increment the count
+                    Some(c) => *c += 1,
+                    // otherwise, push this into the unmatched list
+                    None => {
+                        unmatched_bc.push(r.bc);
+                    }
+                }
+            }
+        }
+        Strand::Forward => {
+            for r in &chunk.reads {
+                if r.dirs.iter().any(|&x| x) {
+                    num_strand_compat_reads += 1;
+                    // lookup the barcode in the map of unfiltered known
+                    // barcodes
+                    match hist.get_mut(&r.bc) {
+                        // if we find a match, increment the count
+                        Some(c) => *c += 1,
+                        // otherwise, push this into the unmatched list
+                        None => {
+                            unmatched_bc.push(r.bc);
+                        }
+                    }
+                }
+            }
+        }
+        Strand::Reverse => {
+            for r in &chunk.reads {
+                if r.dirs.iter().any(|&x| !x) {
+                    num_strand_compat_reads += 1;
+                    // lookup the barcode in the map of unfiltered known
+                    // barcodes
+                    match hist.get_mut(&r.bc) {
+                        // if we find a match, increment the count
+                        Some(c) => *c += 1,
+                        // otherwise, push this into the unmatched list
+                        None => {
+                            unmatched_bc.push(r.bc);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    num_strand_compat_reads
 }
 
 pub fn update_barcode_hist(

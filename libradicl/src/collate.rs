@@ -100,6 +100,29 @@ fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
     }
 }
 
+#[derive(Debug)]
+enum FilterType {
+    Filtered,
+    Unfiltered,
+}
+
+fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType {
+    if let Some(fts) = mdata.get("permit-list-type") {
+        let ft = match fts.as_str() {
+            Some("unfiltered") => FilterType::Unfiltered,
+            Some("filtered") => FilterType::Filtered,
+            _ => FilterType::Filtered,
+        };
+        return ft;
+    } else {
+        info!(
+            log,
+            "permit-list-type key not present in JSON file; assuming list is filtered."
+        );
+        return FilterType::Filtered;
+    }
+}
+
 fn correct_unmapped_counts(
     correct_map: &Arc<HashMap<u64, u64>>,
     unmapped_file: &std::path::Path,
@@ -156,6 +179,16 @@ pub fn collate_in_memory_multipass(
 
     let expected_ori = get_orientation(&mdata, log);
     info!(log, "expected_ori = {:?}", expected_ori);
+
+    let filter_type = get_filter_type(&mdata, log);
+    info!(log, "filter_type = {:?}", filter_type);
+    match filter_type {
+        FilterType::Unfiltered => {
+            unimplemented!();
+        }
+        FilterType::Filtered => {}
+    };
+
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let oname = parent.join("map.collated.rad");
@@ -427,6 +460,15 @@ pub fn collate_with_temp(
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
     let expected_ori = get_orientation(&mdata, log);
+
+    let filter_type = get_filter_type(&mdata, log);
+    info!(log, "filter_type = {:?}", filter_type);
+    match filter_type {
+        FilterType::Unfiltered => {
+            unimplemented!();
+        }
+        FilterType::Filtered => {}
+    };
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue

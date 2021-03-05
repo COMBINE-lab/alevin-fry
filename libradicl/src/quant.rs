@@ -456,19 +456,32 @@ pub fn quantify(
     // now, map each transcript index to it's corresponding gene index
     let mut found = 0usize;
     for result in rdr.deserialize() {
-        let record: TSVRec = result?;
-        // first, get the id for this gene
-        let next_id = gene_name_to_id.len() as u32;
-        let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
-        // if we haven't added this gene name already, then
-        // append it now to the list of gene names.
-        if gene_id == next_id {
-            gene_names.push(record.1.clone());
-        }
-        // get the transcript id
-        if let Some(transcript_id) = rname_to_id.get(&record.0) {
-            found += 1;
-            tid_to_gid[*transcript_id as usize] = gene_id;
+        match result {
+            Ok(record_in) => {
+                let record: TSVRec = record_in;
+                //let record: TSVRec = result?;
+                // first, get the id for this gene
+                let next_id = gene_name_to_id.len() as u32;
+                let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
+                // if we haven't added this gene name already, then
+                // append it now to the list of gene names.
+                if gene_id == next_id {
+                    gene_names.push(record.1.clone());
+                }
+                // get the transcript id
+                if let Some(transcript_id) = rname_to_id.get(&record.0) {
+                    found += 1;
+                    tid_to_gid[*transcript_id as usize] = gene_id;
+                }
+            }
+            Err(e) => {
+                crit!(
+                    log,
+                    "Encountered error [{}] when reading the transcript-to-gene map. Please make sure the transcript-to-gene mapping is a 2 column, tab separated file.",
+                    e
+                );
+                return Err(Box::new(e));
+            }
         }
     }
     assert_eq!(
