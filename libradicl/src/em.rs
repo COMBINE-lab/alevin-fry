@@ -133,16 +133,16 @@ pub(crate) fn em_optimize_subset(
     // fill in the alphas based on the initialization strategy
     let mut rng = rand::thread_rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for i in 0..num_alphas {
+    for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
             EMInitType::Uniform => {
-                alphas_in[i] = uni_prior;
+                *item = uni_prior;
             }
             EMInitType::Informative => {
-                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+                *item = (*item + 0.5) * 1e-3;
             }
             EMInitType::Random => {
-                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+                *item = rng.gen::<f32>() + 1e-5;
             }
         }
     }
@@ -175,7 +175,7 @@ pub(crate) fn em_optimize_subset(
             } // end- in>out if
 
             alphas_in[index] = alphas_out[index];
-            alphas_out[index] = 0.0 as f32;
+            alphas_out[index] = 0.0_f32;
         } //end-for
 
         it_num += 1;
@@ -184,7 +184,7 @@ pub(crate) fn em_optimize_subset(
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
         if *alpha < MIN_ALPHA {
-            *alpha = 0.0 as f32;
+            *alpha = 0.0_f32;
         }
     });
 
@@ -258,16 +258,16 @@ pub(crate) fn em_optimize(
     // fill in the alphas based on the initialization strategy
     let mut rng = rand::thread_rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for i in 0..num_alphas {
+    for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
             EMInitType::Uniform => {
-                alphas_in[i] = uni_prior;
+                *item = uni_prior;
             }
             EMInitType::Informative => {
-                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+                *item = (*item + 0.5) * 1e-3;
             }
             EMInitType::Random => {
-                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+                *item = rng.gen::<f32>() + 1e-5;
             }
         }
     }
@@ -300,7 +300,7 @@ pub(crate) fn em_optimize(
             } // end- in>out if
 
             alphas_in[index] = alphas_out[index];
-            alphas_out[index] = 0.0 as f32;
+            alphas_out[index] = 0.0_f32;
         } //end-for
 
         it_num += 1;
@@ -309,7 +309,7 @@ pub(crate) fn em_optimize(
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
         if *alpha < MIN_ALPHA {
-            *alpha = 0.0 as f32;
+            *alpha = 0.0_f32;
         }
     });
 
@@ -569,7 +569,7 @@ pub fn run_bootstrap_old(
                 } // end- in>out if
 
                 alphas[index] = alphas_prime[index];
-                alphas_prime[index] = 0.0 as f32;
+                alphas_prime[index] = 0.0_f32;
             } //end-for
 
             it_num += 1;
@@ -578,7 +578,7 @@ pub fn run_bootstrap_old(
         // update too small alphas
         alphas.iter_mut().for_each(|alpha| {
             if *alpha < MIN_ALPHA {
-                *alpha = 0.0 as f32;
+                *alpha = 0.0_f32;
             }
         });
 

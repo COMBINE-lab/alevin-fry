@@ -16,13 +16,13 @@ pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
     two_bit_diffs.count_ones() as usize
 }
 
-fn get_bit_mask(nt_index: usize, fill_with: u64) -> Result<u64, Box<dyn Error>> {
+fn get_bit_mask(nt_index: usize, fill_with: u64) -> u64 {
     let mut mask: u64 = fill_with;
     mask <<= 2 * (nt_index - 1);
-    Ok(mask)
+    mask
 }
 
-fn get_all_snps(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
+fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
         bc <= 2u64.pow(2 * bc_length as u32),
         "the barcode id is larger than possible (based on barcode length)"
@@ -37,21 +37,21 @@ fn get_all_snps(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
 
     for nt_index in 1..=bc_length {
         // clearing the two relevant bits based on nucleotide position
-        let bit_mask = bc & !get_bit_mask(nt_index, 3)?;
+        let bit_mask = bc & !get_bit_mask(nt_index, 3);
 
         // iterating over all 4 choices of the nucleotide
         for i in 0..=3 {
-            let new_bc = bit_mask | get_bit_mask(nt_index, i)?;
+            let new_bc = bit_mask | get_bit_mask(nt_index, i);
             if new_bc != bc {
                 snps.push(new_bc);
             }
         }
     }
 
-    Ok(snps)
+    snps
 }
 
-fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>> {
+fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
         bc <= 2u64.pow(2 * bc_length as u32),
         "the barcode id is larger than possible (based on barcode length)"
@@ -73,10 +73,10 @@ fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>>
 
         // iterating over all 4 choices of the nucleotide
         for i in 0..=3 {
-            let new_insertion_bc = upper_half | get_bit_mask(nt_index, i)? | (lower_half >> 2);
+            let new_insertion_bc = upper_half | get_bit_mask(nt_index, i) | (lower_half >> 2);
             let new_deletion_bc = upper_half
-                | get_bit_mask(1, i)?
-                | ((lower_half & !get_bit_mask(nt_index + 1, 3)?) << 2);
+                | get_bit_mask(1, i)
+                | ((lower_half & !get_bit_mask(nt_index + 1, 3)) << 2);
 
             if new_insertion_bc != bc {
                 indels.push(new_insertion_bc);
@@ -87,7 +87,7 @@ fn get_all_indels(bc: u64, bc_length: usize) -> Result<Vec<u64>, Box<dyn Error>>
         }
     }
 
-    Ok(indels)
+    indels
 }
 
 pub fn get_all_one_edit_neighbors(
@@ -97,8 +97,8 @@ pub fn get_all_one_edit_neighbors(
 ) -> Result<(), Box<dyn Error>> {
     neighbors.clear();
 
-    let snps: Vec<u64> = get_all_snps(bc, bc_length)?;
-    let indels: Vec<u64> = get_all_indels(bc, bc_length)?;
+    let snps: Vec<u64> = get_all_snps(bc, bc_length);
+    let indels: Vec<u64> = get_all_indels(bc, bc_length);
 
     neighbors.extend(&snps);
     neighbors.extend(&indels);
@@ -170,7 +170,7 @@ mod tests {
     fn test_get_bit_mask() {
         let mut output = Vec::new();
         for i in 0..=3 {
-            let mask = get_bit_mask(2, i).unwrap();
+            let mask = get_bit_mask(2, i);
             output.push(mask);
         }
         assert_eq!(output, vec![0, 4, 8, 12]);
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_get_all_snps() {
-        let mut output: Vec<u64> = get_all_snps(7, 3).unwrap().into_iter().collect();
+        let mut output: Vec<u64> = get_all_snps(7, 3).into_iter().collect();
         output.sort();
 
         assert_eq!(output, vec![3, 4, 5, 6, 11, 15, 23, 39, 55]);
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_get_all_indels() {
-        let mut output: Vec<u64> = get_all_indels(7, 3).unwrap().into_iter().collect();
+        let mut output: Vec<u64> = get_all_indels(7, 3).into_iter().collect();
         output.sort();
         output.dedup();
 

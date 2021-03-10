@@ -12,13 +12,13 @@ extern crate slog_term;
 
 use bio_types::strand::Strand;
 use clap::{crate_authors, crate_version, App, Arg};
+use csv::Error as CSVError;
+use csv::ErrorKind;
 use libradicl::cellfilter::{generate_permit_list, test_external_parse, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
-use csv::Error as CSVError;
-use csv::ErrorKind;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -285,22 +285,20 @@ fn main() {
             Err(_) => None,
         };
 
-        let _unfiltered_pl = match t.value_of_t::<String>("unfiltered-pl") {
-            Ok(v) => {
-                let min_reads: usize = t
-                    .value_of_t("min-reads")
-                    .expect("min-reads must be a valid integer");
-                if min_reads < 1 {
-                    crit!(
-                        log,
-                        "min-reads < 1 is not supported, the value {} was provided",
-                        min_reads
-                    );
-                    std::process::exit(1);
-                }
-                fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
+        //let _unfiltered_pl = match t.value_of_t::<String>("unfiltered-pl") {
+        if let Ok(v) = t.value_of_t::<String>("unfiltered-pl") {
+            let min_reads: usize = t
+                .value_of_t("min-reads")
+                .expect("min-reads must be a valid integer");
+            if min_reads < 1 {
+                crit!(
+                    log,
+                    "min-reads < 1 is not supported, the value {} was provided",
+                    min_reads
+                );
+                std::process::exit(1);
             }
-            Err(_) => {}
+            fmeth = CellFilterMethod::UnfilteredExternalList(v, min_reads);
         };
 
         let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, &log).unwrap();
@@ -368,21 +366,25 @@ fn main() {
             &log,
         ) {
             // if we're all good; then great!
-            Ok(_) => {},
-            // if we have an error, see if it's an error parsing 
+            Ok(_) => {}
+            // if we have an error, see if it's an error parsing
             // the CSV or something else.
             Err(e) => match e.downcast_ref::<CSVError>() {
                 Some(error) => {
                     match *error.kind() {
                         // if a deserialize error, we already complained about it
-                        ErrorKind::Deserialize{..} => {},
+                        ErrorKind::Deserialize { .. } => {}
                         // if another type of error, just panic for now
-                        _ => { panic!("could not quantify rad file."); },
+                        _ => {
+                            panic!("could not quantify rad file.");
+                        }
                     }
-                },
+                }
                 // if something else, just panic
-                None => { panic!("could not quantify rad file."); },
-            }
+                None => {
+                    panic!("could not quantify rad file.");
+                }
+            },
         };
     }
 

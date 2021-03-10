@@ -12,7 +12,6 @@ use fasthash::sea::Hash64;
 use fasthash::RandomState;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::iter::FromIterator;
 
 use petgraph::prelude::*;
 use petgraph::unionfind::*;
@@ -605,7 +604,7 @@ pub(super) fn get_num_molecules(
 
             // uncovered_vertices will hold the set of vertices that are
             // *not yet* covered.
-            let mut uncovered_vertices = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
+            let mut uncovered_vertices = comp_verts.iter().cloned().collect::<HashSet<u32>>();
 
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)

@@ -192,27 +192,23 @@ fn populate_unfiltered_barcode_map<T: Read>(
     // and generate a vector of encoded barcodes
     // let mut kv = Vec::<u64>::new();
     for line in br.byte_lines() {
-        match line {
-            Ok(l) => {
-                if *first_bclen == 0 {
-                    *first_bclen = l.len();
-                } else {
-                    assert_eq!(
-                        *first_bclen,
-                        l.len(),
-                        "found barcodes of different lenghts {} and {}",
-                        *first_bclen,
-                        l.len()
-                    );
-                }
-                match needletail::bitkmer::BitNuclKmer::new(&l[..], l.len() as u8, false).next() {
-                    Some((_, km, _)) => {
-                        hm.insert(km.0, 0);
-                    }
-                    None => {}
-                }
+        if let Ok(l) = line {
+            if *first_bclen == 0 {
+                *first_bclen = l.len();
+            } else {
+                assert_eq!(
+                    *first_bclen,
+                    l.len(),
+                    "found barcodes of different lenghts {} and {}",
+                    *first_bclen,
+                    l.len()
+                );
             }
-            Err(_) => {}
+            if let Some((_, km, _)) =
+                needletail::bitkmer::BitNuclKmer::new(&l[..], l.len() as u8, false).next()
+            {
+                hm.insert(km.0, 0);
+            }
         }
     }
     hm
@@ -543,13 +539,14 @@ pub fn test_external_parse(
     */
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn process_unfiltered(
     hm: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
     mut unmatched_bc: Vec<u64>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &String,
+    output_dir: &str,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&output_dir);
@@ -559,7 +556,7 @@ fn process_unfiltered(
     let output = std::fs::File::create(&o_path).expect("could not create output.");
     let writer = BufWriter::new(&output);
     */
-    let num_corrected = 0;
+    //let num_corrected = 0;
 
     // the smallest number of reads we'll allow per barcode
     let min_freq;
@@ -672,6 +669,8 @@ fn process_unfiltered(
         distinct_unmatched_bc += 1;
     }
     let unmatched_duration = start_unmatched_time.elapsed();
+    let num_corrected = distinct_recoverable_bc as u64;
+
     info!(
         log,
         "There were {} distinct unmatched barcodes, and {} that can be recovered",
@@ -797,15 +796,21 @@ fn process_unfiltered(
         .write_all(meta_info_string.as_bytes())
         .expect("cannot write to generate_permit_list.json file");
 
+    info!(
+        log,
+        "total number of distinct corrected barcodes : {}",
+        num_corrected.to_formatted_string(&Locale::en)
+    );
     Ok(num_corrected)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn process_filtered(
     hm: &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &String,
+    output_dir: &str,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let valid_bc: Vec<u64>;
@@ -930,7 +935,7 @@ fn process_filtered(
 
     info!(
         log,
-        "total number of corrected barcodes : {}",
+        "total number of distinct corrected barcodes : {}",
         num_corrected.to_formatted_string(&Locale::en)
     );
     Ok(num_corrected)
@@ -960,22 +965,19 @@ pub fn generate_permit_list(
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
-    match &filter_meth {
-        CellFilterMethod::UnfilteredExternalList(fname, _) => {
-            let i_file = File::open(&fname).expect("could not open input file");
-            let br = BufReader::new(i_file);
-            unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
-            info!(
-                log,
-                "number of unfiltered bcs read = {}",
-                unfiltered_bc_counts
-                    .as_ref()
-                    .unwrap()
-                    .len()
-                    .to_formatted_string(&Locale::en)
-            );
-        }
-        _ => {}
+    if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
+        let i_file = File::open(&fname).expect("could not open input file");
+        let br = BufReader::new(i_file);
+        unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
+        info!(
+            log,
+            "number of unfiltered bcs read = {}",
+            unfiltered_bc_counts
+                .as_ref()
+                .unwrap()
+                .len()
+                .to_formatted_string(&Locale::en)
+        );
     }
 
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");

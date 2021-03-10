@@ -122,31 +122,31 @@ impl BarcodeLookupMap {
         for (n, &v) in kv.iter().enumerate() {
             let ind = ((v & pref_mask) >> (prefix_bits)) as usize;
             if ind != prev_ind {
-                for i in (prev_ind + 1)..ind {
-                    offsets[i] = n;
+                for item in offsets.iter_mut().take(ind).skip(prev_ind + 1) {
+                    *item = n;
                 }
                 offsets[ind] = n;
                 prev_ind = ind;
             }
         }
-        for i in (prev_ind + 1)..offsets.len() {
-            offsets[i] = kv.len();
+        for item in offsets.iter_mut().skip(prev_ind + 1) {
+            *item = kv.len();
         }
 
         //let nbc = kv.len();
         BarcodeLookupMap {
             barcodes: kv,
             //counts: vec![0usize; nbc],
-            offsets: offsets,
-            bclen: bclen,
+            offsets,
+            bclen,
             prefix_len: prefix_len as u32,
-            suffix_len: suffix_len,
+            suffix_len,
         }
     }
 
     #[allow(dead_code)]
     pub fn barcode_for_idx(&self, idx: usize) -> u64 {
-        return self.barcodes[idx];
+        self.barcodes[idx]
     }
 
     /// The find function searches for the barcode `query` in the

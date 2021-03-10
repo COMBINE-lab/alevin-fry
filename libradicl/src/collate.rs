@@ -113,13 +113,13 @@ fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType 
             Some("filtered") => FilterType::Filtered,
             _ => FilterType::Filtered,
         };
-        return ft;
+        ft
     } else {
         info!(
             log,
             "permit-list-type key not present in JSON file; assuming list is filtered."
         );
-        return FilterType::Filtered;
+        FilterType::Filtered
     }
 }
 
