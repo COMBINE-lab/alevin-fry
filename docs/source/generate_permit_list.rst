@@ -1,7 +1,7 @@
 generate-permit-list
 ====================
 
-This command takes as input an output directory containing a RAD file (created by running alevin with the ``--justAlign`` flag), 
+This command takes as input an output directory containing a RAD file (created by running alevin with the ``--rad`` and/or ``--sketch'' flags), 
 and it determines what cell barcodes should be associated with "true" cells, which should be corrected to
 some "true" barcode, and which should simply be ignored / discarded. This
 command has 4 required arguments; the path to an input directory ``--input``,
