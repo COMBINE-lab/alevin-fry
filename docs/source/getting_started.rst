@@ -35,7 +35,14 @@ This should then show the following:
 Running the alevin-fry pipeline
 -------------------------------
 
-First, we need to generate the RAD file using alevin.  For a chromium v2 set of read files, the command would look like the following:
+First, we need to generate the RAD file using alevin.  The RAD file can be
+generated using either `selective-alignemnt <https://genomebiology.biomedcentral.com/articles/10.1186/s13059-020-02151-8>`_
+or `pseudoalignemnt <https://www.nature.com/articles/nbt.3519>`_ against the
+transcriptiome (with the ``--rad`` or ``--sketch`` flags, respectively).
+**Note**, however, that alevin-fry does not currently support RAD files aligned
+against a decoy-aware index, so that indices used for RAD file generation
+should be prepared without decoy sequnece. For a chromium v2 set of read files,
+the command would look like the following:
 
 .. code:: bash
     $ salmon alevin -lISR --chromium -1 <read1_files> -2 <read2_files> -o <alevin_odir> -i <index> -p <num_threads> --tgMap <tg_map> --justAlign --sketchMode 
