@@ -398,9 +398,9 @@ pub(super) enum SplicedStatus {
 impl fmt::Display for SplicedStatus {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            SplicedStatus::Unspliced => write!(f, "0"),
-            SplicedStatus::Spliced => write!(f, "1"),
-            SplicedStatus::Ambiguous => write!(f, "2"),
+            SplicedStatus::Unspliced => write!(f, "U"),
+            SplicedStatus::Spliced => write!(f, "S"),
+            SplicedStatus::Ambiguous => write!(f, "A"),
         }
     }
 }
