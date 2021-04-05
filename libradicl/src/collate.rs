@@ -81,8 +81,6 @@ pub fn collate(
     }
 }
 
-
-
 fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
     // next line is ugly — should be a better way.  We need a char to
     // get the strand, so we get the correct field as a `str` then

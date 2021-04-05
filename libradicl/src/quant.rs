@@ -41,7 +41,7 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, velo_em_optimize, run_bootstrap, EMInitType};
+use self::libradicl::em::{em_optimize, run_bootstrap, velo_em_optimize, EMInitType};
 use self::libradicl::pugutils;
 use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy, VeloCounts};
 use self::libradicl::utils::*;
@@ -406,7 +406,6 @@ fn write_eqc_counts(
     }
     true
 }
-
 
 // TODO: see if we'd rather pass an structure
 // with these options
@@ -1096,8 +1095,6 @@ pub fn quantify(
     Ok(())
 }
 
-
-
 struct VeloEQCMap {
     // the *global* gene-level equivalence class map
     global_eqc: HashMap<(Vec<u32>, Vec<u8>), u64, ahash::RandomState>,
@@ -1161,7 +1158,7 @@ fn velo_write_eqc_counts(
     gn_eq_writer
         .write_all(format!("{}\n", num_genes).as_bytes())
         .expect("could not write to gene_eqclass.txt.gz");
-    
+
     gt_eq_writer
         .write_all(format!("{}\n", num_genes).as_bytes())
         .expect("could not write to gene_type_eqclass.txt.gz");
@@ -1191,12 +1188,11 @@ fn velo_write_eqc_counts(
             .expect("could not write to gene_eqclass.txt.gz");
 
         gt_eq_writer
-        .write_all(format!("{}\n", eqid).as_bytes())
-        .expect("could not write to gene_eqclass.txt.gz");
+            .write_all(format!("{}\n", eqid).as_bytes())
+            .expect("could not write to gene_eqclass.txt.gz");
     }
     true
 }
-
 
 // TODO: see if we'd rather pass an structure
 // with these options
@@ -1215,7 +1211,8 @@ pub fn velo_quantify(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
-    let i_file = File::open(parent.join("velo.map.collated.rad")).expect("run collate before quant");
+    let i_file =
+        File::open(parent.join("velo.map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RADHeader::from_bytes(&mut br);
     info!(
@@ -1260,10 +1257,10 @@ pub fn velo_quantify(
     // velo_mode
     let mut found = 0usize;
     // if we are in the velocity mode, the transcriptome contains
-    // the sequence of all spliced txps of each gene, 
+    // the sequence of all spliced txps of each gene,
     // and one unspliced version of this gene which are the whole genome region of the gene
 
-    // starting from 0, we assign each gene 2 ids (2 consecutive integers), 
+    // starting from 0, we assign each gene 2 ids (2 consecutive integers),
     // the even ids are for spliced txps, the odd ids are for unspliced txps
     // for convenience, we define a gid helper, next_gid
     let mut next_gid = 0u32;
@@ -1271,9 +1268,9 @@ pub fn velo_quantify(
         let record: TSVRec = result?;
         // first, get the first id for this gene
         let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert_with(|| {
-            // as we need to return the current next_gid if we run this code 
-            // we add by two and then return new next_gid -2 
-            next_gid += 2; 
+            // as we need to return the current next_gid if we run this code
+            // we add by two and then return new next_gid -2
+            next_gid += 2;
             // we haven't added this gene name already,
             // we append it now to the list of gene names.
             gene_names.push(record.1.clone());
@@ -1286,15 +1283,15 @@ pub fn velo_quantify(
             if record.0.ends_with("-U") {
                 // This is an unspliced txp
                 // we link it to the second gid of this gene
-                tid_to_gid[*transcript_id as usize] = gene_id+1;
+                tid_to_gid[*transcript_id as usize] = gene_id + 1;
             } else {
-                // This is a spliced txp, we link it to the 
+                // This is a spliced txp, we link it to the
                 // first gid of this gene
                 tid_to_gid[*transcript_id as usize] = gene_id;
             }
         }
     }
-    
+
     assert_eq!(
         found, hdr.ref_count as usize,
         "The tg-map must contain a gene mapping for all transcripts in the header"
@@ -1388,8 +1385,12 @@ pub fn velo_quantify(
     let spliced_mat_path = output_matrix_path.join("spliced_quants_mat.gz");
     let unspliced_mat_path = output_matrix_path.join("unspliced_quants_mat.gz");
     let boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
-    let spliced_buffered = GzEncoder::new(fs::File::create(&spliced_mat_path)?, Compression::default());
-    let unspliced_buffered = GzEncoder::new(fs::File::create(&unspliced_mat_path)?, Compression::default());
+    let spliced_buffered =
+        GzEncoder::new(fs::File::create(&spliced_mat_path)?, Compression::default());
+    let unspliced_buffered = GzEncoder::new(
+        fs::File::create(&unspliced_mat_path)?,
+        Compression::default(),
+    );
 
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
@@ -1398,7 +1399,6 @@ pub fn velo_quantify(
         "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
     )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
-
 
     let spliced_tmcap = if use_mtx {
         (0.2f64 * num_genes as f64 * hdr.num_chunks as f64).round() as usize
@@ -1481,8 +1481,8 @@ pub fn velo_quantify(
             let mut no_ambiguity = vec![false; num_genes];
             let mut eq_map = EqMap::new(ref_count);
             let mut expressed_vec = Vec::<(f32, f32)>::with_capacity(num_genes);
-            let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);            
-            // each gene has two counts, spliced and unspliced 
+            let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
+            // each gene has two counts, spliced and unspliced
 
             let mut spliced_eds_bytes = Vec::<u8>::new();
             let mut unspliced_eds_bytes = Vec::<u8>::new();
@@ -1529,7 +1529,7 @@ pub fn velo_quantify(
                     let bc = c.reads.first().expect("chunk with no reads").bc;
                     eq_map.init_from_chunk(&mut c);
 
-                    // a class contains two vectors, 
+                    // a class contains two vectors,
                     // correspond to spliced count and unspliced count of genes
                     // I define counts here because I met some strange errors
                     let mut counts: VeloCounts = VeloCounts::new(num_genes, 0.0f32);
@@ -1629,7 +1629,7 @@ pub fn velo_quantify(
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                            // println!("\n\n # of gene eq class: {}", gene_eqc.len());
+                                                                                  // println!("\n\n # of gene eq class: {}", gene_eqc.len());
                             velo_em_optimize(
                                 &gene_eqc,
                                 &mut counts,
@@ -1649,15 +1649,15 @@ pub fn velo_quantify(
                             //     bootstraps = run_bootstrap(
                             //         &gene_eqc,
                             //         num_bootstraps,
-                            //         &counts,                    
-                            //         num_genes, 
+                            //         &counts,
+                            //         num_genes,
 
                             //         init_uniform,
                             //         summary_stat,
                             //         &log,
                             //     );
                             // }
-                        },
+                        }
                         _ => (),
                     }
 
@@ -1684,7 +1684,7 @@ pub fn velo_quantify(
                     let mut num_expr: u32 = 0;
                     expressed_vec.clear();
                     expressed_ind.clear();
-                    let mut ct:f32;
+                    let mut ct: f32;
                     for gid in 0..num_genes {
                         ct = counts.gene_alpha(gid);
                         max_umi = if ct > max_umi { ct } else { max_umi };
@@ -1727,8 +1727,9 @@ pub fn velo_quantify(
                         if !use_mtx {
                             spliced_eds_bytes = sce::eds::as_bytes(&(counts.spliced), num_genes)
                                 .expect("can't convert vector to eds");
-                            unspliced_eds_bytes = sce::eds::as_bytes(&(counts.unspliced), num_genes)
-                                .expect("can't convert vector to eds");
+                            unspliced_eds_bytes =
+                                sce::eds::as_bytes(&(counts.unspliced), num_genes)
+                                    .expect("can't convert vector to eds");
                         }
 
                         // // write bootstraps
@@ -1743,7 +1744,7 @@ pub fn velo_quantify(
                         //             .expect("can't convert vector to eds");
                         //         unspliced_eds_var_bytes = sce::eds::as_bytes(&bootstraps[1].unspliced, num_genes)
                         //             .expect("can't convert vector to eds");
-                        //     } else { 
+                        //     } else {
                         //         let mut spliced_bt_eds_bytes_slice: Vec<u8>;
                         //         let mut unspliced_bt_eds_bytes_slice: Vec<u8>;
                         //         for i in 0..num_bootstraps {
@@ -1751,7 +1752,7 @@ pub fn velo_quantify(
                         //                 sce::eds::as_bytes(&bootstraps[i as usize].spliced, num_genes)
                         //                     .expect("can't convert vector to eds");
                         //             spliced_bt_eds_bytes.append(&mut spliced_bt_eds_bytes_slice);
-                                    
+
                         //             unspliced_bt_eds_bytes_slice =
                         //                 sce::eds::as_bytes(&bootstraps[i as usize].unspliced, num_genes)
                         //                     .expect("can't convert vector to eds");
@@ -1789,8 +1790,14 @@ pub fn velo_quantify(
                         } else {
                             // fill out the quadruple matrix in memory
                             for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                writer.spliced_trimat.add_triplet(row_index as usize, *ind, val.0);
-                                writer.unspliced_trimat.add_triplet(row_index as usize, *ind, val.1);
+                                writer
+                                    .spliced_trimat
+                                    .add_triplet(row_index as usize, *ind, val.0);
+                                writer.unspliced_trimat.add_triplet(
+                                    row_index as usize,
+                                    *ind,
+                                    val.1,
+                                );
                             }
                         }
                         writeln!(
@@ -1810,7 +1817,7 @@ pub fn velo_quantify(
 
                         // if num_bootstraps > 0 {
                         //     if summary_stat {
-                        //         if let Some((spliced_meanf, unspliced_meanf, 
+                        //         if let Some((spliced_meanf, unspliced_meanf,
                         //             spliced_varf, unspliced_varf)) =
                         //             &mut writer.bootstrap_helper.mean_var_files
                         //         {
@@ -1905,7 +1912,6 @@ pub fn velo_quantify(
             }
         }
     }
-
 
     // write to matrix market if we are using it
     if use_mtx {

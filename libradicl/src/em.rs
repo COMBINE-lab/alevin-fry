@@ -11,7 +11,7 @@ use self::slog::info;
 use fasthash::sea::Hash64;
 #[allow(unused_imports)]
 use fasthash::RandomState;
-use libradicl::schema::{IndexedEqList,VeloCounts};
+use libradicl::schema::{IndexedEqList, VeloCounts};
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
 use std::collections::HashMap;
@@ -617,12 +617,11 @@ pub fn velo_em_update(
 ) {
     // loop over all the eqclasses
     for ((labels, types), count) in eqclasses {
-
         if labels.len() > 1 {
             let mut denominator: f32 = 0.0;
             for label in labels {
                 // expanded gid to gid
-                let gid = (*label/2) as usize;
+                let gid = (*label / 2) as usize;
                 denominator += alphas_in.gene_alpha(gid);
             }
 
@@ -630,29 +629,29 @@ pub fn velo_em_update(
                 let inv_denominator = *count as f32 / denominator;
                 for (&label, &t) in labels.iter().zip(types.iter()) {
                     // get the id of gene in counts
-                    let gid = (label/2) as usize;
-                    let cp:f32 = match t {
+                    let gid = (label / 2) as usize;
+                    let cp: f32 = match t {
                         0 => 0.0,
                         1 => 1.0,
                         _ => 0.5,
                     };
                     if alphas_in.gene_alpha(gid) > 0.0 {
-                        alphas_out.multigene_add(alphas_in, gid, inv_denominator, cp);  
+                        alphas_out.multigene_add(alphas_in, gid, inv_denominator, cp);
                     }
                 }
             }
         } else {
             let label = *labels.get(0).expect("can't extract labels");
-            let gid = (label/2) as usize;
+            let gid = (label / 2) as usize;
             let t = *types.get(0).expect("can't extract types");
-            let cp:f32 = match t {
+            let cp: f32 = match t {
                 0 => 0.0,
                 1 => 1.0,
                 _ => 0.5,
             };
             if alphas_in.gene_alpha(gid) > 0.0 {
                 alphas_out.unigene_add(alphas_in, gid, *count as f32, cp);
-            }        
+            }
         }
     }
 }
@@ -669,19 +668,19 @@ pub(crate) fn velo_em_optimize(
 ) {
     // I take the alpha_in as a part of the input
     // let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
-    let mut alphas_out:VeloCounts = VeloCounts::new(num_alphas, 0.0);
+    let mut alphas_out: VeloCounts = VeloCounts::new(num_alphas, 0.0);
 
     // velo_mode
     // now it's a little bit complex to do initialization by 2 stpes,
     // so I combined them into a single step
 
-    for ((labels,label_types), count) in eqclasses {
+    for ((labels, label_types), count) in eqclasses {
         if labels.len() == 1 {
             let label = labels.get(0).expect("can't extract labels");
             let t = label_types.get(0).expect("can't extract label types");
             // expanded gid to gid
-            let gid = (*label /2) as usize;            
-            let cp:f32 = match *t {
+            let gid = (*label / 2) as usize;
+            let cp: f32 = match *t {
                 0 => 0.0,
                 1 => 1.0,
                 _ => 0.5,
@@ -690,7 +689,7 @@ pub(crate) fn velo_em_optimize(
             unique_evidence[gid] = true;
         } else {
             for label in labels {
-                let gid = (*label /2) as usize;            
+                let gid = (*label / 2) as usize;
                 no_ambiguity[gid] = false;
             }
         }
@@ -753,8 +752,7 @@ pub(crate) fn velo_em_optimize(
     // update too small alphas
     alphas_in.update_small_alpha(MIN_ALPHA);
 
-
-    let alphas_sum: f32 = alphas_in.sum();    
+    let alphas_sum: f32 = alphas_in.sum();
     assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
     info!(log,

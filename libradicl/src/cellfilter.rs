@@ -1100,7 +1100,15 @@ pub fn generate_permit_list(
                 num_reads.to_formatted_string(&Locale::en),
                 hdr.num_chunks.to_formatted_string(&Locale::en)
             );
-            process_filtered(&hm, &ft_vals, &filter_meth, expected_ori, &output_dir, velo_mode, &log)
+            process_filtered(
+                &hm,
+                &ft_vals,
+                &filter_meth,
+                expected_ori,
+                &output_dir,
+                velo_mode,
+                &log,
+            )
         }
     }
 

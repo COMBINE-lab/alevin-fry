@@ -847,7 +847,7 @@ fn velo_get_num_molecules_large_component(
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<(Vec<u32>,Vec<u8>), u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>>,
     numi: &mut u32,
     ng: &mut u32,
     _log: &slog::Logger,
@@ -920,7 +920,7 @@ fn velo_get_num_molecules_large_component(
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
-    let mut gt_aggr: Vec<u32> = vec![0,0,0];
+    let mut gt_aggr: Vec<u32> = vec![0, 0, 0];
     // could this UMI be assigned toa best gene or not
     let mut unresolvable = false;
     // to keep track of the current index in the vector
@@ -939,7 +939,7 @@ fn velo_get_num_molecules_large_component(
                 let global_genes = vec![max_count_gene];
                 let gts = vec![max_count_gt];
                 let counter = gene_eqclass_hash.entry((global_genes, gts)).or_insert(0u32);
-                    *counter += 1;
+                *counter += 1;
             }
 
             // the next umi and gene
@@ -955,7 +955,7 @@ fn velo_get_num_molecules_large_component(
             // count aggr = max count = ct
             // restart the count
             count_aggr = ct;
-            gt_aggr = vec![0,0,0];
+            gt_aggr = vec![0, 0, 0];
 
             max_count = ct;
         } else {
@@ -973,7 +973,7 @@ fn velo_get_num_molecules_large_component(
                 count_aggr = ct;
 
                 // restart the gt_aggr
-                gt_aggr = vec![0,0,0];
+                gt_aggr = vec![0, 0, 0];
                 curr_gn = gn;
             }
             // if the count aggregator exceeded the max
@@ -1012,13 +1012,12 @@ fn velo_get_num_molecules_large_component(
         if cidx == umi_gene_count_vec.len() - 1 && !unresolvable {
             let global_genes = vec![max_count_gene];
             let gts = vec![max_count_gt];
-            let counter = gene_eqclass_hash.entry((global_genes, gts)).or_insert(0u32);                
-            *counter += 1;  
+            let counter = gene_eqclass_hash.entry((global_genes, gts)).or_insert(0u32);
+            *counter += 1;
         }
         cidx += 1;
     }
 }
-
 
 // this function gets global genes and type
 // unspliced = 0, spliced = 1, ambiguous = 2
@@ -1027,8 +1026,8 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
     // depending on whether the particular type of a gene is in the gid list,
     // we will have at most two entries of each gene in global_genes_raw
 
-    let mut global_genes:Vec<u32> = Vec::new();
-    let mut global_genes_type:Vec<u8> = Vec::new();
+    let mut global_genes: Vec<u32> = Vec::new();
+    let mut global_genes_type: Vec<u8> = Vec::new();
     // preparation
     let num_global_genes = global_genes_pre.len();
     let mut idx = 0usize;
@@ -1036,16 +1035,16 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
     // As we always want to check the next entry,
     // we will iterate till the last second entry
     // and then process the last entry separately
-    while idx < num_global_genes-1 {
+    while idx < num_global_genes - 1 {
         // global_genes_pre contains (gid,dist)
         let curr_gid = global_genes_pre[idx];
         // starting from the smallest gid
         // check the type of current gid
-        if (curr_gid %2) == 0 {
+        if (curr_gid % 2) == 0 {
             // curr_gid is a spliced gid
             // if next gid is its unspliced sibling
             // we assign ambiguous type 2
-            if (curr_gid+1) == global_genes_pre[idx+1] {
+            if (curr_gid + 1) == global_genes_pre[idx + 1] {
                 global_genes.push(curr_gid);
                 global_genes_type.push(2);
                 // as the next id is the unspliced type, we skip it
@@ -1053,7 +1052,7 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
             } else {
                 // we know only spliced type of the gene is the reference
                 // so we assign the type as 1
-                
+
                 global_genes.push(curr_gid);
                 global_genes_type.push(1);
                 // next id is not the unspliced sibling, so we go next
@@ -1063,7 +1062,7 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
             // the first type of current gene is the unspliced type, as we sorted, we know
             // the unspliced type is the only one appeared
             // we assign type as 0
-            global_genes.push(curr_gid-1);
+            global_genes.push(curr_gid - 1);
             global_genes_type.push(0);
             // next gid is from a brand new gene
             idx += 1;
@@ -1071,36 +1070,34 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
     } // end while
 
     // Now let's deal with the last entry
-    let last_gid = global_genes_pre[num_global_genes-1];
- 
-    // check the type of the last entry  
-    match last_gid %2 {
+    let last_gid = global_genes_pre[num_global_genes - 1];
+
+    // check the type of the last entry
+    match last_gid % 2 {
         0 => {
             // if this is a spliced type, we just record it
             // because we haven't produced it for sure
             global_genes.push(last_gid);
             global_genes_type.push(1);
-        },
+        }
         1 if num_global_genes == 1 => {
             // if this is an unspliced type,
             //  and is the only entry of global gene list, record it
             global_genes.push(last_gid - 1);
             global_genes_type.push(0);
-
-        },
-        1 if global_genes_pre[num_global_genes-2] != (last_gid - 1) => {
+        }
+        1 if global_genes_pre[num_global_genes - 2] != (last_gid - 1) => {
             // if this is an unspliced type and the previous
             // entry is not its spliced sibling, this is a new gene with unspliced type
             global_genes.push(last_gid - 1);
             global_genes_type.push(0);
-        },
+        }
         // otherwise we have processed this gid in the while loop
         _ => (),
     }
 
     (global_genes, global_genes_type)
 }
-
 
 pub(super) fn velo_get_num_molecules(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
@@ -1166,10 +1163,10 @@ pub(super) fn velo_get_num_molecules(
                 velo_get_num_molecules_large_component(
                     g,
                     eqmap,
-                    comp_verts, 
-                    tid_to_gid, 
-                    num_genes, 
-                    gene_eqclass_hash,  
+                    comp_verts,
+                    tid_to_gid,
+                    num_genes,
+                    gene_eqclass_hash,
                     &mut ng,
                     &mut numi,
                     log,
@@ -1239,13 +1236,13 @@ pub(super) fn velo_get_num_molecules(
                 }
 
                 // get gene_id of best covering transcript
-                
+
                 // velo_mode
-                // if unspliced gid appears, convert it to spliced gid, since 
+                // if unspliced gid appears, convert it to spliced gid, since
                 // we will use spliced gid + type the the future steps
                 let mut best_covering_gene = tid_to_gid[best_covering_txp as usize];
                 if (best_covering_gene % 2) != 0 {
-                    best_covering_gene = best_covering_gene - 1
+                    best_covering_gene -= 1;
                 };
                 //unsafe {
                 global_txps.clear();
@@ -1285,7 +1282,7 @@ pub(super) fn velo_get_num_molecules(
                 // corresponding gene, and dedup the list
                 // velo_mode
                 // each gene has two gids,
-                //  spliced gid and spliced gid + 1 for unspliced, 
+                //  spliced gid and spliced gid + 1 for unspliced,
                 let mut global_genes_pre: Vec<u32> = global_txps
                     .iter()
                     .cloned()
@@ -1300,9 +1297,9 @@ pub(super) fn velo_get_num_molecules(
                     !global_genes_pre.is_empty(),
                     "can't find representative gene(s) for a molecule"
                 );
-                // get global genes and type, 
-                // 0 for unspliced, 
-                // 1 for spliced, 
+                // get global genes and type,
+                // 0 for unspliced,
+                // 1 for spliced,
                 // 2 for ambiguous
                 let (global_genes, global_genes_type) = fill_global_gene(global_genes_pre);
 
@@ -1325,7 +1322,9 @@ pub(super) fn velo_get_num_molecules(
 
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
-                let counter = gene_eqclass_hash.entry((global_genes, global_genes_type)).or_insert(0u32);
+                let counter = gene_eqclass_hash
+                    .entry((global_genes, global_genes_type))
+                    .or_insert(0u32);
                 *counter += 1;
 
                 // for every vertext that has been covered
@@ -1345,7 +1344,8 @@ pub(super) fn velo_get_num_molecules(
                 one_vertex_components[1] += 1;
             }
 
-            let mut global_genes_pre: Vec<u32> = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
+            let mut global_genes_pre: Vec<u32> =
+                tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
             quickersort::sort(&mut global_genes_pre[..]);
             global_genes_pre.dedup();
 
@@ -1355,9 +1355,7 @@ pub(super) fn velo_get_num_molecules(
                 "can't find representative gene(s) for a molecule"
             );
 
-            let (global_genes,global_genes_type) = fill_global_gene(global_genes_pre);
-
-
+            let (global_genes, global_genes_type) = fill_global_gene(global_genes_pre);
 
             pug_stats.total_mccs += 1;
             pug_stats.trivial_mccs += 1;
@@ -1365,7 +1363,9 @@ pub(super) fn velo_get_num_molecules(
                 pug_stats.ambiguous_mccs += 1;
             }
             // incrementing the count of the eqclass label by 1
-            let counter = gene_eqclass_hash.entry((global_genes,global_genes_type)).or_insert(0);
+            let counter = gene_eqclass_hash
+                .entry((global_genes, global_genes_type))
+                .or_insert(0);
             *counter += 1;
         }
 
