@@ -403,3 +403,135 @@ pub(super) struct PUGResolutionStatistics {
     pub ambiguous_mccs: u64,
     pub trivial_mccs: u64,
 }
+
+
+
+pub struct VeloCounts {
+    pub spliced: Vec<f32>,
+    pub unspliced: Vec<f32>,
+}
+
+impl VeloCounts {
+    pub(super) fn new(num_genes: usize, init_value: f32) -> VeloCounts {
+        VeloCounts {
+            spliced: vec![init_value; num_genes],
+            unspliced: vec![init_value; num_genes],
+        }
+    }
+    
+    pub(super) fn scale(&mut self) {
+        self.spliced.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+        self.unspliced.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+    }
+    
+    pub(super) fn only_unique(&mut self) {
+        self.spliced.iter_mut().for_each(|alpha| {
+            *alpha -= 0.5;
+        });
+        self.unspliced.iter_mut().for_each(|alpha| {
+            *alpha -= 0.5;
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn unique_initialize(&mut self, gid: usize, count: f32, cp: f32) {
+        self.spliced[gid] += count * cp;
+        self.unspliced[gid] += count * (1.0-cp);
+    }
+
+    pub(super) fn update_small_alpha(&mut self, min_alpha: f32) {
+        self.spliced.iter_mut().for_each(|alpha| {
+            if *alpha < min_alpha {
+                *alpha = 0.0 as f32;
+            }
+        });
+        self.unspliced.iter_mut().for_each(|alpha| {
+            if *alpha < min_alpha {
+                *alpha = 0.0 as f32;
+            }
+        });
+    }
+
+    pub(super) fn sum(&self) -> f32 {
+        let spliced_sum:f32 = self.spliced.iter().sum();
+        let unspliced_sum:f32 = self.unspliced.iter().sum();
+        spliced_sum + unspliced_sum
+    }
+
+    pub(super) fn multigene_add(&mut self, alphas_in: &VeloCounts, gid:usize, inv_denominator: f32, cp: f32) {        
+        let quota = alphas_in.gene_alpha(gid) * inv_denominator;
+        if cp == 1.0 {
+            self.spliced[gid] += quota;
+        } else if cp == 0.0 {
+            self.unspliced[gid] += quota;
+        } else {
+            let spliced_proportion = (alphas_in.spliced[gid] * cp) / (alphas_in.spliced[gid] * cp +  alphas_in.unspliced[gid] * (1.0 - cp));
+            if !spliced_proportion.is_nan() {
+                self.spliced[gid] += quota * spliced_proportion;
+                self.unspliced[gid] += quota * (1.0 - spliced_proportion);
+            }
+        }
+        // let spliced_proportion = (alphas_in.spliced[gid] * cp) / (alphas_in.spliced[gid] * cp +  alphas_in.unspliced[gid] * (1.0 - cp));
+        // let quota = alphas_in.gene_alpha(gid) * inv_denominator;
+        // if (quota * spliced_proportion).is_nan() {
+        //     println!{"\n\nspliced: {}, unspliced: {}, gene_alpha:{} cp: {}, inv_den: {}, quota: {}", alphas_in.spliced[gid], alphas_in.unspliced[gid], alphas_in.gene_alpha(gid), cp, inv_denominator, quota};
+        // }
+        // self.spliced[gid] += quota * spliced_proportion;
+        // self.unspliced[gid] += quota * (1.0 - spliced_proportion);
+    }
+
+    pub(super) fn unigene_add(&mut self, alphas_in: &VeloCounts, gid: usize, count: f32, cp: f32) {
+        if cp == 1.0 {
+            self.spliced[gid] += count;
+        } else if cp == 0.0 {
+            self.unspliced[gid] += count;
+        } else {
+            let spliced_proportion = alphas_in.spliced[gid] * cp / (alphas_in.spliced[gid] * cp +  alphas_in.unspliced[gid] * (1.0 - cp));
+            if !spliced_proportion.is_nan() {
+            self.spliced[gid] += count * spliced_proportion;
+            self.unspliced[gid] += count * (1.0 - spliced_proportion);
+            }
+        }
+        
+        // let spliced_proportion = alphas_in.spliced[gid] * cp / (alphas_in.spliced[gid] * cp +  alphas_in.unspliced[gid] * (1.0 - cp));
+        // if (count * spliced_proportion).is_nan() {
+        //     println!{"\n\nspliced: {}, unspliced: {}, gene_alpha:{} cp: {}, count: {}", alphas_in.spliced[gid], alphas_in.unspliced[gid], alphas_in.gene_alpha(gid), cp, count};
+        // }
+        // self.spliced[gid] += count * spliced_proportion;
+        // self.unspliced[gid] += count * (1.0 - spliced_proportion);
+    }
+
+
+    pub(super) fn update(&mut self, alphas_out: &mut VeloCounts, gid: usize) {
+        self.spliced[gid] = alphas_out.spliced[gid];
+        self.unspliced[gid] = alphas_out.unspliced[gid];
+        alphas_out.spliced[gid] = 0.0;
+        alphas_out.unspliced[gid] = 0.0;
+    }
+
+    pub(super) fn diff(&self, alphas_out: &VeloCounts, gid: usize) -> f32 {
+        self.gene_alpha(gid) - alphas_out.gene_alpha(gid)
+    } 
+
+    #[allow(dead_code)]
+    pub(super) fn len(&self) -> usize {
+        self.spliced.len()
+    }
+    pub(super) fn gene_alpha(&self, gid: usize) -> f32 {
+        self.spliced[gid] + self.unspliced[gid]
+    }
+    #[allow(dead_code)]
+    pub(super) fn clone(&self) -> VeloCounts {
+        VeloCounts {
+            spliced: self.spliced.clone(),
+            unspliced: self.unspliced.clone(),
+        }
+    }
+    // pub(super) fn iter(&self) -> Counts {
+    //     Counts {
+    //         spliced: self.spliced.clone(),
+    //         unspliced: self.unspliced.clone(),
+    //     }
+    // }
+}
+

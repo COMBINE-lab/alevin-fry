@@ -107,7 +107,9 @@ fn main() {
             Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold; only used with --unfiltered-pl'")
                 .default_value("10")
                 .takes_value(true)
-                .required(true));
+                .required(true))    
+        .arg(Arg::from("-v, --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
+
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
@@ -300,8 +302,10 @@ fn main() {
             }
             fmeth = CellFilterMethod::UnfilteredExternalList(v, min_reads);
         };
+        // velo_mode
+        let velo_mode = t.is_present("velocity-mode");
 
-        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, &log).unwrap();
+        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori,velo_mode, &log).unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
         }
@@ -352,41 +356,82 @@ fn main() {
             std::process::exit(1);
         }
 
-        match libradicl::quant::quantify(
-            input_dir,
-            tg_map,
-            output_dir,
-            num_threads,
-            num_bootstraps,
-            init_uniform,
-            summary_stat,
-            dump_eq,
-            use_mtx,
-            resolution,
-            &log,
-        ) {
-            // if we're all good; then great!
-            Ok(_) => {}
-            // if we have an error, see if it's an error parsing
-            // the CSV or something else.
-            Err(e) => match e.downcast_ref::<CSVError>() {
-                Some(error) => {
-                    match *error.kind() {
-                        // if a deserialize error, we already complained about it
-                        ErrorKind::Deserialize { .. } => {}
-                        // if another type of error, just panic for now
-                        _ => {
-                            panic!("could not quantify rad file.");
+        // velo_mode 
+        let parent = std::path::Path::new(&input_dir);
+
+        if std::path::Path::new(&parent.join("velo.map.collated.rad")).exists() {  
+            match libradicl::quant::velo_quantify(
+                input_dir,
+                tg_map,
+                output_dir,
+                num_threads,
+                num_bootstraps,
+                init_uniform,
+                summary_stat,
+                dump_eq,
+                use_mtx,
+                resolution,
+                &log,
+            ) {
+                // if we're all good; then great!
+                Ok(_) => {}
+                // if we have an error, see if it's an error parsing
+                // the CSV or something else.
+                Err(e) => match e.downcast_ref::<CSVError>() {
+                    Some(error) => {
+                        match *error.kind() {
+                            // if a deserialize error, we already complained about it
+                            ErrorKind::Deserialize { .. } => {}
+                            // if another type of error, just panic for now
+                            _ => {
+                                panic!("could not quantify rad file.");
+                            }
                         }
                     }
-                }
-                // if something else, just panic
-                None => {
-                    panic!("could not quantify rad file.");
-                }
-            },
-        };
-    }
+                    // if something else, just panic
+                    None => {
+                        panic!("could not quantify rad file.");
+                    }
+                },
+            }; // end match if
+        } else {
+            match libradicl::quant::quantify(
+                input_dir,
+                tg_map,
+                output_dir,
+                num_threads,
+                num_bootstraps,
+                init_uniform,
+                summary_stat,
+                dump_eq,
+                use_mtx,
+                resolution,
+                &log,
+            ) {
+                // if we're all good; then great!
+                Ok(_) => {}
+                // if we have an error, see if it's an error parsing
+                // the CSV or something else.
+                Err(e) => match e.downcast_ref::<CSVError>() {
+                    Some(error) => {
+                        match *error.kind() {
+                            // if a deserialize error, we already complained about it
+                            ErrorKind::Deserialize { .. } => {}
+                            // if another type of error, just panic for now
+                            _ => {
+                                panic!("could not quantify rad file.");
+                            }
+                        }
+                    }
+                    // if something else, just panic
+                    None => {
+                        panic!("could not quantify rad file.");
+                    }
+                },
+            }; //end quant if
+        }; // end velo_mode if
+
+    } // end quant if 
 
     if let Some(ref t) = opts.subcommand_matches("infer") {
         let num_threads = t.value_of_t("threads").unwrap();
