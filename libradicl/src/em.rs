@@ -11,7 +11,7 @@ use self::slog::info;
 use fasthash::sea::Hash64;
 #[allow(unused_imports)]
 use fasthash::RandomState;
-use libradicl::schema::{IndexedEqList, VeloCounts};
+use libradicl::schema::{IndexedEqList, SplicedStatus, VeloCounts};
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
 use std::collections::HashMap;
@@ -610,10 +610,10 @@ pub fn run_bootstrap_old(
 
 // velo_mode
 
-pub fn velo_em_update(
+fn velo_em_update(
     alphas_in: &VeloCounts,
     alphas_out: &mut VeloCounts,
-    eqclasses: &HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
 ) {
     // loop over all the eqclasses
     for ((labels, types), count) in eqclasses {
@@ -631,9 +631,9 @@ pub fn velo_em_update(
                     // get the id of gene in counts
                     let gid = (label / 2) as usize;
                     let cp: f32 = match t {
-                        0 => 0.0,
-                        1 => 1.0,
-                        _ => 0.5,
+                        SplicedStatus::Unspliced => 0.0,
+                        SplicedStatus::Spliced => 1.0,
+                        SplicedStatus::Ambiguous => 0.5,
                     };
                     if alphas_in.gene_alpha(gid) > 0.0 {
                         alphas_out.multigene_add(alphas_in, gid, inv_denominator, cp);
@@ -645,9 +645,9 @@ pub fn velo_em_update(
             let gid = (label / 2) as usize;
             let t = *types.get(0).expect("can't extract types");
             let cp: f32 = match t {
-                0 => 0.0,
-                1 => 1.0,
-                _ => 0.5,
+                SplicedStatus::Unspliced => 0.0,
+                SplicedStatus::Spliced => 1.0,
+                SplicedStatus::Ambiguous => 0.5,
             };
             if alphas_in.gene_alpha(gid) > 0.0 {
                 alphas_out.unigene_add(alphas_in, gid, *count as f32, cp);
@@ -657,7 +657,7 @@ pub fn velo_em_update(
 }
 
 pub(crate) fn velo_em_optimize(
-    eqclasses: &HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
     alphas_in: &mut VeloCounts,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
@@ -681,9 +681,9 @@ pub(crate) fn velo_em_optimize(
             // expanded gid to gid
             let gid = (*label / 2) as usize;
             let cp: f32 = match *t {
-                0 => 0.0,
-                1 => 1.0,
-                _ => 0.5,
+                SplicedStatus::Unspliced => 0.0,
+                SplicedStatus::Spliced => 1.0,
+                SplicedStatus::Ambiguous => 0.5,
             };
             alphas_in.unique_initialize(gid, *count as f32, cp);
             unique_evidence[gid] = true;
@@ -693,6 +693,11 @@ pub(crate) fn velo_em_optimize(
                 no_ambiguity[gid] = false;
             }
         }
+    }
+
+    // if we are not running the EM, then return now
+    if only_unique {
+        return;
     }
 
     // fill in the alphas based on the initialization strategy

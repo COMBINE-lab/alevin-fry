@@ -17,7 +17,7 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PUGResolutionStatistics};
+use crate::schema::{EqMap, PUGResolutionStatistics, SplicedStatus};
 
 type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 
@@ -847,7 +847,11 @@ fn velo_get_num_molecules_large_component(
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<
+        (Vec<u32>, Vec<SplicedStatus>),
+        u32,
+        fasthash::RandomState<Hash64>,
+    >,
     numi: &mut u32,
     ng: &mut u32,
     _log: &slog::Logger,
@@ -856,7 +860,7 @@ fn velo_get_num_molecules_large_component(
     // let mut counts = vec![0u32; num_genes];
 
     // TODO: better capacity
-    let mut umi_gene_count_vec: Vec<(u64, u32, u8, u32)> = vec![];
+    let mut umi_gene_count_vec: Vec<(u64, u32, SplicedStatus, u32)> = vec![];
 
     // build a temporary hashmap from each
     // equivalence class id in the current subgraph
@@ -916,7 +920,7 @@ fn velo_get_num_molecules_large_component(
     // and the conditional probability corresponds to it
     let mut max_count_gene = 0u32;
     let mut max_count = 0u32;
-    let mut max_count_gt = 0u8;
+    let mut max_count_gt = SplicedStatus::Unspliced;
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
@@ -984,11 +988,11 @@ fn velo_get_num_molecules_large_component(
                 Ordering::Greater => {
                     max_count = count_aggr;
                     max_count_gt = if gt_aggr[0] > gt_aggr[1] && gt_aggr[0] > gt_aggr[2] {
-                        0
+                        SplicedStatus::Unspliced
                     } else if gt_aggr[1] > gt_aggr[0] && gt_aggr[1] > gt_aggr[2] {
-                        1
+                        SplicedStatus::Spliced
                     } else {
-                        2
+                        SplicedStatus::Ambiguous
                     };
                     max_count_gene = curr_gn;
                     unresolvable = false;
@@ -1021,13 +1025,13 @@ fn velo_get_num_molecules_large_component(
 
 // this function gets global genes and type
 // unspliced = 0, spliced = 1, ambiguous = 2
-fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
+fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<SplicedStatus>) {
     // here we have two gid for each gene, corresponding to spliced type and unspliced type
     // depending on whether the particular type of a gene is in the gid list,
     // we will have at most two entries of each gene in global_genes_raw
 
     let mut global_genes: Vec<u32> = Vec::new();
-    let mut global_genes_type: Vec<u8> = Vec::new();
+    let mut global_genes_type: Vec<SplicedStatus> = Vec::new();
     // preparation
     let num_global_genes = global_genes_pre.len();
     let mut idx = 0usize;
@@ -1046,7 +1050,7 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
             // we assign ambiguous type 2
             if (curr_gid + 1) == global_genes_pre[idx + 1] {
                 global_genes.push(curr_gid);
-                global_genes_type.push(2);
+                global_genes_type.push(SplicedStatus::Ambiguous);
                 // as the next id is the unspliced type, we skip it
                 idx += 2;
             } else {
@@ -1054,7 +1058,7 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
                 // so we assign the type as 1
 
                 global_genes.push(curr_gid);
-                global_genes_type.push(1);
+                global_genes_type.push(SplicedStatus::Spliced);
                 // next id is not the unspliced sibling, so we go next
                 idx += 1;
             }
@@ -1063,7 +1067,7 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
             // the unspliced type is the only one appeared
             // we assign type as 0
             global_genes.push(curr_gid - 1);
-            global_genes_type.push(0);
+            global_genes_type.push(SplicedStatus::Unspliced);
             // next gid is from a brand new gene
             idx += 1;
         } // end if else
@@ -1078,19 +1082,19 @@ fn fill_global_gene(global_genes_pre: Vec<u32>) -> (Vec<u32>, Vec<u8>) {
             // if this is a spliced type, we just record it
             // because we haven't produced it for sure
             global_genes.push(last_gid);
-            global_genes_type.push(1);
+            global_genes_type.push(SplicedStatus::Spliced);
         }
         1 if num_global_genes == 1 => {
             // if this is an unspliced type,
             //  and is the only entry of global gene list, record it
             global_genes.push(last_gid - 1);
-            global_genes_type.push(0);
+            global_genes_type.push(SplicedStatus::Unspliced);
         }
         1 if global_genes_pre[num_global_genes - 2] != (last_gid - 1) => {
             // if this is an unspliced type and the previous
             // entry is not its spliced sibling, this is a new gene with unspliced type
             global_genes.push(last_gid - 1);
-            global_genes_type.push(0);
+            global_genes_type.push(SplicedStatus::Unspliced);
         }
         // otherwise we have processed this gid in the while loop
         _ => (),
@@ -1104,7 +1108,11 @@ pub(super) fn velo_get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<
+        (Vec<u32>, Vec<SplicedStatus>),
+        u32,
+        fasthash::RandomState<Hash64>,
+    >,
     log: &slog::Logger,
 ) -> PUGResolutionStatistics
 //,)

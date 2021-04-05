@@ -43,7 +43,7 @@ use flate2::Compression;
 
 use self::libradicl::em::{em_optimize, run_bootstrap, velo_em_optimize, EMInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy, VeloCounts};
+use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy, SplicedStatus, VeloCounts};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -1097,7 +1097,7 @@ pub fn quantify(
 
 struct VeloEQCMap {
     // the *global* gene-level equivalence class map
-    global_eqc: HashMap<(Vec<u32>, Vec<u8>), u64, ahash::RandomState>,
+    global_eqc: HashMap<(Vec<u32>, Vec<SplicedStatus>), u64, ahash::RandomState>,
     // the list of equivalence classes (and corresponding umi count)
     // that occurs in each cell.
     cell_level_count: Vec<(u64, u32)>,
@@ -1507,8 +1507,11 @@ pub fn velo_quantify(
 
             let s = fasthash::RandomState::<Hash64>::new();
             // velo_mode, <(gid, is_spliced), counts>
-            let mut gene_eqc: HashMap<(Vec<u32>, Vec<u8>), u32, fasthash::RandomState<Hash64>> =
-                HashMap::with_hasher(s);
+            let mut gene_eqc: HashMap<
+                (Vec<u32>, Vec<SplicedStatus>),
+                u32,
+                fasthash::RandomState<Hash64>,
+            > = HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
                 EMInitType::Uniform
@@ -1584,40 +1587,31 @@ pub fn velo_quantify(
                         //     counts = ct.0;
                         //     mmrate.lock().unwrap()[cell_num] = ct.1;
                         // }
-                        // ResolutionStrategy::Parsimony => {
-                        //     let g = extract_graph(&eq_map, &log);
-                        //     let pug_stats = pugutils::get_num_molecules(
-                        //         &g,
-                        //         &eq_map,
-                        //         &tid_to_gid,
-                        //         num_genes,
-                        //         &mut gene_eqc,
-                        //         &log,
-                        //     );
-                        //     alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                        //     counts = em_optimize(
-                        //         &gene_eqc,
-                        //         &mut unique_evidence,
-                        //         &mut no_ambiguity,
-                        //         em_init_type,
-                        //         num_genes,
-                        //         true, // only unqique evidence
-                        //         &log,
-                        //     );
-                        //     if num_bootstraps > 0 {
-                        //         bootstraps = run_bootstrap(
-                        //             &gene_eqc,
-                        //             num_bootstraps,
-                        //             &counts,
-                        //             init_uniform,
-                        //             summary_stat,
-                        //             &log,
-                        //         );
-                        //     }
-                        //     //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
-                        //     //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
-                        //     //);
-                        // }
+                        ResolutionStrategy::Parsimony => {
+                            let g = extract_graph(&eq_map, &log);
+                            let pug_stats = pugutils::velo_get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &tid_to_gid,
+                                num_genes,
+                                &mut gene_eqc,
+                                &log,
+                            );
+                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+                            velo_em_optimize(
+                                &gene_eqc,
+                                &mut counts,
+                                &mut unique_evidence,
+                                &mut no_ambiguity,
+                                em_init_type,
+                                num_genes,
+                                true, // only use unqique evidence i.e. don't run the EM
+                                &log,
+                            );
+                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                            //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
+                            //);
+                        }
                         ResolutionStrategy::Full => {
                             let g = extract_graph(&eq_map, &log);
                             let pug_stats = pugutils::velo_get_num_molecules(
@@ -1658,7 +1652,9 @@ pub fn velo_quantify(
                             //     );
                             // }
                         }
-                        _ => (),
+                        _ => {
+                            unimplemented!("Only the parsimony and full resolution modes are currently implemented in velo mode.");
+                        }
                     }
 
                     // clear our local variables
@@ -1953,7 +1949,7 @@ pub fn velo_quantify(
     // k3yavi: Todo delete after api stability
     // creating a dummy cmd_info.json for R compatibility
     let cmd_info = json!({
-         "salmon_version": "1.3.0",
+         "salmon_version": "1.4.0",
          "auxDir": "aux_info"
     });
     let mut cmd_info_file = File::create(output_path.join("cmd_info.json"))

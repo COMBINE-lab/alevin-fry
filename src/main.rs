@@ -343,7 +343,7 @@ fn main() {
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = t.is_present("use-mtx");
-        let input_dir : String = t.value_of_t("input-dir").unwrap();
+        let input_dir: String = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();

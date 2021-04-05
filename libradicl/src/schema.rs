@@ -388,6 +388,23 @@ impl EqMap {
     }
 }
 
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+pub(super) enum SplicedStatus {
+    Unspliced,
+    Spliced,
+    Ambiguous,
+}
+
+impl fmt::Display for SplicedStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            SplicedStatus::Unspliced => write!(f, "0"),
+            SplicedStatus::Spliced => write!(f, "1"),
+            SplicedStatus::Ambiguous => write!(f, "2"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum PUGEdgeType {
     NoEdge,
