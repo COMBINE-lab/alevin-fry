@@ -45,4 +45,4 @@ path_to_alevinfry quant \
 -i path_to_collate_outdir \
 -o path_to_fry_outdir \
 -m path_to_expanded_tx2gene_file \
--t num_threads --use-mtx -d
+-t num_threads --use-mtx -d -r parsimony
