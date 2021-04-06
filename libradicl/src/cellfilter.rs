@@ -320,7 +320,7 @@ pub fn test_external_parse(
     let i_dir = std::path::Path::new(&rad_dir);
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -987,7 +987,7 @@ pub fn generate_permit_list(
 
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",

@@ -17,9 +17,9 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PUGResolutionStatistics, SplicedStatus};
+use crate::schema::{EqMap, PugResolutionStatistics, SplicedStatus};
 
-type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
+type CcMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 
 /// Extract the weakly connected components from the directed graph
 /// G.  Interestingly, `petgraph` has a builtin algorithm for returning
@@ -30,7 +30,7 @@ type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 /// find data structure.  This returns a HashMap, mapping each
 /// connected component id (a u32) to the corresponding list of vertex
 /// ids (also u32s) contained in the connected component.
-pub fn weakly_connected_components<G>(g: G) -> CCMap
+pub fn weakly_connected_components<G>(g: G) -> CcMap
 where
     G: petgraph::visit::NodeCompactIndexable + petgraph::visit::IntoEdgeReferences,
 {
@@ -42,7 +42,7 @@ where
         vertex_sets.union(g.to_index(a), g.to_index(b));
     }
     let labels = vertex_sets.into_labeling();
-    fn get_map() -> CCMap {
+    fn get_map() -> CcMap {
         let s = RandomState::<Hash64>::new();
         HashMap::with_hasher(s)
     }
@@ -524,7 +524,7 @@ pub(super) fn get_num_molecules(
     num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     log: &slog::Logger,
-) -> PUGResolutionStatistics
+) -> PugResolutionStatistics
 //,)
 {
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
@@ -561,7 +561,7 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
-    let mut pug_stats = PUGResolutionStatistics {
+    let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
         ambiguous_mccs: 0u64,
@@ -841,6 +841,7 @@ pub(super) fn get_num_molecules(
 /// given the connected component (subgraph) of `g` defined by the
 /// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
 /// within this subgraph.
+#[allow(clippy::too_many_arguments)]
 fn velo_get_num_molecules_large_component(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eq_map: &EqMap,
@@ -1114,7 +1115,7 @@ pub(super) fn velo_get_num_molecules(
         fasthash::RandomState<Hash64>,
     >,
     log: &slog::Logger,
-) -> PUGResolutionStatistics
+) -> PugResolutionStatistics
 //,)
 {
     type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
@@ -1151,7 +1152,7 @@ pub(super) fn velo_get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
-    let mut pug_stats = PUGResolutionStatistics {
+    let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
         ambiguous_mccs: 0u64,

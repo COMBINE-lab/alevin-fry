@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use self::libradicl::em::{em_optimize_subset, EMInitType};
+use self::libradicl::em::{em_optimize_subset, EmInitType};
 
 pub fn infer(
     //num_bootstraps,
@@ -149,7 +149,7 @@ pub fn infer(
                         &cell_data,
                         &mut unique_evidence,
                         &mut no_ambiguity,
-                        EMInitType::Informative,
+                        EmInitType::Informative,
                         num_genes,
                         false,
                         &log,

@@ -31,7 +31,7 @@ const MAX_ITER: u32 = 10_000;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
 #[derive(Copy, Clone)]
-pub(crate) enum EMInitType {
+pub(crate) enum EmInitType {
     Informative,
     Uniform,
     Random,
@@ -103,7 +103,7 @@ pub(crate) fn em_optimize_subset(
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
-    init_type: EMInitType,
+    init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
@@ -135,13 +135,13 @@ pub(crate) fn em_optimize_subset(
     let uni_prior = 1.0 / (num_alphas as f32);
     for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
-            EMInitType::Uniform => {
+            EmInitType::Uniform => {
                 *item = uni_prior;
             }
-            EMInitType::Informative => {
+            EmInitType::Informative => {
                 *item = (*item + 0.5) * 1e-3;
             }
-            EMInitType::Random => {
+            EmInitType::Random => {
                 *item = rng.gen::<f32>() + 1e-5;
             }
         }
@@ -231,7 +231,7 @@ pub(crate) fn em_optimize(
     eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
-    init_type: EMInitType,
+    init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
@@ -260,13 +260,13 @@ pub(crate) fn em_optimize(
     let uni_prior = 1.0 / (num_alphas as f32);
     for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
-            EMInitType::Uniform => {
+            EmInitType::Uniform => {
                 *item = uni_prior;
             }
-            EMInitType::Informative => {
+            EmInitType::Informative => {
                 *item = (*item + 0.5) * 1e-3;
             }
-            EMInitType::Random => {
+            EmInitType::Random => {
                 *item = rng.gen::<f32>() + 1e-5;
             }
         }
@@ -381,7 +381,7 @@ pub(crate) fn run_bootstrap_subset(
             &bootstrap_counts[..], // indices into eqclasses relevant for this cell
             &mut unique_evidence,
             &mut no_ambiguity,
-            EMInitType::Random,
+            EmInitType::Random,
             num_alphas_us,
             false, // only unique
             &_log,
@@ -661,7 +661,7 @@ pub(crate) fn velo_em_optimize(
     alphas_in: &mut VeloCounts,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
-    init_type: EMInitType,
+    init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
@@ -705,15 +705,15 @@ pub(crate) fn velo_em_optimize(
     let uni_prior = 1.0 / (num_alphas as f32);
     for gid in 0..num_alphas {
         match init_type {
-            EMInitType::Uniform => {
+            EmInitType::Uniform => {
                 alphas_in.spliced[gid] = uni_prior;
                 alphas_in.unspliced[gid] = uni_prior;
             }
-            EMInitType::Informative => {
+            EmInitType::Informative => {
                 alphas_in.spliced[gid] = (alphas_in.spliced[gid] + 0.25) * 1e-3;
                 alphas_in.unspliced[gid] = (alphas_in.unspliced[gid] + 0.25) * 1e-3;
             }
-            EMInitType::Random => {
+            EmInitType::Random => {
                 let q = rng.gen::<f32>() + 1e-5;
                 alphas_in.spliced[gid] = q;
                 alphas_in.unspliced[gid] = q;

@@ -31,8 +31,8 @@ pub fn collate(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
-    type TSVRec = (u64, u64);
-    let mut tsv_map = Vec::<TSVRec>::new(); //HashMap::<u64, u64>::new();
+    type TsvRec = (u64, u64);
+    let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
 
     let freq_file =
         std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
@@ -43,7 +43,7 @@ pub fn collate(
 
     let mut total_to_collate = 0;
     for result in rdr.deserialize() {
-        let record: TSVRec = result?;
+        let record: TsvRec = result?;
         tsv_map.push(record);
         total_to_collate += record.1;
     }
@@ -210,7 +210,7 @@ pub fn collate_in_memory_multipass(
     let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
     let end_header_pos =
         br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
@@ -270,7 +270,7 @@ pub fn collate_in_memory_multipass(
     };
 
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
-    let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCBChunk>::new());
+    let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCbChunk>::new());
     let mut allocated_records;
     let mut total_allocated_records = 0;
     let mut last_idx = 0;
@@ -307,7 +307,7 @@ pub fn collate_in_memory_multipass(
         for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
             output_cache.insert(
                 rec.0,
-                libradicl::CorrectedCBChunk::from_label_and_counter(rec.0, rec.1),
+                libradicl::CorrectedCbChunk::from_label_and_counter(rec.0, rec.1),
             );
             allocated_records += rec.1;
             last_idx = i + 1;
@@ -504,7 +504,7 @@ pub fn collate_with_temp(
     let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
     let end_header_pos =
         br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
@@ -766,7 +766,7 @@ pub fn collate_with_temp(
         // each thread will need to access the work queue
         let in_q = fq.clone();
         // the output cache and correction map
-        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+        let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk>::new();
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types

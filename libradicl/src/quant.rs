@@ -41,9 +41,9 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, run_bootstrap, velo_em_optimize, EMInitType};
+use self::libradicl::em::{em_optimize, run_bootstrap, velo_em_optimize, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy, SplicedStatus, VeloCounts};
+use self::libradicl::schema::{EqMap, PugEdgeType, ResolutionStrategy, SplicedStatus, VeloCounts};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -68,24 +68,24 @@ fn extract_graph(
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
-    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
+    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
         let hdist = count_diff_2_bit_packed(x.0, y.0);
         if hdist == 0 {
             zero_edit += 1;
-            return PUGEdgeType::BiDirected;
+            return PugEdgeType::BiDirected;
         }
 
         if hdist < 2 {
             one_edit += 1;
             if x.1 > (2 * y.1 - 1) {
-                return PUGEdgeType::XToY;
+                return PugEdgeType::XToY;
             } else if y.1 > (2 * x.1 - 1) {
-                return PUGEdgeType::YToX;
+                return PugEdgeType::YToX;
             } else {
-                return PUGEdgeType::BiDirected;
+                return PugEdgeType::BiDirected;
             }
         }
-        PUGEdgeType::NoEdge
+        PugEdgeType::NoEdge
     };
 
     let mut _bidirected = 0u64;
@@ -135,7 +135,7 @@ fn extract_graph(
                 let et = has_edge(&x, &x2);
                 // for each type of edge, add the appropriate edge in the graph
                 match et {
-                    PUGEdgeType::BiDirected => {
+                    PugEdgeType::BiDirected => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         _bidirected += 1;
@@ -143,21 +143,21 @@ fn extract_graph(
                         //    bidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::XToY => {
+                    PugEdgeType::XToY => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::YToX => {
+                    PugEdgeType::YToX => {
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::NoEdge => {}
+                    PugEdgeType::NoEdge => {}
                 }
             }
         }
@@ -206,7 +206,7 @@ fn extract_graph(
 
                         let et = has_edge(&x, &y);
                         match et {
-                            PUGEdgeType::BiDirected => {
+                            PugEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 _bidirected += 1;
@@ -216,7 +216,7 @@ fn extract_graph(
                                 //    bidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::XToY => {
+                            PugEdgeType::XToY => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
@@ -225,7 +225,7 @@ fn extract_graph(
                                 //    unidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::YToX => {
+                            PugEdgeType::YToX => {
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
@@ -234,7 +234,7 @@ fn extract_graph(
                                 //    unidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::NoEdge => {}
+                            PugEdgeType::NoEdge => {}
                         }
                     }
                 }
@@ -256,10 +256,10 @@ fn extract_graph(
     graph
 }
 
-type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 struct BootstrapHelper {
-    bsfile: Option<BufferedGZFile>,
-    mean_var_files: Option<(BufferedGZFile, BufferedGZFile)>,
+    bsfile: Option<BufferedGzFile>,
+    mean_var_files: Option<(BufferedGzFile, BufferedGzFile)>,
 }
 
 impl BootstrapHelper {
@@ -324,10 +324,10 @@ struct VeloQuantOutputInfo {
     spliced_trimat: sprs::TriMatI<f32, u32>,
     unspliced_trimat: sprs::TriMatI<f32, u32>,
     row_index: usize,
-    bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
+    _bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
-struct EQCMap {
+struct EqcMap {
     // the *global* gene-level equivalence class map
     global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
     // the list of equivalence classes (and corresponding umi count)
@@ -339,7 +339,7 @@ struct EQCMap {
 }
 
 fn write_eqc_counts(
-    eqid_map_lock: &Arc<Mutex<EQCMap>>,
+    eqid_map_lock: &Arc<Mutex<EqcMap>>,
     num_genes: usize,
     output_path: &std::path::Path,
     log: &slog::Logger,
@@ -426,7 +426,7 @@ pub fn quantify(
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
@@ -450,7 +450,7 @@ pub fn quantify(
     let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
 
     // now read in the transcript to gene map
-    type TSVRec = (String, String);
+    type TsvRec = (String, String);
 
     // map each transcript id to the corresponding gene id
     // the transcript name can be looked up from the id in the RAD header,
@@ -469,7 +469,7 @@ pub fn quantify(
     for result in rdr.deserialize() {
         match result {
             Ok(record_in) => {
-                let record: TSVRec = record_in;
+                let record: TsvRec = record_in;
                 //let record: TSVRec = result?;
                 // first, get the id for this gene
                 let next_id = gene_name_to_id.len() as u32;
@@ -629,7 +629,7 @@ pub fn quantify(
     // structure is protected by a lock for now.
     // This will only be used if the `dump_eq` paramater is true.
     let so = ahash::RandomState::new();
-    let eqid_map_lock = Arc::new(Mutex::new(EQCMap {
+    let eqid_map_lock = Arc::new(Mutex::new(EqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
         cell_offset: Vec::new(),
@@ -688,9 +688,9 @@ pub fn quantify(
                 HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
-                EMInitType::Uniform
+                EmInitType::Uniform
             } else {
-                EMInitType::Informative
+                EmInitType::Informative
             };
 
             // pop from the work queue until everything is
@@ -730,7 +730,7 @@ pub fn quantify(
                                 &log,
                             );
                         }
-                        ResolutionStrategy::CellRangerLikeEM => {
+                        ResolutionStrategy::CellRangerLikeEm => {
                             pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
@@ -1095,7 +1095,7 @@ pub fn quantify(
     Ok(())
 }
 
-struct VeloEQCMap {
+struct VeloEqcMap {
     // the *global* gene-level equivalence class map
     global_eqc: HashMap<(Vec<u32>, Vec<SplicedStatus>), u64, ahash::RandomState>,
     // the list of equivalence classes (and corresponding umi count)
@@ -1107,7 +1107,7 @@ struct VeloEQCMap {
 }
 
 fn velo_write_eqc_counts(
-    eqid_map_lock: &Arc<Mutex<VeloEQCMap>>,
+    eqid_map_lock: &Arc<Mutex<VeloEqcMap>>,
     num_genes: usize,
     output_path: &std::path::Path,
     log: &slog::Logger,
@@ -1214,7 +1214,7 @@ pub fn velo_quantify(
     let i_file =
         File::open(parent.join("velo.map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
@@ -1238,7 +1238,7 @@ pub fn velo_quantify(
     let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
 
     // now read in the transcript to gene map
-    type TSVRec = (String, String);
+    type TsvRec = (String, String);
 
     // map each transcript id to the corresponding gene id
     // the transcript name can be looked up from the id in the RAD header,
@@ -1265,7 +1265,7 @@ pub fn velo_quantify(
     // for convenience, we define a gid helper, next_gid
     let mut next_gid = 0u32;
     for result in rdr.deserialize() {
-        let record: TSVRec = result?;
+        let record: TsvRec = result?;
         // first, get the first id for this gene
         let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert_with(|| {
             // as we need to return the current next_gid if we run this code
@@ -1430,10 +1430,10 @@ pub fn velo_quantify(
         spliced_trimat,
         unspliced_trimat,
         row_index: 0usize,
-        bootstrap_helper: boot_helper,
+        _bootstrap_helper: boot_helper,
     }));
 
-    let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
+    let _mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
 
@@ -1444,7 +1444,7 @@ pub fn velo_quantify(
     // structure is protected by a lock for now.
     // This will only be used if the `dump_eq` paramater is true.
     let so = ahash::RandomState::new();
-    let eqid_map_lock = Arc::new(Mutex::new(VeloEQCMap {
+    let eqid_map_lock = Arc::new(Mutex::new(VeloEqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
         cell_offset: Vec::new(),
@@ -1471,7 +1471,7 @@ pub fn velo_quantify(
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
-        let mmrate = mmrate.clone();
+        let _mmrate = _mmrate.clone();
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
@@ -1486,12 +1486,12 @@ pub fn velo_quantify(
 
             let mut spliced_eds_bytes = Vec::<u8>::new();
             let mut unspliced_eds_bytes = Vec::<u8>::new();
-            let mut spliced_bt_eds_bytes: Vec<u8> = Vec::new();
-            let mut unspliced_bt_eds_bytes: Vec<u8> = Vec::new();
-            let mut spliced_eds_mean_bytes: Vec<u8> = Vec::new();
-            let mut unspliced_eds_mean_bytes: Vec<u8> = Vec::new();
-            let mut spliced_eds_var_bytes: Vec<u8> = Vec::new();
-            let mut unspliced_eds_var_bytes: Vec<u8> = Vec::new();
+            let mut _spliced_bt_eds_bytes: Vec<u8> = Vec::new();
+            let mut _unspliced_bt_eds_bytes: Vec<u8> = Vec::new();
+            let mut _spliced_eds_mean_bytes: Vec<u8> = Vec::new();
+            let mut _unspliced_eds_mean_bytes: Vec<u8> = Vec::new();
+            let mut _spliced_eds_var_bytes: Vec<u8> = Vec::new();
+            let mut _unspliced_eds_var_bytes: Vec<u8> = Vec::new();
 
             // the variable we will use to bind the *cell-specific* gene-level
             // equivalence class table.
@@ -1514,9 +1514,9 @@ pub fn velo_quantify(
             > = HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
-                EMInitType::Uniform
+                EmInitType::Uniform
             } else {
-                EMInitType::Informative
+                EmInitType::Informative
             };
 
             // pop from the work queue until everything is
@@ -1536,9 +1536,9 @@ pub fn velo_quantify(
                     // correspond to spliced count and unspliced count of genes
                     // I define counts here because I met some strange errors
                     let mut counts: VeloCounts = VeloCounts::new(num_genes, 0.0f32);
-                    let mut alt_resolution = false;
+                    let alt_resolution;
 
-                    let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+                    let mut _bootstraps: Vec<Vec<f32>> = Vec::new();
 
                     match resolution {
                         // ResolutionStrategy::CellRangerLike => {
@@ -1559,7 +1559,7 @@ pub fn velo_quantify(
                         //         &log,
                         //     );
                         // }
-                        // ResolutionStrategy::CellRangerLikeEM => {
+                        // ResolutionStrategy::CellRangerLikeEm => {
                         //     pugutils::get_num_molecules_cell_ranger_like(
                         //         &eq_map,
                         //         &tid_to_gid,

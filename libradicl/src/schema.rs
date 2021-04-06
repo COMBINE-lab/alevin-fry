@@ -18,7 +18,7 @@ use std::str::FromStr;
 * Single-cell equivalence class
 **/
 #[derive(Debug)]
-pub struct CellEQClass<'a> {
+pub struct CellEqClass<'a> {
     // transcripts defining this eq. class
     pub transcripts: &'a Vec<u32>,
     // umis with multiplicities
@@ -44,7 +44,7 @@ pub struct ProtocolInfo {
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
-    CellRangerLikeEM,
+    CellRangerLikeEm,
     Full,
     Parsimony,
 }
@@ -62,7 +62,7 @@ impl FromStr for ResolutionStrategy {
         match s {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
-            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEM),
+            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
             "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
@@ -406,7 +406,7 @@ impl fmt::Display for SplicedStatus {
 }
 
 #[derive(Debug)]
-pub(super) enum PUGEdgeType {
+pub(super) enum PugEdgeType {
     NoEdge,
     BiDirected,
     XToY,
@@ -414,7 +414,7 @@ pub(super) enum PUGEdgeType {
 }
 
 #[derive(Debug)]
-pub(super) struct PUGResolutionStatistics {
+pub(super) struct PugResolutionStatistics {
     pub used_alternative_strategy: bool,
     pub total_mccs: u64,
     pub ambiguous_mccs: u64,
@@ -434,11 +434,13 @@ impl VeloCounts {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn scale(&mut self) {
         self.spliced.iter_mut().for_each(|alpha| *alpha *= 1e-3);
         self.unspliced.iter_mut().for_each(|alpha| *alpha *= 1e-3);
     }
 
+    #[allow(dead_code)]
     pub(super) fn only_unique(&mut self) {
         self.spliced.iter_mut().for_each(|alpha| {
             *alpha -= 0.5;
