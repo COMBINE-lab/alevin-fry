@@ -98,6 +98,7 @@ pub(crate) fn em_update_subset(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn em_optimize_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
@@ -656,6 +657,7 @@ fn velo_em_update(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn velo_em_optimize(
     eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
     alphas_in: &mut VeloCounts,

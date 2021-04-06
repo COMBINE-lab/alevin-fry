@@ -539,7 +539,7 @@ pub fn test_external_parse(
     */
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps, clippy::too_many_arguments)]
 fn process_unfiltered(
     hm: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
     mut unmatched_bc: Vec<u64>,
