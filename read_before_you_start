@@ -1,4 +1,4 @@
-1. run `cargo build --release` to comple.
+1. run `cargo build --release` to install alevin-fry.
 2. This code uses an expanded transcriptome as the reference, in which each gene has its spliced transcripts(isoforms) and one unspliced transcript, which is the whole transcriptome region of the gene.
 3. the expanded transcriptome can be generated using spliced_unspliced_txome_builder.R, following is the instructions to run the code. You can also get it by running`Rscript spliced_unspliced_txome_builder.R --help`
         This Rscript is used for building expanded transcriptome containing the spliced and unspliced version of genes.
