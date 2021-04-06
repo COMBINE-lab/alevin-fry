@@ -11,7 +11,7 @@ use self::slog::info;
 use fasthash::sea::Hash64;
 #[allow(unused_imports)]
 use fasthash::RandomState;
-use libradicl::schema::IndexedEqList;
+use libradicl::schema::{IndexedEqList, SplicedStatus, VeloCounts};
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
 use std::collections::HashMap;
@@ -312,7 +312,6 @@ pub(crate) fn em_optimize(
             *alpha = 0.0_f32;
         }
     });
-
     let alphas_sum: f32 = alphas_in.iter().sum();
     assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
@@ -607,4 +606,163 @@ pub fn run_bootstrap_old(
     }
 
     bootstraps
+}
+
+// velo_mode
+
+fn velo_em_update(
+    alphas_in: &VeloCounts,
+    alphas_out: &mut VeloCounts,
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
+) {
+    // loop over all the eqclasses
+    for ((labels, types), count) in eqclasses {
+        if labels.len() > 1 {
+            let mut denominator: f32 = 0.0;
+            for label in labels {
+                // expanded gid to gid
+                let gid = (*label / 2) as usize;
+                denominator += alphas_in.gene_alpha(gid);
+            }
+
+            if denominator > 0.0 {
+                let inv_denominator = *count as f32 / denominator;
+                for (&label, &t) in labels.iter().zip(types.iter()) {
+                    // get the id of gene in counts
+                    let gid = (label / 2) as usize;
+                    let cp: f32 = match t {
+                        SplicedStatus::Unspliced => 0.0,
+                        SplicedStatus::Spliced => 1.0,
+                        SplicedStatus::Ambiguous => 0.5,
+                    };
+                    if alphas_in.gene_alpha(gid) > 0.0 {
+                        alphas_out.multigene_add(alphas_in, gid, inv_denominator, cp);
+                    }
+                }
+            }
+        } else {
+            let label = *labels.get(0).expect("can't extract labels");
+            let gid = (label / 2) as usize;
+            let t = *types.get(0).expect("can't extract types");
+            let cp: f32 = match t {
+                SplicedStatus::Unspliced => 0.0,
+                SplicedStatus::Spliced => 1.0,
+                SplicedStatus::Ambiguous => 0.5,
+            };
+            if alphas_in.gene_alpha(gid) > 0.0 {
+                alphas_out.unigene_add(alphas_in, gid, *count as f32, cp);
+            }
+        }
+    }
+}
+
+pub(crate) fn velo_em_optimize(
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
+    alphas_in: &mut VeloCounts,
+    unique_evidence: &mut Vec<bool>,
+    no_ambiguity: &mut Vec<bool>,
+    init_type: EMInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    _log: &slog::Logger,
+) {
+    // I take the alpha_in as a part of the input
+    // let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
+    let mut alphas_out: VeloCounts = VeloCounts::new(num_alphas, 0.0);
+
+    // velo_mode
+    // now it's a little bit complex to do initialization by 2 stpes,
+    // so I combined them into a single step
+
+    for ((labels, label_types), count) in eqclasses {
+        if labels.len() == 1 {
+            let label = labels.get(0).expect("can't extract labels");
+            let t = label_types.get(0).expect("can't extract label types");
+            // expanded gid to gid
+            let gid = (*label / 2) as usize;
+            let cp: f32 = match *t {
+                SplicedStatus::Unspliced => 0.0,
+                SplicedStatus::Spliced => 1.0,
+                SplicedStatus::Ambiguous => 0.5,
+            };
+            alphas_in.unique_initialize(gid, *count as f32, cp);
+            unique_evidence[gid] = true;
+        } else {
+            for label in labels {
+                let gid = (*label / 2) as usize;
+                no_ambiguity[gid] = false;
+            }
+        }
+    }
+
+    // if we are not running the EM, then return now
+    if only_unique {
+        return;
+    }
+
+    // fill in the alphas based on the initialization strategy
+    let mut rng = rand::thread_rng();
+    let uni_prior = 1.0 / (num_alphas as f32);
+    for gid in 0..num_alphas {
+        match init_type {
+            EMInitType::Uniform => {
+                alphas_in.spliced[gid] = uni_prior;
+                alphas_in.unspliced[gid] = uni_prior;
+            }
+            EMInitType::Informative => {
+                alphas_in.spliced[gid] = (alphas_in.spliced[gid] + 0.25) * 1e-3;
+                alphas_in.unspliced[gid] = (alphas_in.unspliced[gid] + 0.25) * 1e-3;
+            }
+            EMInitType::Random => {
+                let q = rng.gen::<f32>() + 1e-5;
+                alphas_in.spliced[gid] = q;
+                alphas_in.unspliced[gid] = q;
+            }
+        }
+    }
+
+    // TODO: is it even necessary?
+    //alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+
+    let mut it_num: u32 = 0;
+    let mut converged: bool = true;
+    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+        // perform one round of em update
+        velo_em_update(&alphas_in, &mut alphas_out, eqclasses);
+
+        converged = true;
+        let mut max_rel_diff = -f32::INFINITY;
+
+        for gid in 0..num_alphas {
+            if alphas_out.gene_alpha(gid) > ALPHA_CHECK_CUTOFF {
+                let diff = alphas_in.diff(&alphas_out, gid);
+                let rel_diff = diff.abs();
+
+                max_rel_diff = match rel_diff > max_rel_diff {
+                    true => rel_diff,
+                    false => max_rel_diff,
+                };
+
+                if rel_diff > REL_DIFF_TOLERANCE {
+                    converged = false;
+                }
+            } // end- in>out if
+
+            alphas_in.update(&mut alphas_out, gid);
+        } //end-for
+
+        it_num += 1;
+    }
+
+    // update too small alphas
+    alphas_in.update_small_alpha(MIN_ALPHA);
+
+    let alphas_sum: f32 = alphas_in.sum();
+    assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    /*
+    info!(log,
+        "Total Molecules after EM {}",
+        alphas_sum
+    );
+    */
 }

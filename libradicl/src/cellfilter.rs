@@ -547,6 +547,7 @@ fn process_unfiltered(
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&output_dir);
@@ -783,6 +784,7 @@ fn process_unfiltered(
         .expect("couldn't serialize permit list mapping.");
 
     let meta_info = json!({
+        "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "permit-list-type" : "unfiltered"
     });
@@ -811,6 +813,7 @@ fn process_filtered(
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let valid_bc: Vec<u64>;
@@ -920,6 +923,7 @@ fn process_filtered(
         .expect("couldn't serialize permit list.");
 
     let meta_info = json!({
+        "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "permit-list-type" : "filtered"
     });
@@ -951,6 +955,7 @@ pub fn generate_permit_list(
     output_dir: String,
     filter_meth: CellFilterMethod,
     expected_ori: Strand,
+    velo_mode: bool,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
@@ -1076,6 +1081,7 @@ pub fn generate_permit_list(
                     &filter_meth,
                     expected_ori,
                     &output_dir,
+                    velo_mode,
                     &log,
                 )
             } else {
@@ -1094,7 +1100,15 @@ pub fn generate_permit_list(
                 num_reads.to_formatted_string(&Locale::en),
                 hdr.num_chunks.to_formatted_string(&Locale::en)
             );
-            process_filtered(&hm, &ft_vals, &filter_meth, expected_ori, &output_dir, &log)
+            process_filtered(
+                &hm,
+                &ft_vals,
+                &filter_meth,
+                expected_ori,
+                &output_dir,
+                velo_mode,
+                &log,
+            )
         }
     }
 

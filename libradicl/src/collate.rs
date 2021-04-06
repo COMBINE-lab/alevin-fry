@@ -177,6 +177,9 @@ pub fn collate_in_memory_multipass(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
+    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
+    info!(log, "velo_mode = {:?}", velo_mode);
+
     let expected_ori = get_orientation(&mdata, log);
     info!(log, "expected_ori = {:?}", expected_ori);
 
@@ -459,6 +462,10 @@ pub fn collate_with_temp(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
+    // velo_mode
+    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
+    info!(log, "velo_mode = {:?}", velo_mode);
+
     let expected_ori = get_orientation(&mdata, log);
 
     let filter_type = get_filter_type(&mdata, log);
@@ -477,7 +484,16 @@ pub fn collate_with_temp(
         std::fs::remove_file(oname)?;
     }
 
-    let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
+    let velo_oname = parent.join("velo.map.collated.rad");
+    if velo_oname.exists() {
+        std::fs::remove_file(velo_oname)?;
+    }
+    // velo_mode
+    let mut ofile = if velo_mode {
+        File::create(parent.join("velo.map.collated.rad")).unwrap()
+    } else {
+        File::create(parent.join("map.collated.rad")).unwrap()
+    };
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
