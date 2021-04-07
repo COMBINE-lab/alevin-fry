@@ -11,6 +11,8 @@ extern crate rust_htslib;
 extern crate sce;
 extern crate scroll;
 
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::*;
 use dashmap::DashMap;
 use needletail::bitkmer::*;
@@ -1038,7 +1040,7 @@ impl RadHeader {
 }
 
 pub fn update_barcode_hist_unfiltered(
-    hist: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &mut HashMap<u64, usize, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     chunk: &Chunk,
     expected_ori: &Strand,
@@ -1099,7 +1101,7 @@ pub fn update_barcode_hist_unfiltered(
 }
 
 pub fn update_barcode_hist(
-    hist: &mut HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &mut HashMap<u64, u64, ahash::RandomState>,
     chunk: &Chunk,
     expected_ori: &Strand,
 ) {
@@ -1127,7 +1129,7 @@ pub fn update_barcode_hist(
 }
 
 pub fn permit_list_from_threshold(
-    hist: &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &HashMap<u64, u64, ahash::RandomState>,
     min_freq: u64,
 ) -> Vec<u64> {
     let valid_bc: Vec<u64> = hist

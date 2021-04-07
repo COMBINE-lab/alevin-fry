@@ -1,6 +1,9 @@
 1. run `cargo build --release` to install alevin-fry.
-2. This code uses an expanded transcriptome as the reference, in which each gene has its spliced transcripts(isoforms) and one unspliced transcript, which is the whole transcriptome region of the gene.
+
+2. This code uses an expanded transcriptome as the reference, in which each gene has its spliced transcripts(isoforms) and one unspliced transcript, which is the whole region of the gene (including all introns).
+
 3. the expanded transcriptome can be generated using spliced_unspliced_txome_builder.R, following is the instructions to run the code. You can also get it by running`Rscript spliced_unspliced_txome_builder.R --help`
+
         This Rscript is used for building expanded transcriptome containing the spliced and unspliced version of genes.
         -----------------------------------------------------------
         Inputs:
@@ -21,6 +24,7 @@
         5. This script is based on `eisaR` and `tximeta` R packages.
 
 4. The end-to-end example pipeline used to do quantification and dump gene equivalence classes is in `run_alevinfry.sh`. 
+
 5. There are three files that are related to dump_eqclasses
     1. geqc_counts.mtx contains the geqc by cell counts.
     2. gene_eqclass.txt.gz contains the sets of genes that define each eqc, each row is for an eqc, and the last item of each row is the eqclass id(row # in geqc_counts.mtx)

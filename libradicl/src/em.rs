@@ -8,9 +8,9 @@ use crate as libradicl;
 
 #[allow(unused_imports)]
 use self::slog::info;
-use fasthash::sea::Hash64;
 #[allow(unused_imports)]
-use fasthash::RandomState;
+use ahash::{AHasher, RandomState};
+#[allow(unused_imports)]
 use libradicl::schema::{IndexedEqList, SplicedStatus, VeloCounts};
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
@@ -203,7 +203,7 @@ pub(crate) fn em_optimize_subset(
 pub fn em_update(
     alphas_in: &[f32],
     alphas_out: &mut Vec<f32>,
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
     for (labels, count) in eqclasses {
@@ -229,7 +229,7 @@ pub fn em_update(
 }
 
 pub(crate) fn em_optimize(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
     init_type: EmInitType,
@@ -423,7 +423,7 @@ pub(crate) fn run_bootstrap_subset(
 }
 
 pub fn run_bootstrap(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -468,7 +468,7 @@ pub fn run_bootstrap(
 
 #[allow(dead_code)]
 pub fn run_bootstrap_old(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -510,9 +510,8 @@ pub fn run_bootstrap_old(
     // println!("total fragments {:?}", total_fragments);
 
     // a new hashmap to be updated in each bootstrap
-    let s = fasthash::RandomState::<Hash64>::new();
-    let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-        HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
     // define a multinomial
     let dist = Multinomial::new(&eq_counts, total_fragments).unwrap();
 
@@ -614,7 +613,7 @@ pub fn run_bootstrap_old(
 fn velo_em_update(
     alphas_in: &VeloCounts,
     alphas_out: &mut VeloCounts,
-    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
     for ((labels, types), count) in eqclasses {
@@ -659,7 +658,7 @@ fn velo_em_update(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn velo_em_optimize(
-    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, ahash::RandomState>,
     alphas_in: &mut VeloCounts,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,

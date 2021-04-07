@@ -19,8 +19,6 @@ use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
-// use fasthash::sea;
-use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
@@ -439,7 +437,9 @@ pub fn quantify(
     // tgmap.
 
     // first, build a hash of each transcript to it's index
-    let mut rname_to_id: HashMap<String, u32> = HashMap::with_capacity(hdr.ref_count as usize);
+    let rnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut rname_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(hdr.ref_count as usize, rnhasher);
     for (i, n) in hdr.ref_names.iter().enumerate() {
         rname_to_id.insert(n.clone(), i as u32);
     }
@@ -447,7 +447,9 @@ pub fn quantify(
 
     // will hold the unique gene names in the order they are encountered
     let mut gene_names: Vec<String> = Vec::with_capacity((hdr.ref_count / 2) as usize);
-    let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
+    let gnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_hasher(gnhasher);
 
     // now read in the transcript to gene map
     type TsvRec = (String, String);
@@ -628,7 +630,7 @@ pub fn quantify(
     // way to do this in a lock-free manner, so this
     // structure is protected by a lock for now.
     // This will only be used if the `dump_eq` paramater is true.
-    let so = ahash::RandomState::new();
+    let so = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let eqid_map_lock = Arc::new(Mutex::new(EqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
@@ -683,9 +685,8 @@ pub fn quantify(
             // classes of size greater than 1, and probabilistic results
             // will attempt to resolve gene multi-mapping reads by
             // running an EM algorithm.
-            let s = fasthash::RandomState::<Hash64>::new();
-            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-                HashMap::with_hasher(s);
+            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+            let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
                 EmInitType::Uniform
@@ -1227,7 +1228,9 @@ pub fn velo_quantify(
     // tgmap.
 
     // first, build a hash of each transcript to it's index
-    let mut rname_to_id: HashMap<String, u32> = HashMap::with_capacity(hdr.ref_count as usize);
+    let rnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut rname_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(hdr.ref_count as usize, rnhasher);
     for (i, n) in hdr.ref_names.iter().enumerate() {
         rname_to_id.insert(n.clone(), i as u32);
     }
@@ -1235,7 +1238,9 @@ pub fn velo_quantify(
 
     // will hold the unique gene names in the order they are encountered
     let mut gene_names: Vec<String> = Vec::with_capacity((hdr.ref_count / 2) as usize);
-    let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
+    let gnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_hasher(gnhasher);
 
     // now read in the transcript to gene map
     type TsvRec = (String, String);
@@ -1443,7 +1448,7 @@ pub fn velo_quantify(
     // way to do this in a lock-free manner, so this
     // structure is protected by a lock for now.
     // This will only be used if the `dump_eq` paramater is true.
-    let so = ahash::RandomState::new();
+    let so = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let eqid_map_lock = Arc::new(Mutex::new(VeloEqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
@@ -1505,13 +1510,10 @@ pub fn velo_quantify(
             // will attempt to resolve gene multi-mapping reads by
             // running an EM algorithm.
 
-            let s = fasthash::RandomState::<Hash64>::new();
+            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
             // velo_mode, <(gid, is_spliced), counts>
-            let mut gene_eqc: HashMap<
-                (Vec<u32>, Vec<SplicedStatus>),
-                u32,
-                fasthash::RandomState<Hash64>,
-            > = HashMap::with_hasher(s);
+            let mut gene_eqc: HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, ahash::RandomState> =
+                HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
                 EmInitType::Uniform

@@ -8,8 +8,8 @@ extern crate quickersort;
 extern crate slog;
 
 use self::slog::{crit, warn};
-use fasthash::sea::Hash64;
-use fasthash::RandomState;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -19,7 +19,7 @@ use petgraph::visit::NodeIndexable;
 
 use crate::schema::{EqMap, PugResolutionStatistics, SplicedStatus};
 
-type CcMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
+type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
 /// Extract the weakly connected components from the directed graph
 /// G.  Interestingly, `petgraph` has a builtin algorithm for returning
@@ -43,7 +43,7 @@ where
     }
     let labels = vertex_sets.into_labeling();
     fn get_map() -> CcMap {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         HashMap::with_hasher(s)
     }
 
@@ -67,9 +67,9 @@ fn collapse_vertices(
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
     // get a new set to hold vertices
-    type VertexSet = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type VertexSet = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> VertexSet {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         VertexSet::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -150,7 +150,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     _log: &slog::Logger,
 ) /*-> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>*/
 {
@@ -306,12 +306,9 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     _log: &slog::Logger,
 ) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
-    let s = RandomState::<Hash64>::new();
-    let mut gene_map: std::collections::HashMap<
-        u32,
-        Vec<u64>,
-        fasthash::RandomState<fasthash::sea::Hash64>,
-    > = HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_map: std::collections::HashMap<u32, Vec<u64>, ahash::RandomState> =
+        HashMap::with_hasher(s);
 
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
@@ -383,7 +380,8 @@ fn get_num_molecules_large_component(
     // equivalence class id in the current subgraph
     // to the set of (UMI, frequency) pairs contained
     // in the subgraph
-    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
+    let ts = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(ts);
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
@@ -522,14 +520,14 @@ pub(super) fn get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
 {
-    type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type U32Set = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> U32Set {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         U32Set::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -848,11 +846,7 @@ fn velo_get_num_molecules_large_component(
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<
-        (Vec<u32>, Vec<SplicedStatus>),
-        u32,
-        fasthash::RandomState<Hash64>,
-    >,
+    gene_eqclass_hash: &mut HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, ahash::RandomState>,
     numi: &mut u32,
     ng: &mut u32,
     _log: &slog::Logger,
@@ -867,7 +861,8 @@ fn velo_get_num_molecules_large_component(
     // equivalence class id in the current subgraph
     // to the set of (UMI, frequency) pairs contained
     // in the subgraph
-    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
+    let rs = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(rs);
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
@@ -1109,18 +1104,14 @@ pub(super) fn velo_get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<
-        (Vec<u32>, Vec<SplicedStatus>),
-        u32,
-        fasthash::RandomState<Hash64>,
-    >,
+    gene_eqclass_hash: &mut HashMap<(Vec<u32>, Vec<SplicedStatus>), u32, ahash::RandomState>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
 {
-    type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type U32Set = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> U32Set {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         U32Set::with_capacity_and_hasher(cap as usize, s)
     }
 

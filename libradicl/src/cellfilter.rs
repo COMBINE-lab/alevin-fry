@@ -9,9 +9,9 @@ use self::slog::info;
 
 use crate as libradicl;
 use crate::BarcodeLookupMap;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
-use fasthash::sea::Hash64;
-use fasthash::RandomState;
 use libradicl::exit_codes;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
@@ -184,8 +184,8 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
 fn populate_unfiltered_barcode_map<T: Read>(
     br: BufReader<T>,
     first_bclen: &mut usize,
-) -> HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>> {
-    let s = RandomState::<Hash64>::new();
+) -> HashMap<u64, usize, ahash::RandomState> {
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut hm = HashMap::with_hasher(s);
 
     // read through the external unfiltered barcode list
@@ -541,7 +541,7 @@ pub fn test_external_parse(
 
 #[allow(clippy::unnecessary_wraps, clippy::too_many_arguments)]
 fn process_unfiltered(
-    hm: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hm: &mut HashMap<u64, usize, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
@@ -626,7 +626,7 @@ fn process_unfiltered(
     let mut distinct_unmatched_bc = 0usize;
     let mut distinct_recoverable_bc = 0usize;
 
-    let s = RandomState::<Hash64>::new();
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(1_000_000, s);
 
     for cbc in bcmap2.barcodes.iter() {
@@ -808,7 +808,7 @@ fn process_unfiltered(
 
 #[allow(clippy::unnecessary_wraps)]
 fn process_filtered(
-    hm: &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hm: &HashMap<u64, u64, ahash::RandomState>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
@@ -872,7 +872,7 @@ fn process_filtered(
     let full_permit_list =
         libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
 
-    let s2 = RandomState::<Hash64>::new();
+    let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
 
     let mut num_corrected = 0;
@@ -1044,7 +1044,7 @@ pub fn generate_permit_list(
         .expect("unknown barcode type id.");
 
     // if dealing with filtered type
-    let s = RandomState::<Hash64>::new();
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut hm = HashMap::with_hasher(s);
 
     // if dealing with the unfiltered type

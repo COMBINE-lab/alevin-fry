@@ -7,8 +7,9 @@ extern crate fasthash;
 extern crate quickersort;
 
 use crate as libradicl;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
-use fasthash::{sea, sea::Hash64, RandomState};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::BufRead;
@@ -113,7 +114,7 @@ impl IndexedEqList {
 
     /// Creates an `IndexedEqList` from a HashMap of eq labels to counts
     pub(super) fn init_from_hash(
-        eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+        eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
         num_genes: usize,
     ) -> IndexedEqList {
         let num_eqc = eqclasses.len();
@@ -287,9 +288,8 @@ impl EqMap {
     pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
         // temporary map of equivalence class label to assigned
         // index.
-        let s = RandomState::<sea::Hash64>::new();
-        let mut eqid_map: HashMap<Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>> =
-            HashMap::with_hasher(s);
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
 
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {

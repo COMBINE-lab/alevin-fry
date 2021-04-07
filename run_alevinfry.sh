@@ -36,7 +36,7 @@ path_to_alevinfry generate-permit-list \
 path_to_alevinfry collate \
 -r path_to_rad_file \
 -i path_to_fry_outdir \
--t numthreads
+-t num_threads
 
 # quantification
 # -d is the dump_eqclasses flag
