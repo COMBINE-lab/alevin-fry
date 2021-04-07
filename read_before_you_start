@@ -17,11 +17,10 @@
         2. annotatoion.expanded.gtf: Each gene has an unspliced version, which is the genome range from the 5' end of the first exon to the 3' end of the last exon
         3. annotation.expanded.fa: The corresponding sequences of the terms in annotatoion.expanded.gtf
         Note: 
-        1. The expanded transcriptome is named using the name of the input gtf file
-        2. The correct input arg example: --fa=genome.fa
-        3. If the outdir is not specified, a new directory will be created in the working directory 
-        4. If some strange errors show up, please check the version of the packages, this script requires the same environment as `eisaR` R package.
-        5. This script is based on `eisaR` and `tximeta` R packages.
+        1. The correct input arg example: --fa=genome.fa
+        2. If the outdir is not specified, a new directory will be created in the working directory 
+        3. If some strange errors show up, please check the version of the packages, this script requires the same environment as `eisaR` plus `tximeta` R package.
+        4. This script is based on `eisaR` and `tximeta` R packages.
 
 4. The end-to-end example pipeline used to do quantification and dump gene equivalence classes is in `run_alevinfry.sh`. 
 
