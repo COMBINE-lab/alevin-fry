@@ -21,7 +21,7 @@ architecture), then you have to build from source.  Luckily, `cargo` makes that 
 
 ## Building
 
-Alevin-fry is built and tested with the latest (major & minor version) stable Rust (currently 1.45).
+Alevin-fry is built and tested with Rust 1.49.
 Building should be as easy as:
 
 ```{bash}
