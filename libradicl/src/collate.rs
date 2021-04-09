@@ -199,6 +199,7 @@ pub fn collate_in_memory_multipass(
     } else {
         "map.collated.rad"
     };
+
     let oname = parent.join(cfname);
     if oname.exists() {
         std::fs::remove_file(oname)?;
@@ -500,6 +501,7 @@ pub fn collate_with_temp(
     } else {
         "map.collated.rad"
     };
+
     let oname = parent.join(cfname);
     if oname.exists() {
         std::fs::remove_file(oname)?;
