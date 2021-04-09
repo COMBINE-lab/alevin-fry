@@ -546,6 +546,7 @@ fn process_unfiltered(
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    version: &str,
     velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
@@ -785,6 +786,7 @@ fn process_unfiltered(
     let meta_info = json!({
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
+        "version_str" : version,
         "permit-list-type" : "unfiltered"
     });
 
@@ -812,6 +814,7 @@ fn process_filtered(
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    version: &str,
     velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
@@ -924,6 +927,7 @@ fn process_filtered(
     let meta_info = json!({
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
+        "version_str" : version,
         "permit-list-type" : "filtered"
     });
 
@@ -954,6 +958,7 @@ pub fn generate_permit_list(
     output_dir: String,
     filter_meth: CellFilterMethod,
     expected_ori: Strand,
+    version: &str,
     velo_mode: bool,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
@@ -1080,6 +1085,7 @@ pub fn generate_permit_list(
                     &filter_meth,
                     expected_ori,
                     &output_dir,
+                    &version,
                     velo_mode,
                     &log,
                 )
@@ -1105,6 +1111,7 @@ pub fn generate_permit_list(
                 &filter_meth,
                 expected_ori,
                 &output_dir,
+                &version,
                 velo_mode,
                 &log,
             )

@@ -23,6 +23,9 @@ use slog::{crit, o, warn, Drain};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+// grab the version from the Cargo file.
+const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
 // static VERSION: &str = "0.0.1";
 // static AUTHORS: &str = "Avi Srivastava, Rob Patro";
 
@@ -304,7 +307,7 @@ fn main() {
         // velo_mode
         let velo_mode = false; //t.is_present("velocity-mode");
 
-        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, velo_mode, &log)
+        let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, VERSION, velo_mode, &log)
             .unwrap();
         if nc == 0 {
             warn!(log, "found 0 corrected barcodes; please check the input.");
