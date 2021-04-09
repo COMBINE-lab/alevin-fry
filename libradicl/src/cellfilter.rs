@@ -549,7 +549,7 @@ fn process_unfiltered(
     version: &str,
     velo_mode: bool,
     log: &slog::Logger,
-) -> Result<u64, Box<dyn std::error::Error>> {
+) -> u64 {
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
     /*
@@ -804,10 +804,11 @@ fn process_unfiltered(
         "total number of distinct corrected barcodes : {}",
         num_corrected.to_formatted_string(&Locale::en)
     );
-    Ok(num_corrected)
+
+    num_corrected
 }
 
-#[allow(clippy::unnecessary_unwrap)]
+#[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_filtered(
     hm: &HashMap<u64, u64, ahash::RandomState>,
     ft_vals: &libradicl::FileTags,
@@ -817,7 +818,7 @@ fn process_filtered(
     version: &str,
     velo_mode: bool,
     log: &slog::Logger,
-) -> Result<u64, Box<dyn std::error::Error>> {
+) -> u64 {
     let valid_bc: Vec<u64>;
     let mut freq: Vec<u64> = hm.values().cloned().collect();
     freq.sort_unstable();
@@ -945,7 +946,8 @@ fn process_filtered(
         "total number of distinct corrected barcodes : {}",
         num_corrected.to_formatted_string(&Locale::en)
     );
-    Ok(num_corrected)
+
+    num_corrected
 }
 
 /// Given the input RAD file `input_file`, compute
@@ -1078,7 +1080,7 @@ pub fn generate_permit_list(
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
                     hdr.num_chunks.to_formatted_string(&Locale::en)
                 );
-                process_unfiltered(
+                Ok(process_unfiltered(
                     &mut hmu,
                     unmatched_bc,
                     &ft_vals,
@@ -1088,7 +1090,7 @@ pub fn generate_permit_list(
                     &version,
                     velo_mode,
                     &log,
-                )
+                ))
             } else {
                 Ok(0)
             }
@@ -1105,7 +1107,7 @@ pub fn generate_permit_list(
                 num_reads.to_formatted_string(&Locale::en),
                 hdr.num_chunks.to_formatted_string(&Locale::en)
             );
-            process_filtered(
+            Ok(process_filtered(
                 &hm,
                 &ft_vals,
                 &filter_meth,
@@ -1114,7 +1116,7 @@ pub fn generate_permit_list(
                 &version,
                 velo_mode,
                 &log,
-            )
+            ))
         }
     }
 

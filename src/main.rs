@@ -24,7 +24,7 @@ use slog::{crit, o, warn, Drain};
 static GLOBAL: MiMalloc = MiMalloc;
 
 // grab the version from the Cargo file.
-const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // static VERSION: &str = "0.0.1";
 // static AUTHORS: &str = "Avi Srivastava, Rob Patro";
