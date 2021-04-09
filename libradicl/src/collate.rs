@@ -252,8 +252,8 @@ pub fn collate_in_memory_multipass(
 
     // make sure that the buffer is empty
     // so we start reading from pos into an empty buffer
-    if br.buffer().len() > 0 { 
-        br.consume(br.buffer().len()); 
+    if br.buffer().len() > 0 {
+        br.consume(br.buffer().len());
         br.get_mut()
             .seek(SeekFrom::Start(pos))
             .expect("could not get read pointer.");
@@ -555,8 +555,8 @@ pub fn collate_with_temp(
 
     // make sure that the buffer is empty
     // so we start reading from pos into an empty buffer
-    if br.buffer().len() > 0 { 
-        br.consume(br.buffer().len()); 
+    if br.buffer().len() > 0 {
+        br.consume(br.buffer().len());
         br.get_mut()
             .seek(SeekFrom::Start(pos))
             .expect("could not get read pointer.");
