@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -213,7 +213,11 @@ pub fn collate_in_memory_multipass(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-
+    
+    // make sure that the buffer is empty 
+    // so we start reading from pos into an empty buffer
+    br.consume( br.buffer().len() );
+    
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
@@ -486,6 +490,11 @@ pub fn collate_with_temp(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
+    // make sure that the buffer is empty 
+    // so we start reading from pos into an empty buffer
+    br.consume( br.buffer().len() );
+    
+    
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
