@@ -42,14 +42,14 @@ pub fn infer(
     // get the path for the equivalence class count matrix
     let count_mat_path = std::path::Path::new(&count_mat_file);
     // read the file and convert it to csr (rows are *cells*)
-    let count_mat : sprs::CsMatBase<u32, u32, Vec<u32>, Vec<u32>, Vec<u32>, _> = match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path)
-    {
-        Ok(t) => t.to_csr(),
-        Err(e) => {
-            warn!(log, "error reading mtx file{:?}", e);
-            return Err(Box::new(e));
-        }
-    };
+    let count_mat: sprs::CsMatBase<u32, u32, Vec<u32>, Vec<u32>, Vec<u32>, _> =
+        match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path) {
+            Ok(t) => t.to_csr(),
+            Err(e) => {
+                warn!(log, "error reading mtx file{:?}", e);
+                return Err(Box::new(e));
+            }
+        };
 
     info!(
         log,
