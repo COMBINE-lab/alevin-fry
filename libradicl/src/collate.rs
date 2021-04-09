@@ -255,10 +255,11 @@ pub fn collate_in_memory_multipass(
     // where we expect.
     if br.buffer().len() > 0 {
         br.consume(br.buffer().len());
-        br.get_mut()
-            .seek(SeekFrom::Start(pos))
-            .expect("could not get read pointer.");
     }
+
+    br.get_mut()
+        .seek(SeekFrom::Start(pos))
+        .expect("could not get read pointer.");
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -559,10 +560,11 @@ pub fn collate_with_temp(
     // where we expect.
     if br.buffer().len() > 0 {
         br.consume(br.buffer().len());
-        br.get_mut()
-            .seek(SeekFrom::Start(pos))
-            .expect("could not get read pointer.");
     }
+
+    br.get_mut()
+        .seek(SeekFrom::Start(pos))
+        .expect("could not get read pointer.");
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
