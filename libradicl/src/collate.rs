@@ -253,7 +253,7 @@ pub fn collate_in_memory_multipass(
     // make sure that the buffer is empty
     // and that br starts reading from exactly
     // where we expect.
-    if br.buffer().len() > 0 {
+    if !br.buffer().is_empty() {
         br.consume(br.buffer().len());
     }
 
@@ -558,7 +558,7 @@ pub fn collate_with_temp(
     // make sure that the buffer is empty
     // and that br starts reading from exactly
     // where we expect.
-    if br.buffer().len() > 0 {
+    if !br.buffer().is_empty() {
         br.consume(br.buffer().len());
     }
 
