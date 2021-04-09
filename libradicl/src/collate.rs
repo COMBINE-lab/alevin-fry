@@ -224,7 +224,7 @@ pub fn collate_in_memory_multipass(
     br.get_mut()
         .seek(SeekFrom::Start(pos))
         .expect("could not get read pointer.");
-    
+
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
