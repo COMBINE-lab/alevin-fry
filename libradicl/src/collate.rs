@@ -216,7 +216,7 @@ pub fn collate_in_memory_multipass(
     
     // make sure that the buffer is empty 
     // so we start reading from pos into an empty buffer
-    br.consume( br.buffer().len() );
+    br.consume(br.buffer().len());
     
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -492,7 +492,7 @@ pub fn collate_with_temp(
 
     // make sure that the buffer is empty 
     // so we start reading from pos into an empty buffer
-    br.consume( br.buffer().len() );
+    br.consume(br.buffer().len());
     
     
     // get the correction map
