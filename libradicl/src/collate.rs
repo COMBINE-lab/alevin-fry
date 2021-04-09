@@ -177,7 +177,7 @@ pub fn collate_in_memory_multipass(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
-    let _velo_mode = mdata["velo_mode"].as_bool().unwrap();
+    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
     // info!(log, "velo_mode = {:?}", velo_mode);
 
     let expected_ori = get_orientation(&mdata, log);
@@ -194,12 +194,17 @@ pub fn collate_in_memory_multipass(
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let oname = parent.join("map.collated.rad");
+    let cfname = if velo_mode {
+        "velo.map.collated.rad"
+    } else {
+        "map.collated.rad"
+    };
+    let oname = parent.join(cfname);
     if oname.exists() {
         std::fs::remove_file(oname)?;
     }
 
-    let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
+    let mut ofile = File::create(parent.join(cfname)).unwrap();
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
@@ -499,7 +504,7 @@ pub fn collate_with_temp(
     if oname.exists() {
         std::fs::remove_file(oname)?;
     }
-    // velo_mode
+
     let mut ofile = File::create(parent.join(cfname)).unwrap();
     let i_dir = std::path::Path::new(&rad_dir);
 
