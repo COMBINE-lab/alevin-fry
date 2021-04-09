@@ -533,7 +533,8 @@ pub fn view2(
         .expect("unknown barcode type id.");
 
     let stdout = stdout(); // get the global stdout entity
-    let mut handle = BufWriter::new(stdout); // optional: wrap that handle in a buffer
+    let stdout_l = stdout.lock();
+    let mut handle = BufWriter::new(stdout_l); // optional: wrap that handle in a buffer
 
     if print_header {
         for i in 0usize..hdr.ref_names.len() {
