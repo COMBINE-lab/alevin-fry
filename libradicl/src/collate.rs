@@ -249,6 +249,9 @@ pub fn collate_in_memory_multipass(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
+
+    // make sure that the buffer is empty 
+    // so we start reading from pos into an empty buffer
     br.consume(br.buffer().len());
 
     // get the correction map
@@ -545,6 +548,8 @@ pub fn collate_with_temp(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
+    // make sure that the buffer is empty 
+    // so we start reading from pos into an empty buffer
     br.consume(br.buffer().len());
 
     // get the correction map
