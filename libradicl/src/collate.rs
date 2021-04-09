@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -249,6 +249,7 @@ pub fn collate_in_memory_multipass(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
+    br.consume( br.buffer().len() );
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -295,13 +296,6 @@ pub fn collate_in_memory_multipass(
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
     while last_idx < tsv_map.len() {
-
-        // reset the reader to start of the chunks
-        if total_allocated_records < total_to_collate {
-            br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
-            br = BufReader::new(br.into_inner());
-        }
-
         allocated_records = 0;
         output_cache.clear();
         // the number of cells left to process
@@ -399,6 +393,11 @@ pub fn collate_in_memory_multipass(
                     info!(log, "thread panicked");
                 }
             }
+        }
+
+        // reset the reader to start of the chunks
+        if total_allocated_records < total_to_collate {
+            br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
         }
     }
 
@@ -546,8 +545,7 @@ pub fn collate_with_temp(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
-    br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
-    br = BufReader::new(br.into_inner());
+    br.consume( br.buffer().len() );
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
