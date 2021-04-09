@@ -295,6 +295,13 @@ pub fn collate_in_memory_multipass(
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
     while last_idx < tsv_map.len() {
+
+        // reset the reader to start of the chunks
+        if total_allocated_records < total_to_collate {
+            br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
+            br = BufReader::new(br.into_inner());
+        }
+
         allocated_records = 0;
         output_cache.clear();
         // the number of cells left to process
@@ -392,11 +399,6 @@ pub fn collate_in_memory_multipass(
                     info!(log, "thread panicked");
                 }
             }
-        }
-
-        // reset the reader to start of the chunks
-        if total_allocated_records < total_to_collate {
-            br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
         }
     }
 
@@ -543,6 +545,9 @@ pub fn collate_with_temp(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
+
+    br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
+    br = BufReader::new(br.into_inner());
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
