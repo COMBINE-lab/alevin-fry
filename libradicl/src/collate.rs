@@ -249,7 +249,7 @@ pub fn collate_in_memory_multipass(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
-    br.consume( br.buffer().len() );
+    br.consume(br.buffer().len());
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -545,7 +545,7 @@ pub fn collate_with_temp(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
-    br.consume( br.buffer().len() );
+    br.consume(br.buffer().len());
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
