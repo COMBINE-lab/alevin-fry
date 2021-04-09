@@ -11,7 +11,7 @@ use self::slog::info;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 #[allow(unused_imports)]
-use libradicl::schema::{IndexedEqList};
+use libradicl::schema::IndexedEqList;
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
 use std::collections::HashMap;

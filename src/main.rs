@@ -107,8 +107,8 @@ fn main() {
             Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold; only used with --unfiltered-pl'")
                 .default_value("10")
                 .takes_value(true)
-                .required(true))
-        .arg(Arg::from("-v, --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
+                .required(true));
+    //.arg(Arg::from("-v, --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
@@ -302,7 +302,7 @@ fn main() {
             fmeth = CellFilterMethod::UnfilteredExternalList(v, min_reads);
         };
         // velo_mode
-        let velo_mode = t.is_present("velocity-mode");
+        let velo_mode = false; //t.is_present("velocity-mode");
 
         let nc = generate_permit_list(input_dir, output_dir, fmeth, expected_ori, velo_mode, &log)
             .unwrap();
