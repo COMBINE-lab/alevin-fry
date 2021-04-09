@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-extern crate fasthash;
 extern crate petgraph;
 extern crate quickersort;
 extern crate slog;
 
 use self::slog::{crit, warn};
-use fasthash::sea::Hash64;
-use fasthash::RandomState;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -17,9 +16,9 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PUGResolutionStatistics};
+use crate::schema::{EqMap, PugResolutionStatistics};
 
-type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
+type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
 /// Extract the weakly connected components from the directed graph
 /// G.  Interestingly, `petgraph` has a builtin algorithm for returning
@@ -30,7 +29,7 @@ type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 /// find data structure.  This returns a HashMap, mapping each
 /// connected component id (a u32) to the corresponding list of vertex
 /// ids (also u32s) contained in the connected component.
-pub fn weakly_connected_components<G>(g: G) -> CCMap
+pub fn weakly_connected_components<G>(g: G) -> CcMap
 where
     G: petgraph::visit::NodeCompactIndexable + petgraph::visit::IntoEdgeReferences,
 {
@@ -42,8 +41,8 @@ where
         vertex_sets.union(g.to_index(a), g.to_index(b));
     }
     let labels = vertex_sets.into_labeling();
-    fn get_map() -> CCMap {
-        let s = RandomState::<Hash64>::new();
+    fn get_map() -> CcMap {
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         HashMap::with_hasher(s)
     }
 
@@ -67,9 +66,9 @@ fn collapse_vertices(
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
     // get a new set to hold vertices
-    type VertexSet = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type VertexSet = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> VertexSet {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         VertexSet::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -150,7 +149,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     _log: &slog::Logger,
 ) /*-> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>*/
 {
@@ -306,12 +305,9 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     _log: &slog::Logger,
 ) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
-    let s = RandomState::<Hash64>::new();
-    let mut gene_map: std::collections::HashMap<
-        u32,
-        Vec<u64>,
-        fasthash::RandomState<fasthash::sea::Hash64>,
-    > = HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_map: std::collections::HashMap<u32, Vec<u64>, ahash::RandomState> =
+        HashMap::with_hasher(s);
 
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
@@ -383,7 +379,8 @@ fn get_num_molecules_large_component(
     // equivalence class id in the current subgraph
     // to the set of (UMI, frequency) pairs contained
     // in the subgraph
-    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
+    let ts = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(ts);
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
@@ -522,14 +519,14 @@ pub(super) fn get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     log: &slog::Logger,
-) -> PUGResolutionStatistics
+) -> PugResolutionStatistics
 //,)
 {
-    type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type U32Set = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> U32Set {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         U32Set::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -561,7 +558,7 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
-    let mut pug_stats = PUGResolutionStatistics {
+    let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
         ambiguous_mccs: 0u64,

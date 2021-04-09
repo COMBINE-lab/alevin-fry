@@ -5,7 +5,6 @@
 extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
-extern crate fasthash;
 extern crate indicatif;
 extern crate serde;
 extern crate slog;
@@ -22,7 +21,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use self::libradicl::em::{em_optimize_subset, EMInitType};
+use self::libradicl::em::{em_optimize_subset, EmInitType};
 
 pub fn infer(
     //num_bootstraps,
@@ -43,7 +42,7 @@ pub fn infer(
     // get the path for the equivalence class count matrix
     let count_mat_path = std::path::Path::new(&count_mat_file);
     // read the file and convert it to csr (rows are *cells*)
-    let count_mat = match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path)
+    let count_mat : sprs::CsMatBase<u32, u32, Vec<u32>, Vec<u32>, Vec<u32>, _> = match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path)
     {
         Ok(t) => t.to_csr(),
         Err(e) => {
@@ -138,7 +137,7 @@ pub fn infer(
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, cell_data)) = in_q.pop() {
+                if let Some((cell_num, cell_data)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
 
                     // given the set of equivalence classes and counts for
@@ -149,7 +148,7 @@ pub fn infer(
                         &cell_data,
                         &mut unique_evidence,
                         &mut no_ambiguity,
-                        EMInitType::Informative,
+                        EmInitType::Informative,
                         num_genes,
                         false,
                         &log,

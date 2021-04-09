@@ -2,16 +2,15 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-extern crate fasthash;
 extern crate slog;
 use self::slog::crit;
 use self::slog::info;
 
 use crate as libradicl;
 use crate::BarcodeLookupMap;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
-use fasthash::sea::Hash64;
-use fasthash::RandomState;
 use libradicl::exit_codes;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
@@ -184,8 +183,8 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
 fn populate_unfiltered_barcode_map<T: Read>(
     br: BufReader<T>,
     first_bclen: &mut usize,
-) -> HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>> {
-    let s = RandomState::<Hash64>::new();
+) -> HashMap<u64, usize, ahash::RandomState> {
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut hm = HashMap::with_hasher(s);
 
     // read through the external unfiltered barcode list
@@ -320,7 +319,7 @@ pub fn test_external_parse(
     let i_dir = std::path::Path::new(&rad_dir);
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -539,14 +538,15 @@ pub fn test_external_parse(
     */
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_unfiltered(
-    hm: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hm: &mut HashMap<u64, usize, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&output_dir);
@@ -625,7 +625,7 @@ fn process_unfiltered(
     let mut distinct_unmatched_bc = 0usize;
     let mut distinct_recoverable_bc = 0usize;
 
-    let s = RandomState::<Hash64>::new();
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(1_000_000, s);
 
     for cbc in bcmap2.barcodes.iter() {
@@ -783,6 +783,7 @@ fn process_unfiltered(
         .expect("couldn't serialize permit list mapping.");
 
     let meta_info = json!({
+        "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "permit-list-type" : "unfiltered"
     });
@@ -804,13 +805,14 @@ fn process_unfiltered(
     Ok(num_corrected)
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_unwrap)]
 fn process_filtered(
-    hm: &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hm: &HashMap<u64, u64, ahash::RandomState>,
     ft_vals: &libradicl::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
+    velo_mode: bool,
     log: &slog::Logger,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let valid_bc: Vec<u64>;
@@ -869,7 +871,7 @@ fn process_filtered(
     let full_permit_list =
         libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
 
-    let s2 = RandomState::<Hash64>::new();
+    let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
 
     let mut num_corrected = 0;
@@ -920,6 +922,7 @@ fn process_filtered(
         .expect("couldn't serialize permit list.");
 
     let meta_info = json!({
+        "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "permit-list-type" : "filtered"
     });
@@ -951,6 +954,7 @@ pub fn generate_permit_list(
     output_dir: String,
     filter_meth: CellFilterMethod,
     expected_ori: Strand,
+    velo_mode: bool,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
@@ -982,7 +986,7 @@ pub fn generate_permit_list(
 
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -1039,7 +1043,7 @@ pub fn generate_permit_list(
         .expect("unknown barcode type id.");
 
     // if dealing with filtered type
-    let s = RandomState::<Hash64>::new();
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut hm = HashMap::with_hasher(s);
 
     // if dealing with the unfiltered type
@@ -1076,6 +1080,7 @@ pub fn generate_permit_list(
                     &filter_meth,
                     expected_ori,
                     &output_dir,
+                    velo_mode,
                     &log,
                 )
             } else {
@@ -1094,7 +1099,15 @@ pub fn generate_permit_list(
                 num_reads.to_formatted_string(&Locale::en),
                 hdr.num_chunks.to_formatted_string(&Locale::en)
             );
-            process_filtered(&hm, &ft_vals, &filter_meth, expected_ori, &output_dir, &log)
+            process_filtered(
+                &hm,
+                &ft_vals,
+                &filter_meth,
+                expected_ori,
+                &output_dir,
+                velo_mode,
+                &log,
+            )
         }
     }
 

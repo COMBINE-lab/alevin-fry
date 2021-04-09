@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 // scroll now, explore nom later
-extern crate fasthash;
 extern crate needletail;
 extern crate num;
 extern crate quickersort;
@@ -11,6 +10,8 @@ extern crate rust_htslib;
 extern crate sce;
 extern crate scroll;
 
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::*;
 use dashmap::DashMap;
 use needletail::bitkmer::*;
@@ -44,7 +45,7 @@ pub fn lib_name() -> &'static str {
     LIB_NAME
 }
 
-pub struct RADHeader {
+pub struct RadHeader {
     pub is_paired: u8,
     pub ref_count: u64,
     pub ref_names: Vec<String>,
@@ -83,7 +84,7 @@ pub struct Chunk {
 }
 
 #[derive(Debug)]
-pub struct CorrectedCBChunk {
+pub struct CorrectedCbChunk {
     remaining_records: u64,
     corrected_bc: u64,
     nrec: u32,
@@ -256,9 +257,9 @@ impl BarcodeLookupMap {
     }
 }
 
-impl CorrectedCBChunk {
-    pub fn from_label_and_counter(corrected_bc_in: u64, num_remain: u64) -> CorrectedCBChunk {
-        let mut cc = CorrectedCBChunk {
+impl CorrectedCbChunk {
+    pub fn from_label_and_counter(corrected_bc_in: u64, num_remain: u64) -> CorrectedCbChunk {
+        let mut cc = CorrectedCbChunk {
             remaining_records: num_remain,
             corrected_bc: corrected_bc_in,
             nrec: 0u32,
@@ -297,7 +298,7 @@ impl GlobalEqCellList {
 }
 
 #[derive(Copy, Clone)]
-pub enum RADIntID {
+pub enum RadIntId {
     U8,
     U16,
     U32,
@@ -333,7 +334,7 @@ impl<
 {
 }
 
-impl RADIntID {
+impl RadIntId {
     pub fn bytes_for_type(&self) -> usize {
         match self {
             Self::U8 => std::mem::size_of::<u8>(),
@@ -382,8 +383,8 @@ pub struct ChunkConfig {
 }
 
 #[derive(Copy, Clone)]
-pub enum RADType {
-    BOOL,
+pub enum RadType {
+    Bool,
     U8,
     U16,
     U32,
@@ -392,25 +393,25 @@ pub enum RADType {
     F64,
 }
 
-pub fn encode_type_tag(type_tag: RADType) -> Option<u8> {
+pub fn encode_type_tag(type_tag: RadType) -> Option<u8> {
     match type_tag {
-        RADType::BOOL => Some(0),
-        RADType::U8 => Some(1),
-        RADType::U16 => Some(2),
-        RADType::U32 => Some(3),
-        RADType::U64 => Some(4),
-        RADType::F32 => Some(5),
-        RADType::F64 => Some(6),
+        RadType::Bool => Some(0),
+        RadType::U8 => Some(1),
+        RadType::U16 => Some(2),
+        RadType::U32 => Some(3),
+        RadType::U64 => Some(4),
+        RadType::F32 => Some(5),
+        RadType::F64 => Some(6),
         //_ => None,
     }
 }
 
-pub fn decode_int_type_tag(type_id: u8) -> Option<RADIntID> {
+pub fn decode_int_type_tag(type_id: u8) -> Option<RadIntId> {
     match type_id {
-        1 => Some(RADIntID::U8),
-        2 => Some(RADIntID::U16),
-        3 => Some(RADIntID::U32),
-        4 => Some(RADIntID::U64),
+        1 => Some(RadIntId::U8),
+        2 => Some(RadIntId::U16),
+        3 => Some(RadIntId::U32),
+        4 => Some(RadIntId::U64),
         _ => None,
     }
 }
@@ -440,23 +441,23 @@ pub fn collect_records<T: Read>(
 }
 */
 
-fn read_into_u64<T: Read>(reader: &mut BufReader<T>, rt: &RADIntID) -> u64 {
+fn read_into_u64<T: Read>(reader: &mut BufReader<T>, rt: &RadIntId) -> u64 {
     let mut rbuf = [0u8; 8];
     let v: u64;
     match rt {
-        RADIntID::U8 => {
+        RadIntId::U8 => {
             reader.read_exact(&mut rbuf[0..1]).unwrap();
             v = rbuf.pread::<u8>(0).unwrap() as u64;
         }
-        RADIntID::U16 => {
+        RadIntId::U16 => {
             reader.read_exact(&mut rbuf[0..2]).unwrap();
             v = rbuf.pread::<u16>(0).unwrap() as u64;
         }
-        RADIntID::U32 => {
+        RadIntId::U32 => {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
             v = rbuf.pread::<u32>(0).unwrap() as u64;
         }
-        RADIntID::U64 => {
+        RadIntId::U64 => {
             reader.read_exact(&mut rbuf[0..8]).unwrap();
             v = rbuf.pread::<u64>(0).unwrap();
         }
@@ -469,7 +470,7 @@ impl ReadRecord {
         self.refs.is_empty()
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RADIntID, umit: &RADIntID) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RadIntId, umit: &RadIntId) -> Self {
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -499,8 +500,8 @@ impl ReadRecord {
 
     pub fn from_bytes_record_header<T: Read>(
         reader: &mut BufReader<T>,
-        bct: &RADIntID,
-        umit: &RADIntID,
+        bct: &RadIntId,
+        umit: &RadIntId,
     ) -> (u64, u64, u32) {
         let mut rbuf = [0u8; 4];
         reader.read_exact(&mut rbuf).unwrap();
@@ -548,8 +549,8 @@ impl ReadRecord {
 
     pub fn from_bytes_keep_ori<T: Read>(
         reader: &mut BufReader<T>,
-        bct: &RADIntID,
-        umit: &RADIntID,
+        bct: &RadIntId,
+        umit: &RadIntId,
         expected_ori: &Strand,
     ) -> Self {
         let mut rbuf = [0u8; 255];
@@ -590,7 +591,7 @@ impl ReadRecord {
 }
 
 #[inline]
-pub fn dump_chunk(v: &mut CorrectedCBChunk, owriter: &Mutex<BufWriter<File>>) {
+pub fn dump_chunk(v: &mut CorrectedCbChunk, owriter: &Mutex<BufWriter<File>>) {
     v.data.set_position(0);
     let nbytes = (v.data.get_ref().len()) as u32;
     let nrec = v.nrec;
@@ -601,11 +602,11 @@ pub fn dump_chunk(v: &mut CorrectedCBChunk, owriter: &Mutex<BufWriter<File>>) {
 
 pub fn collate_temporary_bucket<T: Read>(
     reader: &mut BufReader<T>,
-    bct: &RADIntID,
-    umit: &RADIntID,
+    bct: &RadIntId,
+    umit: &RadIntId,
     nchunks: u32,
     nrec: u32,
-    output_cache: &mut HashMap<u64, CorrectedCBChunk>,
+    output_cache: &mut HashMap<u64, CorrectedCbChunk>,
 ) {
     let mut tbuf = [0u8; 65536];
     // estimated average number of records per barcode
@@ -623,7 +624,7 @@ pub fn collate_temporary_bucket<T: Read>(
         // get the entry for this chunk, or create a new one
         let v = output_cache
             .entry(tup.0)
-            .or_insert_with(|| CorrectedCBChunk::from_label_and_counter(tup.0, est_num_rec as u64));
+            .or_insert_with(|| CorrectedCbChunk::from_label_and_counter(tup.0, est_num_rec as u64));
 
         // keep track of the number of records we're writing
         (*v).nrec += 1;
@@ -642,11 +643,11 @@ pub fn collate_temporary_bucket<T: Read>(
 
 pub fn process_corrected_cb_chunk<T: Read>(
     reader: &mut BufReader<T>,
-    bct: &RADIntID,
-    umit: &RADIntID,
+    bct: &RadIntId,
+    umit: &RadIntId,
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
-    output_cache: &DashMap<u64, CorrectedCBChunk>,
+    output_cache: &DashMap<u64, CorrectedCbChunk>,
     owriter: &Mutex<BufWriter<File>>,
 ) {
     let mut buf = [0u8; 8];
@@ -728,8 +729,8 @@ impl TempBucket {
 
 pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     reader: &mut BufReader<T>,
-    bct: &RADIntID,
-    umit: &RADIntID,
+    bct: &RadIntId,
+    umit: &RadIntId,
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
     output_cache: &HashMap<u64, Arc<TempBucket>>,
@@ -905,7 +906,7 @@ impl Chunk {
         (nbytes, nrec)
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RADIntID, umit: &RADIntID) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RadIntId, umit: &RadIntId) -> Self {
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf).unwrap();
@@ -973,9 +974,9 @@ impl TagSection {
     }
 }
 
-impl RADHeader {
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> RADHeader {
-        let mut rh = RADHeader {
+impl RadHeader {
+    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> RadHeader {
+        let mut rh = RadHeader {
             is_paired: 0,
             ref_count: 0,
             ref_names: vec![],
@@ -1005,8 +1006,8 @@ impl RADHeader {
         rh.num_chunks = buf.pread::<u64>(0).unwrap();
         rh
     }
-    pub fn from_bam_header(header: &HeaderView) -> RADHeader {
-        let mut rh = RADHeader {
+    pub fn from_bam_header(header: &HeaderView) -> RadHeader {
+        let mut rh = RadHeader {
             is_paired: 0,
             ref_count: 0,
             ref_names: vec![],
@@ -1038,7 +1039,7 @@ impl RADHeader {
 }
 
 pub fn update_barcode_hist_unfiltered(
-    hist: &mut HashMap<u64, usize, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &mut HashMap<u64, usize, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     chunk: &Chunk,
     expected_ori: &Strand,
@@ -1099,7 +1100,7 @@ pub fn update_barcode_hist_unfiltered(
 }
 
 pub fn update_barcode_hist(
-    hist: &mut HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &mut HashMap<u64, u64, ahash::RandomState>,
     chunk: &Chunk,
     expected_ori: &Strand,
 ) {
@@ -1127,7 +1128,7 @@ pub fn update_barcode_hist(
 }
 
 pub fn permit_list_from_threshold(
-    hist: &HashMap<u64, u64, fasthash::RandomState<fasthash::sea::Hash64>>,
+    hist: &HashMap<u64, u64, ahash::RandomState>,
     min_freq: u64,
 ) -> Vec<u64> {
     let valid_bc: Vec<u64> = hist
@@ -1151,24 +1152,24 @@ pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
     bc
 }
 
-pub fn write_str_bin(v: &str, type_id: &RADIntID, owriter: &mut Cursor<Vec<u8>>) {
+pub fn write_str_bin(v: &str, type_id: &RadIntId, owriter: &mut Cursor<Vec<u8>>) {
     match type_id {
-        RADIntID::U8 => {
+        RadIntId::U8 => {
             owriter
                 .write_all(&(v.len() as u8).to_le_bytes())
                 .expect("coudn't write to output file");
         }
-        RADIntID::U16 => {
+        RadIntId::U16 => {
             owriter
                 .write_all(&(v.len() as u16).to_le_bytes())
                 .expect("coudn't write to output file");
         }
-        RADIntID::U32 => {
+        RadIntId::U32 => {
             owriter
                 .write_all(&(v.len() as u32).to_le_bytes())
                 .expect("coudn't write to output file");
         }
-        RADIntID::U64 => {
+        RadIntId::U64 => {
             owriter
                 .write_all(&(v.len() as u64).to_le_bytes())
                 .expect("coudn't write to output file");

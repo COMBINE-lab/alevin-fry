@@ -14,7 +14,7 @@ use dashmap::DashMap;
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,8 +31,8 @@ pub fn collate(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
-    type TSVRec = (u64, u64);
-    let mut tsv_map = Vec::<TSVRec>::new(); //HashMap::<u64, u64>::new();
+    type TsvRec = (u64, u64);
+    let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
 
     let freq_file =
         std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
@@ -43,7 +43,7 @@ pub fn collate(
 
     let mut total_to_collate = 0;
     for result in rdr.deserialize() {
-        let record: TSVRec = result?;
+        let record: TsvRec = result?;
         tsv_map.push(record);
         total_to_collate += record.1;
     }
@@ -177,6 +177,9 @@ pub fn collate_in_memory_multipass(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
+    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
+    // info!(log, "velo_mode = {:?}", velo_mode);
+
     let expected_ori = get_orientation(&mdata, log);
     info!(log, "expected_ori = {:?}", expected_ori);
 
@@ -191,12 +194,18 @@ pub fn collate_in_memory_multipass(
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let oname = parent.join("map.collated.rad");
+    let cfname = if velo_mode {
+        "velo.map.collated.rad"
+    } else {
+        "map.collated.rad"
+    };
+
+    let oname = parent.join(cfname);
     if oname.exists() {
         std::fs::remove_file(oname)?;
     }
 
-    let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
+    let mut ofile = File::create(parent.join(cfname)).unwrap();
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
@@ -207,7 +216,7 @@ pub fn collate_in_memory_multipass(
     let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
     let end_header_pos =
         br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
@@ -247,6 +256,17 @@ pub fn collate_in_memory_multipass(
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
 
+    // make sure that the buffer is empty
+    // and that br starts reading from exactly
+    // where we expect.
+    if !br.buffer().is_empty() {
+        br.consume(br.buffer().len());
+    }
+
+    br.get_mut()
+        .seek(SeekFrom::Start(pos))
+        .expect("could not get read pointer.");
+
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
@@ -267,7 +287,7 @@ pub fn collate_in_memory_multipass(
     };
 
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
-    let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCBChunk>::new());
+    let output_cache = Arc::new(DashMap::<u64, libradicl::CorrectedCbChunk>::new());
     let mut allocated_records;
     let mut total_allocated_records = 0;
     let mut last_idx = 0;
@@ -304,7 +324,7 @@ pub fn collate_in_memory_multipass(
         for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
             output_cache.insert(
                 rec.0,
-                libradicl::CorrectedCBChunk::from_label_and_counter(rec.0, rec.1),
+                libradicl::CorrectedCbChunk::from_label_and_counter(rec.0, rec.1),
             );
             allocated_records += rec.1;
             last_idx = i + 1;
@@ -338,7 +358,7 @@ pub fn collate_in_memory_multipass(
                 // pop from the work queue until everything is
                 // processed
                 while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                    if let Ok((_chunk_num, buf)) = in_q.pop() {
+                    if let Some((_chunk_num, buf)) = in_q.pop() {
                         chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                         let mut nbr = BufReader::new(&buf[..]);
                         libradicl::process_corrected_cb_chunk(
@@ -459,6 +479,10 @@ pub fn collate_with_temp(
         .expect("could not open the generate_permit_list.json file.");
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
+    // velo_mode
+    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
+    // info!(log, "velo_mode = {:?}", velo_mode);
+
     let expected_ori = get_orientation(&mdata, log);
 
     let filter_type = get_filter_type(&mdata, log);
@@ -472,12 +496,18 @@ pub fn collate_with_temp(
 
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let oname = parent.join("map.collated.rad");
+    let cfname = if velo_mode {
+        "velo.map.collated.rad"
+    } else {
+        "map.collated.rad"
+    };
+
+    let oname = parent.join(cfname);
     if oname.exists() {
         std::fs::remove_file(oname)?;
     }
 
-    let mut ofile = File::create(parent.join("map.collated.rad")).unwrap();
+    let mut ofile = File::create(parent.join(cfname)).unwrap();
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
@@ -488,7 +518,7 @@ pub fn collate_with_temp(
     let i_file = File::open(i_dir.join("map.rad")).unwrap();
     let mut br = BufReader::new(i_file);
 
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
     let end_header_pos =
         br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
@@ -527,6 +557,17 @@ pub fn collate_with_temp(
         let mut br2 = BufReader::new(br.get_ref());
         std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
     }
+
+    // make sure that the buffer is empty
+    // and that br starts reading from exactly
+    // where we expect.
+    if !br.buffer().is_empty() {
+        br.consume(br.buffer().len());
+    }
+
+    br.get_mut()
+        .seek(SeekFrom::Start(pos))
+        .expect("could not get read pointer.");
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -638,7 +679,7 @@ pub fn collate_with_temp(
             // pop from the work queue until everything is
             // processed
             while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((_chunk_num, buf)) = in_q.pop() {
+                if let Some((_chunk_num, buf)) = in_q.pop() {
                     chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     libradicl::dump_corrected_cb_chunk_to_temp_file(
@@ -750,7 +791,7 @@ pub fn collate_with_temp(
         // each thread will need to access the work queue
         let in_q = fq.clone();
         // the output cache and correction map
-        let mut cmap = HashMap::<u64, libradicl::CorrectedCBChunk>::new();
+        let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk>::new();
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
@@ -770,7 +811,7 @@ pub fn collate_with_temp(
             // pop from the work queue until everything is
             // processed
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok(temp_bucket) = in_q.pop() {
+                if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
                     cmap.clear();
                     cmap.reserve(temp_bucket.0 as usize);

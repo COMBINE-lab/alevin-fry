@@ -5,7 +5,6 @@
 extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
-extern crate fasthash;
 extern crate indicatif;
 extern crate needletail;
 extern crate petgraph;
@@ -19,8 +18,6 @@ use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
-// use fasthash::sea;
-use fasthash::sea::Hash64;
 use needletail::bitkmer::*;
 use scroll::Pwrite;
 use serde_json::json;
@@ -41,9 +38,9 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, run_bootstrap, EMInitType};
+use self::libradicl::em::{em_optimize, run_bootstrap, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PUGEdgeType, ResolutionStrategy};
+use self::libradicl::schema::{EqMap, PugEdgeType, ResolutionStrategy};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -68,24 +65,24 @@ fn extract_graph(
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
-    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PUGEdgeType {
+    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
         let hdist = count_diff_2_bit_packed(x.0, y.0);
         if hdist == 0 {
             zero_edit += 1;
-            return PUGEdgeType::BiDirected;
+            return PugEdgeType::BiDirected;
         }
 
         if hdist < 2 {
             one_edit += 1;
             if x.1 > (2 * y.1 - 1) {
-                return PUGEdgeType::XToY;
+                return PugEdgeType::XToY;
             } else if y.1 > (2 * x.1 - 1) {
-                return PUGEdgeType::YToX;
+                return PugEdgeType::YToX;
             } else {
-                return PUGEdgeType::BiDirected;
+                return PugEdgeType::BiDirected;
             }
         }
-        PUGEdgeType::NoEdge
+        PugEdgeType::NoEdge
     };
 
     let mut _bidirected = 0u64;
@@ -135,7 +132,7 @@ fn extract_graph(
                 let et = has_edge(&x, &x2);
                 // for each type of edge, add the appropriate edge in the graph
                 match et {
-                    PUGEdgeType::BiDirected => {
+                    PugEdgeType::BiDirected => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         _bidirected += 1;
@@ -143,21 +140,21 @@ fn extract_graph(
                         //    bidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::XToY => {
+                    PugEdgeType::XToY => {
                         graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
                         _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::YToX => {
+                    PugEdgeType::YToX => {
                         graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
                         _unidirected += 1;
                         //if multi_gene_vec[eqid] == true {
                         //    unidirected_in_multigene += 1;
                         //}
                     }
-                    PUGEdgeType::NoEdge => {}
+                    PugEdgeType::NoEdge => {}
                 }
             }
         }
@@ -206,7 +203,7 @@ fn extract_graph(
 
                         let et = has_edge(&x, &y);
                         match et {
-                            PUGEdgeType::BiDirected => {
+                            PugEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 _bidirected += 1;
@@ -216,7 +213,7 @@ fn extract_graph(
                                 //    bidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::XToY => {
+                            PugEdgeType::XToY => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
                                 _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
@@ -225,7 +222,7 @@ fn extract_graph(
                                 //    unidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::YToX => {
+                            PugEdgeType::YToX => {
                                 graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
                                 _unidirected += 1;
                                 //if multi_gene_vec[eqid] == true
@@ -234,7 +231,7 @@ fn extract_graph(
                                 //    unidirected_in_multigene += 1;
                                 //}
                             }
-                            PUGEdgeType::NoEdge => {}
+                            PugEdgeType::NoEdge => {}
                         }
                     }
                 }
@@ -256,10 +253,10 @@ fn extract_graph(
     graph
 }
 
-type BufferedGZFile = BufWriter<GzEncoder<fs::File>>;
+type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 struct BootstrapHelper {
-    bsfile: Option<BufferedGZFile>,
-    mean_var_files: Option<(BufferedGZFile, BufferedGZFile)>,
+    bsfile: Option<BufferedGzFile>,
+    mean_var_files: Option<(BufferedGzFile, BufferedGzFile)>,
 }
 
 impl BootstrapHelper {
@@ -316,7 +313,7 @@ struct QuantOutputInfo {
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
-struct EQCMap {
+struct EqcMap {
     // the *global* gene-level equivalence class map
     global_eqc: HashMap<Vec<u32>, u64, ahash::RandomState>,
     // the list of equivalence classes (and corresponding umi count)
@@ -328,7 +325,7 @@ struct EQCMap {
 }
 
 fn write_eqc_counts(
-    eqid_map_lock: &Arc<Mutex<EQCMap>>,
+    eqid_map_lock: &Arc<Mutex<EqcMap>>,
     num_genes: usize,
     output_path: &std::path::Path,
     log: &slog::Logger,
@@ -415,7 +412,7 @@ pub fn quantify(
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
@@ -428,7 +425,9 @@ pub fn quantify(
     // tgmap.
 
     // first, build a hash of each transcript to it's index
-    let mut rname_to_id: HashMap<String, u32> = HashMap::with_capacity(hdr.ref_count as usize);
+    let rnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut rname_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(hdr.ref_count as usize, rnhasher);
     for (i, n) in hdr.ref_names.iter().enumerate() {
         rname_to_id.insert(n.clone(), i as u32);
     }
@@ -436,10 +435,12 @@ pub fn quantify(
 
     // will hold the unique gene names in the order they are encountered
     let mut gene_names: Vec<String> = Vec::with_capacity((hdr.ref_count / 2) as usize);
-    let mut gene_name_to_id: HashMap<String, u32> = HashMap::new();
+    let gnhasher = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
+        HashMap::with_hasher(gnhasher);
 
     // now read in the transcript to gene map
-    type TSVRec = (String, String);
+    type TsvRec = (String, String);
 
     // map each transcript id to the corresponding gene id
     // the transcript name can be looked up from the id in the RAD header,
@@ -458,7 +459,7 @@ pub fn quantify(
     for result in rdr.deserialize() {
         match result {
             Ok(record_in) => {
-                let record: TSVRec = record_in;
+                let record: TsvRec = record_in;
                 //let record: TSVRec = result?;
                 // first, get the id for this gene
                 let next_id = gene_name_to_id.len() as u32;
@@ -484,6 +485,7 @@ pub fn quantify(
             }
         }
     }
+
     assert_eq!(
         found, hdr.ref_count as usize,
         "The tg-map must contain a gene mapping for all transcripts in the header"
@@ -616,8 +618,8 @@ pub fn quantify(
     // way to do this in a lock-free manner, so this
     // structure is protected by a lock for now.
     // This will only be used if the `dump_eq` paramater is true.
-    let so = ahash::RandomState::new();
-    let eqid_map_lock = Arc::new(Mutex::new(EQCMap {
+    let so = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let eqid_map_lock = Arc::new(Mutex::new(EqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
         cell_offset: Vec::new(),
@@ -671,20 +673,19 @@ pub fn quantify(
             // classes of size greater than 1, and probabilistic results
             // will attempt to resolve gene multi-mapping reads by
             // running an EM algorithm.
-            let s = fasthash::RandomState::<Hash64>::new();
-            let mut gene_eqc: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-                HashMap::with_hasher(s);
+            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+            let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
 
             let em_init_type = if init_uniform {
-                EMInitType::Uniform
+                EmInitType::Uniform
             } else {
-                EMInitType::Informative
+                EmInitType::Informative
             };
 
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
+                if let Some((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
@@ -718,7 +719,7 @@ pub fn quantify(
                                 &log,
                             );
                         }
-                        ResolutionStrategy::CellRangerLikeEM => {
+                        ResolutionStrategy::CellRangerLikeEm => {
                             pugutils::get_num_molecules_cell_ranger_like(
                                 &eq_map,
                                 &tid_to_gid,
@@ -1081,4 +1082,24 @@ pub fn quantify(
         .expect("cannot write to cmd_info.json file");
 
     Ok(())
+}
+
+// TODO: see if we'd rather pass an structure
+// with these options
+#[allow(clippy::too_many_arguments)]
+pub fn velo_quantify(
+    _input_dir: String,
+    _tg_map: String,
+    _output_dir: String,
+    _num_threads: u32,
+    _num_bootstraps: u32,
+    _init_uniform: bool,
+    _summary_stat: bool,
+    _dump_eq: bool,
+    _use_mtx: bool,
+    _resolution: ResolutionStrategy,
+    _log: &slog::Logger,
+) -> Result<(), Box<dyn std::error::Error>> {
+    unimplemented!("not implemented on this branch yet");
+    //Ok(())
 }
