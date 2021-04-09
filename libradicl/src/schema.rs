@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 extern crate bio_types;
-extern crate fasthash;
 extern crate quickersort;
 
 use crate as libradicl;

@@ -358,7 +358,7 @@ pub fn collate_in_memory_multipass(
                 // pop from the work queue until everything is
                 // processed
                 while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                    if let Ok((_chunk_num, buf)) = in_q.pop() {
+                    if let Some((_chunk_num, buf)) = in_q.pop() {
                         chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                         let mut nbr = BufReader::new(&buf[..]);
                         libradicl::process_corrected_cb_chunk(
@@ -679,7 +679,7 @@ pub fn collate_with_temp(
             // pop from the work queue until everything is
             // processed
             while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((_chunk_num, buf)) = in_q.pop() {
+                if let Some((_chunk_num, buf)) = in_q.pop() {
                     chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     libradicl::dump_corrected_cb_chunk_to_temp_file(
@@ -811,7 +811,7 @@ pub fn collate_with_temp(
             // pop from the work queue until everything is
             // processed
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok(temp_bucket) = in_q.pop() {
+                if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
                     cmap.clear();
                     cmap.reserve(temp_bucket.0 as usize);

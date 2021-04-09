@@ -3,7 +3,6 @@
 // license that can be found in the LICENSE file.
 
 // scroll now, explore nom later
-extern crate fasthash;
 extern crate needletail;
 extern crate num;
 extern crate quickersort;

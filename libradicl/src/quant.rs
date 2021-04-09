@@ -5,7 +5,6 @@
 extern crate ahash;
 extern crate bincode;
 extern crate crossbeam_queue;
-extern crate fasthash;
 extern crate indicatif;
 extern crate needletail;
 extern crate petgraph;
@@ -686,7 +685,7 @@ pub fn quantify(
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Ok((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
+                if let Some((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
                     cells_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
                     let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
