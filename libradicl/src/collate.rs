@@ -8,6 +8,8 @@ extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
+//use anyhow::{anyhow, Result};
+use crate::utils::InternalVersionInfo;
 use bio_types::strand::Strand;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
@@ -31,6 +33,28 @@ pub fn collate(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
+
+    // open the metadata file and read the json
+    let gpl_path = parent.join("generate_permit_list.json");
+    let meta_data_file =
+        File::open(&gpl_path).expect(&format!("Could not open the file {:?}.", gpl_path)[..]);
+    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+
+    let _vd: InternalVersionInfo;
+    match mdata.get("version_str") {
+        Some(vs) => match vs.as_str() {
+            Some(s) => {
+                _vd = InternalVersionInfo::from_str(s);
+            }
+            None => {
+                return Err("The version_str field must be a string".into());
+            }
+        },
+        None => {
+            return Err("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry".into());
+        }
+    };
+
     type TsvRec = (u64, u64);
     let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
 

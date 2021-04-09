@@ -9,6 +9,30 @@ use std::fs::File;
 pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
 
+#[allow(dead_code)]
+pub(super) struct InternalVersionInfo {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl InternalVersionInfo {
+    pub(super) fn from_str(vs: &str) -> Self {
+        let versions: Vec<u32> = vs.split('.').map(|s| s.parse::<u32>().unwrap()).collect();
+        assert_eq!(
+            versions.len(),
+            3,
+            "The version string should be of the format x.y.z; it was {}",
+            vs
+        );
+        Self {
+            major: versions[0],
+            minor: versions[1],
+            patch: versions[2],
+        }
+    }
+}
+
 pub fn is_velo_mode(input_dir: String) -> bool {
     let parent = std::path::Path::new(&input_dir);
     // open the metadata file and read the json
@@ -235,6 +259,15 @@ mod tests {
         assert_eq!(
             output,
             vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+        );
+    }
+
+    #[test]
+    fn test_version_info() {
+        let vi = InternalVersionInfo::from_str("1.2.3");
+        assert_eq!(
+            vi,
+            InternalVersionInfo{1, 2, 3}
         );
     }
 }
