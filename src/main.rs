@@ -140,7 +140,6 @@ fn main() {
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
-        .default_value("full")
         .case_insensitive(true)
         .about("the resolution strategy by which molecules will be counted"));
 
