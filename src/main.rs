@@ -154,6 +154,7 @@ fn main() {
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
+    /*
     let test_app = App::new("test")
         .about("test")
         .version(version)
@@ -174,13 +175,14 @@ fn main() {
                 .takes_value(true)
                 .required(true),
         );
+    */
 
     let opts = App::new("alevin-fry")
         .version(version)
         .author(crate_authors)
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
-        .subcommand(test_app)
+        //.subcommand(test_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(infer_app)
@@ -202,6 +204,7 @@ fn main() {
 
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
+    /*
     if let Some(ref t) = opts.subcommand_matches("test") {
         let input_file: String = t.value_of_t("input").expect("no input string specified");
         let rad_dir: String = t.value_of_t("rad-dir").expect("no input string specified");
@@ -218,6 +221,7 @@ fn main() {
         }
         let _r = test_external_parse(input_file, rad_dir, min_reads, &log);
     }
+    */
 
     if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
         let input_dir: String = t.value_of_t("input").expect("no input directory specified");
@@ -303,7 +307,8 @@ fn main() {
             }
             fmeth = CellFilterMethod::UnfilteredExternalList(v, min_reads);
         };
-        // velo_mode
+
+        // velo_mode --- currently, on this branch, it is always false
         let velo_mode = false; //t.is_present("velocity-mode");
 
         let nc = generate_permit_list(
@@ -321,12 +326,16 @@ fn main() {
         }
     }
 
+    // convert a BAM file, in *transcriptomic coordinates*, with
+    // the appropriate barcode and umi tags, into a RAD file
     if let Some(ref t) = opts.subcommand_matches("convert") {
         let input_file: String = t.value_of_t("bam").unwrap();
         let rad_file: String = t.value_of_t("output").unwrap();
         let num_threads: u32 = t.value_of_t("threads").unwrap();
         libradicl::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
+
+    // convert a rad file to a textual representation and write to stdout
     if let Some(ref t) = opts.subcommand_matches("view") {
         let rad_file: String = t.value_of_t("rad").unwrap();
         let print_header = t.is_present("header");
@@ -337,6 +346,8 @@ fn main() {
         libradicl::convert::view(rad_file, print_header, out_file, &log)
     }
 
+    // collate a rad file to group together all records corresponding
+    // to the same corrected barcode.
     if let Some(ref t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_dir: String = t.value_of_t("rad-dir").unwrap();
@@ -346,6 +357,7 @@ fn main() {
             .expect("could not collate.");
     }
 
+    // perform quantification of a collated rad file.
     if let Some(ref t) = opts.subcommand_matches("quant") {
         let num_threads = t.value_of_t("threads").unwrap();
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
@@ -455,11 +467,10 @@ fn main() {
         }
     } // end quant if
 
+    // Given an input of equivalence class counts, perform inference
+    // and output a target-by-cell count matrix.
     if let Some(ref t) = opts.subcommand_matches("infer") {
         let num_threads = t.value_of_t("threads").unwrap();
-        //let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
-        //let init_uniform = t.is_present("init-uniform");
-        //let summary_stat = t.is_present("summary-stat");
         let use_mtx = t.is_present("use-mtx");
         let output_dir = t.value_of_t("output-dir").unwrap();
         let count_mat = t.value_of_t("count-mat").unwrap();
