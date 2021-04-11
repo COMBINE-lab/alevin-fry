@@ -14,7 +14,7 @@ use bio_types::strand::Strand;
 use clap::{crate_authors, crate_version, App, Arg};
 use csv::Error as CSVError;
 use csv::ErrorKind;
-use libradicl::cellfilter::{generate_permit_list, test_external_parse, CellFilterMethod};
+use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::ResolutionStrategy;
 use mimalloc::MiMalloc;
 use rand::Rng;

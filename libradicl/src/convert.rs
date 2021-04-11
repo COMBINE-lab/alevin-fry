@@ -11,6 +11,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
+use self::libradicl::utils::MASK_LOWER_31_U32;
 use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
@@ -315,7 +316,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut tid = rec.tid() as u32;
         if qname == old_qname {
             if !is_reverse {
-                tid |= 0x80000000;
+                tid |= MASK_LOWER_31_U32;
             }
             tid_list.push(tid);
             // local_nrec += 1;
@@ -388,7 +389,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             old_qname = qname.clone();
             tid_list.clear();
             if !is_reverse {
-                tid |= 0x80000000;
+                tid |= MASK_LOWER_31_U32;
             }
             tid_list.push(tid);
             local_nrec += 1;

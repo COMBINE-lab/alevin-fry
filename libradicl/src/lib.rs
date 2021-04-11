@@ -9,7 +9,9 @@ extern crate quickersort;
 extern crate rust_htslib;
 extern crate sce;
 extern crate scroll;
+use crate as libradicl;
 
+use self::libradicl::utils::{MASK_LOWER_31_U32, MASK_TOP_BIT_U32};
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use bio_types::strand::*;
@@ -490,9 +492,9 @@ impl ReadRecord {
         for _ in 0..(na as usize) {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
             let v = rbuf.pread::<u32>(0).unwrap();
-            let dir = (v & 0x80000000) != 0;
+            let dir = (v & MASK_LOWER_31_U32) != 0;
             rec.dirs.push(dir);
-            rec.refs.push(v & 0x7FFFFFFF);
+            rec.refs.push(v & MASK_TOP_BIT_U32);
         }
 
         rec

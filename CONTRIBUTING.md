@@ -9,4 +9,3 @@ on _develop_.  Before you make a PR, please check that:
  * you've run `cargo fmt` on the relevant code.
  * any non-obvious code is documented (we don't yet have formal documentation guidelines, so use common sense)
  * you've run `cargo clippy` on the relevant code and any issues are either resolved or the PR describes why they were ignored.
- 
