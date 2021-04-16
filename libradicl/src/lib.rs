@@ -346,7 +346,7 @@ impl RadIntId {
         }
     }
 
-    /// Based on the variant of the current enum, write the value `v`  
+    /// Based on the variant of the current enum, write the value `v`
     /// out using `owrite`.  Here, `v` is bound to be some primitive
     /// integer type.  It is the responsibility of the caller to ensure
     /// that, if `v` is wider than the enum type on which this function
@@ -718,7 +718,8 @@ impl TempBucket {
     pub fn from_id_and_parent(bucket_id: u32, parent: &std::path::Path) -> Self {
         TempBucket {
             bucket_id,
-            bucket_writer: Arc::new(Mutex::new(BufWriter::new(
+            bucket_writer: Arc::new(Mutex::new(BufWriter::with_capacity(
+                4096_usize,
                 File::create(parent.join(&format!("bucket_{}.tmp", bucket_id))).unwrap(),
             ))),
             num_chunks: 0u32,

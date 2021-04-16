@@ -502,6 +502,7 @@ pub fn collate_with_temp(
         }
     }
     pbar_inner.finish_with_message("partitioned records into temporary files.");
+    drop(q);
 
     // At this point, we are done with the "scatter"
     // phase of writing the records to the corresponding
@@ -529,6 +530,8 @@ pub fn collate_with_temp(
         let observed_bytes = md.len();
         assert!(expected_bytes == observed_bytes);
     }
+
+    //std::process::exit(1);
 
     // to hold the temp buckets threads will process
     let slack = ((n_workers / 2) as usize).max(1_usize);
@@ -600,14 +603,14 @@ pub fn collate_with_temp(
                     );
 
                     // we don't need the file or reader anymore
-                    std::fs::remove_file(fname).expect("could not delete temporary file.");
                     drop(treader);
+                    std::fs::remove_file(fname).expect("could not delete temporary file.");
 
                     // go through, add a header to each chunk
                     // and flush the chunk to the global output
                     // file
-                    for mut v in cmap.values_mut() {
-                        libradicl::dump_chunk(&mut v, &owriter);
+                    for v in cmap.values_mut() {
+                        libradicl::dump_chunk(v, &owriter);
                     }
                     local_chunks += 1;
                     pbar_gather.inc(1);
@@ -622,7 +625,7 @@ pub fn collate_with_temp(
     // by the worker threads.
     for temp_bucket in temp_buckets {
         loop {
-            if !q.is_full() {
+            if !fq.is_full() {
                 let r = fq.push(temp_bucket.clone());
                 if r.is_ok() {
                     let expected = temp_bucket.1;
