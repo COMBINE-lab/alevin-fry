@@ -612,7 +612,7 @@ pub fn collate_with_temp(
                     for v in cmap.values_mut() {
                         libradicl::dump_chunk(v, &owriter);
                     }
-                    local_chunks += 1;
+                    local_chunks += cmap.len() as u64;
                     pbar_gather.inc(1);
                 }
             }

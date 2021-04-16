@@ -606,7 +606,7 @@ pub fn collate_temporary_bucket<T: Read>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
     umit: &RadIntId,
-    nchunks: u32,
+    _nchunks: u32,
     nrec: u32,
     output_cache: &mut HashMap<u64, CorrectedCbChunk, ahash::RandomState>,
 ) {
@@ -614,7 +614,7 @@ pub fn collate_temporary_bucket<T: Read>(
     // estimated average number of records per barcode
     // this is just for trying to pre-allocate buffers
     // right; should not affect correctness
-    let est_num_rec = (nrec / nchunks) + 1;
+    let est_num_rec = 10; //(nrec / nchunks) + 1;
 
     // for each record, read it
     for _ in 0..(nrec as usize) {
