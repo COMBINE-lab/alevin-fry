@@ -552,7 +552,7 @@ pub fn collate_with_temp(
         // the output cache and correction map
         let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         let mut cmap =
-            IndexMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
+            HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
@@ -579,7 +579,8 @@ pub fn collate_with_temp(
                     if cmap.capacity() < new_cap {
                         cmap.reserve(temp_bucket.0 as usize);
                     } else {
-                        cmap.truncate(temp_bucket.0 as usize);
+                        // cmap.truncate(temp_bucket.0 as usize);
+                        // cmap.shrink_to(temp_bucket.0 as usize);
                         cmap.shrink_to_fit();
                     }
                     cmap.clear();

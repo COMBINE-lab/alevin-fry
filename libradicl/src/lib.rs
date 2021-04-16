@@ -260,7 +260,7 @@ impl BarcodeLookupMap {
 }
 
 impl CorrectedCbChunk {
-    pub fn from_label_and_counter(corrected_bc_in: u64, num_remain: u64) -> CorrectedCbChunk {
+    pub fn from_label_and_counter(corrected_bc_in: u64, num_remain: u32) -> CorrectedCbChunk {
         let mut cc = CorrectedCbChunk {
             remaining_records: num_remain,
             corrected_bc: corrected_bc_in,
@@ -626,7 +626,7 @@ pub fn collate_temporary_bucket<T: Read>(
         // get the entry for this chunk, or create a new one
         let v = output_cache
             .entry(tup.0)
-            .or_insert_with(|| CorrectedCbChunk::from_label_and_counter(tup.0, est_num_rec as u64));
+            .or_insert_with(|| CorrectedCbChunk::from_label_and_counter(tup.0, est_num_rec));
 
         // keep track of the number of records we're writing
         (*v).nrec += 1;
