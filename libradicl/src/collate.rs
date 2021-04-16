@@ -12,7 +12,7 @@ use self::slog::{crit, info};
 use crate::utils::InternalVersionInfo;
 use bio_types::strand::Strand;
 use crossbeam_queue::ArrayQueue;
-use dashmap::DashMap;
+// use dashmap::DashMap;
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
@@ -316,7 +316,7 @@ pub fn collate_with_temp(
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
     // max_records is the max size of each intermediate file
-    let num_output_chunks = tsv_map.len() as u64;
+    // let num_output_chunks = tsv_map.len() as u64;
     let mut total_allocated_records = 0;
     let mut allocated_records = 0;
     let mut temp_buckets = vec![(
@@ -376,7 +376,7 @@ pub fn collate_with_temp(
     // the number of cells left to process
     let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
 
-    let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+    let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
 
     let min_rec_len = 24usize; // smallest size an individual record can be loaded in memory
     let max_rec = max_records as usize;
@@ -457,6 +457,8 @@ pub fn collate_with_temp(
                     filebuf.write_all(&lb.get_ref()[0..len]).unwrap();
                 }
             }
+            // return something more meaningful
+            0
         });
 
         thread_handles.push(handle);
@@ -562,6 +564,7 @@ pub fn collate_with_temp(
 
         // now, make the worker threads
         let handle = std::thread::spawn(move || {
+            let mut local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
             // processed
@@ -595,9 +598,11 @@ pub fn collate_with_temp(
                     for mut v in cmap.values_mut() {
                         libradicl::dump_chunk(&mut v, &owriter);
                     }
+                    local_chunks += 1;
                     pbar_gather.inc(1);
                 }
             }
+            local_chunks
         });
         thread_handles.push(handle);
     } // for each worker
@@ -619,9 +624,12 @@ pub fn collate_with_temp(
     }
 
     // wait for all of the workers to finish
+    let mut num_output_chunks = 0u64;
     for h in thread_handles.drain(0..) {
         match h.join() {
-            Ok(_) => {}
+            Ok(c) => {
+                num_output_chunks += c;
+            }
             Err(_e) => {
                 info!(log, "thread panicked");
             }
