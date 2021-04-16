@@ -87,7 +87,7 @@ pub struct Chunk {
 
 #[derive(Debug)]
 pub struct CorrectedCbChunk {
-    remaining_records: u64,
+    remaining_records: u32,
     corrected_bc: u64,
     nrec: u32,
     data: Cursor<Vec<u8>>, /*,
@@ -608,7 +608,7 @@ pub fn collate_temporary_bucket<T: Read>(
     umit: &RadIntId,
     nchunks: u32,
     nrec: u32,
-    output_cache: &mut HashMap<u64, CorrectedCbChunk>,
+    output_cache: &mut HashMap<u64, CorrectedCbChunk, ahash::RandomState>,
 ) {
     let mut tbuf = [0u8; 65536];
     // estimated average number of records per barcode

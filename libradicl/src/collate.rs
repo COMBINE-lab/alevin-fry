@@ -531,11 +531,13 @@ pub fn collate_with_temp(
     }
 
     // to hold the temp buckets threads will process
+    let slack = ((n_workers / 2) as usize).max(1_usize);
+    let temp_bucket_queue_size = slack + n_workers;
     let fq = Arc::new(ArrayQueue::<(
         u32,
         u32,
         std::sync::Arc<libradicl::TempBucket>,
-    )>::new(2 * n_workers));
+    )>::new(temp_bucket_queue_size));
     // the number of cells left to process
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
@@ -548,7 +550,9 @@ pub fn collate_with_temp(
         // each thread will need to access the work queue
         let in_q = fq.clone();
         // the output cache and correction map
-        let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut cmap =
+            IndexMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
@@ -571,8 +575,14 @@ pub fn collate_with_temp(
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+                    let new_cap = temp_bucket.0 as usize;
+                    if cmap.capacity() < new_cap {
+                        cmap.reserve(temp_bucket.0 as usize);
+                    } else {
+                        cmap.truncate(temp_bucket.0 as usize);
+                        cmap.shrink_to_fit();
+                    }
                     cmap.clear();
-                    cmap.reserve(temp_bucket.0 as usize);
 
                     let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
@@ -838,7 +848,7 @@ pub fn collate_in_memory_multipass(
         for (i, rec) in tsv_map[init_offset..].iter().enumerate() {
             output_cache.insert(
                 rec.0,
-                libradicl::CorrectedCbChunk::from_label_and_counter(rec.0, rec.1),
+                libradicl::CorrectedCbChunk::from_label_and_counter(rec.0, rec.1 as u32),
             );
             allocated_records += rec.1;
             last_idx = i + 1;
