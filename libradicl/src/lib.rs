@@ -614,7 +614,7 @@ pub fn collate_temporary_bucket<T: Read>(
     // estimated average number of records per barcode
     // this is just for trying to pre-allocate buffers
     // right; should not affect correctness
-    let est_num_rec = 10; //(nrec / nchunks) + 1;
+    let est_num_rec = 1; //(nrec / nchunks) + 1;
 
     // for each record, read it
     for _ in 0..(nrec as usize) {
