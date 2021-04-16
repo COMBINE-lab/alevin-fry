@@ -43,7 +43,10 @@ fn gen_random_kmer(k: usize) -> String {
 }
 
 fn main() {
+    let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
+
     let crate_authors = crate_authors!("\n");
     let version = crate_version!();
     // [] add command for just counting barcode frequency
@@ -119,9 +122,9 @@ fn main() {
     .author(crate_authors)
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
-    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_collate_threads))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
-         .default_value("50000000"));
+         .default_value("30000000"));
     //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
     //     .default_value("fw"));
 
