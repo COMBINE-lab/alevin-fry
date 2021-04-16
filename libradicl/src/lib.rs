@@ -729,6 +729,7 @@ impl TempBucket {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
@@ -736,10 +737,11 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     correct_map: &HashMap<u64, u64>,
     expected_ori: &Strand,
     output_cache: &HashMap<u64, Arc<TempBucket>>,
-    local_buffers: &mut [Cursor<Vec<u8>>],
+    local_buffers: &mut [Cursor<&mut [u8]>],
+    flush_limit: usize,
 ) {
     let mut buf = [0u8; 8];
-    let mut tbuf = vec![0u8; 65536];
+    let mut tbuf = vec![0u8; 4096];
     //let mut tcursor = Cursor::new(tbuf);
     //tcursor.set_position(0);
 
@@ -757,7 +759,7 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     // for each record, read it
     for _ in 0..(nrec as usize) {
         let tup = ReadRecord::from_bytes_record_header(reader, &bct, &umit);
-        //let rr = ReadRecord::from_bytes_keep_ori(reader, &bct, &umit, expected_ori);
+
         // if this record had a correct or correctable barcode
         if let Some(corrected_id) = correct_map.get(&tup.0) {
             let rr = ReadRecord::from_bytes_with_header_keep_ori(
@@ -776,23 +778,20 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                 // write the corresponding entry to the
                 // thread-local buffer for this bucket
 
-                // update number of written records
-                v.num_records_written.fetch_add(1, Ordering::SeqCst);
+                // the total number of bytes this record will take
                 let nb = (rr.refs.len() * target_id_bytes + na_bytes + bc_bytes + umi_bytes) as u64;
 
-                v.num_bytes_written.fetch_add(nb, Ordering::SeqCst);
+                // the buffer index for this corrected barcode
                 let buffidx = v.bucket_id as usize;
+                // the current cursor for this buffer
                 let bcursor = &mut local_buffers[buffidx];
-                let na = rr.refs.len() as u32;
-                bcursor.write_all(&na.to_le_bytes()).unwrap();
-                bct.write_to(*corrected_id, bcursor).unwrap();
-                umit.write_to(rr.umi, bcursor).unwrap();
-                bcursor.write_all(as_u8_slice(&rr.refs[..])).unwrap();
+                // the current position of the cursor
                 let len = bcursor.position() as usize;
 
-                // if the thread-local buffer for this bucket is
-                // greater than the flush size, then flush to file
-                if len > 65536 {
+                // if writing the next record (nb bytes) will put us over
+                // the flush size for the thread-local buffer for this bucket
+                // then first flush the buffer to file.
+                if len + nb as usize >= flush_limit {
                     let mut filebuf = v.bucket_writer.lock().unwrap();
                     filebuf
                         .write_all(&bcursor.get_ref()[0..len as usize])
@@ -800,8 +799,23 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
                     // and reset the local buffer cursor
                     bcursor.set_position(0);
                 }
+
+                // now, write the record to the buffer
+                let na = rr.refs.len() as u32;
+                bcursor.write_all(&na.to_le_bytes()).unwrap();
+                bct.write_to(*corrected_id, bcursor).unwrap();
+                umit.write_to(rr.umi, bcursor).unwrap();
+                bcursor.write_all(as_u8_slice(&rr.refs[..])).unwrap();
+
+                // update number of written records
+                v.num_records_written.fetch_add(1, Ordering::SeqCst);
+                // update number of written bytes
+                v.num_bytes_written.fetch_add(nb, Ordering::SeqCst);
             }
         } else {
+            // in this branch, we don't have access to a correct barcode for
+            // what we observed, so we need to discard the remaining part of
+            // the record.
             reader
                 .read_exact(&mut tbuf[0..(target_id_bytes * (tup.2 as usize))])
                 .unwrap();
