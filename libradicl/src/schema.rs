@@ -14,6 +14,12 @@ use std::fmt;
 use std::io::BufRead;
 use std::str::FromStr;
 
+pub struct TempCellInfo {
+    pub offset: u64,
+    pub nbytes: u32,
+    pub nrec: u32,
+}
+
 /**
 * Single-cell equivalence class
 **/
