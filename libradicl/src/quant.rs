@@ -597,10 +597,8 @@ pub fn quantify(
         0usize
     };
 
-    let trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-        (num_cells as usize, num_genes as usize),
-        tmcap,
-    );
+    let trimat =
+        sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_genes as usize), tmcap);
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::new(bc_file),
@@ -695,9 +693,20 @@ pub fn quantify(
                     if c.reads.is_empty() {
                         warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, _nbyte = {}, nrec = {}", cell_num, _nbyte, nrec);
                     }
+
+                    // TODO: Clean up the expect() and merge with the check above
+                    // the expect shouldn't happen, but the message is redundant with
+                    // the above.  Plus, this would panic if it actually occurred.
                     let bc = c.reads.first().expect("chunk with no reads").bc;
+
+                    // Prepare the equiv class map we'll use to process this cell.
+                    // TODO: If the cell is very small, may want to consider an
+                    // optimized setup to avoid overhead for a small number of
+                    // records.
                     eq_map.init_from_chunk(&mut c);
 
+                    // The structures we'll need to hold our output for this
+                    // cell.
                     let counts: Vec<f32>;
                     let mut alt_resolution = false;
 
@@ -825,12 +834,17 @@ pub fn quantify(
                     // clear our local variables
                     eq_map.clear();
 
-                    // Note: there is a fill method, but it is only on
-                    // the nightly branch.  Use this for now:
-                    unique_evidence.clear();
-                    unique_evidence.resize(num_genes, false);
-                    no_ambiguity.clear();
-                    no_ambiguity.resize(num_genes, false);
+                    // fill requires >= 1.50.0
+                    unique_evidence.fill(false);
+                    no_ambiguity.fill(false);
+
+                    // for older versions, could use below
+                    // but don't want older versions unless we must
+                    // unique_evidence.clear();
+                    // unique_evidence.resize(num_genes, false);
+                    // no_ambiguity.clear();
+                    // no_ambiguity.resize(num_genes, false);
+
                     // done clearing
 
                     if alt_resolution {

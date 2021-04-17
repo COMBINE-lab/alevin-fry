@@ -726,7 +726,7 @@ pub fn collate_temporary_bucket<T: Read>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
     umit: &RadIntId,
-    nchunks: u32,
+    _nchunks: u32,
     nrec: u32,
     output_cache: &mut HashMap<u64, CorrectedCbChunk, ahash::RandomState>,
 ) {
