@@ -413,6 +413,9 @@ pub fn quantify(
     let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    // in the collated rad file, we have 1 cell per chunk
+    let num_cells = hdr.num_chunks;
+
     info!(
         log,
         "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
@@ -553,7 +556,7 @@ pub fn quantify(
     let q = Arc::new(ArrayQueue::<(usize, u32, u32, Vec<u8>)>::new(4 * n_workers));
 
     // the number of cells left to process
-    let cells_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
+    let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
     // the number of reference sequences
@@ -589,13 +592,13 @@ pub fn quantify(
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
-        (0.2f64 * num_genes as f64 * hdr.num_chunks as f64).round() as usize
+        (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize
     } else {
         0usize
     };
 
     let trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-        (hdr.num_chunks as usize, num_genes as usize),
+        (num_cells as usize, num_genes as usize),
         tmcap,
     );
 
@@ -608,7 +611,7 @@ pub fn quantify(
         bootstrap_helper: boot_helper,
     }));
 
-    let mmrate = Arc::new(Mutex::new(vec![0f64; hdr.num_chunks as usize]));
+    let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
 
@@ -1045,7 +1048,7 @@ pub fn quantify(
         sprs::io::write_matrix_market(&mtx_path, &writer.trimat)?;
     }
 
-    let pb_msg = format!("finished quantifying {} cells.", hdr.num_chunks);
+    let pb_msg = format!("finished quantifying {} cells.", num_cells);
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq {
@@ -1054,7 +1057,7 @@ pub fn quantify(
 
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
-        "num_quantified_cells" : hdr.num_chunks,
+        "num_quantified_cells" : num_cells,
         "num_genes" : num_genes,
         "dump_eq" : dump_eq,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
