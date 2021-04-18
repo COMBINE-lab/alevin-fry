@@ -1029,15 +1029,13 @@ pub fn quantify(
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
-        loop {
-            if !q.is_full() {
-                let r = q.push((cell_num, nbytes_chunk, nrec_chunk, buf.clone()));
-                if r.is_ok() {
-                    pbar.inc(1);
-                    break;
-                }
-            }
+
+        let mut bclone = (cell_num, nbytes_chunk, nrec_chunk, buf.clone());
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            while q.is_full() {}
         }
+        pbar.inc(1);
     }
 
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");

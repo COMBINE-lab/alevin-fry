@@ -80,6 +80,7 @@ pub fn collate(
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
+    /*
     let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
     info!(
         log,
@@ -87,6 +88,8 @@ pub fn collate(
     );
     // if est_num_rounds > 2 {
     info!(log, "executing temporary file scatter-gather strategy.");
+    */
+
     collate_with_temp(
         input_dir,
         rad_dir,
@@ -96,6 +99,7 @@ pub fn collate(
         total_to_collate,
         log,
     )
+
     /*} else {
         info!(log, "executing multi-pass strategy.");
         collate_in_memory_multipass(
@@ -485,15 +489,13 @@ pub fn collate_with_temp(
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
-        loop {
-            if !q.is_full() {
-                let r = q.push((cell_num, buf.clone()));
-                if r.is_ok() {
-                    pbar_inner.inc(1);
-                    break;
-                }
-            }
+
+        let mut bclone = (cell_num, buf.clone());
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            while q.is_full() {}
         }
+        pbar_inner.inc(1);
     }
     pbar_inner.finish();
 
@@ -613,17 +615,14 @@ pub fn collate_with_temp(
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
     for temp_bucket in temp_buckets {
-        loop {
-            if !fq.is_full() {
-                let r = fq.push(temp_bucket.clone());
-                if r.is_ok() {
-                    let expected = temp_bucket.1;
-                    let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-                    assert!(expected == observed);
-                    break;
-                }
-            }
+        let mut bclone  = temp_bucket.clone();
+        while let Err(t) = fq.push(bclone) {
+            bclone = t;
+            while fq.is_full() {}
         }
+        let expected = temp_bucket.1;
+        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        assert!(expected == observed);  
     }
 
     // wait for all of the workers to finish
