@@ -1,6 +1,11 @@
-// Copyright 2020 Rob Patro, Hirak Sarkar, Avi Srivastava. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 
 extern crate ahash;
 extern crate bincode;
