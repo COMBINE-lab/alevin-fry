@@ -564,6 +564,9 @@ pub fn collate_with_temp(
         // the output cache and correction map
         let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // alternative strategy
+        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
+
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
@@ -976,4 +979,58 @@ pub fn collate_in_memory_multipass(
     );
     Ok(())
 }
+*/
+
+// alternative collate strategy
+
+// no point trying to push if the queue is full
+/*
+let handle = std::thread::spawn(move || {
+    let mut local_chunks = 0u64;
+    let parent = std::path::Path::new(&input_dir);
+    // pop from the work queue until everything is
+    // processed
+    while buckets_remaining.load(Ordering::SeqCst) > 0 {
+        if let Some(temp_bucket) = in_q.pop() {
+            buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+            let new_cap = temp_bucket.0 as usize;
+            if cmap.capacity() < new_cap {
+                cmap.reserve(temp_bucket.0 as usize);
+            } else {
+                // cmap.truncate(temp_bucket.0 as usize);
+                // cmap.shrink_to(temp_bucket.0 as usize);
+                cmap.shrink_to_fit();
+            }
+            cmap.clear();
+
+            let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+            // create a new handle for reading
+            let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+            let mut treader = BufReader::new(tfile);
+
+            libradicl::collate_temporary_bucket(
+                &mut treader,
+                &bc_type,
+                &umi_type,
+                temp_bucket.0,
+                temp_bucket.1,
+                &mut cmap,
+            );
+
+            // we don't need the file or reader anymore
+            drop(treader);
+            std::fs::remove_file(fname).expect("could not delete temporary file.");
+
+            // go through, add a header to each chunk
+            // and flush the chunk to the global output
+            // file
+            for v in cmap.values_mut() {
+                libradicl::dump_chunk(v, &owriter);
+            }
+            local_chunks += cmap.len() as u64;
+            pbar_gather.inc(1);
+        }
+    }
+    local_chunks
+});
 */
