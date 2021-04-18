@@ -982,8 +982,6 @@ pub fn collate_in_memory_multipass(
 */
 
 // alternative collate strategy
-
-// no point trying to push if the queue is full
 /*
 let handle = std::thread::spawn(move || {
     let mut local_chunks = 0u64;
