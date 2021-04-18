@@ -1031,8 +1031,10 @@ pub fn quantify(
         br.read_exact(&mut buf[8..]).unwrap();
 
         let mut bclone = (cell_num, nbytes_chunk, nrec_chunk, buf.clone());
+        // keep trying until we can push this payload
         while let Err(t) = q.push(bclone) {
             bclone = t;
+            // no point trying to push if the queue is full
             while q.is_full() {}
         }
         pbar.inc(1);

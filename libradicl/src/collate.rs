@@ -491,8 +491,10 @@ pub fn collate_with_temp(
         br.read_exact(&mut buf[8..]).unwrap();
 
         let mut bclone = (cell_num, buf.clone());
+        // keep trying until we can push this payload
         while let Err(t) = q.push(bclone) {
             bclone = t;
+            // no point trying to push if the queue is full
             while q.is_full() {}
         }
         pbar_inner.inc(1);
@@ -615,14 +617,16 @@ pub fn collate_with_temp(
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
     for temp_bucket in temp_buckets {
-        let mut bclone  = temp_bucket.clone();
+        let mut bclone = temp_bucket.clone();
+        // keep trying until we can push this payload
         while let Err(t) = fq.push(bclone) {
             bclone = t;
+            // no point trying to push if the queue is full
             while fq.is_full() {}
         }
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert!(expected == observed);  
+        assert!(expected == observed);
     }
 
     // wait for all of the workers to finish
