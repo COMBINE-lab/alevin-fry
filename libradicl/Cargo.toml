@@ -1,7 +1,7 @@
 [package]
 name = "libradicl"
 version = "0.1.0"
-authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Rob Patro <rob@cs.umd.edu>"]
+authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 
 [dependencies]
