@@ -710,16 +710,13 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek>(
         }
     }
 
-    //let num_remain : usize = cb_byte_map.iter().map( |(_k,v)| -> usize { v.nbytes as usize}).sum();
-    //assert_eq!(0_usize, num_remain);
-
     owriter
         .lock()
         .unwrap()
         .write_all(output_buffer.get_ref())
         .unwrap();
 
-    return cb_byte_map.len();
+    cb_byte_map.len()
 }
 
 pub fn collate_temporary_bucket<T: Read>(
