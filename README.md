@@ -21,8 +21,7 @@ architecture), then you have to build from source.  Luckily, `cargo` makes that 
 
 ## Building
 
-Alevin-fry is built and tested with the latest (major & minor version) stable Rust (currently 1.45).
-Building should be as easy as:
+Alevin-fry is built and tested with the latest (major & minor) stable version of [Rust](https://www.rust-lang.org/). While it will likely compile fine with slightly older versions of Rust, this is not a guarantee and is not a support priority.  Unlike with C++, Rust has a frequent and stable release cadence, is designed to be installed and updated from user space, and is easy to keep up to date with [rustup](https://rustup.rs/). Thanks to cargo, building should be as easy as:
 
 ```{bash}
 $ cargo build --release

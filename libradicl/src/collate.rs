@@ -1,10 +1,16 @@
-// Copyright 2020 Rob Patro, Avi Srivastava. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 
 extern crate bincode;
 extern crate indicatif;
 extern crate slog;
+use crate as libradicl;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
@@ -13,6 +19,7 @@ use crate::utils::InternalVersionInfo;
 use bio_types::strand::Strand;
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
+use self::libradicl::schema::TempCellInfo;
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
@@ -21,8 +28,6 @@ use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-
-use crate as libradicl;
 
 pub fn collate(
     input_dir: String,
@@ -75,6 +80,7 @@ pub fn collate(
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
+    /*
     let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
     info!(
         log,
@@ -82,6 +88,8 @@ pub fn collate(
     );
     // if est_num_rounds > 2 {
     info!(log, "executing temporary file scatter-gather strategy.");
+    */
+
     collate_with_temp(
         input_dir,
         rad_dir,
@@ -91,6 +99,7 @@ pub fn collate(
         total_to_collate,
         log,
     )
+
     /*} else {
         info!(log, "executing multi-pass strategy.");
         collate_in_memory_multipass(
@@ -480,15 +489,15 @@ pub fn collate_with_temp(
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
         br.read_exact(&mut buf[8..]).unwrap();
-        loop {
-            if !q.is_full() {
-                let r = q.push((cell_num, buf.clone()));
-                if r.is_ok() {
-                    pbar_inner.inc(1);
-                    break;
-                }
-            }
+
+        let mut bclone = (cell_num, buf.clone());
+        // keep trying until we can push this payload
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while q.is_full() {}
         }
+        pbar_inner.inc(1);
     }
     pbar_inner.finish();
 
@@ -554,8 +563,10 @@ pub fn collate_with_temp(
         let in_q = fq.clone();
         // the output cache and correction map
         let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap =
-            HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
+        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // alternative strategy
+        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
+
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
@@ -578,14 +589,6 @@ pub fn collate_with_temp(
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    let new_cap = temp_bucket.0 as usize;
-                    if cmap.capacity() < new_cap {
-                        cmap.reserve(temp_bucket.0 as usize);
-                    } else {
-                        // cmap.truncate(temp_bucket.0 as usize);
-                        // cmap.shrink_to(temp_bucket.0 as usize);
-                        cmap.shrink_to_fit();
-                    }
                     cmap.clear();
 
                     let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
@@ -593,26 +596,19 @@ pub fn collate_with_temp(
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
 
-                    libradicl::collate_temporary_bucket(
+                    local_chunks += libradicl::collate_temporary_bucket_twopass(
                         &mut treader,
                         &bc_type,
                         &umi_type,
-                        temp_bucket.0,
                         temp_bucket.1,
+                        &owriter,
                         &mut cmap,
-                    );
+                    ) as u64;
 
                     // we don't need the file or reader anymore
                     drop(treader);
                     std::fs::remove_file(fname).expect("could not delete temporary file.");
 
-                    // go through, add a header to each chunk
-                    // and flush the chunk to the global output
-                    // file
-                    for v in cmap.values_mut() {
-                        libradicl::dump_chunk(v, &owriter);
-                    }
-                    local_chunks += cmap.len() as u64;
                     pbar_gather.inc(1);
                 }
             }
@@ -624,17 +620,16 @@ pub fn collate_with_temp(
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
     for temp_bucket in temp_buckets {
-        loop {
-            if !fq.is_full() {
-                let r = fq.push(temp_bucket.clone());
-                if r.is_ok() {
-                    let expected = temp_bucket.1;
-                    let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-                    assert!(expected == observed);
-                    break;
-                }
-            }
+        let mut bclone = temp_bucket.clone();
+        // keep trying until we can push this payload
+        while let Err(t) = fq.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while fq.is_full() {}
         }
+        let expected = temp_bucket.1;
+        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        assert!(expected == observed);
     }
 
     // wait for all of the workers to finish
@@ -984,4 +979,56 @@ pub fn collate_in_memory_multipass(
     );
     Ok(())
 }
+*/
+
+// alternative collate strategy
+/*
+let handle = std::thread::spawn(move || {
+    let mut local_chunks = 0u64;
+    let parent = std::path::Path::new(&input_dir);
+    // pop from the work queue until everything is
+    // processed
+    while buckets_remaining.load(Ordering::SeqCst) > 0 {
+        if let Some(temp_bucket) = in_q.pop() {
+            buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+            let new_cap = temp_bucket.0 as usize;
+            if cmap.capacity() < new_cap {
+                cmap.reserve(temp_bucket.0 as usize);
+            } else {
+                // cmap.truncate(temp_bucket.0 as usize);
+                // cmap.shrink_to(temp_bucket.0 as usize);
+                cmap.shrink_to_fit();
+            }
+            cmap.clear();
+
+            let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+            // create a new handle for reading
+            let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+            let mut treader = BufReader::new(tfile);
+
+            libradicl::collate_temporary_bucket(
+                &mut treader,
+                &bc_type,
+                &umi_type,
+                temp_bucket.0,
+                temp_bucket.1,
+                &mut cmap,
+            );
+
+            // we don't need the file or reader anymore
+            drop(treader);
+            std::fs::remove_file(fname).expect("could not delete temporary file.");
+
+            // go through, add a header to each chunk
+            // and flush the chunk to the global output
+            // file
+            for v in cmap.values_mut() {
+                libradicl::dump_chunk(v, &owriter);
+            }
+            local_chunks += cmap.len() as u64;
+            pbar_gather.inc(1);
+        }
+    }
+    local_chunks
+});
 */
