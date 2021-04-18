@@ -361,7 +361,7 @@ fn main() {
         let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &log)
+        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &VERSION, &log)
             .expect("could not collate.");
     }
 

@@ -15,6 +15,7 @@ pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub(super) struct InternalVersionInfo {
     major: u32,
     minor: u32,
@@ -34,6 +35,18 @@ impl InternalVersionInfo {
             major: versions[0],
             minor: versions[1],
             patch: versions[2],
+        }
+    }
+
+    pub(super) fn is_compatible_with(&self, other: &InternalVersionInfo) -> Result<(), String> {
+        if self.major == other.major && self.minor == other.minor {
+            Ok(())
+        } else {
+            let s = format!(
+                "version {:?} is incompatible with version {:?}",
+                self, other
+            );
+            Err(s)
         }
     }
 }

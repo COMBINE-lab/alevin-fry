@@ -16,7 +16,7 @@ use self::indicatif::{ProgressBar, ProgressStyle};
 use self::slog::{crit, info};
 //use anyhow::{anyhow, Result};
 use crate::utils::InternalVersionInfo;
-use bio_types::strand::Strand;
+use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 use self::libradicl::schema::TempCellInfo;
@@ -34,6 +34,7 @@ pub fn collate(
     rad_dir: String,
     num_threads: u32,
     max_records: u32,
+    version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -45,11 +46,12 @@ pub fn collate(
         File::open(&gpl_path).expect(&format!("Could not open the file {:?}.", gpl_path)[..]);
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
-    let _vd: InternalVersionInfo;
+    let calling_version = InternalVersionInfo::from_str(version_str);
+    let vd: InternalVersionInfo;
     match mdata.get("version_str") {
         Some(vs) => match vs.as_str() {
             Some(s) => {
-                _vd = InternalVersionInfo::from_str(s);
+                vd = InternalVersionInfo::from_str(s);
             }
             None => {
                 return Err("The version_str field must be a string".into());
@@ -59,6 +61,10 @@ pub fn collate(
             return Err("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry".into());
         }
     };
+
+    if let Err(es) = calling_version.is_compatible_with(&vd) {
+        return Err(es.into());
+    }
 
     type TsvRec = (u64, u64);
     let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
@@ -114,7 +120,7 @@ pub fn collate(
     }*/
 }
 
-fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
+fn get_orientation(mdata: &serde_json::Value) -> Result<Strand, StrandError> {
     // next line is ugly — should be a better way.  We need a char to
     // get the strand, so we get the correct field as a `str` then
     // use the chars iterator and get the first char.
@@ -124,13 +130,7 @@ fn get_orientation(mdata: &serde_json::Value, log: &slog::Logger) -> Strand {
         .chars()
         .next()
         .unwrap();
-    match Strand::from_char(&ori_str) {
-        Ok(s) => s,
-        Err(e) => {
-            crit!(log, "invalid metadata {}.", e);
-            std::process::exit(1);
-        }
-    }
+    Strand::from_char(&ori_str)
 }
 
 #[derive(Debug)]
@@ -214,11 +214,26 @@ pub fn collate_with_temp(
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .expect("could not open the generate_permit_list.json file.");
-    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
 
     // velo_mode
     let velo_mode = mdata["velo_mode"].as_bool().unwrap();
-    let expected_ori = get_orientation(&mdata, log);
+    let expected_ori: Strand;
+    match get_orientation(&mdata) {
+        Ok(o) => {
+            expected_ori = o;
+        }
+        Err(e) => {
+            crit!(
+                log,
+                "Error reading strand info from {:#?} :: {}",
+                &meta_data_file,
+                e
+            );
+            return Err(e.into());
+        }
+    }
+
     let filter_type = get_filter_type(&mdata, log);
 
     // log the filter type
@@ -242,7 +257,7 @@ pub fn collate_with_temp(
 
     if !i_dir.exists() {
         crit!(log, "the input RAD path {} does not exist", rad_dir);
-        std::process::exit(1);
+        return Err("invlid input".into());
     }
 
     let i_file = File::open(i_dir.join("map.rad")).unwrap();
