@@ -20,7 +20,7 @@ bio-types = "0.11.0"
 statrs = "0.13.0"
 
 [dependencies.clap]
-version = "3.0.0-beta.1"
+version = "3.0.0-beta.2"
 features = ["wrap_help"]
 
 [profile.release]

@@ -16,7 +16,7 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{crate_authors, crate_version, App, Arg};
+use clap::{crate_authors, crate_version, App, AppSettings, Arg};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
@@ -186,6 +186,7 @@ fn main() {
     */
 
     let opts = App::new("alevin-fry")
+        .setting(AppSettings::SubcommandRequiredElseHelp)
         .version(version)
         .author(crate_authors)
         .about("Process RAD files from the command line")
