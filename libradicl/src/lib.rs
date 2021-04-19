@@ -158,6 +158,28 @@ impl BarcodeLookupMap {
         self.barcodes[idx]
     }
 
+    pub fn find_exact(&self, query: u64) -> Option<usize> {
+        let mut ret: Option<usize> = None;
+
+        // extract the prefix we will use to search
+        let suffix_bits = 2 * self.suffix_len;
+        let query_pref = query >> suffix_bits;
+
+        // the range of entries having query_pref as their prefix
+        let qrange = std::ops::Range {
+            start: self.offsets[query_pref as usize],
+            end: self.offsets[(query_pref + 1) as usize],
+        };
+
+        let qs = qrange.start as usize;
+
+        // if we can, then we return the found barcode and that there was 1 best hit
+        if let Ok(res) = self.barcodes[qrange].binary_search(&query) {
+            ret = Some(qs + res);
+        }
+        ret
+    }
+
     /// The find function searches for the barcode `query` in the
     /// BarcodeLookupMap.  It returns a tuple `(Option<usize>, usize)` where
     /// the first element is either Some(usize) or None.  If
@@ -166,12 +188,10 @@ impl BarcodeLookupMap {
     /// 0, 1 or 2.  If 0, no match was found; if 1 a unique match was found, if 2
     /// then 2 or more equally good matches were found.
     ///
-    /// The parameter `exact_only` controls whether a 1 mismatch search is
-    /// performed or not.  If `exact_only` is `true`, then only an exact
-    /// match for `query` will be considered a match and no search will be performed
-    /// for a 1-mismatch neighbor.  If `exact_only` is `false`, then a 1-mismatch
-    /// search will be performed if an exact match is not found.
-    pub fn find(&self, query: u64, exact_only: bool) -> (Option<usize>, usize) {
+    /// The parameter `try_exact` controls whether a an exact search is performed
+    /// or not.  If this parameter is true, an exact search is performed before
+    /// a neighbor search.  Otherwise, the exact search is skipped.
+    pub fn find_neighbors(&self, query: u64, try_exact: bool) -> (Option<usize>, usize) {
         let mut ret: Option<usize> = None;
 
         // extract the prefix we will use to search
@@ -188,15 +208,14 @@ impl BarcodeLookupMap {
 
         let qs = qrange.start as usize;
 
-        // first, we try to find exactly.
-        // if we can, then we return the found barcode and that there was 1 best hit
-        if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&query) {
-            ret = Some(qs + res);
-            num_neighbors += 1;
-            return (ret, num_neighbors);
-        }
-        if exact_only {
-            return (ret, num_neighbors);
+        if try_exact {
+            // first, we try to find exactly.
+            // if we can, then we return the found barcode and that there was 1 best hit
+            if let Ok(res) = self.barcodes[qrange.clone()].binary_search(&query) {
+                ret = Some(qs + res);
+                num_neighbors += 1;
+                return (ret, num_neighbors);
+            }
         }
 
         // othwerwise, we fall back to the 1 mismatch search
@@ -1178,7 +1197,7 @@ impl RadHeader {
 }
 
 pub fn update_barcode_hist_unfiltered(
-    hist: &mut HashMap<u64, usize, ahash::RandomState>,
+    hist: &mut HashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     chunk: &Chunk,
     expected_ori: &Strand,
