@@ -1,24 +1,35 @@
-// Copyright 2020 Rob Patro, Avi Srivastava. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 
 extern crate bio_types;
-extern crate fasthash;
 extern crate quickersort;
 
 use crate as libradicl;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
-use fasthash::{sea, sea::Hash64, RandomState};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::BufRead;
 use std::str::FromStr;
 
+pub struct TempCellInfo {
+    pub offset: u64,
+    pub nbytes: u32,
+    pub nrec: u32,
+}
+
 /**
 * Single-cell equivalence class
 **/
 #[derive(Debug)]
-pub struct CellEQClass<'a> {
+pub struct CellEqClass<'a> {
     // transcripts defining this eq. class
     pub transcripts: &'a Vec<u32>,
     // umis with multiplicities
@@ -44,7 +55,7 @@ pub struct ProtocolInfo {
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
-    CellRangerLikeEM,
+    CellRangerLikeEm,
     Full,
     Parsimony,
 }
@@ -62,7 +73,7 @@ impl FromStr for ResolutionStrategy {
         match s {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
-            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEM),
+            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
             "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
@@ -113,7 +124,7 @@ impl IndexedEqList {
 
     /// Creates an `IndexedEqList` from a HashMap of eq labels to counts
     pub(super) fn init_from_hash(
-        eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+        eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
         num_genes: usize,
     ) -> IndexedEqList {
         let num_eqc = eqclasses.len();
@@ -287,9 +298,8 @@ impl EqMap {
     pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
         // temporary map of equivalence class label to assigned
         // index.
-        let s = RandomState::<sea::Hash64>::new();
-        let mut eqid_map: HashMap<Vec<u32>, u32, fasthash::RandomState<fasthash::sea::Hash64>> =
-            HashMap::with_hasher(s);
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
 
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
@@ -389,7 +399,7 @@ impl EqMap {
 }
 
 #[derive(Debug)]
-pub(super) enum PUGEdgeType {
+pub(super) enum PugEdgeType {
     NoEdge,
     BiDirected,
     XToY,
@@ -397,7 +407,7 @@ pub(super) enum PUGEdgeType {
 }
 
 #[derive(Debug)]
-pub(super) struct PUGResolutionStatistics {
+pub(super) struct PugResolutionStatistics {
     pub used_alternative_strategy: bool,
     pub total_mccs: u64,
     pub ambiguous_mccs: u64,

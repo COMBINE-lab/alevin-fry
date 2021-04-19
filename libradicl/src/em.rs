@@ -1,16 +1,20 @@
-// Copyright 2020 Rob Patro, Avi Srivastava. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 
-extern crate fasthash;
 extern crate slog;
 use crate as libradicl;
 
 #[allow(unused_imports)]
 use self::slog::info;
-use fasthash::sea::Hash64;
 #[allow(unused_imports)]
-use fasthash::RandomState;
+use ahash::{AHasher, RandomState};
+#[allow(unused_imports)]
 use libradicl::schema::IndexedEqList;
 use rand::{thread_rng, Rng};
 use statrs::distribution::Multinomial;
@@ -31,7 +35,7 @@ const MAX_ITER: u32 = 10_000;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
 #[derive(Copy, Clone)]
-pub(crate) enum EMInitType {
+pub(crate) enum EmInitType {
     Informative,
     Uniform,
     Random,
@@ -98,12 +102,13 @@ pub(crate) fn em_update_subset(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn em_optimize_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
-    init_type: EMInitType,
+    init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
@@ -133,16 +138,16 @@ pub(crate) fn em_optimize_subset(
     // fill in the alphas based on the initialization strategy
     let mut rng = rand::thread_rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for i in 0..num_alphas {
+    for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
-            EMInitType::Uniform => {
-                alphas_in[i] = uni_prior;
+            EmInitType::Uniform => {
+                *item = uni_prior;
             }
-            EMInitType::Informative => {
-                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+            EmInitType::Informative => {
+                *item = (*item + 0.5) * 1e-3;
             }
-            EMInitType::Random => {
-                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+            EmInitType::Random => {
+                *item = rng.gen::<f32>() + 1e-5;
             }
         }
     }
@@ -175,7 +180,7 @@ pub(crate) fn em_optimize_subset(
             } // end- in>out if
 
             alphas_in[index] = alphas_out[index];
-            alphas_out[index] = 0.0 as f32;
+            alphas_out[index] = 0.0_f32;
         } //end-for
 
         it_num += 1;
@@ -184,7 +189,7 @@ pub(crate) fn em_optimize_subset(
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
         if *alpha < MIN_ALPHA {
-            *alpha = 0.0 as f32;
+            *alpha = 0.0_f32;
         }
     });
 
@@ -202,7 +207,7 @@ pub(crate) fn em_optimize_subset(
 pub fn em_update(
     alphas_in: &[f32],
     alphas_out: &mut Vec<f32>,
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
     for (labels, count) in eqclasses {
@@ -228,10 +233,10 @@ pub fn em_update(
 }
 
 pub(crate) fn em_optimize(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
-    init_type: EMInitType,
+    init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
@@ -258,16 +263,16 @@ pub(crate) fn em_optimize(
     // fill in the alphas based on the initialization strategy
     let mut rng = rand::thread_rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for i in 0..num_alphas {
+    for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
-            EMInitType::Uniform => {
-                alphas_in[i] = uni_prior;
+            EmInitType::Uniform => {
+                *item = uni_prior;
             }
-            EMInitType::Informative => {
-                alphas_in[i] = (alphas_in[i] + 0.5) * 1e-3;
+            EmInitType::Informative => {
+                *item = (*item + 0.5) * 1e-3;
             }
-            EMInitType::Random => {
-                alphas_in[i] = rng.gen::<f32>() + 1e-5;
+            EmInitType::Random => {
+                *item = rng.gen::<f32>() + 1e-5;
             }
         }
     }
@@ -300,7 +305,7 @@ pub(crate) fn em_optimize(
             } // end- in>out if
 
             alphas_in[index] = alphas_out[index];
-            alphas_out[index] = 0.0 as f32;
+            alphas_out[index] = 0.0_f32;
         } //end-for
 
         it_num += 1;
@@ -309,10 +314,9 @@ pub(crate) fn em_optimize(
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
         if *alpha < MIN_ALPHA {
-            *alpha = 0.0 as f32;
+            *alpha = 0.0_f32;
         }
     });
-
     let alphas_sum: f32 = alphas_in.iter().sum();
     assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
@@ -382,7 +386,7 @@ pub(crate) fn run_bootstrap_subset(
             &bootstrap_counts[..], // indices into eqclasses relevant for this cell
             &mut unique_evidence,
             &mut no_ambiguity,
-            EMInitType::Random,
+            EmInitType::Random,
             num_alphas_us,
             false, // only unique
             &_log,
@@ -423,7 +427,7 @@ pub(crate) fn run_bootstrap_subset(
 }
 
 pub fn run_bootstrap(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -468,7 +472,7 @@ pub fn run_bootstrap(
 
 #[allow(dead_code)]
 pub fn run_bootstrap_old(
-    eqclasses: &HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -510,9 +514,8 @@ pub fn run_bootstrap_old(
     // println!("total fragments {:?}", total_fragments);
 
     // a new hashmap to be updated in each bootstrap
-    let s = fasthash::RandomState::<Hash64>::new();
-    let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-        HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
     // define a multinomial
     let dist = Multinomial::new(&eq_counts, total_fragments).unwrap();
 
@@ -569,7 +572,7 @@ pub fn run_bootstrap_old(
                 } // end- in>out if
 
                 alphas[index] = alphas_prime[index];
-                alphas_prime[index] = 0.0 as f32;
+                alphas_prime[index] = 0.0_f32;
             } //end-for
 
             it_num += 1;
@@ -578,7 +581,7 @@ pub fn run_bootstrap_old(
         // update too small alphas
         alphas.iter_mut().for_each(|alpha| {
             if *alpha < MIN_ALPHA {
-                *alpha = 0.0 as f32;
+                *alpha = 0.0_f32;
             }
         });
 
