@@ -14,6 +14,7 @@ use crate as libradicl;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
+use core::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::BufRead;
@@ -259,8 +260,7 @@ impl EqMap {
         self.eq_label_starts.clear();
         // clear the label_counts, but resize
         // and fill with 0
-        self.label_counts.clear();
-        self.label_counts.resize(self.nref as usize, 0u32);
+        self.label_counts.fill(0u32);
 
         self.ref_offsets.clear();
         self.ref_labels.clear();
@@ -295,7 +295,75 @@ impl EqMap {
         self.ref_labels = vec![u32::MAX; self.label_list_size + 1];
     }
 
+    #[allow(dead_code)]
+    fn init_from_small_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
+        /*
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut hasher = s.build_hasher();
+        */
+        quickersort::sort_by(
+            &mut cell_chunk.reads,
+            &|a, b| match a.refs.len().cmp(&b.refs.len()) {
+                Ordering::Equal => {
+                    let r_cmp = a.refs.cmp(&b.refs);
+                    if r_cmp == Ordering::Equal {
+                        a.umi.cmp(&b.umi)
+                    } else {
+                        r_cmp
+                    }
+                }
+                x => x,
+            },
+        );
+
+        let mut clabel: Vec<u32> = vec![];
+        let mut cumi = u64::MAX;
+        let mut eq_num = 0usize;
+        for r in cell_chunk.reads.iter() {
+            // if the label is the same
+            if r.refs == clabel {
+                // and the umi is the same
+                if cumi == r.umi {
+                    // increment the prev umi count
+                    self.eqc_info[eq_num].umis.last_mut().unwrap().1 += 1;
+                } else {
+                    // if the umi is different
+                    self.eqc_info[eq_num].umis.push((r.umi, 1));
+                }
+                cumi = r.umi;
+            } else {
+                // new class
+                self.label_list_size += r.refs.len();
+                for r in r.refs.iter() {
+                    let ridx = *r as usize;
+                    self.label_counts[ridx] += 1;
+                }
+                eq_num = self.eq_label_starts.len();
+                self.eq_label_starts.push(self.eq_labels.len() as u32);
+                self.eq_labels.extend(&r.refs);
+                self.eqc_info.push(EqMapEntry {
+                    umis: vec![(r.umi, 1)],
+                    eq_num: eq_num as u32,
+                });
+                clabel = r.refs.clone();
+                cumi = r.umi;
+            }
+        }
+        // final value to avoid special cases
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
+
+        //
+        self.fill_ref_offsets();
+        self.fill_label_sizes();
+    }
+
     pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
+        /*
+        if cell_chunk.reads.len() < 10 {
+            self.init_from_small_chunk(cell_chunk);
+            return;
+        }
+        */
         // temporary map of equivalence class label to assigned
         // index.
         let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);

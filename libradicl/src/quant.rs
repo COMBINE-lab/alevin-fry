@@ -24,7 +24,7 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 use needletail::bitkmer::*;
-use scroll::Pwrite;
+use scroll::{Pread, Pwrite};
 use serde_json::json;
 use smallvec::SmallVec;
 use std::collections::HashMap;
@@ -398,6 +398,132 @@ fn write_eqc_counts(
     true
 }
 
+type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
+
+fn fill_work_queue<T: Read>(
+    q: Arc<ArrayQueue<MetaChunk>>,
+    mut br: BufReader<T>,
+    num_chunks: usize,
+    pbar: &ProgressBar,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // now prepare to push work onto the
+    // work queue
+    let mut buf = vec![0u8; 524208];
+    // the number of bytes currently packed into the chunk
+    let mut cbytes = 0u32;
+    // the number of records currently packed into the chunk
+    let mut crec = 0u32;
+    // the numberof cells in the current chunk
+    let mut cells_in_chunk = 0usize;
+    // the offset of the first cell in this chunk
+    let mut first_cell = 0usize;
+    // the current chunk number
+    let mut chunk_num = 0usize;
+    // if we should skip filling the buffer because we
+    // already read and pushed the current cell
+    let mut skip_fill;
+
+    // while we've not yet processed all chunks
+    while chunk_num < num_chunks {
+        skip_fill = false;
+        // read the header for the next chunk
+        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
+
+        // if the next cell would exceed our buffer size, then dispatch the
+        // current buffer
+        if (cbytes + nbytes_chunk) as usize > buf.len() {
+            // special case: If *just* the current cell is too
+            // big to fit in a buffer, then we'll just accomodate
+            // it by expanding the current buffer and adding it
+            // here.
+            if nbytes_chunk as usize > buf.len() {
+                skip_fill = true;
+                let chunk_resize = nbytes_chunk as usize + cbytes as usize;
+                let boffset = cbytes as usize;
+                buf.resize(chunk_resize, 0);
+                buf.pwrite::<u32>(nbytes_chunk, boffset)?;
+                buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
+                br.read_exact(&mut buf[boffset + 8..]).unwrap();
+                cbytes += nbytes_chunk;
+                crec += nrec_chunk;
+                cells_in_chunk += 1;
+                chunk_num += 1;
+            }
+
+            // launch off these cells on the queue
+            let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
+            // keep trying until we can push this payload
+            while let Err(t) = q.push(bclone) {
+                bclone = t;
+                // no point trying to push if the queue is full
+                while q.is_full() {}
+            }
+            pbar.inc(cells_in_chunk as u64);
+
+            // offset of the first cell in the next chunk
+            first_cell += cells_in_chunk;
+            // reset the counters
+            cells_in_chunk = 0;
+            cbytes = 0;
+            crec = 0;
+            buf.resize(524208, 0);
+        }
+
+        // otherwise, either this cell fits in the current chunk
+        // or we sent a singleton cell off by itself.  If we sent
+        // a singleton cell off by itself, go back to the top of the
+        // loop, otherwise, pack this cell into the current chunk.
+        if !skip_fill {
+            let boffset = cbytes as usize;
+
+            if (cbytes + nbytes_chunk) as usize > buf.len() {
+                eprintln!("SHOULD NOT HAPPEN IN THIS BRANCH; skip_fill = {}, cells_in_chunk = {}, cbytes = {}, nbytes_chunk = {}, buf.len = {}", skip_fill, cells_in_chunk, cbytes, nbytes_chunk, buf.len());
+            }
+
+            buf.pwrite::<u32>(nbytes_chunk, boffset)?;
+            buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
+            br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
+                .unwrap();
+            cells_in_chunk += 1;
+            cbytes += nbytes_chunk;
+            crec += nrec_chunk;
+            chunk_num += 1;
+        }
+    }
+    // if there are any cells left in the pending buffer, send them off
+    if cells_in_chunk > 0 {
+        // launch off these cells on the queue
+        let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf);
+        // keep trying until we can push this payload
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while q.is_full() {}
+        }
+        pbar.inc(cells_in_chunk as u64);
+    }
+
+    /*
+    for cell_num in 0..(hdr.num_chunks as usize) {
+        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
+        buf.resize(nbytes_chunk as usize, 0);
+        buf.pwrite::<u32>(nbytes_chunk, 0)?;
+        buf.pwrite::<u32>(nrec_chunk, 4)?;
+        br.read_exact(&mut buf[8..]).unwrap();
+
+        let mut bclone = (cell_num, nbytes_chunk, nrec_chunk, buf.clone());
+        // keep trying until we can push this payload
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while q.is_full() {}
+        }
+        pbar.inc(1);
+    }
+    */
+    Ok(())
+}
+
 // TODO: see if we'd rather pass an structure
 // with these options
 #[allow(clippy::too_many_arguments)]
@@ -538,6 +664,7 @@ pub fn quantify(
             )
             .progress_chars("╢▌▌░╟"),
     );
+    pbar.set_draw_delta(500);
 
     // Trying this parallelization strategy to avoid
     // many temporary data structures.
@@ -558,7 +685,9 @@ pub fn quantify(
     } else {
         1
     };
-    let q = Arc::new(ArrayQueue::<(usize, u32, u32, Vec<u8>)>::new(4 * n_workers));
+    let q = Arc::new(ArrayQueue::<MetaChunk>::new(
+        4 * n_workers,
+    ));
 
     // the number of cells left to process
     let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
@@ -691,330 +820,377 @@ pub fn quantify(
             // pop from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some((cell_num, _nbyte, nrec, buf)) = in_q.pop() {
-                    cells_remaining.fetch_sub(1, Ordering::SeqCst);
-                    let mut nbr = BufReader::new(&buf[..]);
-                    let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
-                    if c.reads.is_empty() {
-                        warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, _nbyte = {}, nrec = {}", cell_num, _nbyte, nrec);
-                    }
+                if let Some((
+                    first_cell_in_chunk,
+                    cells_in_chunk,
+                    _nbytes_total,
+                    _nrec_total,
+                    buf,
+                )) = in_q.pop()
+                {
+                    let mut byte_offset = 0usize;
+                    for cn in 0..cells_in_chunk {
+                        cells_remaining.fetch_sub(1, Ordering::SeqCst);
+                        let cell_num = first_cell_in_chunk + cn;
+                        // nbytes for the current cell
+                        let nbytes = buf[byte_offset..].pread::<u32>(0).unwrap();
+                        let nrec = buf[byte_offset..].pread::<u32>(4).unwrap();
+                        let mut nbr =
+                            BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
+                        byte_offset += nbytes as usize;
 
-                    // TODO: Clean up the expect() and merge with the check above
-                    // the expect shouldn't happen, but the message is redundant with
-                    // the above.  Plus, this would panic if it actually occurred.
-                    let bc = c.reads.first().expect("chunk with no reads").bc;
-
-                    // Prepare the equiv class map we'll use to process this cell.
-                    // TODO: If the cell is very small, may want to consider an
-                    // optimized setup to avoid overhead for a small number of
-                    // records.
-                    eq_map.init_from_chunk(&mut c);
-
-                    // The structures we'll need to hold our output for this
-                    // cell.
-                    let counts: Vec<f32>;
-                    let mut alt_resolution = false;
-
-                    let mut bootstraps: Vec<Vec<f32>> = Vec::new();
-
-                    match resolution {
-                        ResolutionStrategy::CellRangerLike => {
-                            pugutils::get_num_molecules_cell_ranger_like(
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &mut gene_eqc,
-                                &log,
-                            );
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                em_init_type,
-                                num_genes,
-                                true,
-                                &log,
-                            );
+                        let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                        if c.reads.is_empty() {
+                            warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
-                        ResolutionStrategy::CellRangerLikeEm => {
-                            pugutils::get_num_molecules_cell_ranger_like(
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &mut gene_eqc,
-                                &log,
-                            );
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                em_init_type,
-                                num_genes,
-                                false,
-                                &log,
-                            );
-                        }
-                        ResolutionStrategy::Trivial => {
-                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &log,
-                            );
-                            counts = ct.0;
-                            mmrate.lock().unwrap()[cell_num] = ct.1;
-                        }
-                        ResolutionStrategy::Parsimony => {
-                            let g = extract_graph(&eq_map, &log);
-                            let pug_stats = pugutils::get_num_molecules(
-                                &g,
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &mut gene_eqc,
-                                &log,
-                            );
-                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                em_init_type,
-                                num_genes,
-                                true, // only unqique evidence
-                                &log,
-                            );
-                            if num_bootstraps > 0 {
-                                bootstraps = run_bootstrap(
-                                    &gene_eqc,
-                                    num_bootstraps,
-                                    &counts,
-                                    init_uniform,
-                                    summary_stat,
-                                    &log,
-                                );
+
+                        // TODO: Clean up the expect() and merge with the check above
+                        // the expect shouldn't happen, but the message is redundant with
+                        // the above.  Plus, this would panic if it actually occurred.
+                        let bc = c.reads.first().expect("chunk with no reads").bc;
+
+                        // The structures we'll need to hold our output for this
+                        // cell.
+                        let mut counts: Vec<f32>;
+                        let mut alt_resolution = false;
+
+                        let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+
+                        let non_trivial = c.reads.len() > 1;
+                        if non_trivial {
+                            // Prepare the equiv class map we'll use to process this cell.
+                            // TODO: If the cell is very small, may want to consider an
+                            // optimized setup to avoid overhead for a small number of
+                            // records.
+                            eq_map.init_from_chunk(&mut c);
+
+                            match resolution {
+                                ResolutionStrategy::CellRangerLike => {
+                                    pugutils::get_num_molecules_cell_ranger_like(
+                                        &eq_map,
+                                        &tid_to_gid,
+                                        num_genes,
+                                        &mut gene_eqc,
+                                        &log,
+                                    );
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        em_init_type,
+                                        num_genes,
+                                        true,
+                                        &log,
+                                    );
+                                }
+                                ResolutionStrategy::CellRangerLikeEm => {
+                                    pugutils::get_num_molecules_cell_ranger_like(
+                                        &eq_map,
+                                        &tid_to_gid,
+                                        num_genes,
+                                        &mut gene_eqc,
+                                        &log,
+                                    );
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        em_init_type,
+                                        num_genes,
+                                        false,
+                                        &log,
+                                    );
+                                }
+                                ResolutionStrategy::Trivial => {
+                                    let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                                        &eq_map,
+                                        &tid_to_gid,
+                                        num_genes,
+                                        &log,
+                                    );
+                                    counts = ct.0;
+                                    mmrate.lock().unwrap()[cell_num] = ct.1;
+                                }
+                                ResolutionStrategy::Parsimony => {
+                                    let g = extract_graph(&eq_map, &log);
+                                    let pug_stats = pugutils::get_num_molecules(
+                                        &g,
+                                        &eq_map,
+                                        &tid_to_gid,
+                                        num_genes,
+                                        &mut gene_eqc,
+                                        &log,
+                                    );
+                                    alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        em_init_type,
+                                        num_genes,
+                                        true, // only unqique evidence
+                                        &log,
+                                    );
+                                    if num_bootstraps > 0 {
+                                        bootstraps = run_bootstrap(
+                                            &gene_eqc,
+                                            num_bootstraps,
+                                            &counts,
+                                            init_uniform,
+                                            summary_stat,
+                                            &log,
+                                        );
+                                    }
+                                    //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                                    //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
+                                    //);
+                                }
+                                ResolutionStrategy::Full => {
+                                    let g = extract_graph(&eq_map, &log);
+                                    let pug_stats = pugutils::get_num_molecules(
+                                        &g,
+                                        &eq_map,
+                                        &tid_to_gid,
+                                        num_genes,
+                                        &mut gene_eqc,
+                                        &log,
+                                    );
+                                    alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        em_init_type,
+                                        num_genes,
+                                        false, // only unqique evidence
+                                        &log,
+                                    );
+
+                                    //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
+                                    //100f64 * (pug_stats.ambiguous_mccs as f64 / pug_stats.total_mccs as f64)
+                                    //);
+
+                                    if num_bootstraps > 0 {
+                                        bootstraps = run_bootstrap(
+                                            &gene_eqc,
+                                            num_bootstraps,
+                                            &counts,
+                                            init_uniform,
+                                            summary_stat,
+                                            &log,
+                                        );
+                                    }
+                                }
                             }
-                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
-                            //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
-                            //);
-                        }
-                        ResolutionStrategy::Full => {
-                            let g = extract_graph(&eq_map, &log);
-                            let pug_stats = pugutils::get_num_molecules(
-                                &g,
-                                &eq_map,
-                                &tid_to_gid,
-                                num_genes,
-                                &mut gene_eqc,
-                                &log,
-                            );
-                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                            counts = em_optimize(
-                                &gene_eqc,
-                                &mut unique_evidence,
-                                &mut no_ambiguity,
-                                em_init_type,
-                                num_genes,
-                                false, // only unqique evidence
-                                &log,
-                            );
 
-                            //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
-                            //100f64 * (pug_stats.ambiguous_mccs as f64 / pug_stats.total_mccs as f64)
-                            //);
+                            // clear our local variables
+                            eq_map.clear();
 
-                            if num_bootstraps > 0 {
-                                bootstraps = run_bootstrap(
-                                    &gene_eqc,
-                                    num_bootstraps,
-                                    &counts,
-                                    init_uniform,
-                                    summary_stat,
-                                    &log,
-                                );
-                            }
-                        }
-                    }
-
-                    // clear our local variables
-                    eq_map.clear();
-
-                    // fill requires >= 1.50.0
-                    unique_evidence.fill(false);
-                    no_ambiguity.fill(false);
-
-                    // for older versions, could use below
-                    // but don't want older versions unless we must
-                    // unique_evidence.clear();
-                    // unique_evidence.resize(num_genes, false);
-                    // no_ambiguity.clear();
-                    // no_ambiguity.resize(num_genes, false);
-
-                    // done clearing
-
-                    if alt_resolution {
-                        alt_res_cells.lock().unwrap().push(cell_num as u64);
-                    }
-
-                    //
-                    // featuresStream << "\t" << numRawReads
-                    //   << "\t" << numMappedReads
-                    let mut max_umi = 0.0f32;
-                    let mut sum_umi = 0.0f32;
-                    let mut num_expr: u32 = 0;
-                    expressed_vec.clear();
-                    expressed_ind.clear();
-                    for (gn, c) in counts.iter().enumerate() {
-                        max_umi = if *c > max_umi { *c } else { max_umi };
-                        sum_umi += *c;
-                        if *c > 0.0 {
-                            num_expr += 1;
-                            expressed_vec.push(*c);
-                            expressed_ind.push(gn);
-                        }
-                    }
-
-                    let num_mapped = nrec;
-                    let dedup_rate = sum_umi / num_mapped as f32;
-
-                    let num_unmapped = match unmapped_count.get(&bc) {
-                        Some(nu) => *nu,
-                        None => 0u32,
-                    };
-
-                    let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
-
-                    // mean of the "expressed" genes
-                    let mean_expr = sum_umi / num_expr as f32;
-                    // number of genes with expression > expressed mean
-                    let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
-                        if x > &mean_expr {
-                            acc + 1u32
+                            // fill requires >= 1.50.0
+                            unique_evidence.fill(false);
+                            no_ambiguity.fill(false);
+                            // for older versions, could use below
+                            // but don't want older versions unless we must
+                            // unique_evidence.clear();
+                            // unique_evidence.resize(num_genes, false);
+                            // no_ambiguity.clear();
+                            // no_ambiguity.resize(num_genes, false);
                         } else {
-                            acc
+                            // trivial; single read
+                            let mut g: Vec<u32> = c
+                                .reads
+                                .first()
+                                .unwrap()
+                                .refs
+                                .iter()
+                                .map(|t| tid_to_gid[*t as usize])
+                                .collect();
+                            quickersort::sort(&mut g);
+                            g.dedup();
+                            counts = vec![0f32; num_genes];
+
+                            match resolution {
+                                ResolutionStrategy::CellRangerLikeEm | ResolutionStrategy::Full => {
+                                    let contrib = 1.0f32 / g.len() as f32;
+                                    for gi in &g {
+                                        counts[*gi as usize] = contrib;
+                                    }
+                                }
+                                _ => {
+                                    if g.len() == 1 {
+                                        counts[(*g.first().unwrap()) as usize] = 1.0
+                                    }
+                                }
+                            }
+                            gene_eqc.insert(g, 1);
                         }
-                    });
-                    // expressed mean / max expression
-                    let mean_by_max = mean_expr / max_umi;
 
-                    let row_index: usize; // the index for this row (cell)
-                    {
-                        // writing the files
-                        let bc_mer: BitKmer = (bc, bclen as u8);
+                        // done clearing
 
-                        if !use_mtx {
-                            eds_bytes = sce::eds::as_bytes(&counts, num_genes)
-                                .expect("can't conver vector to eds");
+                        if alt_resolution {
+                            alt_res_cells.lock().unwrap().push(cell_num as u64);
                         }
 
-                        // write bootstraps
-                        if num_bootstraps > 0 {
-                            // flatten the bootstraps
-                            if summary_stat {
-                                eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_genes)
-                                    .expect("can't convert vector to eds");
-                                eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_genes)
-                                    .expect("can't convert vector to eds");
+                        //
+                        // featuresStream << "\t" << numRawReads
+                        //   << "\t" << numMappedReads
+                        let mut max_umi = 0.0f32;
+                        let mut sum_umi = 0.0f32;
+                        let mut num_expr: u32 = 0;
+                        expressed_vec.clear();
+                        expressed_ind.clear();
+                        for (gn, c) in counts.iter().enumerate() {
+                            max_umi = if *c > max_umi { *c } else { max_umi };
+                            sum_umi += *c;
+                            if *c > 0.0 {
+                                num_expr += 1;
+                                expressed_vec.push(*c);
+                                expressed_ind.push(gn);
+                            }
+                        }
+
+                        let num_mapped = nrec;
+                        let dedup_rate = sum_umi / num_mapped as f32;
+
+                        let num_unmapped = match unmapped_count.get(&bc) {
+                            Some(nu) => *nu,
+                            None => 0u32,
+                        };
+
+                        let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
+
+                        // mean of the "expressed" genes
+                        let mean_expr = sum_umi / num_expr as f32;
+                        // number of genes with expression > expressed mean
+                        let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
+                            if x > &mean_expr {
+                                acc + 1u32
                             } else {
-                                for i in 0..num_bootstraps {
-                                    let bt_eds_bytes_slice =
-                                        sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
-                                            .expect("can't convert vector to eds");
-                                    bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                                acc
+                            }
+                        });
+                        // expressed mean / max expression
+                        let mean_by_max = mean_expr / max_umi;
+
+                        let row_index: usize; // the index for this row (cell)
+                        {
+                            // writing the files
+                            let bc_mer: BitKmer = (bc, bclen as u8);
+
+                            if !use_mtx {
+                                eds_bytes = sce::eds::as_bytes(&counts, num_genes)
+                                    .expect("can't conver vector to eds");
+                            }
+
+                            // write bootstraps
+                            if num_bootstraps > 0 {
+                                // flatten the bootstraps
+                                if summary_stat {
+                                    eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_genes)
+                                        .expect("can't convert vector to eds");
+                                    eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_genes)
+                                        .expect("can't convert vector to eds");
+                                } else {
+                                    for i in 0..num_bootstraps {
+                                        let bt_eds_bytes_slice =
+                                            sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                                                .expect("can't convert vector to eds");
+                                        bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                                    }
                                 }
                             }
+
+                            let writer_deref = bcout.lock();
+                            let writer = &mut *writer_deref.unwrap();
+
+                            // get the row index and then increment it
+                            row_index = writer.row_index;
+                            writer.row_index += 1;
+
+                            // write to barcode file
+                            let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
+                            writeln!(&mut writer.barcode_file, "{}", unsafe {
+                                std::str::from_utf8_unchecked(&bc_bytes)
+                            })
+                            .expect("can't write to barcode file.");
+
+                            // write to matrix file
+                            if !use_mtx {
+                                // write in eds format
+                                writer
+                                    .eds_file
+                                    .write_all(&eds_bytes)
+                                    .expect("can't write to matrix file.");
+                            } else {
+                                // fill out the triplet matrix in memory
+                                for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                                    writer.trimat.add_triplet(row_index as usize, *ind, *val);
+                                }
+                            }
+                            writeln!(
+                                &mut writer.feature_file,
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
+                                (num_mapped + num_unmapped),
+                                num_mapped,
+                                sum_umi,
+                                mapping_rate,
+                                dedup_rate,
+                                mean_by_max,
+                                num_expr,
+                                num_genes_over_mean
+                            )
+                            .expect("can't write to feature file");
+
+                            if num_bootstraps > 0 {
+                                if summary_stat {
+                                    if let Some((meanf, varf)) =
+                                        &mut writer.bootstrap_helper.mean_var_files
+                                    {
+                                        meanf
+                                            .write_all(&eds_mean_bytes)
+                                            .expect("can't write to bootstrap mean file.");
+                                        varf.write_all(&eds_var_bytes)
+                                            .expect("can't write to bootstrap var file.");
+                                    }
+                                } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
+                                    bsfile
+                                        .write_all(&bt_eds_bytes)
+                                        .expect("can't write to bootstrap file");
+                                }
+                            } // done bootstrap writing
                         }
 
-                        let writer_deref = bcout.lock();
-                        let writer = &mut *writer_deref.unwrap();
-
-                        // get the row index and then increment it
-                        row_index = writer.row_index;
-                        writer.row_index += 1;
-
-                        // write to barcode file
-                        let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
-                        writeln!(&mut writer.barcode_file, "{}", unsafe {
-                            std::str::from_utf8_unchecked(&bc_bytes)
-                        })
-                        .expect("can't write to barcode file.");
-
-                        // write to matrix file
-                        if !use_mtx {
-                            // write in eds format
-                            writer
-                                .eds_file
-                                .write_all(&eds_bytes)
-                                .expect("can't write to matrix file.");
-                        } else {
-                            // fill out the triplet matrix in memory
-                            for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                writer.trimat.add_triplet(row_index as usize, *ind, *val);
+                        // if we are dumping the equivalence class output, fill in
+                        // the in-memory representation here.
+                        if dump_eq {
+                            let eqmap_deref = eqid_map_lockc.lock();
+                            let geqmap = &mut *eqmap_deref.unwrap();
+                            // the next available global id for a gene-level
+                            // equivalence class
+                            let mut next_id = geqmap.global_eqc.len() as u64;
+                            for (labels, count) in gene_eqc.iter() {
+                                let mut found = true;
+                                match geqmap.global_eqc.get(&labels.to_vec()) {
+                                    Some(eqid) => {
+                                        geqmap.cell_level_count.push((*eqid, *count));
+                                    }
+                                    None => {
+                                        found = false;
+                                        geqmap.cell_level_count.push((next_id, *count));
+                                    }
+                                }
+                                if !found {
+                                    geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
+                                    next_id += 1;
+                                }
                             }
+                            //let bc_mer: BitKmer = (bc, bclen as u8);
+                            geqmap.cell_offset.push((row_index, gene_eqc.len()));
                         }
-                        writeln!(
-                            &mut writer.feature_file,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
-                            (num_mapped + num_unmapped),
-                            num_mapped,
-                            sum_umi,
-                            mapping_rate,
-                            dedup_rate,
-                            mean_by_max,
-                            num_expr,
-                            num_genes_over_mean
-                        )
-                        .expect("can't write to feature file");
-
-                        if num_bootstraps > 0 {
-                            if summary_stat {
-                                if let Some((meanf, varf)) =
-                                    &mut writer.bootstrap_helper.mean_var_files
-                                {
-                                    meanf
-                                        .write_all(&eds_mean_bytes)
-                                        .expect("can't write to bootstrap mean file.");
-                                    varf.write_all(&eds_var_bytes)
-                                        .expect("can't write to bootstrap var file.");
-                                }
-                            } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                                bsfile
-                                    .write_all(&bt_eds_bytes)
-                                    .expect("can't write to bootstrap file");
-                            }
-                        } // done bootstrap writing
-                    }
-
-                    // if we are dumping the equivalence class output, fill in
-                    // the in-memory representation here.
-                    if dump_eq {
-                        let eqmap_deref = eqid_map_lockc.lock();
-                        let geqmap = &mut *eqmap_deref.unwrap();
-                        // the next available global id for a gene-level
-                        // equivalence class
-                        let mut next_id = geqmap.global_eqc.len() as u64;
-                        for (labels, count) in gene_eqc.iter() {
-                            let mut found = true;
-                            match geqmap.global_eqc.get(&labels.to_vec()) {
-                                Some(eqid) => {
-                                    geqmap.cell_level_count.push((*eqid, *count));
-                                }
-                                None => {
-                                    found = false;
-                                    geqmap.cell_level_count.push((next_id, *count));
-                                }
-                            }
-                            if !found {
-                                geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
-                                next_id += 1;
-                            }
-                        }
-                        //let bc_mer: BitKmer = (bc, bclen as u8);
-                        geqmap.cell_offset.push((row_index, gene_eqc.len()));
-                    }
-                    // clear the gene eqc map
-                    gene_eqc.clear();
+                        // clear the gene eqc map
+                        gene_eqc.clear();
+                    } // for all cells in this meta chunk
                 } // while we can get work
             } // while cells remain
         });
@@ -1022,23 +1198,9 @@ pub fn quantify(
         thread_handles.push(handle);
     }
 
-    let mut buf = vec![0u8; 65536];
-    for cell_num in 0..(hdr.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-        buf.resize(nbytes_chunk as usize, 0);
-        buf.pwrite::<u32>(nbytes_chunk, 0)?;
-        buf.pwrite::<u32>(nrec_chunk, 4)?;
-        br.read_exact(&mut buf[8..]).unwrap();
-
-        let mut bclone = (cell_num, nbytes_chunk, nrec_chunk, buf.clone());
-        // keep trying until we can push this payload
-        while let Err(t) = q.push(bclone) {
-            bclone = t;
-            // no point trying to push if the queue is full
-            while q.is_full() {}
-        }
-        pbar.inc(1);
-    }
+    // push the work onto the queue for the worker threads
+    // we spawned above.
+    fill_work_queue(q, br, hdr.num_chunks as usize, &pbar)?;
 
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
