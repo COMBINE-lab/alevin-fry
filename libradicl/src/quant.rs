@@ -406,50 +406,70 @@ fn fill_work_queue<T: Read>(
     num_chunks: usize,
     pbar: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // now prepare to push work onto the
-    // work queue
-    let mut buf = vec![0u8; 524208];
+    const BUFSIZE: usize = 524208;
+    // the buffer that will hold our records
+    let mut buf = vec![0u8; BUFSIZE];
     // the number of bytes currently packed into the chunk
     let mut cbytes = 0u32;
     // the number of records currently packed into the chunk
     let mut crec = 0u32;
-    // the numberof cells in the current chunk
+    // the number of cells in the current chunk
     let mut cells_in_chunk = 0usize;
     // the offset of the first cell in this chunk
     let mut first_cell = 0usize;
-    // the current chunk number
-    let mut chunk_num = 0usize;
-    // if we should skip filling the buffer because we
-    // already read and pushed the current cell
-    let mut skip_fill;
+    // if we had to expand the buffer already and should
+    // forcibly push the current buffer onto the queue
+    let mut force_push = false;
+    // the number of bytes and records in the next chunk header
+    let mut nbytes_chunk = 0u32;
+    let mut nrec_chunk = 0u32;
 
-    // while we've not yet processed all chunks
-    while chunk_num < num_chunks {
-        skip_fill = false;
-        // read the header for the next chunk
-        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-
-        // if the next cell would exceed our buffer size, then dispatch the
-        // current buffer
-        if (cbytes + nbytes_chunk) as usize > buf.len() {
-            // special case: If *just* the current cell is too
-            // big to fit in a buffer, then we'll just accomodate
-            // it by expanding the current buffer and adding it
-            // here.
+    // we include the endpoint here because we will not actually
+    // copy a chunk in the first iteration (since we have not yet
+    // read the header, which comes at the end of the loop).
+    for chunk_num in 0..=num_chunks {
+        // in the first iteration we've not read a header yet
+        // so we can't fill a chunk, otherwise we read the header
+        // at the bottom of the previous iteration of this loop, and
+        // we will fill in the buffer appropriately here.
+        if chunk_num > 0 {
+            // if the currenc cell (the cell whose header we read in the last iteration of
+            // the loop) alone is too big for the buffer, than resize the buffer to be big enough
             if nbytes_chunk as usize > buf.len() {
-                skip_fill = true;
+                // if we had to resize the buffer to fit this cell, then make sure we push
+                // immediately in the next round
+                force_push = true;
                 let chunk_resize = nbytes_chunk as usize + cbytes as usize;
-                let boffset = cbytes as usize;
                 buf.resize(chunk_resize, 0);
-                buf.pwrite::<u32>(nbytes_chunk, boffset)?;
-                buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
-                br.read_exact(&mut buf[boffset + 8..]).unwrap();
-                cbytes += nbytes_chunk;
-                crec += nrec_chunk;
-                cells_in_chunk += 1;
-                chunk_num += 1;
             }
 
+            // copy the data for the current chunk into the buffer
+            let boffset = cbytes as usize;
+            buf.pwrite::<u32>(nbytes_chunk, boffset)?;
+            buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
+            br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
+                .unwrap();
+            cells_in_chunk += 1;
+            cbytes += nbytes_chunk;
+            crec += nrec_chunk;
+        }
+
+        // in the last iteration of the loop, we will have read num_chunks headers already
+        // and we are just filling up the buffer with the last cell, and there will be no more
+        // headers left to read, so skip this
+        if chunk_num < num_chunks {
+            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            nbytes_chunk = nc;
+            nrec_chunk = nr;
+        }
+
+        // determine if we should dump the current buffer to the work queue
+        if force_push  // if we were told to push this chunk
+           || // or if adding the next cell to this chunk would exceed the buffer size
+           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+           || // of if this was the last chunk
+           chunk_num == num_chunks
+        {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
             // keep trying until we can push this payload
@@ -466,61 +486,10 @@ fn fill_work_queue<T: Read>(
             cells_in_chunk = 0;
             cbytes = 0;
             crec = 0;
-            buf.resize(524208, 0);
-        }
-
-        // otherwise, either this cell fits in the current chunk
-        // or we sent a singleton cell off by itself.  If we sent
-        // a singleton cell off by itself, go back to the top of the
-        // loop, otherwise, pack this cell into the current chunk.
-        if !skip_fill {
-            let boffset = cbytes as usize;
-
-            if (cbytes + nbytes_chunk) as usize > buf.len() {
-                eprintln!("SHOULD NOT HAPPEN IN THIS BRANCH; skip_fill = {}, cells_in_chunk = {}, cbytes = {}, nbytes_chunk = {}, buf.len = {}", skip_fill, cells_in_chunk, cbytes, nbytes_chunk, buf.len());
-            }
-
-            buf.pwrite::<u32>(nbytes_chunk, boffset)?;
-            buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
-            br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
-                .unwrap();
-            cells_in_chunk += 1;
-            cbytes += nbytes_chunk;
-            crec += nrec_chunk;
-            chunk_num += 1;
+            buf.resize(BUFSIZE, 0);
+            force_push = false;
         }
     }
-    // if there are any cells left in the pending buffer, send them off
-    if cells_in_chunk > 0 {
-        // launch off these cells on the queue
-        let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf);
-        // keep trying until we can push this payload
-        while let Err(t) = q.push(bclone) {
-            bclone = t;
-            // no point trying to push if the queue is full
-            while q.is_full() {}
-        }
-        pbar.inc(cells_in_chunk as u64);
-    }
-
-    /*
-    for cell_num in 0..(hdr.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) = libradicl::Chunk::read_header(&mut br);
-        buf.resize(nbytes_chunk as usize, 0);
-        buf.pwrite::<u32>(nbytes_chunk, 0)?;
-        buf.pwrite::<u32>(nrec_chunk, 4)?;
-        br.read_exact(&mut buf[8..]).unwrap();
-
-        let mut bclone = (cell_num, nbytes_chunk, nrec_chunk, buf.clone());
-        // keep trying until we can push this payload
-        while let Err(t) = q.push(bclone) {
-            bclone = t;
-            // no point trying to push if the queue is full
-            while q.is_full() {}
-        }
-        pbar.inc(1);
-    }
-    */
     Ok(())
 }
 
@@ -538,6 +507,7 @@ pub fn quantify(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    small_thresh: usize,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -664,7 +634,8 @@ pub fn quantify(
             )
             .progress_chars("╢▌▌░╟"),
     );
-    pbar.set_draw_delta(500);
+    let ddelta = 500_u64.min(hdr.num_chunks / 10);
+    pbar.set_draw_delta(ddelta);
 
     // Trying this parallelization strategy to avoid
     // many temporary data structures.
@@ -685,9 +656,7 @@ pub fn quantify(
     } else {
         1
     };
-    let q = Arc::new(ArrayQueue::<MetaChunk>::new(
-        4 * n_workers,
-    ));
+    let q = Arc::new(ArrayQueue::<MetaChunk>::new(4 * n_workers));
 
     // the number of cells left to process
     let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
@@ -817,7 +786,7 @@ pub fn quantify(
                 EmInitType::Informative
             };
 
-            // pop from the work queue until everything is
+            // pop MetaChunks from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some((
@@ -828,6 +797,7 @@ pub fn quantify(
                     buf,
                 )) = in_q.pop()
                 {
+                    // for every cell (chunk) within this meta-chunk
                     let mut byte_offset = 0usize;
                     for cn in 0..cells_in_chunk {
                         cells_remaining.fetch_sub(1, Ordering::SeqCst);
@@ -856,12 +826,12 @@ pub fn quantify(
 
                         let mut bootstraps: Vec<Vec<f32>> = Vec::new();
 
-                        let non_trivial = c.reads.len() > 1;
+                        let non_trivial = c.reads.len() >= small_thresh;
                         if non_trivial {
                             // Prepare the equiv class map we'll use to process this cell.
-                            // TODO: If the cell is very small, may want to consider an
-                            // optimized setup to avoid overhead for a small number of
-                            // records.
+                            // TODO: If the cell is very small, but not small enough to hit the
+                            // trivial code branch, may want to consider an optimized setup
+                            // to avoid overhead for a small number of records.
                             eq_map.init_from_chunk(&mut c);
 
                             match resolution {
@@ -931,19 +901,6 @@ pub fn quantify(
                                         true, // only unqique evidence
                                         &log,
                                     );
-                                    if num_bootstraps > 0 {
-                                        bootstraps = run_bootstrap(
-                                            &gene_eqc,
-                                            num_bootstraps,
-                                            &counts,
-                                            init_uniform,
-                                            summary_stat,
-                                            &log,
-                                        );
-                                    }
-                                    //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
-                                    //    100f64 * (pug_stats.ambiguous_mccs as f64 / (pug_stats.total_mccs - pug_stats.trivial_mccs) as f64)
-                                    //);
                                 }
                                 ResolutionStrategy::Full => {
                                     let g = extract_graph(&eq_map, &log);
@@ -966,10 +923,6 @@ pub fn quantify(
                                         &log,
                                     );
 
-                                    //info!(log, "\n\ncell had {}% ambiguous mccs\n\n",
-                                    //100f64 * (pug_stats.ambiguous_mccs as f64 / pug_stats.total_mccs as f64)
-                                    //);
-
                                     if num_bootstraps > 0 {
                                         bootstraps = run_bootstrap(
                                             &gene_eqc,
@@ -989,43 +942,63 @@ pub fn quantify(
                             // fill requires >= 1.50.0
                             unique_evidence.fill(false);
                             no_ambiguity.fill(false);
-                            // for older versions, could use below
-                            // but don't want older versions unless we must
-                            // unique_evidence.clear();
-                            // unique_evidence.resize(num_genes, false);
-                            // no_ambiguity.clear();
-                            // no_ambiguity.resize(num_genes, false);
-                        } else {
-                            // trivial; single read
-                            let mut g: Vec<u32> = c
-                                .reads
-                                .first()
-                                .unwrap()
-                                .refs
-                                .iter()
-                                .map(|t| tid_to_gid[*t as usize])
-                                .collect();
-                            quickersort::sort(&mut g);
-                            g.dedup();
-                            counts = vec![0f32; num_genes];
 
-                            match resolution {
-                                ResolutionStrategy::CellRangerLikeEm | ResolutionStrategy::Full => {
-                                    let contrib = 1.0f32 / g.len() as f32;
-                                    for gi in &g {
-                                        counts[*gi as usize] = contrib;
-                                    }
-                                }
-                                _ => {
-                                    if g.len() == 1 {
-                                        counts[(*g.first().unwrap()) as usize] = 1.0
+                            // done clearing
+                        } else {
+                            // very small number of reads, avoid data structure
+                            // overhead and resolve looking at the actual records
+                            pugutils::get_num_molecules_cell_ranger_like_small(
+                                &mut c,
+                                &tid_to_gid,
+                                num_genes,
+                                &mut gene_eqc,
+                                &log,
+                            );
+                            counts = vec![0f32; num_genes];
+                            for (k, v) in gene_eqc.iter() {
+                                if k.len() == 1 {
+                                    counts[*k.first().unwrap() as usize] += *v as f32;
+                                } else {
+                                    match resolution {
+                                        ResolutionStrategy::CellRangerLikeEm
+                                        | ResolutionStrategy::Full => {
+                                            let contrib = 1.0 / (k.len() as f32);
+                                            for g in k.iter() {
+                                                counts[*g as usize] += contrib;
+                                            }
+                                        }
+                                        _ => {
+                                            // otherwise discard gene multimappers
+                                        }
                                     }
                                 }
                             }
-                            gene_eqc.insert(g, 1);
-                        }
 
-                        // done clearing
+                            if num_bootstraps > 0 {
+                                match resolution {
+                                    ResolutionStrategy::CellRangerLikeEm
+                                    | ResolutionStrategy::Full => {
+                                        // TODO: should issue a warning here,
+                                        // bootstrapping doesn't make sense for
+                                        // unfiltered data.
+                                        if summary_stat {
+                                            // sample mean = quant
+                                            bootstraps.push(counts.clone());
+                                            // sample var = 0
+                                            bootstraps.push(vec![0f32; num_genes]);
+                                        } else {
+                                            // no variation
+                                            for _ in 0..num_bootstraps {
+                                                bootstraps.push(counts.clone());
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        // no bootstrapping in this branch
+                                    }
+                                } // take action depending on the resolution method
+                            } // if the user requested bootstraps
+                        } // end of else branch for trivial size cells
 
                         if alt_resolution {
                             alt_res_cells.lock().unwrap().push(cell_num as u64);
@@ -1282,6 +1255,7 @@ pub fn velo_quantify(
     _dump_eq: bool,
     _use_mtx: bool,
     _resolution: ResolutionStrategy,
+    _small_thresh: usize,
     _log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unimplemented!("not implemented on this branch yet");

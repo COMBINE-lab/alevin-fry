@@ -965,7 +965,7 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     }
 }
 
-fn as_u8_slice(v: &[u32]) -> &[u8] {
+pub(crate) fn as_u8_slice(v: &[u32]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             v.as_ptr() as *const u8,

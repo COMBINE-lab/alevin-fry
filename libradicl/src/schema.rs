@@ -14,9 +14,9 @@ use crate as libradicl;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
-use core::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{BuildHasher, Hasher};
 use std::io::BufRead;
 use std::str::FromStr;
 
@@ -244,6 +244,7 @@ pub(super) struct EqMap {
     // the concatenated list of all equivalence class labels for
     // all transcripts
     pub ref_labels: Vec<u32>,
+    eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState>,
 }
 
 impl EqMap {
@@ -264,9 +265,12 @@ impl EqMap {
 
         self.ref_offsets.clear();
         self.ref_labels.clear();
+
+        //self.eqid_map.clear();
     }
 
     pub(super) fn new(nref_in: u32) -> EqMap {
+        let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         EqMap {
             eqc_info: vec![], //HashMap::with_hasher(rs),
             nref: nref_in,
@@ -276,6 +280,7 @@ impl EqMap {
             label_counts: vec![0; nref_in as usize],
             ref_offsets: vec![],
             ref_labels: vec![],
+            eqid_map: HashMap::with_hasher(rand_state),
         }
     }
 
@@ -297,64 +302,71 @@ impl EqMap {
 
     #[allow(dead_code)]
     fn init_from_small_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
-        /*
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut hasher = s.build_hasher();
-        */
-        quickersort::sort_by(
-            &mut cell_chunk.reads,
-            &|a, b| match a.refs.len().cmp(&b.refs.len()) {
-                Ordering::Equal => {
-                    let r_cmp = a.refs.cmp(&b.refs);
-                    if r_cmp == Ordering::Equal {
-                        a.umi.cmp(&b.umi)
-                    } else {
-                        r_cmp
-                    }
-                }
-                x => x,
-            },
-        );
+        //let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut hasher = self.eqid_map.hasher().build_hasher();
+        //let mut hasher = rand_state.build_hasher();
 
-        let mut clabel: Vec<u32> = vec![];
-        let mut cumi = u64::MAX;
+        let mut hash_vec: Vec<(u64, u64, usize)> = cell_chunk
+            .reads
+            .iter()
+            .enumerate()
+            .map(|(idx, r)| -> (u64, u64, usize) {
+                hasher.write(libradicl::as_u8_slice(&r.refs[..]));
+                (hasher.finish(), r.umi, idx)
+            })
+            .collect();
+
+        quickersort::sort(&mut hash_vec[..]);
+
+        let mut prev_hash = 0u64;
+        let mut prev_umi = u64::MAX;
         let mut eq_num = 0usize;
-        for r in cell_chunk.reads.iter() {
-            // if the label is the same
-            if r.refs == clabel {
-                // and the umi is the same
-                if cumi == r.umi {
-                    // increment the prev umi count
-                    self.eqc_info[eq_num].umis.last_mut().unwrap().1 += 1;
+        for (chash, cumi, idx) in hash_vec {
+            if let Some(r) = cell_chunk.reads.get(idx) {
+                // if the label is the same
+                if chash == prev_hash {
+                    // and the umi is the same
+                    if cumi == prev_umi {
+                        // increment the prev umi count
+                        self.eqc_info[eq_num].umis.last_mut().unwrap().1 += 1;
+                    } else {
+                        // if the umi is different
+                        self.eqc_info[eq_num].umis.push((cumi, 1));
+                    }
+                    prev_umi = cumi;
                 } else {
-                    // if the umi is different
-                    self.eqc_info[eq_num].umis.push((r.umi, 1));
+                    // new class
+                    self.label_list_size += r.refs.len();
+                    for r in r.refs.iter() {
+                        let ridx = *r as usize;
+                        self.label_counts[ridx] += 1;
+                    }
+                    eq_num = self.eq_label_starts.len();
+                    self.eq_label_starts.push(self.eq_labels.len() as u32);
+                    self.eq_labels.extend(&r.refs);
+                    self.eqc_info.push(EqMapEntry {
+                        umis: vec![(cumi, 1)],
+                        eq_num: eq_num as u32,
+                    });
+                    prev_hash = chash;
+                    prev_umi = cumi;
                 }
-                cumi = r.umi;
-            } else {
-                // new class
-                self.label_list_size += r.refs.len();
-                for r in r.refs.iter() {
-                    let ridx = *r as usize;
-                    self.label_counts[ridx] += 1;
-                }
-                eq_num = self.eq_label_starts.len();
-                self.eq_label_starts.push(self.eq_labels.len() as u32);
-                self.eq_labels.extend(&r.refs);
-                self.eqc_info.push(EqMapEntry {
-                    umis: vec![(r.umi, 1)],
-                    eq_num: eq_num as u32,
-                });
-                clabel = r.refs.clone();
-                cumi = r.umi;
             }
         }
         // final value to avoid special cases
         self.eq_label_starts.push(self.eq_labels.len() as u32);
-
-        //
         self.fill_ref_offsets();
         self.fill_label_sizes();
+
+        for idx in 0..self.num_eq_classes() {
+            // for each reference in this
+            // label, put it in the next free spot
+            let label = self.refs_for_eqc(idx as u32).to_vec();
+            for r in label {
+                self.ref_offsets[r as usize] -= 1;
+                self.ref_labels[self.ref_offsets[r as usize] as usize] = self.eqc_info[idx].eq_num;
+            }
+        }
     }
 
     pub(super) fn init_from_chunk(&mut self, cell_chunk: &mut libradicl::Chunk) {
@@ -366,9 +378,11 @@ impl EqMap {
         */
         // temporary map of equivalence class label to assigned
         // index.
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
+        // let mut eqid_map:
+        // let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        // let mut eqid_map  = HashMap::with_hasher(rand_state);
 
+        self.eqid_map.clear();
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
             // TODO: ensure this is done upstream so we
@@ -376,7 +390,7 @@ impl EqMap {
             // NOTE: should be done if collate was run.
             // r.refs.sort();
 
-            match eqid_map.get_mut(&r.refs) {
+            match self.eqid_map.get_mut(&r.refs) {
                 // if we've seen this equivalence class before, just add the new
                 // umi.
                 Some(v) => {
@@ -399,7 +413,7 @@ impl EqMap {
                         umis: vec![(r.umi, 1)],
                         eq_num,
                     });
-                    eqid_map.insert(r.refs.clone(), eq_num);
+                    self.eqid_map.insert(r.refs.clone(), eq_num);
                     //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
                 }
             }
