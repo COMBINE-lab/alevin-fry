@@ -17,7 +17,9 @@ csv = "1.1.6"
 mimalloc = { version = "0.1.22", default-features = false }
 num_cpus = "1.13.0"
 bio-types = "0.11.0"
-statrs = "0.13.0"
+# statrs = "0.13.0"
+statrs = { git = "https://github.com/boxtown/statrs.git", rev="8f08cda54e54d3892a9235d79daf6f72adadda52" }
+
 
 [dependencies.clap]
 version = "3.0.0-beta.2"
