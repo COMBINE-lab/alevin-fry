@@ -16,7 +16,7 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{crate_authors, crate_version, App, AppSettings, Arg};
+use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
@@ -148,8 +148,8 @@ fn main() {
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
-        .case_insensitive(true)
-        .about("the resolution strategy by which molecules will be counted"));
+        .case_insensitive(true))
+    .arg(Arg::from("--small-thresh 'cells with fewer than these many reads will be resolved using a custom approach'").default_value("10").setting(ArgSettings::Hidden));
 
     let infer_app = App::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -378,13 +378,29 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+        let small_thresh = t.value_of_t("small-thresh").unwrap();
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
                 log,
-                "Gene equivalence classes are not meaningful in case of Trivial resolution."
+                "\n\nGene equivalence classes are not meaningful in case of Trivial resolution."
             );
             std::process::exit(1);
+        }
+
+        if num_bootstraps > 0 {
+            match resolution {
+                ResolutionStrategy::CellRangerLikeEm | ResolutionStrategy::Full => {
+                    // sounds good
+                }
+                _ => {
+                    eprintln!(
+                        "\n\nThe num_bootstraps argument was set to {}, but bootstrapping can only be used with the cr-like-em or full resolution strategies",
+                        num_bootstraps
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
 
         // first make sure that the input direcory passed in has the
@@ -410,6 +426,7 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    small_thresh,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -445,6 +462,7 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    small_thresh,
                     &log,
                 ) {
                     // if we're all good; then great!
