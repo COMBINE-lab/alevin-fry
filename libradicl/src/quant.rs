@@ -828,50 +828,49 @@ pub fn quantify(
 
                         let non_trivial = c.reads.len() >= small_thresh;
                         if non_trivial {
-                            // Prepare the equiv class map we'll use to process this cell.
-                            // TODO: If the cell is very small, but not small enough to hit the
-                            // trivial code branch, may want to consider an optimized setup
-                            // to avoid overhead for a small number of records.
-                            eq_map.init_from_chunk(&mut c);
+                            // TODO: some testing was done, but see if there
+                            // is a better way to set this value.
+                            let small_cell = c.reads.len() <= 250;
+
+                            // TODO: Is there an easy / clean way to have similar
+                            // optimized code paths for other resolution methods?
 
                             match resolution {
-                                ResolutionStrategy::CellRangerLike => {
-                                    pugutils::get_num_molecules_cell_ranger_like(
-                                        &eq_map,
-                                        &tid_to_gid,
-                                        num_genes,
-                                        &mut gene_eqc,
-                                        &log,
-                                    );
+                                ResolutionStrategy::CellRangerLike
+                                | ResolutionStrategy::CellRangerLikeEm => {
+                                    if small_cell {
+                                        pugutils::get_num_molecules_cell_ranger_like_small(
+                                            &mut c,
+                                            &tid_to_gid,
+                                            num_genes,
+                                            &mut gene_eqc,
+                                            &log,
+                                        );
+                                    } else {
+                                        eq_map.init_from_chunk(&mut c);
+                                        pugutils::get_num_molecules_cell_ranger_like(
+                                            &eq_map,
+                                            &tid_to_gid,
+                                            num_genes,
+                                            &mut gene_eqc,
+                                            &log,
+                                        );
+                                        eq_map.clear();
+                                    }
+                                    let only_unique =
+                                        resolution == ResolutionStrategy::CellRangerLike;
                                     counts = em_optimize(
                                         &gene_eqc,
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         em_init_type,
                                         num_genes,
-                                        true,
-                                        &log,
-                                    );
-                                }
-                                ResolutionStrategy::CellRangerLikeEm => {
-                                    pugutils::get_num_molecules_cell_ranger_like(
-                                        &eq_map,
-                                        &tid_to_gid,
-                                        num_genes,
-                                        &mut gene_eqc,
-                                        &log,
-                                    );
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        em_init_type,
-                                        num_genes,
-                                        false,
+                                        only_unique,
                                         &log,
                                     );
                                 }
                                 ResolutionStrategy::Trivial => {
+                                    eq_map.init_from_chunk(&mut c);
                                     let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                         &eq_map,
                                         &tid_to_gid,
@@ -880,8 +879,10 @@ pub fn quantify(
                                     );
                                     counts = ct.0;
                                     mmrate.lock().unwrap()[cell_num] = ct.1;
+                                    eq_map.clear();
                                 }
                                 ResolutionStrategy::Parsimony => {
+                                    eq_map.init_from_chunk(&mut c);
                                     let g = extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
@@ -901,8 +902,10 @@ pub fn quantify(
                                         true, // only unqique evidence
                                         &log,
                                     );
+                                    eq_map.clear();
                                 }
                                 ResolutionStrategy::Full => {
+                                    eq_map.init_from_chunk(&mut c);
                                     let g = extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
@@ -922,22 +925,23 @@ pub fn quantify(
                                         false, // only unqique evidence
                                         &log,
                                     );
-
-                                    if num_bootstraps > 0 {
-                                        bootstraps = run_bootstrap(
-                                            &gene_eqc,
-                                            num_bootstraps,
-                                            &counts,
-                                            init_uniform,
-                                            summary_stat,
-                                            &log,
-                                        );
-                                    }
+                                    eq_map.clear();
                                 }
                             }
 
+                            if num_bootstraps > 0 {
+                                bootstraps = run_bootstrap(
+                                    &gene_eqc,
+                                    num_bootstraps,
+                                    &counts,
+                                    init_uniform,
+                                    summary_stat,
+                                    &log,
+                                );
+                            }
+
                             // clear our local variables
-                            eq_map.clear();
+                            // eq_map.clear();
 
                             // fill requires >= 1.50.0
                             unique_evidence.fill(false);
