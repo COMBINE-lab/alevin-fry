@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 extern crate indicatif;
 extern crate needletail;
 extern crate rust_htslib;
@@ -11,6 +19,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
+use self::libradicl::utils::MASK_LOWER_31_U32;
 use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
@@ -41,7 +50,7 @@ use crate as libradicl;
 fn get_random_nucl() -> &'static str {
     let nucl = vec!["A", "T", "G", "C"];
     let mut rng = rand::thread_rng();
-    let idx = rng.gen_range(0, 4);
+    let idx = rng.gen_range(0..4);
     nucl[idx]
     // match idx {
     //     0 => {return "A";},
@@ -117,7 +126,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     // let tid_lookup: HashMap<u32, String>  = tid_2_contig(&hdrv);
     let mut data = Cursor::new(vec![]);
     // initialize the header (do we need this ?)
-    // let mut hdr = libradicl::RADHeader::from_bam_header(&hdrv);
+    // let mut hdr = libradicl::RadHeader::from_bam_header(&hdrv);
     // number of chunks would be decided when we know
     // let end_header_pos2 = hdr.get_size();
     // info!(
@@ -187,12 +196,12 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut umi_tag_str = "ulen";
 
         // str - type
-        libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
+        libradicl::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // str - type
-        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
+        libradicl::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -209,10 +218,10 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         // type is conditional on barcode and umi length
         let bc_typeid = match bclen {
-            1..=4 => libradicl::encode_type_tag(libradicl::RADType::U8).unwrap(),
-            5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
-            9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
-            17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
+            1..=4 => libradicl::encode_type_tag(libradicl::RadType::U8).unwrap(),
+            5..=8 => libradicl::encode_type_tag(libradicl::RadType::U16).unwrap(),
+            9..=16 => libradicl::encode_type_tag(libradicl::RadType::U32).unwrap(),
+            17..=32 => libradicl::encode_type_tag(libradicl::RadType::U64).unwrap(),
             l => {
                 crit!(log, "cannot encode barcode of length {} > 32", l);
                 std::process::exit(1);
@@ -220,10 +229,10 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         };
 
         let umi_typeid = match umilen {
-            1..=4 => libradicl::encode_type_tag(libradicl::RADType::U8).unwrap(),
-            5..=8 => libradicl::encode_type_tag(libradicl::RADType::U16).unwrap(),
-            9..=16 => libradicl::encode_type_tag(libradicl::RADType::U32).unwrap(),
-            17..=32 => libradicl::encode_type_tag(libradicl::RADType::U64).unwrap(),
+            1..=4 => libradicl::encode_type_tag(libradicl::RadType::U8).unwrap(),
+            5..=8 => libradicl::encode_type_tag(libradicl::RadType::U16).unwrap(),
+            9..=16 => libradicl::encode_type_tag(libradicl::RadType::U32).unwrap(),
+            17..=32 => libradicl::encode_type_tag(libradicl::RadType::U64).unwrap(),
             l => {
                 crit!(log, "cannot encode umi of length {} > 32", l);
                 std::process::exit(1);
@@ -232,11 +241,11 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
-        libradicl::write_str_bin(&cb_tag_str, &libradicl::RADIntID::U16, &mut data);
+        libradicl::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        libradicl::write_str_bin(&umi_tag_str, &libradicl::RADIntID::U16, &mut data);
+        libradicl::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
         data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -248,7 +257,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        libradicl::write_str_bin(&refid_str, &libradicl::RADIntID::U16, &mut data);
+        libradicl::write_str_bin(&refid_str, &libradicl::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -315,7 +324,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut tid = rec.tid() as u32;
         if qname == old_qname {
             if !is_reverse {
-                tid |= 0x80000000;
+                tid |= MASK_LOWER_31_U32;
             }
             tid_list.push(tid);
             // local_nrec += 1;
@@ -388,7 +397,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             old_qname = qname.clone();
             tid_list.clear();
             if !is_reverse {
-                tid |= 0x80000000;
+                tid |= MASK_LOWER_31_U32;
             }
             tid_list.push(tid);
             local_nrec += 1;
@@ -476,7 +485,7 @@ pub fn view2(
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RADHeader::from_bytes(&mut br);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
     // info!(
     //     log,
     //     "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -533,7 +542,8 @@ pub fn view2(
         .expect("unknown barcode type id.");
 
     let stdout = stdout(); // get the global stdout entity
-    let mut handle = BufWriter::new(stdout); // optional: wrap that handle in a buffer
+    let stdout_l = stdout.lock();
+    let mut handle = BufWriter::new(stdout_l); // optional: wrap that handle in a buffer
 
     if print_header {
         for i in 0usize..hdr.ref_names.len() {
