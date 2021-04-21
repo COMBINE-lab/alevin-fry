@@ -16,5 +16,4 @@ dictate how the collation and filtering will be performed.
 output
 ------
 
-The ``collate`` command only has a single output.  It will write a file name
-``map.collated.rad`` in the directory specified by ``-i``.
+The ``collate`` command will output all files it creates in the expected format in the output directory taht is specified. It will write a file name ``map.collated.rad`` and one named ``unmapped_bc_count_collated.bin`` in the directory specified by ``-i``.
