@@ -978,29 +978,26 @@ pub fn quantify(
                                 }
                             }
 
+                            // if the user requested bootstraps
+                            // NOTE: we check that the specified resolution method
+                            // is conceptually compatible with bootstrapping before
+                            // invoking `quant`, so we don't bother checking that
+                            // here.
                             if num_bootstraps > 0 {
-                                match resolution {
-                                    ResolutionStrategy::CellRangerLikeEm
-                                    | ResolutionStrategy::Full => {
-                                        // TODO: should issue a warning here,
-                                        // bootstrapping doesn't make sense for
-                                        // unfiltered data.
-                                        if summary_stat {
-                                            // sample mean = quant
-                                            bootstraps.push(counts.clone());
-                                            // sample var = 0
-                                            bootstraps.push(vec![0f32; num_genes]);
-                                        } else {
-                                            // no variation
-                                            for _ in 0..num_bootstraps {
-                                                bootstraps.push(counts.clone());
-                                            }
-                                        }
+                                // TODO: should issue a warning here,
+                                // bootstrapping doesn't make sense for
+                                // unfiltered data.
+                                if summary_stat {
+                                    // sample mean = quant
+                                    bootstraps.push(counts.clone());
+                                    // sample var = 0
+                                    bootstraps.push(vec![0f32; num_genes]);
+                                } else {
+                                    // no variation
+                                    for _ in 0..num_bootstraps {
+                                        bootstraps.push(counts.clone());
                                     }
-                                    _ => {
-                                        // no bootstrapping in this branch
-                                    }
-                                } // take action depending on the resolution method
+                                }
                             } // if the user requested bootstraps
                         } // end of else branch for trivial size cells
 
