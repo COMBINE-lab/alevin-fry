@@ -57,32 +57,32 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  Coverage:
-    if: "!contains(github.event.head_commit.message, 'skip ci')"
-    needs: Formatting
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
+  # Coverage:
+  #   if: "!contains(github.event.head_commit.message, 'skip ci')"
+  #   needs: Formatting
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v2
 
-      - name: Install nightly toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
+  #     - name: Install nightly toolchain
+  #       uses: actions-rs/toolchain@v1
+  #       with:
+  #         toolchain: nightly
+  #         override: true
 
-      - name: Install cargo-tarpaulin
-        uses: actions-rs/install@v0.1
-        with:
-          crate: cargo-tarpaulin
-          version: latest
-          use-tool-cache: true
+  #     - name: Install cargo-tarpaulin
+  #       uses: actions-rs/install@v0.1
+  #       with:
+  #         crate: cargo-tarpaulin
+  #         version: latest
+  #         use-tool-cache: true
 
-      - name: Coverage with tarpaulin
-        run: cargo tarpaulin --all --all-features --timeout 600 --out Lcov -- --test-threads 1
+  #     - name: Coverage with tarpaulin
+  #       run: cargo tarpaulin --all --all-features --timeout 600 --out Lcov -- --test-threads 1
 
-      - name: Upload coverage
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: ./lcov.info
+  #     - name: Upload coverage
+  #       uses: coverallsapp/github-action@master
+  #       with:
+  #         github-token: ${{ secrets.GITHUB_TOKEN }}
+  #         path-to-lcov: ./lcov.info
