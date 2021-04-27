@@ -9,7 +9,7 @@ This functionality makes it possible to separate the UMI resolution step (which 
 UMIs being assigned to equivalence classes of genes rather than individual genes), and the gene-level 
 estimation step, that attempts to resolve gene-multimapping UMIs.
 
-T command can takes the following options :
+This command can takes the following options :
 
 * ``-c, --count-mat <eqc-mat>`` : This provides the path to the (mtx format) matrix of cells by equivalence class counts. **Note**: It is assumed that the parent directory where ``eqc-mat`` is located will also contain a file called ``quants_mat_rows.txt`` containing the row names of the matrix and a file called ``quants_mat_cols.txt`` containing the column names of the files. The ``infer`` command will not run if these other input files are absent from the parent directory of ``eqc-mat``. 
 
