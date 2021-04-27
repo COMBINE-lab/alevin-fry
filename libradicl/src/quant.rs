@@ -1346,7 +1346,7 @@ pub fn quantify(
     pbar.finish_with_message(&pb_msg);
 
     if dump_eq {
-        write_eqc_counts(&eqid_map_lock, num_genes, &output_path, &log);
+        write_eqc_counts(&eqid_map_lock, num_genes, &output_matrix_path, &log);
     }
 
     let meta_info = json!({
