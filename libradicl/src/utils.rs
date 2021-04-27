@@ -7,9 +7,14 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+extern crate ahash;
+
+use bstr::io::BufReadExt;
+use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
+use std::io::BufReader;
 
 pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
@@ -215,6 +220,33 @@ pub fn generate_permitlist_map(
     }
 
     Ok(one_edit_barcode_map)
+}
+
+/// Reads the contents of the file `flist`, which should contain
+/// a single barcode per-line, and returns a Result that is either
+/// a HashSet containing the k-mer encoding of all barcodes or
+/// the Error that was encountered parsing the file.
+pub fn read_filter_list(
+    flist: &str,
+    bclen: u16,
+) -> Result<HashSet<u64, ahash::RandomState>, Box<dyn std::error::Error>> {
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut fset = HashSet::<u64, ahash::RandomState>::with_hasher(s);
+
+    let filt_file = std::fs::File::open(flist).expect("couldn't open file");
+    let reader = BufReader::new(filt_file);
+
+    // Read the file line by line using the lines() iterator from std::io::BufRead.
+    reader
+        .for_byte_line(|line| {
+            let mut bnk = BitNuclKmer::new(line, bclen as u8, false);
+            let (_, k, _) = bnk.next().expect("can't extract kmer");
+            fset.insert(k.0);
+            Ok(true)
+        })
+        .unwrap();
+
+    Ok(fset)
 }
 
 #[cfg(test)]

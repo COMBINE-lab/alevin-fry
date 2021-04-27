@@ -27,7 +27,7 @@ use needletail::bitkmer::*;
 use scroll::{Pread, Pwrite};
 use serde_json::json;
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -493,6 +493,118 @@ fn fill_work_queue<T: Read>(
     Ok(())
 }
 
+/// This function is the same as `fill_work_queue`, except that
+/// when parsing the input file, it ignores (i.e. does not enqueue)
+/// any cell whose barcode is not in `keep_set`.
+fn fill_work_queue_filtered<T: Read>(
+    keep_set: HashSet<u64, ahash::RandomState>,
+    rl_tags: &libradicl::TagSection,
+    q: Arc<ArrayQueue<MetaChunk>>,
+    mut br: BufReader<T>,
+    num_chunks: usize,
+    pbar: &ProgressBar,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bct = rl_tags.tags[0].typeid;
+    let umit = rl_tags.tags[1].typeid;
+    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+
+    const BUFSIZE: usize = 524208;
+    // the buffer that will hold our records
+    let mut buf = vec![0u8; BUFSIZE];
+    // the number of bytes currently packed into the chunk
+    let mut cbytes = 0u32;
+    // the number of records currently packed into the chunk
+    let mut crec = 0u32;
+    // the number of cells in the current chunk
+    let mut cells_in_chunk = 0usize;
+    // the offset of the first cell in this chunk
+    let mut first_cell = 0usize;
+    // if we had to expand the buffer already and should
+    // forcibly push the current buffer onto the queue
+    let mut force_push = false;
+    // the number of bytes and records in the next chunk header
+    let mut nbytes_chunk = 0u32;
+    let mut nrec_chunk = 0u32;
+
+    // we include the endpoint here because we will not actually
+    // copy a chunk in the first iteration (since we have not yet
+    // read the header, which comes at the end of the loop).
+    for chunk_num in 0..=num_chunks {
+        // in the first iteration we've not read a header yet
+        // so we can't fill a chunk, otherwise we read the header
+        // at the bottom of the previous iteration of this loop, and
+        // we will fill in the buffer appropriately here.
+        if chunk_num > 0 {
+            // if the currenc cell (the cell whose header we read in the last iteration of
+            // the loop) alone is too big for the buffer, than resize the buffer to be big enough
+            if nbytes_chunk as usize > buf.len() {
+                // if we had to resize the buffer to fit this cell, then make sure we push
+                // immediately in the next round, unless we are skipping it's barcode
+                force_push = true;
+                let chunk_resize = nbytes_chunk as usize + cbytes as usize;
+                buf.resize(chunk_resize, 0);
+            }
+
+            // copy the data for the current chunk into the buffer
+            let boffset = cbytes as usize;
+            buf.pwrite::<u32>(nbytes_chunk, boffset)?;
+            buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
+            br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
+                .unwrap();
+            // get the barcode for this chunk
+            let (bc, _umi) =
+                libradicl::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
+            if keep_set.contains(&bc) {
+                cells_in_chunk += 1;
+                cbytes += nbytes_chunk;
+                crec += nrec_chunk;
+            } else {
+                // if we are skipping this cell, and it
+                // triggered a force_push, then undo that
+                force_push = false;
+            }
+        }
+
+        // in the last iteration of the loop, we will have read num_chunks headers already
+        // and we are just filling up the buffer with the last cell, and there will be no more
+        // headers left to read, so skip this
+        if chunk_num < num_chunks {
+            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            nbytes_chunk = nc;
+            nrec_chunk = nr;
+        }
+
+        // determine if we should dump the current buffer to the work queue
+        if force_push  // if we were told to push this chunk
+           || // or if adding the next cell to this chunk would exceed the buffer size
+           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+           || // of if this was the last chunk
+           chunk_num == num_chunks
+        {
+            // launch off these cells on the queue
+            let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
+            // keep trying until we can push this payload
+            while let Err(t) = q.push(bclone) {
+                bclone = t;
+                // no point trying to push if the queue is full
+                while q.is_full() {}
+            }
+            pbar.inc(cells_in_chunk as u64);
+
+            // offset of the first cell in the next chunk
+            first_cell += cells_in_chunk;
+            // reset the counters
+            cells_in_chunk = 0;
+            cbytes = 0;
+            crec = 0;
+            buf.resize(BUFSIZE, 0);
+            force_push = false;
+        }
+    }
+    Ok(())
+}
+
 // TODO: see if we'd rather pass an structure
 // with these options
 #[allow(clippy::too_many_arguments)]
@@ -508,14 +620,19 @@ pub fn quantify(
     use_mtx: bool,
     resolution: ResolutionStrategy,
     small_thresh: usize,
+    filter_list: Option<&str>,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
     let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
     let mut br = BufReader::new(i_file);
     let hdr = libradicl::RadHeader::from_bytes(&mut br);
-    // in the collated rad file, we have 1 cell per chunk
-    let num_cells = hdr.num_chunks;
+
+    // in the collated rad file, we have 1 cell per chunk.
+    // we make this value `mut` since, if we have a non-empty
+    // filter list, the number of cells will be dictated by
+    // it's length.
+    let mut num_cells = hdr.num_chunks;
 
     info!(
         log,
@@ -624,9 +741,25 @@ pub fn quantify(
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
 
+    // if we have a filter list, extract it here
+    let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
+    if let Some(fname) = filter_list {
+        match read_filter_list(fname, ft_vals.bclen) {
+            Ok(fset) => {
+                // the number of cells we expect to
+                // actually process
+                num_cells = fset.len() as u64;
+                retained_bc = Some(fset);
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
     let mut _num_reads: usize = 0;
 
-    let pbar = ProgressBar::new(hdr.num_chunks);
+    let pbar = ProgressBar::new(num_cells);
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
@@ -634,7 +767,7 @@ pub fn quantify(
             )
             .progress_chars("╢▌▌░╟"),
     );
-    let ddelta = 500_u64.min(hdr.num_chunks / 10);
+    let ddelta = 500_u64.min(num_cells / 10);
     pbar.set_draw_delta(ddelta);
 
     // Trying this parallelization strategy to avoid
@@ -1174,7 +1307,13 @@ pub fn quantify(
 
     // push the work onto the queue for the worker threads
     // we spawned above.
-    fill_work_queue(q, br, hdr.num_chunks as usize, &pbar)?;
+    if let Some(ret_bc) = retained_bc {
+        // we have a retained set
+        fill_work_queue_filtered(ret_bc, &rl_tags, q, br, hdr.num_chunks as usize, &pbar)?;
+    } else {
+        // we're quantifying everything
+        fill_work_queue(q, br, hdr.num_chunks as usize, &pbar)?;
+    }
 
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
@@ -1257,6 +1396,7 @@ pub fn velo_quantify(
     _use_mtx: bool,
     _resolution: ResolutionStrategy,
     _small_thresh: usize,
+    _filter_list: Option<&str>,
     _log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unimplemented!("not implemented on this branch yet");

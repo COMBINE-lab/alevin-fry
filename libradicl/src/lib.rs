@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::io::{BufWriter, Write};
+use std::mem;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
@@ -1081,6 +1082,47 @@ impl Chunk {
         }
 
         c
+    }
+
+    /// peeks to the first record in the buffer `buf`, and returns
+    /// the barcode and umi associated with this record.  It is assumed
+    /// that there is at least one record present in the buffer.
+    pub fn peek_record(buf: &[u8], bct: &RadIntId, umit: &RadIntId) -> (u64, u64) {
+        let na_size = mem::size_of::<u32>();
+        let bc_size = bct.bytes_for_type();
+
+        let _na = buf.pread::<u32>(0).unwrap();
+        let bc;
+        match bct {
+            RadIntId::U8 => {
+                bc = buf.pread::<u8>(na_size).unwrap() as u64;
+            }
+            RadIntId::U16 => {
+                bc = buf.pread::<u16>(na_size).unwrap() as u64;
+            }
+            RadIntId::U32 => {
+                bc = buf.pread::<u32>(na_size).unwrap() as u64;
+            }
+            RadIntId::U64 => {
+                bc = buf.pread::<u64>(na_size).unwrap();
+            }
+        }
+        let umi;
+        match umit {
+            RadIntId::U8 => {
+                umi = buf.pread::<u8>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U16 => {
+                umi = buf.pread::<u16>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U32 => {
+                umi = buf.pread::<u32>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U64 => {
+                umi = buf.pread::<u64>(na_size + bc_size).unwrap();
+            }
+        }
+        (bc, umi)
     }
 }
 

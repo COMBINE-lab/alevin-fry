@@ -146,6 +146,7 @@ fn main() {
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
+    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .case_insensitive(true))
@@ -379,6 +380,7 @@ fn main() {
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
+        let filter_list = t.value_of("quant-subset");
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
@@ -427,6 +429,7 @@ fn main() {
                     use_mtx,
                     resolution,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -463,6 +466,7 @@ fn main() {
                     use_mtx,
                     resolution,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
