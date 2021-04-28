@@ -20,10 +20,7 @@ It makes use of the selective-alignment and tag processing framework of
 
    building
    getting_started
-   generate_permit_list  
-   collate
-   quant
-   infer
+   commands
    LICENSE.rst
 
 Indices and tables
