@@ -18,10 +18,16 @@ use self::indicatif::{ProgressBar, ProgressStyle};
 #[allow(unused_imports)]
 use self::slog::{crit, info, warn};
 use crate as libradicl;
+use crate::permit_list_from_file;
+use crate::utils::read_filter_list;
 use crossbeam_queue::ArrayQueue;
 
 // use fasthash::sea;
+use needletail::bitkmer::*;
 use sprs::TriMatI;
+use std::collections::HashSet;
+use std::fs;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -36,6 +42,7 @@ pub fn infer(
     eq_label_file: String,
     _use_mtx: bool,
     num_threads: u32,
+    filter_list: Option<&str>,
     output_dir: String,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -46,6 +53,10 @@ pub fn infer(
 
     // get the path for the equivalence class count matrix
     let count_mat_path = std::path::Path::new(&count_mat_file);
+    let count_mat_parent = count_mat_path
+        .parent()
+        .unwrap_or_else(|| panic!("cannot get parent path of {:?}", count_mat_path));
+
     // read the file and convert it to csr (rows are *cells*)
     let count_mat: sprs::CsMatBase<u32, u32, Vec<u32>, Vec<u32>, Vec<u32>, _> =
         match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path) {
@@ -63,6 +74,8 @@ pub fn infer(
         count_mat.cols()
     );
 
+    let mut num_cells = count_mat.rows();
+
     // read in the global equivalence class representation
     let eq_label_path = std::path::Path::new(&eq_label_file);
     let global_eq_classes = Arc::new(libradicl::schema::IndexedEqList::init_from_eqc_file(
@@ -78,8 +91,51 @@ pub fn infer(
     // the number of genes (columns) that the output (gene-level) matrix will have
     let num_genes = global_eq_classes.num_genes;
 
+    // if we have a filter list, extract it here
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut retained_bc: HashSet<u64, ahash::RandomState> = HashSet::with_hasher(s);
+    let mut filter_bc = false;
+    // read the first barcode in the file to get the barcode
+    // length.
+    let bc_path = count_mat_parent.join("quants_mat_rows.txt");
+    let bc_len;
+    {
+        let mut first_line = String::new();
+        let file = match fs::File::open(&bc_path) {
+            Ok(file) => file,
+            Err(_) => panic!("Unable to read first barcode from {:?}", &bc_path),
+        };
+        let mut rdr = BufReader::new(file);
+        rdr.read_line(&mut first_line).expect("Unable to read line");
+        if first_line.ends_with('\n') {
+            first_line.pop();
+        }
+        bc_len = first_line.len() as u16;
+    }
+    let bc_fname = bc_path
+        .to_str()
+        .expect("couldn't unwrap barcode file path")
+        .to_string();
+    let bcvec = permit_list_from_file(bc_fname, bc_len);
+
+    if let Some(fname) = filter_list {
+        // read in the fitler list
+        match read_filter_list(fname, bc_len) {
+            Ok(fset) => {
+                // the number of cells we expect to
+                // actually process
+                num_cells = fset.len();
+                retained_bc = fset;
+                filter_bc = true;
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
     // the progress bar we'll use to monitor progress of the EM
-    let pbar = ProgressBar::new(count_mat.rows() as u64);
+    let pbar = ProgressBar::new(num_cells as u64);
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
@@ -102,10 +158,10 @@ pub fn infer(
     let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
 
     // the number of cells left to process
-    let cells_to_process = Arc::new(AtomicUsize::new(count_mat.rows()));
+    let cells_to_process = Arc::new(AtomicUsize::new(num_cells));
     // the output cell-by-gene matrix
     let trimat = Arc::new(Mutex::new(TriMatI::<f32, u32>::with_capacity(
-        (count_mat.rows(), num_genes),
+        (num_cells, num_genes),
         count_mat.nnz(),
     )));
 
@@ -261,24 +317,56 @@ pub fn infer(
         thread_handles.push(handle);
     }
 
+    // create our output directory
+    let output_path = std::path::Path::new(&output_dir);
+    fs::create_dir_all(output_path)?;
+
+    let in_col_path = count_mat_parent.join("quants_mat_cols.txt");
+    let out_col_path = output_path.join("quants_mat_cols.txt");
+    fs::copy(in_col_path, out_col_path).expect("could not copy column (gene) names to output");
+
+    let out_barcode_path = output_path.join("quants_mat_rows.txt");
+    let out_bc_file =
+        fs::File::create(out_barcode_path).expect("couldn't create output barcode file");
+    let mut bc_writer = BufWriter::new(out_bc_file);
+
+    let mut processed_ind = 0_usize;
+    let short_bc_len = bc_len as u8;
     // iterate over the rows (cells) of the equivalence class count
     // matrix.  The iterator will yield a pair of the row index and
     // an iterator over the row data.
-    for (row_ind, row_vec) in count_mat.outer_iterator().enumerate() {
-        // gather the data from the row's iterator into a vector of
-        // (eq_id, count) tuples.
-        let cell_data: Vec<(u32, u32)> = row_vec.iter().map(|e| (e.0 as u32, *e.1)).collect();
-        // keep pushing this data onto our work queue while we can.
-        loop {
-            if !q.is_full() {
-                let r = q.push((row_ind, cell_data.clone()));
-                // if we were successful in pushing, then increment
-                // the progress bar.
-                if r.is_ok() {
-                    pbar.inc(1);
-                    break;
-                }
+    // we zip the bcvec iterator (vector of barcodes in row order)
+    // with the actual rows of the matrix.
+    for (barcode, row_vec) in bcvec.iter().zip(count_mat.outer_iterator()) {
+        let process_cell = if filter_bc {
+            // if the reatined_bc list contains this cell id
+            // then process it
+            retained_bc.contains(barcode)
+        } else {
+            true
+        };
+        if process_cell {
+            // write to barcode file
+            let bc_bytes = &bitmer_to_bytes((*barcode, short_bc_len))[..];
+            writeln!(&mut bc_writer, "{}", unsafe {
+                std::str::from_utf8_unchecked(&bc_bytes)
+            })
+            .expect("can't write to barcode file.");
+
+            // gather the data from the row's iterator into a vector of
+            // (eq_id, count) tuples.
+            let cell_data: Vec<(u32, u32)> = row_vec.iter().map(|e| (e.0 as u32, *e.1)).collect();
+            // keep pushing this data onto our work queue while we can.
+            // launch off these cells on the queue
+            let mut cd_clone = (processed_ind, cell_data.clone());
+            // keep trying until we can push this payload
+            while let Err(t) = q.push(cd_clone) {
+                cd_clone = t;
+                // no point trying to push if the queue is full
+                while q.is_full() {}
             }
+            pbar.inc(1);
+            processed_ind += 1;
         }
     }
 
@@ -291,15 +379,15 @@ pub fn infer(
         }
     }
 
-    let pb_msg = format!("finished quantifying {} cells.", count_mat.rows());
+    let pb_msg = format!("finished quantifying {} cells.", num_cells);
     pbar.finish_with_message(&pb_msg);
 
     // finally, we write our output matrix of gene
     // counts.
+    let output_matrix_path = output_path.join("quants_mat.mtx");
     let writer_deref = trimat.lock();
     let writer = &*writer_deref.unwrap();
-    let output_path = std::path::Path::new(&output_dir);
-    sprs::io::write_matrix_market(&output_path, writer)?;
+    sprs::io::write_matrix_market(&output_matrix_path, writer)?;
 
     Ok(())
 }

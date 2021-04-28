@@ -30,13 +30,15 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring much less storage space than the full bootstrap replicate information.  This flag is only meaningful when ``--num-bootstraps`` is meaningful.
 
+* ``--quant-subset <sfile>`` : This optional argument provides a file containing list of barcodes to quantify (one barcode per line, written as a string), those not in this list will be ignored during inference and will not appear in the output quantification matrix.  If this argument is not provided, then all of the original barcodes will be quantified.
+
 * ``--use-mtx`` : This flag will cause the output to be written in matrix market coordinate format rather than in EDS format.
 
 output
 ------
 
-The output of the ``quant`` command consists of 5 files: ``barcodes.txt``,
-``counts.eds.gz``, ``gene_names.txt``, ``meta_info.json``, and ``features.txt``. 
+The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``,
+``counts.eds.gz``, ``quants_mat_cols.txt``, ``meta_info.json``, and ``features.txt``. 
 The ``meta_info.json`` file contains information about the quantification run,
 such as the method used for UMI resolution.  The ``features.txt`` file contains
 cell-level information designed to be useful in post-quantification cell filtering
@@ -45,9 +47,9 @@ The other three files all correspond to quantification information.
 
 The ``counts.eds.gz`` is a file in EDS_ format that stores the gene-by-cell
 expression matrix. The two other files provide the labels for the rows and
-columns of this matrix. The ``gene_names.txt`` file is a text file that
+columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that
 contains the names of the rows of the matrix, in the order in which it is
-written, with one gene name written per line. The ``barcodes.txt`` file is a
+written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a
 text file that contains the names of the columns of the matrix, in the order
 in which it is written, with one barcode name written per line.
 

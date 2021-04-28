@@ -146,6 +146,7 @@ fn main() {
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
+    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .case_insensitive(true))
@@ -160,6 +161,7 @@ fn main() {
     .arg(Arg::from("-e, --eq-labels=<eq-labels> 'file containing the gene labels of the equivalence classes'").takes_value(true).required(true))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'").takes_value(true).required(true))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
     /*
@@ -379,6 +381,7 @@ fn main() {
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
+        let filter_list = t.value_of("quant-subset");
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
@@ -427,6 +430,7 @@ fn main() {
                     use_mtx,
                     resolution,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -463,6 +467,7 @@ fn main() {
                     use_mtx,
                     resolution,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -502,6 +507,7 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let count_mat = t.value_of_t("count-mat").unwrap();
         let eq_label_file = t.value_of_t("eq-labels").unwrap();
+        let filter_list = t.value_of("quant-subset");
         //let bc_file = t.value_of_t("barcodes").unwrap();
 
         libradicl::infer::infer(
@@ -513,6 +519,7 @@ fn main() {
             //bc_file,
             use_mtx,
             num_threads,
+            filter_list,
             output_dir,
             &log,
         )
