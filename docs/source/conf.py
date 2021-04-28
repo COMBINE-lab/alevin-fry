@@ -18,7 +18,7 @@
 # -- Project information -----------------------------------------------------
 
 project = 'alevin-fry'
-copyright = '2021, Avi Srivastava, Hiark Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
+copyright = '2021, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
 author = 'Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
