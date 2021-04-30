@@ -27,6 +27,7 @@ use num::cast::AsPrimitive;
 use rust_htslib::bam::HeaderView;
 use scroll::Pread;
 use serde::{Deserialize, Serialize};
+//use snap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
@@ -628,12 +629,12 @@ pub fn dump_chunk(v: &mut CorrectedCbChunk, owriter: &Mutex<BufWriter<File>>) {
     owriter.lock().unwrap().write_all(v.data.get_ref()).unwrap();
 }
 
-pub fn collate_temporary_bucket_twopass<T: Read + Seek>(
+pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
     umit: &RadIntId,
     nrec: u32,
-    owriter: &Mutex<BufWriter<File>>,
+    owriter: &Mutex<U>,
     cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
 ) -> usize {
     let mut tbuf = [0u8; 65536];

@@ -24,6 +24,7 @@ use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
 
 use needletail::bitkmer::*;
+use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
 use smallvec::SmallVec;
@@ -636,10 +637,10 @@ pub fn quantify(
 
     info!(
         log,
-        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}",
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
         hdr.is_paired != 0,
-        hdr.ref_count,
-        hdr.num_chunks
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en)
     );
 
     // now that we have the header, parse and convert the
@@ -715,8 +716,8 @@ pub fn quantify(
     info!(
         log,
         "tg-map contained {} genes mapping to {} transcripts.",
-        gene_names.len(),
-        found
+        gene_names.len().to_formatted_string(&Locale::en),
+        found.to_formatted_string(&Locale::en)
     );
 
     // read the map for the number of unmapped reads per corrected barcode
@@ -847,7 +848,7 @@ pub fn quantify(
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
-    let mut thread_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(n_workers);
+    let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
     // (i.e. across all cells) gene-level equivalence
@@ -919,6 +920,7 @@ pub fn quantify(
                 EmInitType::Informative
             };
 
+            let mut local_nrec = 0usize;
             // pop MetaChunks from the work queue until everything is
             // processed
             while cells_remaining.load(Ordering::SeqCst) > 0 {
@@ -938,6 +940,7 @@ pub fn quantify(
                         // nbytes for the current cell
                         let nbytes = buf[byte_offset..].pread::<u32>(0).unwrap();
                         let nrec = buf[byte_offset..].pread::<u32>(4).unwrap();
+                        local_nrec += nrec as usize;
                         let mut nbr =
                             BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
                         byte_offset += nbytes as usize;
@@ -1300,6 +1303,7 @@ pub fn quantify(
                     } // for all cells in this meta chunk
                 } // while we can get work
             } // while cells remain
+            local_nrec
         });
 
         thread_handles.push(handle);
@@ -1322,9 +1326,12 @@ pub fn quantify(
         gn_writer.write_all(format!("{}\n", g).as_bytes())?;
     }
 
+    let mut total_records = 0usize;
     for h in thread_handles {
         match h.join() {
-            Ok(_) => {}
+            Ok(rc) => {
+                total_records += rc;
+            }
             Err(_e) => {
                 info!(log, "thread panicked");
             }
@@ -1342,8 +1349,17 @@ pub fn quantify(
         sprs::io::write_matrix_market(&mtx_path, &writer.trimat)?;
     }
 
-    let pb_msg = format!("finished quantifying {} cells.", num_cells);
+    let pb_msg = format!(
+        "finished quantifying {} cells.",
+        num_cells.to_formatted_string(&Locale::en)
+    );
     pbar.finish_with_message(&pb_msg);
+
+    info!(
+        log,
+        "processed {} total read records",
+        total_records.to_formatted_string(&Locale::en)
+    );
 
     if dump_eq {
         write_eqc_counts(&eqid_map_lock, num_genes, &output_matrix_path, &log);

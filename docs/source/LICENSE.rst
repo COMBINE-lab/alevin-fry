@@ -3,7 +3,7 @@ License
 
 BSD 3-Clause License
 
-Copyright (c) 2020, Rob Patro, Avi Srivastava
+Copyright (c) 2020, Mohsen Zakeri, Avi Srivastava, Hirak Sarkar, Dongze He, Rob Patro
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

@@ -18,7 +18,7 @@
 # -- Project information -----------------------------------------------------
 
 project = 'alevin-fry'
-copyright = '2021, Avi Srivastava, Hiark Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
+copyright = '2021, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
 author = 'Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
@@ -48,7 +48,9 @@ exclude_patterns = []
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'alabaster'
+html_theme = 'furo'
+
+html_logo = '../logo.png'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
