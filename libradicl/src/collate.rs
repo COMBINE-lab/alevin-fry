@@ -20,10 +20,11 @@ use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 use self::libradicl::schema::TempCellInfo;
+use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -203,6 +204,9 @@ pub fn collate_with_temp(
     total_to_collate: u64,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // the number of corrected cells we'll write
+    let expected_output_chunks = tsv_map.len() as u64;
+    // the parent input directory
     let parent = std::path::Path::new(&input_dir);
 
     let n_workers = if num_threads > 1 {
@@ -252,30 +256,37 @@ pub fn collate_with_temp(
         std::fs::remove_file(oname)?;
     }
 
-    let mut ofile = File::create(parent.join(cfname)).unwrap();
+    let ofile = File::create(parent.join(cfname)).unwrap();
+    //let owriter = Arc::new(Mutex::new(snap::write::FrameEncoder::new(ofile)));
+    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
         crit!(log, "the input RAD path {} does not exist", rad_dir);
-        return Err("invlid input".into());
+        return Err("invalid input".into());
     }
 
-    let i_file = File::open(i_dir.join("map.rad")).unwrap();
+    let input_rad_path = i_dir.join("map.rad");
+    let i_file = File::open(&input_rad_path).unwrap();
     let mut br = BufReader::new(i_file);
 
     let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
+    // the exact position at the end of the header,
+    // precisely sizeof(u64) bytes beyond the num_chunks field.
     let end_header_pos =
         br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
 
     info!(
         log,
-        "paired : {:?}, ref_count : {:?}, num_chunks : {:?}, expected_ori : {:?}",
+        "paired : {:?}, ref_count : {}, num_chunks : {}, expected_ori : {:?}",
         hdr.is_paired != 0,
-        hdr.ref_count,
-        hdr.num_chunks,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en),
         expected_ori
     );
+
     // file-level
     let fl_tags = libradicl::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
@@ -292,27 +303,35 @@ pub fn collate_with_temp(
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
 
+    // the exact position at the end of the header + file tags
     let pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
 
     // copy the header
     {
-        br.get_mut()
-            .seek(SeekFrom::Start(0))
-            .expect("could not get read pointer.");
-        let mut br2 = BufReader::new(br.get_ref());
-        std::io::copy(&mut br2.by_ref().take(pos), &mut ofile).expect("couldn't copy header.");
-    }
+        // we want to copy up to the end of the header
+        // minus the num chunks (sizeof u64), and then
+        // write the actual number of chunks we expect.
+        let chunk_bytes = std::mem::size_of::<u64>() as u64;
+        let take_pos = end_header_pos - chunk_bytes;
 
-    // make sure that the buffer is empty
-    // and that br starts reading from exactly
-    // where we expect.
-    if !br.buffer().is_empty() {
-        br.consume(br.buffer().len());
-    }
+        // This temporary file pointer and buffer will be dropped
+        // at the end of this block (scope).
+        let mut rfile = File::open(&input_rad_path).unwrap();
+        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
 
-    br.get_mut()
-        .seek(SeekFrom::Start(pos))
-        .expect("could not get read pointer.");
+        rfile
+            .read_exact(&mut hdr_buf.get_mut())
+            .expect("couldn't read input file header");
+        hdr_buf.set_position(take_pos);
+        hdr_buf
+            .write_all(&expected_output_chunks.to_le_bytes())
+            .expect("couldn't write num_chunks");
+        hdr_buf.set_position(0);
+
+        if let Ok(mut oput) = owriter.lock() {
+            std::io::copy(&mut hdr_buf, &mut *oput).expect("couldn't copy header.");
+        }
+    }
 
     // get the correction map
     let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
@@ -325,8 +344,8 @@ pub fn collate_with_temp(
 
     info!(
         log,
-        "deserialized correction map of length : {:?}",
-        correct_map.len()
+        "deserialized correction map of length : {}",
+        correct_map.len().to_formatted_string(&Locale::en)
     );
 
     let cc = libradicl::ChunkConfig {
@@ -335,12 +354,10 @@ pub fn collate_with_temp(
         umi_type: umit,
     };
 
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
     // TODO: see if we can do this without the Arc
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
     // max_records is the max size of each intermediate file
-    // let num_output_chunks = tsv_map.len() as u64;
     let mut total_allocated_records = 0;
     let mut allocated_records = 0;
     let mut temp_buckets = vec![(
@@ -661,35 +678,31 @@ pub fn collate_with_temp(
     }
     pbar_gather.finish_with_message("gathered all temp files.");
 
-    // reset the reader to start of the chunks
-    if total_allocated_records < total_to_collate {
-        br.get_ref().seek(SeekFrom::Start(pos)).unwrap();
-    }
-
     // make sure we wrote the same number of records that our
     // file suggested we should.
     assert!(total_allocated_records == total_to_collate);
 
     info!(
         log,
-        "writing num output chunks ({:?}) to header", num_output_chunks
+        "writing num output chunks ({}) to header",
+        num_output_chunks.to_formatted_string(&Locale::en)
+    );
+
+    info!(
+        log,
+        "expected number of output chunks {}",
+        expected_output_chunks.to_formatted_string(&Locale::en)
+    );
+
+    assert_eq!(
+        expected_output_chunks,
+        num_output_chunks,
+        "expected to write {} chunks but wrote {}",
+        expected_output_chunks.to_formatted_string(&Locale::en),
+        num_output_chunks.to_formatted_string(&Locale::en),
     );
 
     owriter.lock().unwrap().flush()?;
-    owriter
-        .lock()
-        .unwrap()
-        .get_ref()
-        .seek(SeekFrom::Start(
-            end_header_pos - (std::mem::size_of::<u64>() as u64),
-        ))
-        .expect("couldn't seek in output file");
-    owriter
-        .lock()
-        .unwrap()
-        .write_all(&num_output_chunks.to_le_bytes())
-        .expect("couldn't write to output file.");
-
     info!(
         log,
         "finished collating input rad file {:?}.",
