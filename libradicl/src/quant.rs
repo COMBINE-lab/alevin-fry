@@ -22,7 +22,6 @@ use self::petgraph::prelude::*;
 use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
-use snap;
 
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
@@ -625,20 +624,26 @@ pub fn quantify(
     filter_list: Option<&str>,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let parent = std::path::Path::new(&input_dir);
 
     // read the collate metadata
-    let collate_md_file = File::open(parent.join("collate.json"))
-        .expect("could not open the collate.json file.");
+    let collate_md_file =
+        File::open(parent.join("collate.json")).expect("could not open the collate.json file.");
     let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
 
     // is the collated RAD file compressed?
     let compressed_input = collate_md["compressed_output"].as_bool().unwrap();
 
     if compressed_input {
-        let i_file = File::open(parent.join("map.collated.rad.sz")).expect("run collate before quant");
-        let br = snap::read::FrameDecoder::new(BufReader::new(i_file));
+        let i_file =
+            File::open(parent.join("map.collated.rad.sz")).expect("run collate before quant");
+        let br = snap::read::FrameDecoder::new(BufReader::new(&i_file));
+
+        info!(
+            log,
+            "quantifying from compressed, collated RAD file {:?}", i_file
+        );
+
         do_quantify(
             input_dir,
             br,
@@ -653,10 +658,17 @@ pub fn quantify(
             resolution,
             small_thresh,
             filter_list,
-            &log)
+            &log,
+        )
     } else {
         let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
-        let br = BufReader::new(i_file);
+        let br = BufReader::new(&i_file);
+
+        info!(
+            log,
+            "quantifying from uncompressed, collated RAD file {:?}", i_file
+        );
+
         do_quantify(
             input_dir,
             br,
@@ -671,9 +683,9 @@ pub fn quantify(
             resolution,
             small_thresh,
             filter_list,
-            &log)
+            &log,
+        )
     }
-
 }
 
 // TODO: see if we'd rather pass an structure
@@ -697,7 +709,7 @@ pub fn do_quantify<T: Read>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
     let hdr = libradicl::RadHeader::from_bytes(&mut br);
-    
+
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
     // filter list, the number of cells will be dictated by

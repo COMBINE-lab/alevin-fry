@@ -27,7 +27,7 @@ use num::cast::AsPrimitive;
 use rust_htslib::bam::HeaderView;
 use scroll::Pread;
 use serde::{Deserialize, Serialize};
-use snap;
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
@@ -736,18 +736,20 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
             panic!("should not have any barcodes we can't find");
         }
     }
-    
+
     output_buffer.set_position(0);
 
     if compress {
-        // compress the contents of output_buffer to compressed_output 
-        let mut compressed_output = snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(total_bytes)));
-        compressed_output.write_all(output_buffer.get_ref());
-        if let Ok(b) =  compressed_output.into_inner() {
-            output_buffer = b;
-        } else {
-            // what here?
-        }
+        // compress the contents of output_buffer to compressed_output
+        let mut compressed_output =
+            snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(total_bytes)));
+        compressed_output
+            .write_all(output_buffer.get_ref())
+            .expect("could not compress the output chunk.");
+
+        output_buffer = compressed_output
+            .into_inner()
+            .expect("couldn't unwrap the FrameEncoder.");
         output_buffer.set_position(0);
     }
 

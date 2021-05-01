@@ -247,19 +247,19 @@ pub fn collate_with_temp(
 
     // log the filter type
     info!(log, "filter_type = {:?}", filter_type);
-    info!(log, "collated rad file {} be compressed", 
+    info!(
+        log,
+        "collated rad file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let cfname = if velo_mode {
         "velo.map.collated.rad"
+    } else if compress_out {
+        "map.collated.rad.sz"
     } else {
-        if compress_out {
-            "map.collated.rad.sz"
-        } else {
-            "map.collated.rad"
-        }
+        "map.collated.rad"
     };
 
     // writing the collate metadata
@@ -277,7 +277,6 @@ pub fn collate_with_temp(
             .write_all(cm_info_string.as_bytes())
             .expect("cannot write to collate.json file");
     }
-
 
     let oname = parent.join(cfname);
     if oname.exists() {
@@ -357,18 +356,20 @@ pub fn collate_with_temp(
 
         // compress the header buffer to a compressed buffer
         if compress_out {
-            let mut compressed_buf = snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
-            compressed_buf.write_all(hdr_buf.get_ref());
-            if let Ok(b) = compressed_buf.into_inner() {
-                hdr_buf = b;
-            } else {
-                // what here?
-            }
+            let mut compressed_buf =
+                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
+            compressed_buf
+                .write_all(hdr_buf.get_ref())
+                .expect("could not compress the output header.");
+            hdr_buf = compressed_buf
+                .into_inner()
+                .expect("couldn't unwrap the FrameEncoder.");
             hdr_buf.set_position(0);
         }
 
         if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref());
+            oput.write_all(hdr_buf.get_ref())
+                .expect("could not write the output header.");
         }
     }
 
@@ -673,7 +674,7 @@ pub fn collate_with_temp(
                         &umi_type,
                         temp_bucket.1,
                         &owriter,
-                        compress_out,   
+                        compress_out,
                         &mut cmap,
                     ) as u64;
 

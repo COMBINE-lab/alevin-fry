@@ -366,8 +366,16 @@ fn main() {
         let num_threads = t.value_of_t("threads").unwrap();
         let compress_out = t.is_present("compress");
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, compress_out, &VERSION, &log)
-            .expect("could not collate.");
+        libradicl::collate::collate(
+            input_dir,
+            rad_dir,
+            num_threads,
+            max_records,
+            compress_out,
+            &VERSION,
+            &log,
+        )
+        .expect("could not collate.");
     }
 
     // perform quantification of a collated rad file.
