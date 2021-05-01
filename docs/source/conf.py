@@ -22,7 +22,7 @@ copyright = '2021, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob P
 author = 'Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
-release = '0.2.0'
+release = '0.3.0'
 
 master_doc = 'index'
 
