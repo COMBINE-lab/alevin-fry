@@ -5,7 +5,7 @@ authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarka
 edition = "2018"
 
 [dependencies]
-# snap = "1"
+snap = "1"
 scroll = "0.10.2"
 num = "0.4.0"
 ahash = "0.7.2"

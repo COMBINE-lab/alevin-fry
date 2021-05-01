@@ -22,6 +22,7 @@ use self::petgraph::prelude::*;
 use self::slog::{crit, info, warn};
 use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
+use snap;
 
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
@@ -403,7 +404,7 @@ type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
 
 fn fill_work_queue<T: Read>(
     q: Arc<ArrayQueue<MetaChunk>>,
-    mut br: BufReader<T>,
+    mut br: T,
     num_chunks: usize,
     pbar: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -501,7 +502,7 @@ fn fill_work_queue_filtered<T: Read>(
     keep_set: HashSet<u64, ahash::RandomState>,
     rl_tags: &libradicl::TagSection,
     q: Arc<ArrayQueue<MetaChunk>>,
-    mut br: BufReader<T>,
+    mut br: T,
     num_chunks: usize,
     pbar: &ProgressBar,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -624,11 +625,79 @@ pub fn quantify(
     filter_list: Option<&str>,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = std::path::Path::new(&input_dir);
-    let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
-    let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RadHeader::from_bytes(&mut br);
 
+    let parent = std::path::Path::new(&input_dir);
+
+    // read the collate metadata
+    let collate_md_file = File::open(parent.join("collate.json"))
+        .expect("could not open the collate.json file.");
+    let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
+
+    // is the collated RAD file compressed?
+    let compressed_input = collate_md["compressed_output"].as_bool().unwrap();
+
+    if compressed_input {
+        let i_file = File::open(parent.join("map.collated.rad.sz")).expect("run collate before quant");
+        let br = snap::read::FrameDecoder::new(BufReader::new(i_file));
+        do_quantify(
+            input_dir,
+            br,
+            tg_map,
+            output_dir,
+            num_threads,
+            num_bootstraps,
+            init_uniform,
+            summary_stat,
+            dump_eq,
+            use_mtx,
+            resolution,
+            small_thresh,
+            filter_list,
+            &log)
+    } else {
+        let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
+        let br = BufReader::new(i_file);
+        do_quantify(
+            input_dir,
+            br,
+            tg_map,
+            output_dir,
+            num_threads,
+            num_bootstraps,
+            init_uniform,
+            summary_stat,
+            dump_eq,
+            use_mtx,
+            resolution,
+            small_thresh,
+            filter_list,
+            &log)
+    }
+
+}
+
+// TODO: see if we'd rather pass an structure
+// with these options
+#[allow(clippy::too_many_arguments)]
+pub fn do_quantify<T: Read>(
+    input_dir: String,
+    mut br: T,
+    tg_map: String,
+    output_dir: String,
+    num_threads: u32,
+    num_bootstraps: u32,
+    init_uniform: bool,
+    summary_stat: bool,
+    dump_eq: bool,
+    use_mtx: bool,
+    resolution: ResolutionStrategy,
+    small_thresh: usize,
+    filter_list: Option<&str>,
+    log: &slog::Logger,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = std::path::Path::new(&input_dir);
+    let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
     // filter list, the number of cells will be dictated by

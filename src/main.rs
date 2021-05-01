@@ -128,6 +128,7 @@ fn main() {
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_collate_threads))
+    .arg(Arg::from("-c, --compress 'compress the output collated RAD file'").takes_value(false).required(false))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
          .default_value("30000000"));
     //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
@@ -363,8 +364,9 @@ fn main() {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
+        let compress_out = t.is_present("compress");
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &VERSION, &log)
+        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, compress_out, &VERSION, &log)
             .expect("could not collate.");
     }
 
