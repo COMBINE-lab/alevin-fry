@@ -249,6 +249,196 @@ pub fn read_filter_list(
     Ok(fset)
 }
 
+#[inline(always)]
+fn unspliced_of(gid: u32) -> u32 {
+    gid + 1
+}
+
+/// should always compile to no-op
+#[inline(always)]
+fn spliced_of(gid: u32) -> u32 {
+    gid
+}
+
+/// Parse a 3 column tsv of the format
+/// transcript_name gene_name   status
+/// where status is one of S or U each gene will be allocated both a spliced and
+/// unspliced variant, the spliced index will always be even and the unspliced odd,
+/// and they will always be adjacent ids.  For example, if gene A is present in
+/// the sample and it's spliced variant is assigned id i,  then it will always be true that
+/// i % 2 == 0
+/// and
+/// (i+1) will be the id for the unspliced version of gene A
+fn parse_tg_spliced_unspliced(
+    rdr: &mut csv::Reader<File>,
+    ref_count: usize,
+    rname_to_id: &HashMap<String, u32, ahash::RandomState>,
+    gene_names: &mut Vec<String>,
+    gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
+) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    // map each transcript id to the corresponding gene id
+    // the transcript name can be looked up from the id in the RAD header,
+    // and the gene name can be looked up from the id in the gene_names
+    // vector.
+    let mut tid_to_gid = vec![u32::MAX; ref_count];
+
+    // Record will be transcript, gene, splicing status
+    type TsvRec = (String, String, String);
+
+    // the transcripts for which we've found a gene mapping
+    let mut found = 0usize;
+
+    // starting from 0, we assign each gene 2 ids (2 consecutive integers),
+    // the even ids are for spliced txps, the odd ids are for unspliced txps
+    // for convenience, we define a gid helper, next_gid
+    let mut next_gid = 0u32;
+    // apparently the "header" (first row) will be included
+    // in the iterator returned by `deserialize` anyway
+    /*let hdr = rdr.headers()?;
+    let hdr_vec : Vec<Result<TsvRec,csv::Error>> = vec![hdr.deserialize(None)];
+    */
+    for result in rdr.deserialize() {
+        let record: TsvRec = result?;
+        // first, get the first id for this gene
+        let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert_with(|| {
+            // as we need to return the current next_gid if we run this code
+            // we add by two and then return current gene id.
+            let cur_gid = next_gid;
+            next_gid += 2;
+            // we haven't added this gene name already,
+            // we append it now to the list of gene names.
+            gene_names.push(record.1.clone());
+            cur_gid
+        });
+
+        // get the transcript id
+        if let Some(transcript_id) = rname_to_id.get(&record.0) {
+            found += 1;
+            if record.2.eq_ignore_ascii_case("U") {
+                // This is an unspliced txp
+                // we link it to the second gid of this gene
+                tid_to_gid[*transcript_id as usize] = unspliced_of(gene_id);
+            } else if record.2.eq_ignore_ascii_case("S") {
+                // This is a spliced txp, we link it to the
+                // first gid of this gene
+                tid_to_gid[*transcript_id as usize] = spliced_of(gene_id);
+            } else {
+                return Err("Third column in 3 column txp-to-gene file must be S or U".into());
+            }
+        }
+    }
+
+    assert_eq!(
+        found, ref_count,
+        "The tg-map must contain a gene mapping for all transcripts in the header"
+    );
+
+    Ok(tid_to_gid)
+}
+
+fn parse_tg_spliced(
+    rdr: &mut csv::Reader<File>,
+    ref_count: usize,
+    rname_to_id: &HashMap<String, u32, ahash::RandomState>,
+    gene_names: &mut Vec<String>,
+    gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
+) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    // map each transcript id to the corresponding gene id
+    // the transcript name can be looked up from the id in the RAD header,
+    // and the gene name can be looked up from the id in the gene_names
+    // vector.
+    let mut tid_to_gid = vec![u32::MAX; ref_count];
+    // now read in the transcript to gene map
+    type TsvRec = (String, String);
+    // now, map each transcript index to it's corresponding gene index
+    let mut found = 0usize;
+    // apparently the "header" (first row) will be included
+    // in the iterator returned by `deserialize` anyway
+    /*let hdr = rdr.headers()?;
+    let hdr_vec : Vec<Result<TsvRec,csv::Error>> = vec![hdr.deserialize(None)];
+    */
+    for result in rdr.deserialize() {
+        match result {
+            Ok(record_in) => {
+                let record: TsvRec = record_in;
+                //let record: TSVRec = result?;
+                // first, get the id for this gene
+                let next_id = gene_name_to_id.len() as u32;
+                let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
+                // if we haven't added this gene name already, then
+                // append it now to the list of gene names.
+                if gene_id == next_id {
+                    gene_names.push(record.1.clone());
+                }
+                // get the transcript id
+                if let Some(transcript_id) = rname_to_id.get(&record.0) {
+                    found += 1;
+                    tid_to_gid[*transcript_id as usize] = gene_id;
+                }
+            }
+            Err(e) => {
+                /*
+                crit!(
+                    log,
+                    "Encountered error [{}] when reading the transcript-to-gene map. Please make sure the transcript-to-gene mapping is a 2 column, tab separated file.",
+                    e
+                );
+                */
+                return Err(Box::new(e));
+            }
+        }
+    }
+
+    assert_eq!(
+        found, ref_count,
+        "The tg-map must contain a gene mapping for all transcripts in the header"
+    );
+
+    Ok(tid_to_gid)
+}
+
+pub fn parse_tg_map(
+    tg_map: &str,
+    ref_count: usize,
+    rname_to_id: &HashMap<String, u32, ahash::RandomState>,
+    gene_names: &mut Vec<String>,
+    gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
+) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+    let t2g_file = std::fs::File::open(tg_map).expect("couldn't open file");
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .delimiter(b'\t')
+        .from_reader(t2g_file);
+
+    let headers = rdr.headers()?;
+    match headers.len() {
+        2 => {
+            // parse the 2 column format
+            parse_tg_spliced(
+                &mut rdr,
+                ref_count,
+                rname_to_id,
+                gene_names,
+                gene_name_to_id,
+            )
+        }
+        3 => {
+            // parse the 3 column format
+            parse_tg_spliced_unspliced(
+                &mut rdr,
+                ref_count,
+                rname_to_id,
+                gene_names,
+                gene_name_to_id,
+            )
+        }
+        _ => {
+            // not supported
+            Err("Transcript-gene mapping must have either 2 or 3 columns.".into())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use self::libradicl::utils::*;

@@ -742,63 +742,32 @@ pub fn do_quantify<T: Read>(
     let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
         HashMap::with_hasher(gnhasher);
 
-    // now read in the transcript to gene map
-    type TsvRec = (String, String);
-
-    // map each transcript id to the corresponding gene id
-    // the transcript name can be looked up from the id in the RAD header,
-    // and the gene name can be looked up from the id in the gene_names
-    // vector.
-    let mut tid_to_gid = vec![u32::MAX; hdr.ref_count as usize];
-
-    let t2g_file = std::fs::File::open(tg_map).expect("couldn't open file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .delimiter(b'\t')
-        .from_reader(t2g_file);
-
-    // now, map each transcript index to it's corresponding gene index
-    let mut found = 0usize;
-    for result in rdr.deserialize() {
-        match result {
-            Ok(record_in) => {
-                let record: TsvRec = record_in;
-                //let record: TSVRec = result?;
-                // first, get the id for this gene
-                let next_id = gene_name_to_id.len() as u32;
-                let gene_id = *gene_name_to_id.entry(record.1.clone()).or_insert(next_id);
-                // if we haven't added this gene name already, then
-                // append it now to the list of gene names.
-                if gene_id == next_id {
-                    gene_names.push(record.1.clone());
-                }
-                // get the transcript id
-                if let Some(transcript_id) = rname_to_id.get(&record.0) {
-                    found += 1;
-                    tid_to_gid[*transcript_id as usize] = gene_id;
-                }
-            }
-            Err(e) => {
-                crit!(
-                    log,
-                    "Encountered error [{}] when reading the transcript-to-gene map. Please make sure the transcript-to-gene mapping is a 2 column, tab separated file.",
-                    e
-                );
-                return Err(Box::new(e));
-            }
+    let tid_to_gid;
+    // parse the tg-map; this is expected to be a 2-column
+    // tsv file if we are dealing with one status of transcript
+    // e.g. just spliced, or 3-column tsv if we are dealing with
+    // both spliced and unspliced.  The type will be automatically
+    // determined.
+    match parse_tg_map(
+        &tg_map,
+        hdr.ref_count as usize,
+        &rname_to_id,
+        &mut gene_names,
+        &mut gene_name_to_id,
+    ) {
+        Ok(v) => {
+            tid_to_gid = v;
+        }
+        Err(e) => {
+            return Err(e);
         }
     }
-
-    assert_eq!(
-        found, hdr.ref_count as usize,
-        "The tg-map must contain a gene mapping for all transcripts in the header"
-    );
 
     info!(
         log,
         "tg-map contained {} genes mapping to {} transcripts.",
         gene_names.len().to_formatted_string(&Locale::en),
-        found.to_formatted_string(&Locale::en)
+        tid_to_gid.len().to_formatted_string(&Locale::en)
     );
 
     // read the map for the number of unmapped reads per corrected barcode
