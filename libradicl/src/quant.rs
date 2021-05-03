@@ -742,6 +742,7 @@ pub fn do_quantify<T: Read>(
     let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
         HashMap::with_hasher(gnhasher);
 
+    let with_unspliced;
     let tid_to_gid;
     // parse the tg-map; this is expected to be a 2-column
     // tsv file if we are dealing with one status of transcript
@@ -755,8 +756,19 @@ pub fn do_quantify<T: Read>(
         &mut gene_names,
         &mut gene_name_to_id,
     ) {
-        Ok(v) => {
+        Ok((v, us)) => {
             tid_to_gid = v;
+            with_unspliced = us;
+            if with_unspliced {
+                assert_eq!(
+                    num_bootstraps, 0,
+                    "currently 3-column (spliced/unspliced) analysis cannot be used with bootstrapping"
+                );
+                assert_eq!(
+                    resolution, ResolutionStrategy::CellRangerLike,
+                    "currently 3-column (spliced/unspliced) analysis can only be used with cr-like resolution"
+                );
+            }
         }
         Err(e) => {
             return Err(e);
@@ -884,8 +896,29 @@ pub fn do_quantify<T: Read>(
         0usize
     };
 
+    // the length of the vector of gene counts we'll use
+    let num_rows = if with_unspliced {
+        // the number of genes should be the max gene id + 1
+        // over the gene ids in gene_name_to_id.  The +2 is
+        // because the ids in gene_name_to_id are only for
+        // the spliced genes, leaving a space in between for each
+        // unspliced variant; so +1 to get the largest valid index and
+        // another +1 to get the size (ids are 0 based).
+        let mid = (gene_name_to_id
+            .values()
+            .max()
+            .expect("gene name to id map should not be empty.")
+            + 2) as usize;
+
+        // spliced, unspliced, ambiguous for each gene
+        // but num genes already accounts for spliced & unspliced
+        mid + (mid / 2)
+    } else {
+        num_genes
+    };
+
     let trimat =
-        sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_genes as usize), tmcap);
+        sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows as usize), tmcap);
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::new(bc_file),
@@ -1030,6 +1063,7 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
+                                            with_unspliced,
                                             &log,
                                         );
                                     } else {
@@ -1039,21 +1073,28 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
+                                            with_unspliced,
                                             &log,
                                         );
                                         eq_map.clear();
                                     }
                                     let only_unique =
                                         resolution == ResolutionStrategy::CellRangerLike;
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        em_init_type,
-                                        num_genes,
-                                        only_unique,
-                                        &log,
-                                    );
+                                    if with_unspliced {
+                                        // currently only supports gene
+                                        // unique count extraction
+                                        counts = extract_counts(&gene_eqc, num_rows);
+                                    } else {
+                                        counts = em_optimize(
+                                            &gene_eqc,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            em_init_type,
+                                            num_genes,
+                                            only_unique,
+                                            &log,
+                                        );
+                                    }
                                 }
                                 ResolutionStrategy::Trivial => {
                                     eq_map.init_from_chunk(&mut c);
@@ -1142,28 +1183,34 @@ pub fn do_quantify<T: Read>(
                                 &tid_to_gid,
                                 num_genes,
                                 &mut gene_eqc,
+                                with_unspliced,
                                 &log,
                             );
-                            counts = vec![0f32; num_genes];
-                            for (k, v) in gene_eqc.iter() {
-                                if k.len() == 1 {
-                                    counts[*k.first().unwrap() as usize] += *v as f32;
-                                } else {
-                                    match resolution {
-                                        ResolutionStrategy::CellRangerLikeEm
-                                        | ResolutionStrategy::Full => {
-                                            let contrib = 1.0 / (k.len() as f32);
-                                            for g in k.iter() {
-                                                counts[*g as usize] += contrib;
+                            if with_unspliced {
+                                // currently only supports gene
+                                // unique count extraction
+                                counts = extract_counts(&gene_eqc, num_rows);
+                            } else {
+                                counts = vec![0f32; num_genes];
+                                for (k, v) in gene_eqc.iter() {
+                                    if k.len() == 1 {
+                                        counts[*k.first().unwrap() as usize] += *v as f32;
+                                    } else {
+                                        match resolution {
+                                            ResolutionStrategy::CellRangerLikeEm
+                                            | ResolutionStrategy::Full => {
+                                                let contrib = 1.0 / (k.len() as f32);
+                                                for g in k.iter() {
+                                                    counts[*g as usize] += contrib;
+                                                }
                                             }
-                                        }
-                                        _ => {
-                                            // otherwise discard gene multimappers
+                                            _ => {
+                                                // otherwise discard gene multimappers
+                                            }
                                         }
                                     }
                                 }
                             }
-
                             // if the user requested bootstraps
                             // NOTE: we check that the specified resolution method
                             // is conceptually compatible with bootstrapping before
@@ -1199,6 +1246,7 @@ pub fn do_quantify<T: Read>(
                         let mut num_expr: u32 = 0;
                         expressed_vec.clear();
                         expressed_ind.clear();
+
                         for (gn, c) in counts.iter().enumerate() {
                             max_umi = if *c > max_umi { *c } else { max_umi };
                             sum_umi += *c;
@@ -1238,22 +1286,22 @@ pub fn do_quantify<T: Read>(
                             let bc_mer: BitKmer = (bc, bclen as u8);
 
                             if !use_mtx {
-                                eds_bytes = sce::eds::as_bytes(&counts, num_genes)
-                                    .expect("can't conver vector to eds");
+                                eds_bytes = sce::eds::as_bytes(&counts, num_rows)
+                                    .expect("can't convert vector to eds");
                             }
 
                             // write bootstraps
                             if num_bootstraps > 0 {
                                 // flatten the bootstraps
                                 if summary_stat {
-                                    eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_genes)
+                                    eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_rows)
                                         .expect("can't convert vector to eds");
-                                    eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_genes)
+                                    eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_rows)
                                         .expect("can't convert vector to eds");
                                 } else {
                                     for i in 0..num_bootstraps {
                                         let bt_eds_bytes_slice =
-                                            sce::eds::as_bytes(&bootstraps[i as usize], num_genes)
+                                            sce::eds::as_bytes(&bootstraps[i as usize], num_rows)
                                                 .expect("can't convert vector to eds");
                                         bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
                                     }
@@ -1372,8 +1420,26 @@ pub fn do_quantify<T: Read>(
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
     let mut gn_writer = BufWriter::new(gn_file);
-    for g in gene_names {
-        gn_writer.write_all(format!("{}\n", g).as_bytes())?;
+
+    // if we are not using unspliced then just write the gene names
+    if !with_unspliced {
+        for g in gene_names {
+            gn_writer.write_all(format!("{}\n", g).as_bytes())?;
+        }
+    } else {
+        // otherwise, we write the spliced names, the unspliced names, and then
+        // the ambiguous names
+        for g in gene_names.iter().step_by(2) {
+            gn_writer.write_all(format!("{}\n", *g).as_bytes())?;
+        }
+        // unspliced
+        for g in gene_names.iter().skip(1).step_by(2) {
+            gn_writer.write_all(format!("{}-U\n", *g).as_bytes())?;
+        }
+        // ambiguous
+        for g in gene_names.iter().step_by(2) {
+            gn_writer.write_all(format!("{}-A\n", *g).as_bytes())?;
+        }
     }
 
     let mut total_records = 0usize;
@@ -1418,7 +1484,7 @@ pub fn do_quantify<T: Read>(
     let meta_info = json!({
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : num_cells,
-        "num_genes" : num_genes,
+        "num_genes" : num_rows,
         "dump_eq" : dump_eq,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
