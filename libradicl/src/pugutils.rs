@@ -23,6 +23,7 @@ use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
 use crate::schema::{EqMap, PugResolutionStatistics};
+// use crate::utils;
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
@@ -151,11 +152,131 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
+#[inline]
+fn resolve_num_molecules_crlike_from_vec(
+    umi_gene_count_vec: &mut [(u64, u32, u32)],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    _with_unspliced: bool,
+) {
+    // sort the triplets
+    // first on umi
+    // then on gene_id
+    // then on count
+    quickersort::sort(umi_gene_count_vec);
+
+    // hold the current umi and gene we are examining
+    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
+    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    // hold the gene id having the max count for this umi
+    // and the maximum count value itself
+    // let mut max_count_gene = 0u32;
+    let mut max_count = 0u32;
+    // to aggregate the count should a (umi, gene) pair appear
+    // more than once
+    let mut count_aggr = 0u32;
+    // could this UMI be assigned toa best gene or not
+    // let mut unresolvable = false;
+    // to keep track of the current index in the vector
+    let mut cidx = 0usize;
+    // the vector will hold the equivalent set of best genes
+    let mut best_genes = Vec::<u32>::with_capacity(16);
+
+    // look over all sorted triplets
+    while cidx < umi_gene_count_vec.len() {
+        let (umi, gn, ct) = umi_gene_count_vec[cidx];
+
+        // if this umi is different than
+        // the one we are processing
+        // then decide what action to take
+        // on the previous umi
+        if umi != curr_umi {
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+
+            // sort & dedup redundant here
+            // quickersort::sort(&mut best_genes[..]);
+            // best_genes.dedup();
+
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+
+            // the next umi and gene
+            curr_umi = umi;
+            curr_gn = gn;
+
+            // the next umi will start as resolvable
+            // unresolvable = false;
+
+            // current gene is current best
+            // max_count_gene = gn;
+            best_genes.clear();
+            best_genes.push(gn);
+
+            // count aggr = max count = ct
+            count_aggr = ct;
+            max_count = ct;
+        } else {
+            // the umi was the same
+
+            // if the gene is the same, add the counts
+            if gn == curr_gn {
+                //utils::same_gene(gn, curr_gn, with_unspliced) {
+                // if we are considering spliced and unspliced
+                // and curr_gn != gn, then this is ambiguous
+                //if curr_gn != gn {
+                //    best_genes.push(gn);
+                //}
+                count_aggr += ct;
+            } else {
+                // if the gene is different, then restart the count_aggr
+                // and set the current gene id
+                count_aggr = ct;
+                curr_gn = gn;
+            }
+            // if the count aggregator exceeded the max
+            // then it is the new max, and this gene is
+            // the new max gene.  Having a distinct max
+            // also makes this UMI uniquely resolvable
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
+                    max_count = count_aggr;
+                    // max_count_gene = gn;
+                    // unresolvable = false;
+                    best_genes.clear();
+                    best_genes.push(gn);
+                }
+                Ordering::Equal => {
+                    // if we have a tie for the max count
+                    // then the current UMI isn't uniquely-unresolvable
+                    // it will stay this way unless we see a bigger
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
+                    // unresolvable = true;
+                    best_genes.push(gn);
+                }
+                Ordering::Less => {
+                    // we do nothing
+                }
+            }
+        }
+
+        // if this was the last UMI in the list
+        if cidx == umi_gene_count_vec.len() - 1 {
+            // sort & dedup redundant here
+            // quickersort::sort(&mut best_genes[..]);
+            // best_genes.dedup();
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            //counts[max_count_gene as usize] += 1.0f32;
+        }
+        cidx += 1;
+    }
+}
+
 pub(super) fn get_num_molecules_cell_ranger_like_small(
     cell_chunk: &mut libradicl::Chunk,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    with_unspliced: bool,
     _log: &slog::Logger,
 ) {
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
@@ -178,109 +299,11 @@ pub(super) fn get_num_molecules_cell_ranger_like_small(
             umi_gene_count_vec.push((umi, *g, 1));
         }
     }
-
-    // sort the triplets
-    // first on umi
-    // then on gene_id
-    // then on count
-    quickersort::sort(&mut umi_gene_count_vec[..]);
-
-    // hold the current umi and gene we are examining
-    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
-    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
-    // hold the gene id having the max count for this umi
-    // and the maximum count value itself
-    // let mut max_count_gene = 0u32;
-    let mut max_count = 0u32;
-    // to aggregate the count should a (umi, gene) pair appear
-    // more than once
-    let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    // let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
-    // the vector will hold the equivalent set of best genes
-    let mut best_genes = Vec::<u32>::with_capacity(16);
-
-    // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
-        // if this umi is different than
-        // the one we are processing
-        // then decide what action to take
-        // on the previous umi
-        if umi != curr_umi {
-            // update the count of the equivalence class of genes
-            // that gets this UMI
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-
-            // the next umi and gene
-            curr_umi = umi;
-            curr_gn = gn;
-
-            // the next umi will start as resolvable
-            // unresolvable = false;
-
-            // current gene is current best
-            // max_count_gene = gn;
-            best_genes.clear();
-            best_genes.push(gn);
-
-            // count aggr = max count = ct
-            count_aggr = ct;
-            max_count = ct;
-        } else {
-            // the umi was the same
-
-            // if the gene is the same, add the counts
-            if gn == curr_gn {
-                count_aggr += ct;
-            } else {
-                // if the gene is different, then restart the count_aggr
-                // and set the current gene id
-                count_aggr = ct;
-                curr_gn = gn;
-            }
-            // if the count aggregator exceeded the max
-            // then it is the new max, and this gene is
-            // the new max gene.  Having a distinct max
-            // also makes this UMI uniquely resolvable
-            match count_aggr.cmp(&max_count) {
-                Ordering::Greater => {
-                    max_count = count_aggr;
-                    // max_count_gene = gn;
-                    // unresolvable = false;
-                    best_genes.clear();
-                    best_genes.push(gn);
-                }
-                Ordering::Equal => {
-                    // if we have a tie for the max count
-                    // then the current UMI isn't uniquely-unresolvable
-                    // it will stay this way unless we see a bigger
-                    // count for this UMI.  We add the current
-                    // "tied" gene to the equivalence class.
-                    // unresolvable = true;
-                    best_genes.push(gn);
-                }
-                Ordering::Less => {
-                    // we do nothing
-                }
-            }
-        }
-
-        // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 {
-            //&& !unresolvable {
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-            //counts[max_count_gene as usize] += 1.0f32;
-        }
-        cidx += 1;
-    }
+    resolve_num_molecules_crlike_from_vec(
+        &mut umi_gene_count_vec,
+        gene_eqclass_hash,
+        with_unspliced,
+    );
 }
 
 pub(super) fn get_num_molecules_cell_ranger_like(
@@ -288,6 +311,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    with_unspliced: bool,
     _log: &slog::Logger,
 ) {
     // TODO: better capacity
@@ -305,7 +329,12 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             .iter()
             .map(|tid| tid_to_gid[*tid as usize])
             .collect();
-        // and make the gene ids unique
+        // and make the gene ids unique,
+        // note, if we have both spliced and
+        // unspliced gene ids, then they will
+        // necessarily be adjacent here, since
+        // they are always asigned adjacent ids
+        // with spliced being even and unspliced odd.
         quickersort::sort(&mut gset[..]);
         gset.dedup();
 
@@ -317,117 +346,11 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             }
         }
     }
-
-    // sort the triplets
-    // first on umi
-    // then on gene_id
-    // then on count
-    quickersort::sort(&mut umi_gene_count_vec[..]);
-
-    // hold the current umi and gene we are examining
-    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
-    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
-    // hold the gene id having the max count for this umi
-    // and the maximum count value itself
-    // let mut max_count_gene = 0u32;
-    let mut max_count = 0u32;
-    // to aggregate the count should a (umi, gene) pair appear
-    // more than once
-    let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    // let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
-    // the vector will hold the equivalent set of best genes
-    let mut best_genes = Vec::<u32>::with_capacity(16);
-
-    // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
-        // if this umi is different than
-        // the one we are processing
-        // then decide what action to take
-        // on the previous umi
-        if umi != curr_umi {
-            // if previous was resolvable, add it to the appropriate gene
-            //if !unresolvable {
-            //    counts[max_count_gene as usize] += 1.0f32;
-            //}
-
-            // update the count of the equivalence class of genes
-            // that gets this UMI
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-
-            // the next umi and gene
-            curr_umi = umi;
-            curr_gn = gn;
-
-            // the next umi will start as resolvable
-            // unresolvable = false;
-
-            // current gene is current best
-            // max_count_gene = gn;
-            best_genes.clear();
-            best_genes.push(gn);
-
-            // count aggr = max count = ct
-            count_aggr = ct;
-            max_count = ct;
-        } else {
-            // the umi was the same
-
-            // if the gene is the same, add the counts
-            if gn == curr_gn {
-                count_aggr += ct;
-            } else {
-                // if the gene is different, then restart the count_aggr
-                // and set the current gene id
-                count_aggr = ct;
-                curr_gn = gn;
-            }
-            // if the count aggregator exceeded the max
-            // then it is the new max, and this gene is
-            // the new max gene.  Having a distinct max
-            // also makes this UMI uniquely resolvable
-            match count_aggr.cmp(&max_count) {
-                Ordering::Greater => {
-                    max_count = count_aggr;
-                    // max_count_gene = gn;
-                    // unresolvable = false;
-                    best_genes.clear();
-                    best_genes.push(gn);
-                }
-                Ordering::Equal => {
-                    // if we have a tie for the max count
-                    // then the current UMI isn't uniquely-unresolvable
-                    // it will stay this way unless we see a bigger
-                    // count for this UMI.  We add the current
-                    // "tied" gene to the equivalence class.
-                    // unresolvable = true;
-                    best_genes.push(gn);
-                }
-                Ordering::Less => {
-                    // we do nothing
-                }
-            }
-        }
-
-        // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 {
-            //&& !unresolvable {
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-            //counts[max_count_gene as usize] += 1.0f32;
-        }
-        cidx += 1;
-    }
-
-    //counts
-    //gene_eqclass_hash
+    resolve_num_molecules_crlike_from_vec(
+        &mut umi_gene_count_vec,
+        gene_eqclass_hash,
+        with_unspliced,
+    );
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(

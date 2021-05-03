@@ -22,6 +22,7 @@ use crossbeam_queue::ArrayQueue;
 use self::libradicl::schema::TempCellInfo;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
@@ -35,6 +36,7 @@ pub fn collate(
     rad_dir: String,
     num_threads: u32,
     max_records: u32,
+    compress_out: bool,
     version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
@@ -104,6 +106,7 @@ pub fn collate(
         max_records,
         tsv_map,
         total_to_collate,
+        compress_out,
         log,
     )
 
@@ -195,6 +198,7 @@ fn correct_unmapped_counts(
         .expect("couldn't serialize corrected unmapped bc count.");
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn collate_with_temp(
     input_dir: String,
     rad_dir: String,
@@ -202,6 +206,7 @@ pub fn collate_with_temp(
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
+    compress_out: bool,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // the number of corrected cells we'll write
@@ -242,14 +247,36 @@ pub fn collate_with_temp(
 
     // log the filter type
     info!(log, "filter_type = {:?}", filter_type);
-
+    info!(
+        log,
+        "collated rad file {} be compressed",
+        if compress_out { "will" } else { "will not" }
+    );
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let cfname = if velo_mode {
         "velo.map.collated.rad"
+    } else if compress_out {
+        "map.collated.rad.sz"
     } else {
         "map.collated.rad"
     };
+
+    // writing the collate metadata
+    {
+        let collate_meta = json!({
+            "compressed_output" : compress_out,
+        });
+
+        let cm_path = parent.join("collate.json");
+        let mut cm_file = std::fs::File::create(&cm_path).expect("could not create metadata file.");
+
+        let cm_info_string =
+            serde_json::to_string_pretty(&collate_meta).expect("could not format json.");
+        cm_file
+            .write_all(cm_info_string.as_bytes())
+            .expect("cannot write to collate.json file");
+    }
 
     let oname = parent.join(cfname);
     if oname.exists() {
@@ -257,7 +284,6 @@ pub fn collate_with_temp(
     }
 
     let ofile = File::create(parent.join(cfname)).unwrap();
-    //let owriter = Arc::new(Mutex::new(snap::write::FrameEncoder::new(ofile)));
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
     let i_dir = std::path::Path::new(&rad_dir);
@@ -328,8 +354,22 @@ pub fn collate_with_temp(
             .expect("couldn't write num_chunks");
         hdr_buf.set_position(0);
 
+        // compress the header buffer to a compressed buffer
+        if compress_out {
+            let mut compressed_buf =
+                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
+            compressed_buf
+                .write_all(hdr_buf.get_ref())
+                .expect("could not compress the output header.");
+            hdr_buf = compressed_buf
+                .into_inner()
+                .expect("couldn't unwrap the FrameEncoder.");
+            hdr_buf.set_position(0);
+        }
+
         if let Ok(mut oput) = owriter.lock() {
-            std::io::copy(&mut hdr_buf, &mut *oput).expect("couldn't copy header.");
+            oput.write_all(hdr_buf.get_ref())
+                .expect("could not write the output header.");
         }
     }
 
@@ -634,6 +674,7 @@ pub fn collate_with_temp(
                         &umi_type,
                         temp_bucket.1,
                         &owriter,
+                        compress_out,
                         &mut cmap,
                     ) as u64;
 
