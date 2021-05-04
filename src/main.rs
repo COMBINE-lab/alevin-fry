@@ -20,7 +20,7 @@ use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
-use libradicl::schema::ResolutionStrategy;
+use libradicl::schema::{ResolutionStrategy, SplicedAmbiguityModel};
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
@@ -151,6 +151,10 @@ fn main() {
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .case_insensitive(true))
+    .arg(Arg::from("--sa-model 'preferred model of splicing ambiguity'")
+        .possible_values(&["prefer-ambig", "winner-take-all"])
+        .default_value("winner-take-all")
+        .setting(ArgSettings::Hidden))
     .arg(Arg::from("--small-thresh 'cells with fewer than these many reads will be resolved using a custom approach'").default_value("10").setting(ArgSettings::Hidden));
 
     let infer_app = App::new("infer")
@@ -390,6 +394,7 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+        let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
         let filter_list = t.value_of("quant-subset");
 
@@ -439,6 +444,7 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    sa_model,
                     small_thresh,
                     filter_list,
                     &log,
@@ -476,6 +482,7 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    sa_model,
                     small_thresh,
                     filter_list,
                     &log,
