@@ -46,7 +46,7 @@ use flate2::Compression;
 
 use self::libradicl::em::{em_optimize, run_bootstrap, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PugEdgeType, ResolutionStrategy};
+use self::libradicl::schema::{EqMap, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -620,6 +620,7 @@ pub fn quantify(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
     log: &slog::Logger,
@@ -656,6 +657,7 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            sa_model,
             small_thresh,
             filter_list,
             &log,
@@ -681,6 +683,7 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            sa_model,
             small_thresh,
             filter_list,
             &log,
@@ -703,6 +706,7 @@ pub fn do_quantify<T: Read>(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    mut sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
     log: &slog::Logger,
@@ -768,6 +772,20 @@ pub fn do_quantify<T: Read>(
                     resolution, ResolutionStrategy::CellRangerLike,
                     "currently 3-column (spliced/unspliced) analysis can only be used with cr-like resolution"
                 );
+            } else {
+                // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
+                // operating `with_unspliced`, so if the user has set that here, inform them
+                // it will be changed back to winner-take-all
+                match sa_model {
+                    SplicedAmbiguityModel::WinnerTakeAll => {}
+                    _ => {
+                        info!(
+                            log,
+                            "When not operating in 3-column (spliced/unspliced) mode, the SplicedAmbiguityModel will be ignored"
+                        );
+                        sa_model = SplicedAmbiguityModel::WinnerTakeAll;
+                    }
+                }
             }
         }
         Err(e) => {
@@ -1064,6 +1082,7 @@ pub fn do_quantify<T: Read>(
                                             num_genes,
                                             &mut gene_eqc,
                                             with_unspliced,
+                                            sa_model,
                                             &log,
                                         );
                                     } else {
@@ -1074,6 +1093,7 @@ pub fn do_quantify<T: Read>(
                                             num_genes,
                                             &mut gene_eqc,
                                             with_unspliced,
+                                            sa_model,
                                             &log,
                                         );
                                         eq_map.clear();
@@ -1184,6 +1204,7 @@ pub fn do_quantify<T: Read>(
                                 num_genes,
                                 &mut gene_eqc,
                                 with_unspliced,
+                                sa_model,
                                 &log,
                             );
                             if with_unspliced {
@@ -1527,6 +1548,7 @@ pub fn velo_quantify(
     _dump_eq: bool,
     _use_mtx: bool,
     _resolution: ResolutionStrategy,
+    mut _sa_model: SplicedAmbiguityModel,
     _small_thresh: usize,
     _filter_list: Option<&str>,
     _log: &slog::Logger,

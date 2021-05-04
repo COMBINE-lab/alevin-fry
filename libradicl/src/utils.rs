@@ -495,9 +495,7 @@ pub fn extract_counts(
                 if let (Some(g1), Some(g2)) = (labels.first(), labels.last()) {
                     if same_gene(*g1, *g2, true) {
                         let idx = ambig_offset + (*g1 >> 1) as usize;
-                        if idx > counts.len() {
-                            eprintln!("g1 = {}, g2 = {}", (*g1 >> 1), (*g2 >> 1));
-                        }
+                        //eprintln!("ambig count {} at {}!", *count, idx);
                         counts[idx] += *count as f32;
                     }
                 }

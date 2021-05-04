@@ -15,6 +15,7 @@ use crate as libradicl;
 use self::slog::{crit, warn};
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
+use arrayvec::ArrayVec;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -22,8 +23,8 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PugResolutionStatistics};
-// use crate::utils;
+use crate::schema::{EqMap, PugResolutionStatistics, SplicedAmbiguityModel};
+use crate::utils;
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
@@ -153,6 +154,145 @@ fn collapse_vertices(
 }
 
 #[inline]
+fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
+    umi_gene_count_vec: &mut [(u64, u32, u32)],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+) {
+    // sort the triplets
+    // first on umi
+    // then on gene_id
+    // then on count
+    quickersort::sort(umi_gene_count_vec);
+
+    // hold the current umi and gene we are examining
+    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
+    let first_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    let mut curr_gn = ArrayVec::<u32, 2>::new();
+    curr_gn.push(first_gn);
+
+    // hold the gene id having the max count for this umi
+    // and the maximum count value itself
+    // let mut max_count_gene = 0u32;
+    let mut max_count = 0u32;
+    // to aggregate the count should a (umi, gene) pair appear
+    // more than once
+    let mut count_aggr = 0u32;
+    // could this UMI be assigned toa best gene or not
+    // let mut unresolvable = false;
+    // to keep track of the current index in the vector
+    let mut cidx = 0usize;
+    // the vector will hold the equivalent set of best genes
+    let mut best_genes = Vec::<u32>::with_capacity(16);
+
+    // look over all sorted triplets
+    while cidx < umi_gene_count_vec.len() {
+        let (umi, gn, ct) = umi_gene_count_vec[cidx];
+
+        // if this umi is different than
+        // the one we are processing
+        // then decide what action to take
+        // on the previous umi
+        if umi != curr_umi {
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+
+            // the next umi and gene
+            curr_umi = umi;
+            curr_gn.clear();
+            curr_gn.push(gn);
+
+            // current gene is current best
+            best_genes.clear();
+            best_genes.push(gn);
+
+            // count aggr = max count = ct
+            count_aggr = ct;
+            max_count = ct;
+        } else {
+            // the umi was the same
+
+            let prev_gid = *curr_gn.last().expect("not empty");
+
+            // if the gene is the same (modulo splicing), add the counts
+            if utils::same_gene(gn, prev_gid, true) {
+                // if the gene is the same modulo splicing, but
+                // curr_gn != gn, then this is gene will be set as ambiguous,
+                // this is the transition from counting occurrences
+                // of this UMI from the spliced to unspliced version
+                // of the gene.
+                if prev_gid != gn {
+                    // mark the current gene as
+                    // splicing ambiguous by pushing
+                    // the unspliced id onto curr_gn
+                    curr_gn.push(gn);
+                }
+                count_aggr += ct;
+            } else {
+                // if the gene is different, then restart the count_aggr
+                // and set the current gene id
+                count_aggr = ct;
+                curr_gn.clear();
+                curr_gn.push(gn);
+            }
+
+            // we have the following cases, consider we are
+            // processing the records for gene g_i.  If
+            // * curr_gn = [g_i^s], then we have so far only observed spliced reads for g_i
+            // * curr_gn = [g_i^u], then we have only observed unspliced reads for g_i
+            //   (and there are no spliced reads)
+            // * curr_gn = [g_i^s, g_i^u], then we have observed both spliced and unspliced
+            //   reads for g_i, and this gene will be considered splicing ambiguous.
+
+            // the current best_genes is either empty or contains some
+            // set of genes g_i-k, ..., g_i-1, and now,
+            // g_i matches their count.  If g_i has only observed spliced reads,
+            // then we will add g_i^s to the list.  If g_i has observed
+            // only unspliced reads then we will add g_i^u, otherwise
+            // we will add both g_i^s and g_i^u.
+
+            // the current best_genes is either emtpy or contains some
+            // set of genes g_i-k, ..., g_i-1, and now,
+            // g_i *exceeds* their count.  If g_i has only observed spliced reads,
+            // then we will *clear* best_genes, and replace it with g_i^s.
+            // If g_i has only observed unspliced reads, then we will *clear*
+            // best_genes and replace it with g_i^u.  Othewise we will *clear*
+            // best_genes and replace it with [g_i^s, g_i^u];
+
+            // if the count aggregator exceeded the max
+            // then it is the new max, and this gene is
+            // the new max gene.  Having a distinct max
+            // also makes this UMI uniquely resolvable
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
+                    max_count = count_aggr;
+                    best_genes.clear();
+                    best_genes.extend(curr_gn.iter());
+                }
+                Ordering::Equal => {
+                    // if we have a tie for the max count
+                    // then the current UMI isn't uniquely-unresolvable
+                    // it will stay this way unless we see a bigger
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
+                    best_genes.extend(curr_gn.iter());
+                }
+                Ordering::Less => {
+                    // we do nothing
+                }
+            }
+        }
+
+        // if this was the last UMI in the list
+        if cidx == umi_gene_count_vec.len() - 1 {
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+        }
+        cidx += 1;
+    }
+}
+
+#[inline]
 fn resolve_num_molecules_crlike_from_vec(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -192,19 +332,11 @@ fn resolve_num_molecules_crlike_from_vec(
         if umi != curr_umi {
             // update the count of the equivalence class of genes
             // that gets this UMI
-
-            // sort & dedup redundant here
-            // quickersort::sort(&mut best_genes[..]);
-            // best_genes.dedup();
-
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
             curr_umi = umi;
             curr_gn = gn;
-
-            // the next umi will start as resolvable
-            // unresolvable = false;
 
             // current gene is current best
             // max_count_gene = gn;
@@ -219,12 +351,6 @@ fn resolve_num_molecules_crlike_from_vec(
 
             // if the gene is the same, add the counts
             if gn == curr_gn {
-                //utils::same_gene(gn, curr_gn, with_unspliced) {
-                // if we are considering spliced and unspliced
-                // and curr_gn != gn, then this is ambiguous
-                //if curr_gn != gn {
-                //    best_genes.push(gn);
-                //}
                 count_aggr += ct;
             } else {
                 // if the gene is different, then restart the count_aggr
@@ -239,10 +365,20 @@ fn resolve_num_molecules_crlike_from_vec(
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
-                    // max_count_gene = gn;
-                    // unresolvable = false;
-                    best_genes.clear();
-                    best_genes.push(gn);
+                    // we want to avoid the case that we are just
+                    // updating the count of the best gene above and
+                    // here we clear out the vector and populate it
+                    // with the same element again and again.  So
+                    // if the current best_genes vector holds just
+                    // gn, we do nothing.  Otherwise we clear it and
+                    // add gn.
+                    match &best_genes[..] {
+                        [x] if *x == gn => { /* do nothing here */ }
+                        _ => {
+                            best_genes.clear();
+                            best_genes.push(gn);
+                        }
+                    }
                 }
                 Ordering::Equal => {
                     // if we have a tie for the max count
@@ -250,7 +386,6 @@ fn resolve_num_molecules_crlike_from_vec(
                     // it will stay this way unless we see a bigger
                     // count for this UMI.  We add the current
                     // "tied" gene to the equivalence class.
-                    // unresolvable = true;
                     best_genes.push(gn);
                 }
                 Ordering::Less => {
@@ -261,11 +396,7 @@ fn resolve_num_molecules_crlike_from_vec(
 
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
-            // sort & dedup redundant here
-            // quickersort::sort(&mut best_genes[..]);
-            // best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-            //counts[max_count_gene as usize] += 1.0f32;
         }
         cidx += 1;
     }
@@ -277,6 +408,7 @@ pub(super) fn get_num_molecules_cell_ranger_like_small(
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     with_unspliced: bool,
+    sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) {
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
@@ -299,11 +431,21 @@ pub(super) fn get_num_molecules_cell_ranger_like_small(
             umi_gene_count_vec.push((umi, *g, 1));
         }
     }
-    resolve_num_molecules_crlike_from_vec(
-        &mut umi_gene_count_vec,
-        gene_eqclass_hash,
-        with_unspliced,
-    );
+    match sa_model {
+        SplicedAmbiguityModel::WinnerTakeAll => {
+            resolve_num_molecules_crlike_from_vec(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+                with_unspliced,
+            );
+        }
+        SplicedAmbiguityModel::PreferAmbiguity => {
+            resolve_num_molecules_crlike_from_vec_prefer_ambig(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+            );
+        }
+    }
 }
 
 pub(super) fn get_num_molecules_cell_ranger_like(
@@ -312,6 +454,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     with_unspliced: bool,
+    sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) {
     // TODO: better capacity
@@ -346,11 +489,21 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             }
         }
     }
-    resolve_num_molecules_crlike_from_vec(
-        &mut umi_gene_count_vec,
-        gene_eqclass_hash,
-        with_unspliced,
-    );
+    match sa_model {
+        SplicedAmbiguityModel::WinnerTakeAll => {
+            resolve_num_molecules_crlike_from_vec(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+                with_unspliced,
+            );
+        }
+        SplicedAmbiguityModel::PreferAmbiguity => {
+            resolve_num_molecules_crlike_from_vec_prefer_ambig(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+            );
+        }
+    }
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(

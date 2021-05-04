@@ -82,6 +82,24 @@ impl FromStr for ResolutionStrategy {
     }
 }
 
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum SplicedAmbiguityModel {
+    PreferAmbiguity,
+    WinnerTakeAll,
+}
+
+// Implement the trait
+impl FromStr for SplicedAmbiguityModel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "prefer-ambig" => Ok(SplicedAmbiguityModel::PreferAmbiguity),
+            "winner-take-all" => Ok(SplicedAmbiguityModel::WinnerTakeAll),
+            _ => Err("no match"),
+        }
+    }
+}
+
 // NOTE: this is _clearly_ redundant with the EqMap below.
 // we should re-factor so that EqMap makes use of this class
 // rather than replicates its members
