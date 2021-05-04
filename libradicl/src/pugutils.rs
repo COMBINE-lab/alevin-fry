@@ -167,27 +167,22 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
     let first_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    // The capacity of curr_gn is 2 as it will be used to hold the
+    // the spliced id of a gene, the unspliced id of a gene, or both
     let mut curr_gn = ArrayVec::<u32, 2>::new();
     curr_gn.push(first_gn);
 
     // hold the gene id having the max count for this umi
     // and the maximum count value itself
-    // let mut max_count_gene = 0u32;
     let mut max_count = 0u32;
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    // let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
     // the vector will hold the equivalent set of best genes
     let mut best_genes = Vec::<u32>::with_capacity(16);
 
     // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
+    for (cidx, &(umi, gn, ct)) in umi_gene_count_vec.iter().enumerate() {
         // if this umi is different than
         // the one we are processing
         // then decide what action to take
@@ -288,7 +283,6 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
         if cidx == umi_gene_count_vec.len() - 1 {
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
         }
-        cidx += 1;
     }
 }
 
@@ -314,17 +308,11 @@ fn resolve_num_molecules_crlike_from_vec(
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    // let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
     // the vector will hold the equivalent set of best genes
     let mut best_genes = Vec::<u32>::with_capacity(16);
 
     // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
+    for (cidx, &(umi, gn, ct)) in umi_gene_count_vec.iter().enumerate() {
         // if this umi is different than
         // the one we are processing
         // then decide what action to take
@@ -398,7 +386,6 @@ fn resolve_num_molecules_crlike_from_vec(
         if cidx == umi_gene_count_vec.len() - 1 {
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
         }
-        cidx += 1;
     }
 }
 
