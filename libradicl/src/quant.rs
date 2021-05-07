@@ -1450,15 +1450,15 @@ pub fn do_quantify<T: Read>(
     } else {
         // otherwise, we write the spliced names, the unspliced names, and then
         // the ambiguous names
-        for g in gene_names.iter().step_by(2) {
+        for g in gene_names.iter() {
             gn_writer.write_all(format!("{}\n", *g).as_bytes())?;
         }
         // unspliced
-        for g in gene_names.iter().skip(1).step_by(2) {
+        for g in gene_names.iter() {
             gn_writer.write_all(format!("{}-U\n", *g).as_bytes())?;
         }
         // ambiguous
-        for g in gene_names.iter().step_by(2) {
+        for g in gene_names.iter() {
             gn_writer.write_all(format!("{}-A\n", *g).as_bytes())?;
         }
     }
