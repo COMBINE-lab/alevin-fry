@@ -1507,6 +1507,7 @@ pub fn do_quantify<T: Read>(
         "num_quantified_cells" : num_cells,
         "num_genes" : num_rows,
         "dump_eq" : dump_eq,
+        "usa_mode" : with_unspliced,
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
