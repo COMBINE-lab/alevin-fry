@@ -333,6 +333,7 @@ struct EqcMap {
 fn write_eqc_counts(
     eqid_map_lock: &Arc<Mutex<EqcMap>>,
     num_genes: usize,
+    usa_mode: bool,
     output_path: &std::path::Path,
     log: &slog::Logger,
 ) -> bool {
@@ -342,7 +343,7 @@ fn write_eqc_counts(
 
     info!(
         log,
-        "Writing gene level equivalence class with {:?} classes",
+        "Writing gene-level equivalence class with {:?} classes",
         geqmap.global_eqc.len()
     );
 
@@ -386,15 +387,73 @@ fn write_eqc_counts(
     // each line describes a class in terms of
     // the tab-separated tokens
     // g_1 g_2 ... g_k eqid
-    for (gene_list, eqid) in geqmap.global_eqc.iter() {
-        for g in gene_list.iter() {
+
+    if usa_mode {
+        // if we are running in USA mode, then:
+        // spliced (even) IDs get divided by 2
+        // and odd IDs get divided by 2 and added to the
+        // unspliced offset.
+
+        // offset for unspliced gene ids
+        let unspliced_offset = (num_genes / 3) as u32;
+        // offset for ambiguous gene ids
+        let ambig_offset = (2 * unspliced_offset) as u32;
+        // to hold the gene labels as we write them.
+        let mut gl;
+
+        // if we are running the *standard* mode, then the gene_id
+        // mapping is unaltered
+        for (gene_list, eqid) in geqmap.global_eqc.iter() {
+            // strategy for peeking ahead as needed derived from
+            // https://sts10.github.io/2020/10/06/peeking-the-pivot.html
+            let mut peekable_arr = gene_list.iter().peekable();
+            // get the current gene label
+            while let Some(cg) = peekable_arr.next() {
+                // get the next gene label in the eq class
+                if let Some(ng) = peekable_arr.peek() {
+                    // if the gene label belongs to the same gene
+                    // then it must be splicing ambiguous (because exact
+                    // duplicate IDs can't occur in eq class labels).
+                    if same_gene(*cg, **ng, true) {
+                        gl = (cg >> 1) + ambig_offset;
+                        gn_eq_writer
+                            .write_all(format!("{}\t", gl).as_bytes())
+                            .expect("could not write to gene_eqclass.txt.gz");
+                        // we covered the next element here, so skip it in the
+                        // next iteration.
+                        peekable_arr.next();
+                        continue;
+                    }
+                }
+                // either the next element does *not* belong to the same
+                // gene, or there is no next element.  In either case, deal
+                // with this gene label individually.
+                if is_spliced(*cg) {
+                    gl = cg >> 1;
+                } else {
+                    gl = (cg >> 1) + unspliced_offset;
+                }
+                gn_eq_writer
+                    .write_all(format!("{}\t", gl).as_bytes())
+                    .expect("could not write to gene_eqclass.txt.gz")
+            }
             gn_eq_writer
-                .write_all(format!("{}\t", g).as_bytes())
+                .write_all(format!("{}\n", eqid).as_bytes())
                 .expect("could not write to gene_eqclass.txt.gz");
         }
-        gn_eq_writer
-            .write_all(format!("{}\n", eqid).as_bytes())
-            .expect("could not write to gene_eqclass.txt.gz");
+    } else {
+        // if we are running the *standard* mode, then the gene_id
+        // mapping is unaltered
+        for (gene_list, eqid) in geqmap.global_eqc.iter() {
+            for g in gene_list.iter() {
+                gn_eq_writer
+                    .write_all(format!("{}\t", g).as_bytes())
+                    .expect("could not write to gene_eqclass.txt.gz");
+            }
+            gn_eq_writer
+                .write_all(format!("{}\n", eqid).as_bytes())
+                .expect("could not write to gene_eqclass.txt.gz");
+        }
     }
     true
 }
@@ -766,11 +825,11 @@ pub fn do_quantify<T: Read>(
             if with_unspliced {
                 assert_eq!(
                     num_bootstraps, 0,
-                    "currently 3-column (spliced/unspliced) analysis cannot be used with bootstrapping"
+                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
                 );
                 assert_eq!(
                     resolution, ResolutionStrategy::CellRangerLike,
-                    "currently 3-column (spliced/unspliced) analysis can only be used with cr-like resolution"
+                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like resolution."
                 );
             } else {
                 // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
@@ -781,7 +840,7 @@ pub fn do_quantify<T: Read>(
                     _ => {
                         info!(
                             log,
-                            "When not operating in 3-column (spliced/unspliced) mode, the SplicedAmbiguityModel will be ignored"
+                            "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
                         );
                         sa_model = SplicedAmbiguityModel::WinnerTakeAll;
                     }
@@ -1499,7 +1558,13 @@ pub fn do_quantify<T: Read>(
     );
 
     if dump_eq {
-        write_eqc_counts(&eqid_map_lock, num_genes, &output_matrix_path, &log);
+        write_eqc_counts(
+            &eqid_map_lock,
+            num_rows,
+            with_unspliced,
+            &output_matrix_path,
+            &log,
+        );
     }
 
     let meta_info = json!({
@@ -1521,7 +1586,7 @@ pub fn do_quantify<T: Read>(
     // k3yavi: Todo delete after api stability
     // creating a dummy cmd_info.json for R compatibility
     let cmd_info = json!({
-         "salmon_version": "1.3.0",
+         "salmon_version": "1.4.0",
          "auxDir": "aux_info"
     });
     let mut cmd_info_file = File::create(output_path.join("cmd_info.json"))
