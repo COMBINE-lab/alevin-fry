@@ -20,7 +20,7 @@ use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
-use libradicl::schema::ResolutionStrategy;
+use libradicl::schema::{ResolutionStrategy, SplicedAmbiguityModel};
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
@@ -128,6 +128,7 @@ fn main() {
     .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
     .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_collate_threads))
+    .arg(Arg::from("-c, --compress 'compress the output collated RAD file'").takes_value(false).required(false))
     .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
          .default_value("30000000"));
     //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
@@ -146,9 +147,14 @@ fn main() {
     .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
+    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
         .case_insensitive(true))
+    .arg(Arg::from("--sa-model 'preferred model of splicing ambiguity'")
+        .possible_values(&["prefer-ambig", "winner-take-all"])
+        .default_value("winner-take-all")
+        .setting(ArgSettings::Hidden))
     .arg(Arg::from("--small-thresh 'cells with fewer than these many reads will be resolved using a custom approach'").default_value("10").setting(ArgSettings::Hidden));
 
     let infer_app = App::new("infer")
@@ -160,6 +166,7 @@ fn main() {
     .arg(Arg::from("-e, --eq-labels=<eq-labels> 'file containing the gene labels of the equivalence classes'").takes_value(true).required(true))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'").takes_value(true).required(true))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
     /*
@@ -361,9 +368,18 @@ fn main() {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
+        let compress_out = t.is_present("compress");
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(input_dir, rad_dir, num_threads, max_records, &VERSION, &log)
-            .expect("could not collate.");
+        libradicl::collate::collate(
+            input_dir,
+            rad_dir,
+            num_threads,
+            max_records,
+            compress_out,
+            &VERSION,
+            &log,
+        )
+        .expect("could not collate.");
     }
 
     // perform quantification of a collated rad file.
@@ -378,7 +394,9 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
+        let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
+        let filter_list = t.value_of("quant-subset");
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
@@ -426,7 +444,9 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    sa_model,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -462,7 +482,9 @@ fn main() {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    sa_model,
                     small_thresh,
+                    filter_list,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -502,6 +524,7 @@ fn main() {
         let output_dir = t.value_of_t("output-dir").unwrap();
         let count_mat = t.value_of_t("count-mat").unwrap();
         let eq_label_file = t.value_of_t("eq-labels").unwrap();
+        let filter_list = t.value_of("quant-subset");
         //let bc_file = t.value_of_t("barcodes").unwrap();
 
         libradicl::infer::infer(
@@ -513,6 +536,7 @@ fn main() {
             //bc_file,
             use_mtx,
             num_threads,
+            filter_list,
             output_dir,
             &log,
         )

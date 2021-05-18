@@ -27,10 +27,12 @@ use num::cast::AsPrimitive;
 use rust_htslib::bam::HeaderView;
 use scroll::Pread;
 use serde::{Deserialize, Serialize};
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::io::{BufWriter, Write};
+use std::mem;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
@@ -468,7 +470,7 @@ pub fn collect_records<T: Read>(
 }
 */
 
-fn read_into_u64<T: Read>(reader: &mut BufReader<T>, rt: &RadIntId) -> u64 {
+fn read_into_u64<T: Read>(reader: &mut T, rt: &RadIntId) -> u64 {
     let mut rbuf = [0u8; 8];
     let v: u64;
     match rt {
@@ -497,7 +499,7 @@ impl ReadRecord {
         self.refs.is_empty()
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RadIntId, umit: &RadIntId) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut T, bct: &RadIntId, umit: &RadIntId) -> Self {
         let mut rbuf = [0u8; 255];
 
         reader.read_exact(&mut rbuf[0..4]).unwrap();
@@ -526,7 +528,7 @@ impl ReadRecord {
     }
 
     pub fn from_bytes_record_header<T: Read>(
-        reader: &mut BufReader<T>,
+        reader: &mut T,
         bct: &RadIntId,
         umit: &RadIntId,
     ) -> (u64, u64, u32) {
@@ -539,7 +541,7 @@ impl ReadRecord {
     }
 
     pub fn from_bytes_with_header_keep_ori<T: Read>(
-        reader: &mut BufReader<T>,
+        reader: &mut T,
         bc: u64,
         umi: u64,
         na: u32,
@@ -575,7 +577,7 @@ impl ReadRecord {
     }
 
     pub fn from_bytes_keep_ori<T: Read>(
-        reader: &mut BufReader<T>,
+        reader: &mut T,
         bct: &RadIntId,
         umit: &RadIntId,
         expected_ori: &Strand,
@@ -627,12 +629,13 @@ pub fn dump_chunk(v: &mut CorrectedCbChunk, owriter: &Mutex<BufWriter<File>>) {
     owriter.lock().unwrap().write_all(v.data.get_ref()).unwrap();
 }
 
-pub fn collate_temporary_bucket_twopass<T: Read + Seek>(
+pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
     umit: &RadIntId,
     nrec: u32,
-    owriter: &Mutex<BufWriter<File>>,
+    owriter: &Mutex<U>,
+    compress: bool,
     cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
 ) -> usize {
     let mut tbuf = [0u8; 65536];
@@ -734,6 +737,22 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek>(
         }
     }
 
+    output_buffer.set_position(0);
+
+    if compress {
+        // compress the contents of output_buffer to compressed_output
+        let mut compressed_output =
+            snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(total_bytes)));
+        compressed_output
+            .write_all(output_buffer.get_ref())
+            .expect("could not compress the output chunk.");
+
+        output_buffer = compressed_output
+            .into_inner()
+            .expect("couldn't unwrap the FrameEncoder.");
+        output_buffer.set_position(0);
+    }
+
     owriter
         .lock()
         .unwrap()
@@ -744,7 +763,7 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek>(
 }
 
 pub fn collate_temporary_bucket<T: Read>(
-    reader: &mut BufReader<T>,
+    reader: &mut T,
     bct: &RadIntId,
     umit: &RadIntId,
     _nchunks: u32,
@@ -785,7 +804,7 @@ pub fn collate_temporary_bucket<T: Read>(
 }
 
 pub fn process_corrected_cb_chunk<T: Read>(
-    reader: &mut BufReader<T>,
+    reader: &mut T,
     bct: &RadIntId,
     umit: &RadIntId,
     correct_map: &HashMap<u64, u64>,
@@ -1055,7 +1074,7 @@ pub(crate) fn as_u8_slice(v: &[u32]) -> &[u8] {
 //}
 
 impl Chunk {
-    pub fn read_header<T: Read>(reader: &mut BufReader<T>) -> (u32, u32) {
+    pub fn read_header<T: Read>(reader: &mut T) -> (u32, u32) {
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf).unwrap();
@@ -1064,7 +1083,7 @@ impl Chunk {
         (nbytes, nrec)
     }
 
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>, bct: &RadIntId, umit: &RadIntId) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut T, bct: &RadIntId, umit: &RadIntId) -> Self {
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf).unwrap();
@@ -1082,10 +1101,51 @@ impl Chunk {
 
         c
     }
+
+    /// peeks to the first record in the buffer `buf`, and returns
+    /// the barcode and umi associated with this record.  It is assumed
+    /// that there is at least one record present in the buffer.
+    pub fn peek_record(buf: &[u8], bct: &RadIntId, umit: &RadIntId) -> (u64, u64) {
+        let na_size = mem::size_of::<u32>();
+        let bc_size = bct.bytes_for_type();
+
+        let _na = buf.pread::<u32>(0).unwrap();
+        let bc;
+        match bct {
+            RadIntId::U8 => {
+                bc = buf.pread::<u8>(na_size).unwrap() as u64;
+            }
+            RadIntId::U16 => {
+                bc = buf.pread::<u16>(na_size).unwrap() as u64;
+            }
+            RadIntId::U32 => {
+                bc = buf.pread::<u32>(na_size).unwrap() as u64;
+            }
+            RadIntId::U64 => {
+                bc = buf.pread::<u64>(na_size).unwrap();
+            }
+        }
+        let umi;
+        match umit {
+            RadIntId::U8 => {
+                umi = buf.pread::<u8>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U16 => {
+                umi = buf.pread::<u16>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U32 => {
+                umi = buf.pread::<u32>(na_size + bc_size).unwrap() as u64;
+            }
+            RadIntId::U64 => {
+                umi = buf.pread::<u64>(na_size + bc_size).unwrap();
+            }
+        }
+        (bc, umi)
+    }
 }
 
 impl FileTags {
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> Self {
+    pub fn from_bytes<T: Read>(reader: &mut T) -> Self {
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf).unwrap();
 
@@ -1097,7 +1157,7 @@ impl FileTags {
 }
 
 impl TagDesc {
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> TagDesc {
+    pub fn from_bytes<T: Read>(reader: &mut T) -> TagDesc {
         // space for the string length (1 byte)
         // the longest string possible (255 char)
         // and the typeid
@@ -1115,7 +1175,7 @@ impl TagDesc {
 }
 
 impl TagSection {
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> TagSection {
+    pub fn from_bytes<T: Read>(reader: &mut T) -> TagSection {
         let mut buf = [0u8; 2];
         reader.read_exact(&mut buf).unwrap();
         let num_tags = buf.pread::<u16>(0).unwrap() as usize;
@@ -1133,7 +1193,7 @@ impl TagSection {
 }
 
 impl RadHeader {
-    pub fn from_bytes<T: Read>(reader: &mut BufReader<T>) -> RadHeader {
+    pub fn from_bytes<T: Read>(reader: &mut T) -> RadHeader {
         let mut rh = RadHeader {
             is_paired: 0,
             ref_count: 0,
