@@ -682,6 +682,7 @@ pub fn quantify(
     sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -719,6 +720,7 @@ pub fn quantify(
             sa_model,
             small_thresh,
             filter_list,
+            cmdline,
             &log,
         )
     } else {
@@ -745,6 +747,7 @@ pub fn quantify(
             sa_model,
             small_thresh,
             filter_list,
+            cmdline,
             &log,
         )
     }
@@ -768,6 +771,7 @@ pub fn do_quantify<T: Read>(
     mut sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -1568,6 +1572,7 @@ pub fn do_quantify<T: Read>(
     }
 
     let meta_info = json!({
+        "cmd" : cmdline,
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : num_cells,
         "num_genes" : num_rows,
@@ -1617,6 +1622,7 @@ pub fn velo_quantify(
     mut _sa_model: SplicedAmbiguityModel,
     _small_thresh: usize,
     _filter_list: Option<&str>,
+    _cmdline: &str,
     _log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unimplemented!("not implemented on this branch yet");

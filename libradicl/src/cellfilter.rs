@@ -229,6 +229,7 @@ fn process_unfiltered(
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> u64 {
     let parent = std::path::Path::new(&output_dir);
@@ -414,7 +415,8 @@ fn process_unfiltered(
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "version_str" : version,
-        "max_ambig_record" : max_ambiguity_read,
+        "max-ambig-record" : max_ambiguity_read,
+        "cmd" : cmdline,
         "permit-list-type" : "unfiltered"
     });
 
@@ -446,6 +448,7 @@ fn process_filtered(
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> u64 {
     let valid_bc: Vec<u64>;
@@ -558,7 +561,8 @@ fn process_filtered(
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "version_str" : version,
-        "max_ambig_record" : max_ambiguity_read,
+        "max-ambig-record" : max_ambiguity_read,
+        "cmd" : cmdline,
         "permit-list-type" : "filtered"
     });
 
@@ -585,6 +589,7 @@ fn process_filtered(
 /// (i.e. "permitted") barcode values, as well as
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_permit_list(
     rad_dir: String,
     output_dir: String,
@@ -592,6 +597,7 @@ pub fn generate_permit_list(
     expected_ori: Strand,
     version: &str,
     velo_mode: bool,
+    cmdline: &str,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
@@ -723,6 +729,7 @@ pub fn generate_permit_list(
                     &version,
                     max_ambiguity_read,
                     velo_mode,
+                    cmdline,
                     &log,
                 ))
             } else {
@@ -751,6 +758,7 @@ pub fn generate_permit_list(
                 &version,
                 max_ambiguity_read,
                 velo_mode,
+                cmdline,
                 &log,
             ))
         }

@@ -314,6 +314,7 @@ fn main() {
             expected_ori,
             VERSION,
             velo_mode,
+            &cmdline,
             &log,
         )
         .unwrap();
@@ -356,6 +357,7 @@ fn main() {
             num_threads,
             max_records,
             compress_out,
+            &cmdline,
             &VERSION,
             &log,
         )
@@ -427,6 +429,7 @@ fn main() {
                     sa_model,
                     small_thresh,
                     filter_list,
+                    &cmdline,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -465,6 +468,7 @@ fn main() {
                     sa_model,
                     small_thresh,
                     filter_list,
+                    &cmdline,
                     &log,
                 ) {
                     // if we're all good; then great!

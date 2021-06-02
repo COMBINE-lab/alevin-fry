@@ -917,7 +917,7 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     let nrec = buf.pread::<u32>(4).unwrap();
 
     let bc_bytes = bct.bytes_for_type();
-    let umi_bytes = bct.bytes_for_type();
+    let umi_bytes = umit.bytes_for_type();
     let na_bytes = std::mem::size_of::<u32>();
     let target_id_bytes = std::mem::size_of::<u32>();
 
