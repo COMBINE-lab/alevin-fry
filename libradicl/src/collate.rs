@@ -464,7 +464,7 @@ pub fn collate_with_temp(
     let num_buckets = temp_buckets.len();
     let num_threads = n_workers as usize;
     let loc_buffer_size =
-        (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(131072_usize);
+        (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(655360_usize); //131072_usize);
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {

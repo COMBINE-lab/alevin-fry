@@ -638,7 +638,7 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
     compress: bool,
     cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
 ) -> usize {
-    let mut tbuf = [0u8; 65536];
+    let mut tbuf = vec![0u8; 65536];
     let mut total_bytes = 0usize;
     let header_size = 2 * std::mem::size_of::<u32>() as u64;
     let size_of_u32 = std::mem::size_of::<u32>();
@@ -665,6 +665,10 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
 
         // read the alignment records from the input file
         let na = tup.2 as usize;
+        let req_size = size_of_u32 * na;
+        if tbuf.len() < req_size {
+            tbuf.resize(req_size, 0);
+        }
         reader.read_exact(&mut tbuf[0..(size_of_u32 * na)]).unwrap();
         // compute the total number of bytes this record requires
         let nbytes = calc_record_bytes(na);
@@ -977,9 +981,21 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
             // in this branch, we don't have access to a correct barcode for
             // what we observed, so we need to discard the remaining part of
             // the record.
+            let req_len = target_id_bytes * (tup.2 as usize);
+            let do_resize = req_len > tbuf.len();
+
+            if do_resize {
+                tbuf.resize(req_len, 0);
+            }
+
             reader
                 .read_exact(&mut tbuf[0..(target_id_bytes * (tup.2 as usize))])
                 .unwrap();
+
+            if do_resize {
+                tbuf.resize(4096, 0);
+                tbuf.shrink_to_fit();
+            }
         }
     }
 }
@@ -1259,6 +1275,7 @@ impl RadHeader {
 pub fn update_barcode_hist_unfiltered(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
+    max_ambiguity_read: &mut usize,
     chunk: &Chunk,
     expected_ori: &Strand,
 ) -> usize {
@@ -1267,6 +1284,7 @@ pub fn update_barcode_hist_unfiltered(
         Strand::Unknown => {
             for r in &chunk.reads {
                 num_strand_compat_reads += 1;
+                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                 // lookup the barcode in the map of unfiltered known
                 // barcodes
                 match hist.get_mut(&r.bc) {
@@ -1283,6 +1301,7 @@ pub fn update_barcode_hist_unfiltered(
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| x) {
                     num_strand_compat_reads += 1;
+                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                     // lookup the barcode in the map of unfiltered known
                     // barcodes
                     match hist.get_mut(&r.bc) {
@@ -1300,6 +1319,7 @@ pub fn update_barcode_hist_unfiltered(
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| !x) {
                     num_strand_compat_reads += 1;
+                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                     // lookup the barcode in the map of unfiltered known
                     // barcodes
                     match hist.get_mut(&r.bc) {
@@ -1319,18 +1339,21 @@ pub fn update_barcode_hist_unfiltered(
 
 pub fn update_barcode_hist(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
+    max_ambiguity_read: &mut usize,
     chunk: &Chunk,
     expected_ori: &Strand,
 ) {
     match expected_ori {
         Strand::Unknown => {
             for r in &chunk.reads {
+                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                 *hist.entry(r.bc).or_insert(0) += 1;
             }
         }
         Strand::Forward => {
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| x) {
+                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                     *hist.entry(r.bc).or_insert(0) += 1;
                 }
             }
@@ -1338,6 +1361,7 @@ pub fn update_barcode_hist(
         Strand::Reverse => {
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| !x) {
+                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
                     *hist.entry(r.bc).or_insert(0) += 1;
                 }
             }
