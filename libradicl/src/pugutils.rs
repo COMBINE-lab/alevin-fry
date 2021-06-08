@@ -1,26 +1,32 @@
-// Copyright 2020 Rob Patro, Avi Srivastava. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ *
+ * This file is part of alevin-fry
+ * (see https://github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 
-extern crate fasthash;
 extern crate petgraph;
 extern crate quickersort;
 extern crate slog;
+use crate as libradicl;
 
 use self::slog::{crit, warn};
-use fasthash::sea::Hash64;
-use fasthash::RandomState;
+#[allow(unused_imports)]
+use ahash::{AHasher, RandomState};
+use arrayvec::ArrayVec;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::iter::FromIterator;
 
 use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PUGResolutionStatistics};
+use crate::schema::{EqMap, PugResolutionStatistics, SplicedAmbiguityModel};
+use crate::utils;
 
-type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
+type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
 /// Extract the weakly connected components from the directed graph
 /// G.  Interestingly, `petgraph` has a builtin algorithm for returning
@@ -31,7 +37,7 @@ type CCMap = HashMap<u32, Vec<u32>, fasthash::RandomState<Hash64>>;
 /// find data structure.  This returns a HashMap, mapping each
 /// connected component id (a u32) to the corresponding list of vertex
 /// ids (also u32s) contained in the connected component.
-pub fn weakly_connected_components<G>(g: G) -> CCMap
+pub fn weakly_connected_components<G>(g: G) -> CcMap
 where
     G: petgraph::visit::NodeCompactIndexable + petgraph::visit::IntoEdgeReferences,
 {
@@ -43,8 +49,8 @@ where
         vertex_sets.union(g.to_index(a), g.to_index(b));
     }
     let labels = vertex_sets.into_labeling();
-    fn get_map() -> CCMap {
-        let s = RandomState::<Hash64>::new();
+    fn get_map() -> CcMap {
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         HashMap::with_hasher(s)
     }
 
@@ -68,9 +74,9 @@ fn collapse_vertices(
     eqmap: &EqMap,
 ) -> (Vec<u32>, u32) {
     // get a new set to hold vertices
-    type VertexSet = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type VertexSet = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> VertexSet {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         VertexSet::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -147,52 +153,150 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
-pub(super) fn get_num_molecules_cell_ranger_like(
-    eq_map: &EqMap,
-    tid_to_gid: &[u32],
-    _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
-    _log: &slog::Logger,
-) /*-> HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>*/
-{
-    /*
-    let s = fasthash::RandomState::<Hash64>::new();
-    let mut gene_eqclass_hash: HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>> =
-        HashMap::with_hasher(s);
-    */
-    // TODO: better capacity
-    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
-
-    // for each equivalence clss
-    for eqinfo in &eq_map.eqc_info {
-        // get the (umi, count) pairs
-        let umis = &eqinfo.umis;
-        let eqid = &eqinfo.eq_num;
-
-        // project the transcript ids to gene ids
-        let mut gset: Vec<u32> = eq_map
-            .refs_for_eqc(*eqid)
-            .iter()
-            .map(|tid| tid_to_gid[*tid as usize])
-            .collect();
-        // and make the gene ids unique
-        quickersort::sort(&mut gset[..]);
-        gset.dedup();
-
-        // add every (umi, count), gene pair as a triplet
-        // of (umi, gene_id, count) to the output vector
-        for umi_ct in umis {
-            for g in &gset {
-                umi_gene_count_vec.push((umi_ct.0, *g, umi_ct.1));
-            }
-        }
-    }
-
+#[inline]
+fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
+    umi_gene_count_vec: &mut [(u64, u32, u32)],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+) {
     // sort the triplets
     // first on umi
     // then on gene_id
     // then on count
-    quickersort::sort(&mut umi_gene_count_vec[..]);
+    quickersort::sort(umi_gene_count_vec);
+
+    // hold the current umi and gene we are examining
+    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
+    let first_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
+    // The capacity of curr_gn is 2 as it will be used to hold the
+    // the spliced id of a gene, the unspliced id of a gene, or both
+    let mut curr_gn = ArrayVec::<u32, 2>::new();
+    curr_gn.push(first_gn);
+
+    // hold the gene id having the max count for this umi
+    // and the maximum count value itself
+    let mut max_count = 0u32;
+    // to aggregate the count should a (umi, gene) pair appear
+    // more than once
+    let mut count_aggr = 0u32;
+    // the vector will hold the equivalent set of best genes
+    let mut best_genes = Vec::<u32>::with_capacity(16);
+
+    // look over all sorted triplets
+    for (cidx, &(umi, gn, ct)) in umi_gene_count_vec.iter().enumerate() {
+        // if this umi is different than
+        // the one we are processing
+        // then decide what action to take
+        // on the previous umi
+        if umi != curr_umi {
+            // update the count of the equivalence class of genes
+            // that gets this UMI
+
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+
+            // the next umi and gene
+            curr_umi = umi;
+            curr_gn.clear();
+            curr_gn.push(gn);
+
+            // current gene is current best
+            best_genes.clear();
+            best_genes.push(gn);
+
+            // count aggr = max count = ct
+            count_aggr = ct;
+            max_count = ct;
+        } else {
+            // the umi was the same
+
+            let prev_gid = *curr_gn.last().expect("not empty");
+
+            // if the gene is the same (modulo splicing), add the counts
+            if utils::same_gene(gn, prev_gid, true) {
+                // if the gene is the same modulo splicing, but
+                // curr_gn != gn, then this is gene will be set as ambiguous,
+                // this is the transition from counting occurrences
+                // of this UMI from the spliced to unspliced version
+                // of the gene.
+                if prev_gid != gn {
+                    // mark the current gene as
+                    // splicing ambiguous by pushing
+                    // the unspliced id onto curr_gn
+                    curr_gn.push(gn);
+                }
+                count_aggr += ct;
+            } else {
+                // if the gene is different, then restart the count_aggr
+                // and set the current gene id
+                count_aggr = ct;
+                curr_gn.clear();
+                curr_gn.push(gn);
+            }
+
+            // we have the following cases, consider we are
+            // processing the records for gene g_i.  If
+            // * curr_gn = [g_i^s], then we have so far only observed spliced reads for g_i
+            // * curr_gn = [g_i^u], then we have only observed unspliced reads for g_i
+            //   (and there are no spliced reads)
+            // * curr_gn = [g_i^s, g_i^u], then we have observed both spliced and unspliced
+            //   reads for g_i, and this gene will be considered splicing ambiguous.
+
+            // the current best_genes is either empty or contains some
+            // set of genes g_i-k, ..., g_i-1, and now,
+            // g_i matches their count.  If g_i has only observed spliced reads,
+            // then we will add g_i^s to the list.  If g_i has observed
+            // only unspliced reads then we will add g_i^u, otherwise
+            // we will add both g_i^s and g_i^u.
+
+            // the current best_genes is either emtpy or contains some
+            // set of genes g_i-k, ..., g_i-1, and now,
+            // g_i *exceeds* their count.  If g_i has only observed spliced reads,
+            // then we will *clear* best_genes, and replace it with g_i^s.
+            // If g_i has only observed unspliced reads, then we will *clear*
+            // best_genes and replace it with g_i^u.  Othewise we will *clear*
+            // best_genes and replace it with [g_i^s, g_i^u];
+
+            // if the count aggregator exceeded the max
+            // then it is the new max, and this gene is
+            // the new max gene.  Having a distinct max
+            // also makes this UMI uniquely resolvable
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
+                    max_count = count_aggr;
+                    best_genes.clear();
+                    best_genes.extend(curr_gn.iter());
+                }
+                Ordering::Equal => {
+                    // if we have a tie for the max count
+                    // then the current UMI isn't uniquely-unresolvable
+                    // it will stay this way unless we see a bigger
+                    // count for this UMI.  We add the current
+                    // "tied" gene to the equivalence class.
+                    best_genes.extend(curr_gn.iter());
+                }
+                Ordering::Less => {
+                    // we do nothing
+                }
+            }
+        }
+
+        // if this was the last UMI in the list
+        if cidx == umi_gene_count_vec.len() - 1 {
+            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+        }
+    }
+}
+
+#[inline]
+fn resolve_num_molecules_crlike_from_vec(
+    umi_gene_count_vec: &mut [(u64, u32, u32)],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    _with_unspliced: bool,
+) {
+    // sort the triplets
+    // first on umi
+    // then on gene_id
+    // then on count
+    quickersort::sort(umi_gene_count_vec);
 
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
@@ -204,39 +308,23 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     // to aggregate the count should a (umi, gene) pair appear
     // more than once
     let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    // let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
     // the vector will hold the equivalent set of best genes
     let mut best_genes = Vec::<u32>::with_capacity(16);
 
     // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
+    for (cidx, &(umi, gn, ct)) in umi_gene_count_vec.iter().enumerate() {
         // if this umi is different than
         // the one we are processing
         // then decide what action to take
         // on the previous umi
         if umi != curr_umi {
-            // if previous was resolvable, add it to the appropriate gene
-            //if !unresolvable {
-            //    counts[max_count_gene as usize] += 1.0f32;
-            //}
-
             // update the count of the equivalence class of genes
             // that gets this UMI
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
 
             // the next umi and gene
             curr_umi = umi;
             curr_gn = gn;
-
-            // the next umi will start as resolvable
-            // unresolvable = false;
 
             // current gene is current best
             // max_count_gene = gn;
@@ -265,10 +353,20 @@ pub(super) fn get_num_molecules_cell_ranger_like(
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
-                    // max_count_gene = gn;
-                    // unresolvable = false;
-                    best_genes.clear();
-                    best_genes.push(gn);
+                    // we want to avoid the case that we are just
+                    // updating the count of the best gene above and
+                    // here we clear out the vector and populate it
+                    // with the same element again and again.  So
+                    // if the current best_genes vector holds just
+                    // gn, we do nothing.  Otherwise we clear it and
+                    // add gn.
+                    match &best_genes[..] {
+                        [x] if *x == gn => { /* do nothing here */ }
+                        _ => {
+                            best_genes.clear();
+                            best_genes.push(gn);
+                        }
+                    }
                 }
                 Ordering::Equal => {
                     // if we have a tie for the max count
@@ -276,7 +374,6 @@ pub(super) fn get_num_molecules_cell_ranger_like(
                     // it will stay this way unless we see a bigger
                     // count for this UMI.  We add the current
                     // "tied" gene to the equivalence class.
-                    // unresolvable = true;
                     best_genes.push(gn);
                 }
                 Ordering::Less => {
@@ -287,17 +384,113 @@ pub(super) fn get_num_molecules_cell_ranger_like(
 
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
-            //&& !unresolvable {
-            quickersort::sort(&mut best_genes[..]);
-            //best_genes.dedup();
             *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
-            //counts[max_count_gene as usize] += 1.0f32;
         }
-        cidx += 1;
     }
+}
 
-    //counts
-    //gene_eqclass_hash
+pub(super) fn get_num_molecules_cell_ranger_like_small(
+    cell_chunk: &mut libradicl::Chunk,
+    tid_to_gid: &[u32],
+    _num_genes: usize,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    with_unspliced: bool,
+    sa_model: SplicedAmbiguityModel,
+    _log: &slog::Logger,
+) {
+    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
+
+    // for each record
+    for rec in &cell_chunk.reads {
+        // get the umi
+        let umi = rec.umi;
+
+        // project the transcript ids to gene ids
+        let mut gset: Vec<u32> = rec
+            .refs
+            .iter()
+            .map(|tid| tid_to_gid[*tid as usize])
+            .collect();
+        // and make the gene ids unique
+        quickersort::sort(&mut gset[..]);
+        gset.dedup();
+        for g in &gset {
+            umi_gene_count_vec.push((umi, *g, 1));
+        }
+    }
+    match sa_model {
+        SplicedAmbiguityModel::WinnerTakeAll => {
+            resolve_num_molecules_crlike_from_vec(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+                with_unspliced,
+            );
+        }
+        SplicedAmbiguityModel::PreferAmbiguity => {
+            resolve_num_molecules_crlike_from_vec_prefer_ambig(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+            );
+        }
+    }
+}
+
+pub(super) fn get_num_molecules_cell_ranger_like(
+    eq_map: &EqMap,
+    tid_to_gid: &[u32],
+    _num_genes: usize,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    with_unspliced: bool,
+    sa_model: SplicedAmbiguityModel,
+    _log: &slog::Logger,
+) {
+    // TODO: better capacity
+    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
+
+    // for each equivalence class
+    for eqinfo in &eq_map.eqc_info {
+        // get the (umi, count) pairs
+        let umis = &eqinfo.umis;
+        let eqid = &eqinfo.eq_num;
+
+        // project the transcript ids to gene ids
+        let mut gset: Vec<u32> = eq_map
+            .refs_for_eqc(*eqid)
+            .iter()
+            .map(|tid| tid_to_gid[*tid as usize])
+            .collect();
+        // and make the gene ids unique,
+        // note, if we have both spliced and
+        // unspliced gene ids, then they will
+        // necessarily be adjacent here, since
+        // they are always asigned adjacent ids
+        // with spliced being even and unspliced odd.
+        quickersort::sort(&mut gset[..]);
+        gset.dedup();
+
+        // add every (umi, count), gene pair as a triplet
+        // of (umi, gene_id, count) to the output vector
+        for umi_ct in umis {
+            for g in &gset {
+                umi_gene_count_vec.push((umi_ct.0, *g, umi_ct.1));
+            }
+        }
+    }
+    match sa_model {
+        SplicedAmbiguityModel::WinnerTakeAll => {
+            resolve_num_molecules_crlike_from_vec(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+                with_unspliced,
+            );
+        }
+        SplicedAmbiguityModel::PreferAmbiguity => {
+            resolve_num_molecules_crlike_from_vec_prefer_ambig(
+                &mut umi_gene_count_vec,
+                gene_eqclass_hash,
+            );
+        }
+    }
 }
 
 pub(super) fn get_num_molecules_trivial_discard_all_ambig(
@@ -307,12 +500,9 @@ pub(super) fn get_num_molecules_trivial_discard_all_ambig(
     _log: &slog::Logger,
 ) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
-    let s = RandomState::<Hash64>::new();
-    let mut gene_map: std::collections::HashMap<
-        u32,
-        Vec<u64>,
-        fasthash::RandomState<fasthash::sea::Hash64>,
-    > = HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_map: std::collections::HashMap<u32, Vec<u64>, ahash::RandomState> =
+        HashMap::with_hasher(s);
 
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
@@ -384,7 +574,8 @@ fn get_num_molecules_large_component(
     // equivalence class id in the current subgraph
     // to the set of (UMI, frequency) pairs contained
     // in the subgraph
-    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>>::new();
+    let ts = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(ts);
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
@@ -523,14 +714,14 @@ pub(super) fn get_num_molecules(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, fasthash::RandomState<Hash64>>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     log: &slog::Logger,
-) -> PUGResolutionStatistics
+) -> PugResolutionStatistics
 //,)
 {
-    type U32Set = HashSet<u32, fasthash::RandomState<Hash64>>;
+    type U32Set = HashSet<u32, ahash::RandomState>;
     fn get_set(cap: u32) -> U32Set {
-        let s = RandomState::<Hash64>::new();
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         U32Set::with_capacity_and_hasher(cap as usize, s)
     }
 
@@ -562,7 +753,7 @@ pub(super) fn get_num_molecules(
     // the transcripts to their corresponding gene ids.
     //let mut global_txps : Vec<u32>;
     let mut global_txps = get_set(16);
-    let mut pug_stats = PUGResolutionStatistics {
+    let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
         ambiguous_mccs: 0u64,
@@ -605,11 +796,12 @@ pub(super) fn get_num_molecules(
 
             // uncovered_vertices will hold the set of vertices that are
             // *not yet* covered.
-            let mut uncovered_vertices = HashSet::<u32>::from_iter(comp_verts.iter().cloned());
+            let mut uncovered_vertices = comp_verts.iter().cloned().collect::<HashSet<u32>>();
 
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
             while !uncovered_vertices.is_empty() {
+                let num_remaining = uncovered_vertices.len();
                 // will hold vertices in the best mcc
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
@@ -625,11 +817,18 @@ pub(super) fn get_num_molecules(
                     let (new_mcc, covering_txp) =
                         collapse_vertices(*v, &uncovered_vertices, g, eqmap);
 
+                    let mcc_len = new_mcc.len();
                     // if the new mcc is better than the current best, then
                     // it becomes the new best
-                    if best_mcc.len() < new_mcc.len() {
+                    if best_mcc.len() < mcc_len {
                         best_mcc = new_mcc;
                         best_covering_txp = covering_txp;
+                    }
+                    // we can't do better than covering all
+                    // remaining uncovered vertices.  So, if we
+                    // accomplish that, then quit here.
+                    if mcc_len == num_remaining {
+                        break;
                     }
                 }
 

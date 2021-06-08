@@ -10,7 +10,7 @@ What is alevin-fry?
 ===================
 
 Alevin-fry is a program exposing a suite of tools for single-cell sequencing analysis.
-It makes use of the selective-alignment and barcode processing framework of  
+It makes use of the selective-alignment and tag processing framework of  
 `alevin <https://github.com/COMBINE-lab/salmon/>`_.
 
 
@@ -20,9 +20,7 @@ It makes use of the selective-alignment and barcode processing framework of
 
    building
    getting_started
-   generate_permit_list  
-   collate
-   quant
+   commands
    LICENSE.rst
 
 Indices and tables
