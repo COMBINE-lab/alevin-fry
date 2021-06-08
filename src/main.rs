@@ -10,6 +10,7 @@
 extern crate bio_types;
 extern crate chrono;
 extern crate clap;
+extern crate itertools;
 extern crate num_cpus;
 extern crate rand;
 extern crate slog;
@@ -19,6 +20,7 @@ use bio_types::strand::Strand;
 use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
+use itertools::Itertools;
 use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
 use libradicl::schema::{ResolutionStrategy, SplicedAmbiguityModel};
 use mimalloc::MiMalloc;
@@ -54,8 +56,9 @@ fn main() {
 
     let crate_authors = crate_authors!("\n");
     let version = crate_version!();
-    // [] add command for just counting barcode frequency
-    // [] add other algorithms for determining barcode cutoff
+
+    // capture the entire command line as a string
+    let cmdline = std::env::args().join(" ");
 
     let convert_app = App::new("convert")
         .about("Convert a BAM file to a RAD file")
@@ -168,29 +171,6 @@ fn main() {
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
     .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
-
-    /*
-    let test_app = App::new("test")
-        .about("test")
-        .version(version)
-        .author(crate_authors)
-        .arg(
-            Arg::from("-r, --rad-dir=<rad-dir> 'rad directory'")
-                .takes_value(true)
-                .required(true),
-        )
-        .arg(
-            Arg::from("-i, --input=<input-file> 'input file'")
-                .takes_value(true)
-                .required(true),
-        )
-        .arg(
-            Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold'")
-                .default_value("10")
-                .takes_value(true)
-                .required(true),
-        );
-    */
 
     let opts = App::new("alevin-fry")
         .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -334,6 +314,7 @@ fn main() {
             expected_ori,
             VERSION,
             velo_mode,
+            &cmdline,
             &log,
         )
         .unwrap();
@@ -376,6 +357,7 @@ fn main() {
             num_threads,
             max_records,
             compress_out,
+            &cmdline,
             &VERSION,
             &log,
         )
@@ -447,6 +429,7 @@ fn main() {
                     sa_model,
                     small_thresh,
                     filter_list,
+                    &cmdline,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -485,6 +468,7 @@ fn main() {
                     sa_model,
                     small_thresh,
                     filter_list,
+                    &cmdline,
                     &log,
                 ) {
                     // if we're all good; then great!

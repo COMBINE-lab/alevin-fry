@@ -227,7 +227,9 @@ fn process_unfiltered(
     expected_ori: Strand,
     output_dir: &str,
     version: &str,
+    max_ambiguity_read: usize,
     velo_mode: bool,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> u64 {
     let parent = std::path::Path::new(&output_dir);
@@ -413,6 +415,8 @@ fn process_unfiltered(
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "version_str" : version,
+        "max-ambig-record" : max_ambiguity_read,
+        "cmd" : cmdline,
         "permit-list-type" : "unfiltered"
     });
 
@@ -442,7 +446,9 @@ fn process_filtered(
     expected_ori: Strand,
     output_dir: &str,
     version: &str,
+    max_ambiguity_read: usize,
     velo_mode: bool,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> u64 {
     let valid_bc: Vec<u64>;
@@ -555,6 +561,8 @@ fn process_filtered(
         "velo_mode" : velo_mode,
         "expected_ori" : *expected_ori.strand_symbol(),
         "version_str" : version,
+        "max-ambig-record" : max_ambiguity_read,
+        "cmd" : cmdline,
         "permit-list-type" : "filtered"
     });
 
@@ -581,6 +589,7 @@ fn process_filtered(
 /// (i.e. "permitted") barcode values, as well as
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_permit_list(
     rad_dir: String,
     output_dir: String,
@@ -588,6 +597,7 @@ pub fn generate_permit_list(
     expected_ori: Strand,
     version: &str,
     velo_mode: bool,
+    cmdline: &str,
     //top_k: Option<usize>,
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
@@ -683,6 +693,7 @@ pub fn generate_permit_list(
     // the set of barcodes that are not an exact match for any known barcodes
     let mut unmatched_bc: Vec<u64>;
     let mut num_orientation_compat_reads = 0usize;
+    let mut max_ambiguity_read = 0usize;
 
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
@@ -694,6 +705,7 @@ pub fn generate_permit_list(
                     num_orientation_compat_reads += libradicl::update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
+                        &mut max_ambiguity_read,
                         &c,
                         &expected_ori,
                     );
@@ -701,10 +713,11 @@ pub fn generate_permit_list(
                 }
                 info!(
                     log,
-                    "observed {} reads ({} orientation consistent) in {} chunks",
+                    "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
                     num_reads.to_formatted_string(&Locale::en),
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
-                    hdr.num_chunks.to_formatted_string(&Locale::en)
+                    hdr.num_chunks.to_formatted_string(&Locale::en),
+                    max_ambiguity_read.to_formatted_string(&Locale::en)
                 );
                 Ok(process_unfiltered(
                     hmu,
@@ -714,7 +727,9 @@ pub fn generate_permit_list(
                     expected_ori,
                     &output_dir,
                     &version,
+                    max_ambiguity_read,
                     velo_mode,
+                    cmdline,
                     &log,
                 ))
             } else {
@@ -724,14 +739,15 @@ pub fn generate_permit_list(
         _ => {
             for _ in 0..(hdr.num_chunks as usize) {
                 let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-                libradicl::update_barcode_hist(&mut hm, &c, &expected_ori);
+                libradicl::update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
                 num_reads += c.reads.len();
             }
             info!(
                 log,
-                "observed {} reads in {} chunks",
+                "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
                 num_reads.to_formatted_string(&Locale::en),
-                hdr.num_chunks.to_formatted_string(&Locale::en)
+                hdr.num_chunks.to_formatted_string(&Locale::en),
+                max_ambiguity_read.to_formatted_string(&Locale::en)
             );
             Ok(process_filtered(
                 &hm,
@@ -740,7 +756,9 @@ pub fn generate_permit_list(
                 expected_ori,
                 &output_dir,
                 &version,
+                max_ambiguity_read,
                 velo_mode,
+                cmdline,
                 &log,
             ))
         }
