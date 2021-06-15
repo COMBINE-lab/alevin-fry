@@ -120,6 +120,15 @@ pub(super) struct IndexedEqList {
 }
 
 impl IndexedEqList {
+    pub(super) fn new() -> Self {
+        IndexedEqList{
+            num_genes: 0usize,
+            label_list_size: 0usize,
+            eq_labels: Vec::<u32>::new(),
+            eq_label_starts: Vec::<u32>::new()
+        }
+    }
+
     /// returns the number of equivalence classes represented in this `IndexedEqList`
     pub(super) fn num_eq_classes(&self) -> usize {
         if !self.eq_label_starts.is_empty() {
@@ -127,6 +136,18 @@ impl IndexedEqList {
         } else {
             0usize
         }
+    }
+
+    pub(super) fn add_single_label(&mut self, lab: u32) {
+        self.label_list_size += 1;
+        self.eq_labels.push(lab);
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
+    }
+
+    pub(super) fn add_label_vec(&mut self, lab: &[u32]) {
+        self.label_list_size += lab.len();
+        self.eq_labels.extend_from_slice(lab);
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
     }
 
     //pub(super) fn num_genes(&self) -> usize {
@@ -139,6 +160,7 @@ impl IndexedEqList {
         self.label_list_size = 0usize;
         self.eq_labels.clear();
         self.eq_label_starts.clear();
+        self.eq_label_starts.push(0);
     }
 
     /// Creates an `IndexedEqList` from a HashMap of eq labels to counts

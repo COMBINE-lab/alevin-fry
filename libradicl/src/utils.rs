@@ -9,12 +9,16 @@
 
 extern crate ahash;
 
+use crate as libradicl;
+
 use bstr::io::BufReadExt;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
+use self::libradicl::schema::{IndexedEqList};
+
 
 pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
@@ -464,7 +468,7 @@ pub fn parse_tg_map(
     }
 }
 
-pub fn extract_counts(
+pub(super) fn extract_counts(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_counts: usize,
 ) -> Vec<f32> {
@@ -546,6 +550,162 @@ pub fn extract_counts(
         }
     }
     counts
+}
+
+pub(super) fn extract_counts_mm_uniform(
+    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    num_counts: usize,
+) -> Vec<f32> {
+    // the number of genes not considering status
+    // i.e. spliced, unspliced, ambiguous
+    let unspliced_offset = num_counts / 3;
+    let ambig_offset = 2 * unspliced_offset;
+    let mut counts = vec![0_f32; num_counts];
+    let mut tvec = Vec::<usize>::with_capacity(16);
+
+    for (labels, count) in gene_eqc {
+        // the length of the label will tell us if this is a
+        // splicing-unique, gene-unique (but splicing ambiguous).
+        // or gene-ambiguous equivalence class label.
+        match labels.len() {
+            1 => {
+                // determine if spliced or unspliced
+                if let Some(gid) = labels.first() {
+                    let idx = if is_spliced(*gid) {
+                        (*gid >> 1) as usize
+                    } else {
+                        unspliced_offset + (*gid >> 1) as usize
+                    };
+                    counts[idx] += *count as f32;
+                }
+            }
+            _ => {
+                // iterate over all of the genes
+                let mut iter = labels.iter().peekable();
+                tvec.clear();
+                while let Some(gn) = iter.next() {
+                    // the base index of this gene
+                    let mut idx = (gn >> 1) as usize;
+                    // if the current gene is spliced
+                    // check if the next item is the unspliced version
+                    // of this gene.
+                    if is_spliced(*gn) {
+                        if let Some(ng) = iter.peek() {
+                            // if this is the unspliced version
+                            // of the same gene, then the count allocation
+                            // goes to the ambiguous label
+                            if same_gene(*gn, **ng, true) {
+                                idx += ambig_offset;
+                                // advance the iterator so we don't see
+                                // this again.
+                                iter.next();
+                            } 
+                            // if it's not the same gene then add the
+                            // contribution to the spliced molecule 
+                            // so do nothing here
+                        }
+                    } else {
+                        // this is unspliced, so even if there is a next element
+                        // it cannot belong to the same gene.
+                        // modify the index so the contribution is 
+                        // to the unspliced geen index.
+                        idx += unspliced_offset;
+                    }
+                    tvec.push(idx)
+                }
+                let fcount = (*count as f32) / (tvec.len() as f32);
+                for g in &tvec { counts[*g] += fcount; }
+            }
+        }
+    }
+    counts
+}
+
+pub(super) fn extract_usa_eqmap(
+    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    num_counts: usize,
+    idx_eq_list: &mut IndexedEqList,
+    eq_id_count: &mut Vec<(u32, u32)>
+) {
+    
+    // We use a little trick here.  Even though the resulting 
+    // USA-mode equivalence classes will not be over the same set
+    // of gene IDs as the input list, we *do* know there will be 
+    // a 1-1 correspondence, such that each equivalence class label
+    // in `gene_eqc` will produce exactly one USA-mode equivalence 
+    // class label, and that each USA-mode equivalence class label
+    // will be unique.  This means we can just clear out our 
+    // `idx_eq_list` and add the new class labels and counts as we
+    // encounter them.
+    idx_eq_list.clear();
+    eq_id_count.clear();
+
+    // i.e. spliced, unspliced, ambiguous
+    let unspliced_offset = num_counts / 3;
+    let ambig_offset = 2 * unspliced_offset;
+    let mut tvec = Vec::<u32>::with_capacity(16);
+
+    for (ctr, (labels, count)) in gene_eqc.iter().enumerate() {
+        // the length of the label will tell us if this is a
+        // splicing-unique, gene-unique (but splicing ambiguous).
+        // or gene-ambiguous equivalence class label.
+        match labels.len() {
+            1 => {
+                // determine if spliced or unspliced
+                if let Some(gid) = labels.first() {
+                    let idx = if is_spliced(*gid) {
+                        (*gid >> 1) as usize
+                    } else {
+                        unspliced_offset + (*gid >> 1) as usize
+                    };
+                    idx_eq_list.add_single_label(idx as u32);
+                    eq_id_count.push((ctr as u32, *count));
+                }
+            }
+            _ => {
+                // iterate over all of the genes
+                let mut iter = labels.iter().peekable();
+                tvec.clear();
+                while let Some(gn) = iter.next() {
+                    // the base index of this gene
+                    let mut idx = (gn >> 1) as usize;
+                    // if the current gene is spliced
+                    // check if the next item is the unspliced version
+                    // of this gene.
+                    if is_spliced(*gn) {
+                        if let Some(ng) = iter.peek() {
+                            // if this is the unspliced version
+                            // of the same gene, then the count allocation
+                            // goes to the ambiguous label
+                            if same_gene(*gn, **ng, true) {
+                                idx += ambig_offset;
+                                // advance the iterator so we don't see
+                                // this again.
+                                iter.next();
+                            } 
+                            // if it's not the same gene then add the
+                            // contribution to the spliced molecule 
+                            // so do nothing here
+                        }
+                    } else {
+                        // this is unspliced, so even if there is a next element
+                        // it cannot belong to the same gene.
+                        // modify the index so the contribution is 
+                        // to the unspliced geen index.
+                        idx += unspliced_offset;
+                    }
+                    tvec.push(idx as u32);
+                }
+                // NOTE: the tvec won't necessarily be in sorted order
+                // however, because we know the original eqc labels
+                // and the USA mode labels are 1-1, we don't need this
+                // so avoid the sort here.
+                // quickersort::sort(tvec);
+                idx_eq_list.add_label_vec(tvec.as_slice());
+                eq_id_count.push((ctr as u32, *count));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

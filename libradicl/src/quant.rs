@@ -44,9 +44,9 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, run_bootstrap, EmInitType};
+use self::libradicl::em::{em_optimize, run_bootstrap, em_optimize_subset, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel};
+use self::libradicl::schema::{EqMap, IndexedEqList, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -831,9 +831,10 @@ pub fn do_quantify<T: Read>(
                     num_bootstraps, 0,
                     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
                 );
-                assert_eq!(
-                    resolution, ResolutionStrategy::CellRangerLike,
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like resolution."
+                assert!(
+                    matches!(resolution, 
+                             ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
+                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
                 );
             } else {
                 // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
@@ -1084,6 +1085,12 @@ pub fn do_quantify<T: Read>(
                 EmInitType::Informative
             };
 
+            // If we are operating in USA-mode with an EM capable resolution 
+            // method, we'll use (re-use) these variables to hold the USA-mode
+            // equivalence class information.
+            let mut idx_eq_list = IndexedEqList::new();
+            let mut eq_id_count = Vec::<(u32, u32)>::new();
+
             let mut local_nrec = 0usize;
             // pop MetaChunks from the work queue until everything is
             // processed
@@ -1163,20 +1170,42 @@ pub fn do_quantify<T: Read>(
                                     }
                                     let only_unique =
                                         resolution == ResolutionStrategy::CellRangerLike;
-                                    if with_unspliced {
-                                        // currently only supports gene
-                                        // unique count extraction
-                                        counts = extract_counts(&gene_eqc, num_rows);
-                                    } else {
-                                        counts = em_optimize(
-                                            &gene_eqc,
-                                            &mut unique_evidence,
-                                            &mut no_ambiguity,
-                                            em_init_type,
-                                            num_genes,
-                                            only_unique,
-                                            &log,
-                                        );
+
+                                    // NOTE: This configuration seems overly complicated
+                                    // see if we can simplify it.
+                                    match (with_unspliced, only_unique) {
+                                        (true, true) => {
+                                            // USA mode, only gene-unqique reads
+                                            counts = extract_counts(&gene_eqc, num_rows);
+                                        },
+                                        (true, false) => {
+                                            // USA mode, use EM
+                                            extract_usa_eqmap(
+                                                &gene_eqc, num_rows, &mut idx_eq_list, &mut eq_id_count
+                                            );
+                                            counts = em_optimize_subset(
+                                                &idx_eq_list,
+                                                &eq_id_count,
+                                                &mut unique_evidence,
+                                                &mut no_ambiguity,
+                                                em_init_type,
+                                                num_rows,
+                                                only_unique,
+                                                &log
+                                            );
+                                        },
+                                        (false, _) => {
+                                            // not USA-mode
+                                            counts = em_optimize(
+                                                &gene_eqc,
+                                                &mut unique_evidence,
+                                                &mut no_ambiguity,
+                                                em_init_type,
+                                                num_genes,
+                                                only_unique,
+                                                &log,
+                                            ); 
+                                        }
                                     }
                                 }
                                 ResolutionStrategy::Trivial => {
@@ -1270,11 +1299,25 @@ pub fn do_quantify<T: Read>(
                                 sa_model,
                                 &log,
                             );
+                            // USA-mode
                             if with_unspliced {
-                                // currently only supports gene
-                                // unique count extraction
-                                counts = extract_counts(&gene_eqc, num_rows);
+                                // here, just like for non-USA mode, 
+                                // we substitute EM with uniform allocation in 
+                                // this special case
+                                match resolution {
+                                    ResolutionStrategy::CellRangerLike => {
+                                        counts = extract_counts(&gene_eqc, num_rows);
+                                    },
+                                    ResolutionStrategy::CellRangerLikeEm => {
+                                        counts = extract_counts_mm_uniform(&gene_eqc, num_rows);
+                                    },
+                                    _ => { 
+                                        counts = vec![0f32; num_genes];
+                                        warn!(log, "Should not reach here, only cr-like and cr-like-em are supported in USA-mode.");
+                                    }
+                                }
                             } else {
+                                // non USA-mode
                                 counts = vec![0f32; num_genes];
                                 for (k, v) in gene_eqc.iter() {
                                     if k.len() == 1 {
