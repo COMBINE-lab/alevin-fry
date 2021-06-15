@@ -1055,8 +1055,8 @@ pub fn do_quantify<T: Read>(
         let handle = std::thread::spawn(move || {
             // these can be created once and cleared after processing
             // each cell.
-            let mut unique_evidence = vec![false; num_genes];
-            let mut no_ambiguity = vec![false; num_genes];
+            let mut unique_evidence = vec![false; num_rows];
+            let mut no_ambiguity = vec![false; num_rows];
             let mut eq_map = EqMap::new(ref_count);
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
             let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);

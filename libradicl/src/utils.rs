@@ -468,6 +468,15 @@ pub fn parse_tg_map(
     }
 }
 
+/// Extracts UMI counts from the `gene_eqc` HashMap.
+/// This function is to be used when we are counting UMIs in 
+/// USA mode, and when we do not wish to consider gene-ambiguous
+/// reads.
+/// UMIs will be assigned to the spliced, unspliced, or ambiguous 
+/// version of their gene.  If a UMI is compatible with more than 
+/// one gene, but only one *spliced* gene, then it is assigned to 
+/// the spliced gene, unless there is too much multimapping 
+/// (i.e. it is compatible with > 10 different loci).
 pub(super) fn extract_counts(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_counts: usize,
@@ -552,6 +561,10 @@ pub(super) fn extract_counts(
     counts
 }
 
+/// Extracts UMI counts from the `gene_eqc` HashMap.
+/// This function is to be used when we are counting UMIs in 
+/// USA mode.  Multimappers will be uniformly allocated to the 
+/// genes to which they map.
 pub(super) fn extract_counts_mm_uniform(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_counts: usize,
@@ -621,6 +634,14 @@ pub(super) fn extract_counts_mm_uniform(
     counts
 }
 
+/// Extracts an `IndexedEqList` and equivalence class ID / count 
+/// vector from the `gene_eqc` HashMap.
+/// This function is used in USA-mode when we wish to resolve 
+/// multi-mapping UMIs via an EM algorithm. Equivalence class 
+/// labels (stored in `idx_eq_list`) will contain 
+/// spliced, unspliced and ambiguous gene IDs based on UMI mappings,
+/// and `eq_id_count` will enumerate the count of UMIs for each 
+/// observed equivalence class.
 pub(super) fn extract_usa_eqmap(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_counts: usize,
