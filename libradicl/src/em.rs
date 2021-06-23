@@ -28,6 +28,7 @@ use std::f32;
 //}
 
 const MIN_ALPHA: f32 = 1e-8;
+const MIN_OUTPUT_ALPHA: f32 = 0.01;
 const ALPHA_CHECK_CUTOFF: f32 = 1e-2;
 
 const MIN_ITER: u32 = 2;
@@ -185,7 +186,7 @@ pub(crate) fn em_optimize_subset(
 
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
-        if *alpha < MIN_ALPHA {
+        if *alpha < MIN_OUTPUT_ALPHA {
             *alpha = 0.0_f32;
         }
     });
@@ -304,7 +305,8 @@ pub(crate) fn em_optimize(
 
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
-        if *alpha < MIN_ALPHA {
+        if *alpha < MIN_OUTPUT_ALPHA {
+
             *alpha = 0.0_f32;
         }
     });
