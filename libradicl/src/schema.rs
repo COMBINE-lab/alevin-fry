@@ -75,7 +75,7 @@ impl FromStr for ResolutionStrategy {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
-            "full" => Ok(ResolutionStrategy::Full),
+            "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             _ => Err("no match"),
         }
@@ -121,11 +121,11 @@ pub(super) struct IndexedEqList {
 
 impl IndexedEqList {
     pub(super) fn new() -> Self {
-        IndexedEqList{
+        IndexedEqList {
             num_genes: 0usize,
             label_list_size: 0usize,
             eq_labels: Vec::<u32>::new(),
-            eq_label_starts: Vec::<u32>::new()
+            eq_label_starts: Vec::<u32>::new(),
         }
     }
 

@@ -133,7 +133,7 @@ pub(crate) fn em_optimize_subset(
     }
 
     // if we are just pulling out unique counts
-    // or there were no multi-mapping reads, then 
+    // or there were no multi-mapping reads, then
     // we're done
     if only_unique || !needs_em {
         return alphas_in;
@@ -158,7 +158,11 @@ pub(crate) fn em_optimize_subset(
 
     let mut it_num: u32 = 0;
     let mut converged: bool = true;
-    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+    // allow one last round of the EM after thresholding
+    // very small counts to 0.
+    let mut last_round: bool = false;
+
+    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) || last_round {
         // perform one round of em update
         em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
 
@@ -182,6 +186,25 @@ pub(crate) fn em_optimize_subset(
         } //end-for
 
         it_num += 1;
+
+        // if this was the last round
+        // then break the loop.
+        if last_round {
+            break;
+        }
+
+        // if we've run for at least the required number
+        // of iterations, and if we are converged
+        // then do one last round after filtering
+        // very small values.
+        if it_num >= MIN_ITER && converged {
+            alphas_in.iter_mut().for_each(|alpha| {
+                if *alpha < MIN_OUTPUT_ALPHA {
+                    *alpha = 0.0_f32;
+                }
+            });
+            last_round = true;
+        }
     }
 
     // update too small alphas
@@ -306,7 +329,6 @@ pub(crate) fn em_optimize(
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
         if *alpha < MIN_OUTPUT_ALPHA {
-
             *alpha = 0.0_f32;
         }
     });

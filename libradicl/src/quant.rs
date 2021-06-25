@@ -44,9 +44,11 @@ use std::thread;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, run_bootstrap, em_optimize_subset, EmInitType};
+use self::libradicl::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{EqMap, IndexedEqList, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel};
+use self::libradicl::schema::{
+    EqMap, IndexedEqList, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel,
+};
 use self::libradicl::utils::*;
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -832,7 +834,7 @@ pub fn do_quantify<T: Read>(
                     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
                 );
                 assert!(
-                    matches!(resolution, 
+                    matches!(resolution,
                              ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
                     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
                 );
@@ -1085,7 +1087,7 @@ pub fn do_quantify<T: Read>(
                 EmInitType::Informative
             };
 
-            // If we are operating in USA-mode with an EM capable resolution 
+            // If we are operating in USA-mode with an EM capable resolution
             // method, we'll use (re-use) these variables to hold the USA-mode
             // equivalence class information.
             let mut idx_eq_list = IndexedEqList::new();
@@ -1177,11 +1179,14 @@ pub fn do_quantify<T: Read>(
                                         (true, true) => {
                                             // USA mode, only gene-unqique reads
                                             counts = extract_counts(&gene_eqc, num_rows);
-                                        },
+                                        }
                                         (true, false) => {
                                             // USA mode, use EM
                                             extract_usa_eqmap(
-                                                &gene_eqc, num_rows, &mut idx_eq_list, &mut eq_id_count
+                                                &gene_eqc,
+                                                num_rows,
+                                                &mut idx_eq_list,
+                                                &mut eq_id_count,
                                             );
                                             counts = em_optimize_subset(
                                                 &idx_eq_list,
@@ -1191,9 +1196,9 @@ pub fn do_quantify<T: Read>(
                                                 em_init_type,
                                                 num_rows,
                                                 only_unique,
-                                                &log
+                                                &log,
                                             );
-                                        },
+                                        }
                                         (false, _) => {
                                             // not USA-mode
                                             counts = em_optimize(
@@ -1204,7 +1209,7 @@ pub fn do_quantify<T: Read>(
                                                 num_genes,
                                                 only_unique,
                                                 &log,
-                                            ); 
+                                            );
                                         }
                                     }
                                 }
@@ -1301,17 +1306,17 @@ pub fn do_quantify<T: Read>(
                             );
                             // USA-mode
                             if with_unspliced {
-                                // here, just like for non-USA mode, 
-                                // we substitute EM with uniform allocation in 
+                                // here, just like for non-USA mode,
+                                // we substitute EM with uniform allocation in
                                 // this special case
                                 match resolution {
                                     ResolutionStrategy::CellRangerLike => {
                                         counts = extract_counts(&gene_eqc, num_rows);
-                                    },
+                                    }
                                     ResolutionStrategy::CellRangerLikeEm => {
                                         counts = extract_counts_mm_uniform(&gene_eqc, num_rows);
-                                    },
-                                    _ => { 
+                                    }
+                                    _ => {
                                         counts = vec![0f32; num_genes];
                                         warn!(log, "Should not reach here, only cr-like and cr-like-em are supported in USA-mode.");
                                     }

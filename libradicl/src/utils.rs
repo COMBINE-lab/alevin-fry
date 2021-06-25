@@ -11,14 +11,13 @@ extern crate ahash;
 
 use crate as libradicl;
 
+use self::libradicl::schema::IndexedEqList;
 use bstr::io::BufReadExt;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
-use self::libradicl::schema::{IndexedEqList};
-
 
 pub(super) const MASK_TOP_BIT_U32: u32 = 0x7FFFFFFF;
 pub(super) const MASK_LOWER_31_U32: u32 = 0x80000000;
@@ -469,13 +468,13 @@ pub fn parse_tg_map(
 }
 
 /// Extracts UMI counts from the `gene_eqc` HashMap.
-/// This function is to be used when we are counting UMIs in 
+/// This function is to be used when we are counting UMIs in
 /// USA mode, and when we do not wish to consider gene-ambiguous
 /// reads.
-/// UMIs will be assigned to the spliced, unspliced, or ambiguous 
-/// version of their gene.  If a UMI is compatible with more than 
-/// one gene, but only one *spliced* gene, then it is assigned to 
-/// the spliced gene, unless there is too much multimapping 
+/// UMIs will be assigned to the spliced, unspliced, or ambiguous
+/// version of their gene.  If a UMI is compatible with more than
+/// one gene, but only one *spliced* gene, then it is assigned to
+/// the spliced gene, unless there is too much multimapping
 /// (i.e. it is compatible with > 10 different loci).
 pub(super) fn extract_counts(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -562,8 +561,8 @@ pub(super) fn extract_counts(
 }
 
 /// Extracts UMI counts from the `gene_eqc` HashMap.
-/// This function is to be used when we are counting UMIs in 
-/// USA mode.  Multimappers will be uniformly allocated to the 
+/// This function is to be used when we are counting UMIs in
+/// USA mode.  Multimappers will be uniformly allocated to the
 /// genes to which they map.
 pub(super) fn extract_counts_mm_uniform(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -612,50 +611,51 @@ pub(super) fn extract_counts_mm_uniform(
                                 // advance the iterator so we don't see
                                 // this again.
                                 iter.next();
-                            } 
+                            }
                             // if it's not the same gene then add the
-                            // contribution to the spliced molecule 
+                            // contribution to the spliced molecule
                             // so do nothing here
                         }
                     } else {
                         // this is unspliced, so even if there is a next element
                         // it cannot belong to the same gene.
-                        // modify the index so the contribution is 
+                        // modify the index so the contribution is
                         // to the unspliced geen index.
                         idx += unspliced_offset;
                     }
                     tvec.push(idx)
                 }
                 let fcount = (*count as f32) / (tvec.len() as f32);
-                for g in &tvec { counts[*g] += fcount; }
+                for g in &tvec {
+                    counts[*g] += fcount;
+                }
             }
         }
     }
     counts
 }
 
-/// Extracts an `IndexedEqList` and equivalence class ID / count 
+/// Extracts an `IndexedEqList` and equivalence class ID / count
 /// vector from the `gene_eqc` HashMap.
-/// This function is used in USA-mode when we wish to resolve 
-/// multi-mapping UMIs via an EM algorithm. Equivalence class 
-/// labels (stored in `idx_eq_list`) will contain 
+/// This function is used in USA-mode when we wish to resolve
+/// multi-mapping UMIs via an EM algorithm. Equivalence class
+/// labels (stored in `idx_eq_list`) will contain
 /// spliced, unspliced and ambiguous gene IDs based on UMI mappings,
-/// and `eq_id_count` will enumerate the count of UMIs for each 
+/// and `eq_id_count` will enumerate the count of UMIs for each
 /// observed equivalence class.
 pub(super) fn extract_usa_eqmap(
     gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     num_counts: usize,
     idx_eq_list: &mut IndexedEqList,
-    eq_id_count: &mut Vec<(u32, u32)>
+    eq_id_count: &mut Vec<(u32, u32)>,
 ) {
-    
-    // We use a little trick here.  Even though the resulting 
+    // We use a little trick here.  Even though the resulting
     // USA-mode equivalence classes will not be over the same set
-    // of gene IDs as the input list, we *do* know there will be 
+    // of gene IDs as the input list, we *do* know there will be
     // a 1-1 correspondence, such that each equivalence class label
-    // in `gene_eqc` will produce exactly one USA-mode equivalence 
+    // in `gene_eqc` will produce exactly one USA-mode equivalence
     // class label, and that each USA-mode equivalence class label
-    // will be unique.  This means we can just clear out our 
+    // will be unique.  This means we can just clear out our
     // `idx_eq_list` and add the new class labels and counts as we
     // encounter them.
     idx_eq_list.clear();
@@ -703,15 +703,15 @@ pub(super) fn extract_usa_eqmap(
                                 // advance the iterator so we don't see
                                 // this again.
                                 iter.next();
-                            } 
+                            }
                             // if it's not the same gene then add the
-                            // contribution to the spliced molecule 
+                            // contribution to the spliced molecule
                             // so do nothing here
                         }
                     } else {
                         // this is unspliced, so even if there is a next element
                         // it cannot belong to the same gene.
-                        // modify the index so the contribution is 
+                        // modify the index so the contribution is
                         // to the unspliced geen index.
                         idx += unspliced_offset;
                     }
