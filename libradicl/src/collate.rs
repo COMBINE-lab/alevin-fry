@@ -31,12 +31,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+#[allow(clippy::too_many_arguments)]
 pub fn collate(
     input_dir: String,
     rad_dir: String,
     num_threads: u32,
     max_records: u32,
     compress_out: bool,
+    cmdline: &str,
     version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
@@ -107,6 +109,7 @@ pub fn collate(
         tsv_map,
         total_to_collate,
         compress_out,
+        cmdline,
         log,
     )
 
@@ -160,6 +163,21 @@ fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType 
     }
 }
 
+fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> usize {
+    if let Some(mar) = mdata.get("max-ambig-record") {
+        match mar.as_u64() {
+            Some(mv) => mv as usize,
+            _ => 2500_usize,
+        }
+    } else {
+        info!(
+            log,
+            "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
+        );
+        2500_usize
+    }
+}
+
 fn correct_unmapped_counts(
     correct_map: &Arc<HashMap<u64, u64>>,
     unmapped_file: &std::path::Path,
@@ -207,6 +225,7 @@ pub fn collate_with_temp(
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
     compress_out: bool,
+    cmdline: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // the number of corrected cells we'll write
@@ -244,6 +263,7 @@ pub fn collate_with_temp(
     }
 
     let filter_type = get_filter_type(&mdata, log);
+    let most_ambig_record = get_most_ambiguous_record(&mdata, log);
 
     // log the filter type
     info!(log, "filter_type = {:?}", filter_type);
@@ -265,6 +285,7 @@ pub fn collate_with_temp(
     // writing the collate metadata
     {
         let collate_meta = json!({
+            "cmd" : cmdline,
             "compressed_output" : compress_out,
         });
 
@@ -463,8 +484,9 @@ pub fn collate_with_temp(
     let max_rec = max_records as usize;
     let num_buckets = temp_buckets.len();
     let num_threads = n_workers as usize;
-    let loc_buffer_size =
-        (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(131072_usize);
+    let loc_buffer_size = (min_rec_len + (most_ambig_record * 4_usize) - 4_usize).max(
+        (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(262_144_usize),
+    ); //131072_usize);
 
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
