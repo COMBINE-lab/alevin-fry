@@ -152,7 +152,7 @@ fn main() {
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
     .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
-        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony"])
+        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em"])
         .case_insensitive(true))
     .arg(Arg::from("--sa-model 'preferred model of splicing ambiguity'")
         .possible_values(&["prefer-ambig", "winner-take-all"])
