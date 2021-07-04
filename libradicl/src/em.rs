@@ -28,10 +28,11 @@ use std::f32;
 //}
 
 const MIN_ALPHA: f32 = 1e-8;
+const MIN_OUTPUT_ALPHA: f32 = 0.01;
 const ALPHA_CHECK_CUTOFF: f32 = 1e-2;
 
-const MIN_ITER: u32 = 50;
-const MAX_ITER: u32 = 10_000;
+const MIN_ITER: u32 = 2;
+const MAX_ITER: u32 = 100;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
 #[derive(Copy, Clone)]
@@ -116,6 +117,7 @@ pub(crate) fn em_optimize_subset(
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
+    let mut needs_em = false;
     for (i, count) in cell_data {
         let labels = eqclasses.refs_for_eqc(*i);
         if labels.len() == 1 {
@@ -126,12 +128,14 @@ pub(crate) fn em_optimize_subset(
             for idx in labels {
                 no_ambiguity[*idx as usize] = false;
             }
+            needs_em = true;
         }
     }
 
-    // if we are just pulling out unique counts, then we
-    // are done here
-    if only_unique {
+    // if we are just pulling out unique counts
+    // or there were no multi-mapping reads, then
+    // we're done
+    if only_unique || !needs_em {
         return alphas_in;
     }
 
@@ -152,12 +156,13 @@ pub(crate) fn em_optimize_subset(
         }
     }
 
-    // TODO: is it even necessary?
-    // alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
-
     let mut it_num: u32 = 0;
     let mut converged: bool = true;
-    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+    // allow one last round of the EM after thresholding
+    // very small counts to 0.
+    let mut last_round: bool = false;
+
+    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) || last_round {
         // perform one round of em update
         em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
 
@@ -169,10 +174,7 @@ pub(crate) fn em_optimize_subset(
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
 
-                max_rel_diff = match rel_diff > max_rel_diff {
-                    true => rel_diff,
-                    false => max_rel_diff,
-                };
+                max_rel_diff = max_rel_diff.max(rel_diff);
 
                 if rel_diff > REL_DIFF_TOLERANCE {
                     converged = false;
@@ -184,23 +186,36 @@ pub(crate) fn em_optimize_subset(
         } //end-for
 
         it_num += 1;
+
+        // if this was the last round
+        // then break the loop.
+        if last_round {
+            break;
+        }
+
+        // if we've run for at least the required number
+        // of iterations, and if we are converged
+        // then do one last round after filtering
+        // very small values.
+        if it_num >= MIN_ITER && converged {
+            alphas_in.iter_mut().for_each(|alpha| {
+                if *alpha < MIN_OUTPUT_ALPHA {
+                    *alpha = 0.0_f32;
+                }
+            });
+            last_round = true;
+        }
     }
 
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
-        if *alpha < MIN_ALPHA {
+        if *alpha < MIN_OUTPUT_ALPHA {
             *alpha = 0.0_f32;
         }
     });
 
     let alphas_sum: f32 = alphas_in.iter().sum();
     assert!(alphas_sum > 0.0, "Alpha Sum too small");
-    /*
-    info!(log,
-        "Total Molecules after EM {}",
-        alphas_sum
-    );
-    */
     alphas_in
 }
 
@@ -313,7 +328,7 @@ pub(crate) fn em_optimize(
 
     // update too small alphas
     alphas_in.iter_mut().for_each(|alpha| {
-        if *alpha < MIN_ALPHA {
+        if *alpha < MIN_OUTPUT_ALPHA {
             *alpha = 0.0_f32;
         }
     });
