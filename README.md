@@ -36,4 +36,37 @@ $ export PATH=`pwd`/target/release/:$PATH
 
 ## Documentation 
 
-Alevin-fry is under active development.  However, you can find the documentation on [read the docs](https://alevin-fry.readthedocs.io/en/latest/).  We try to keep the documentation up to date with the latest developments in the software.
+Alevin-fry is under active development.  However, you can find the documentation on [read the docs](https://alevin-fry.readthedocs.io/en/latest/).  We try to keep the documentation up to date with the latest developments in the software.  Additionally, there is a series of tutorial for using alevin-fry for processing different types of data that you can find [here](https://combine-lab.github.io/alevin-fry-tutorials/).
+
+
+## A note about preparing a _splici_ (spliced + intron) reference
+
+In [the manuscript describing alevin-fry](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1), we primarily make use of an index that is built over spliced + intron sequence, which we refer to as a _splici_ reference.  To make the construction of the relevant reference sequence (and the 3 column TSV file you will need for Unspliced/Spliced/Ambiguous (USA) quantification) simple, we have written an R script that will process a genome and GTF file and produce the splici reference which you can then index with [`salmon`](https://github.com/COMBINE-lab/salmon) as normal.
+
+First, checkout the [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository and navigate to the `R` directory.  Then, we'll run the 
+`build_splici_ref.R` script.
+
+```
+$ ./build_splici_ref.R <path_to_genome_fasta> <path_to_gtf> <target_read_length> <output_dir>
+```
+
+where `$` indicated your command prompt. In addition to these required positional arguments, there are a few optional arguments that you can find by running 
+
+```
+$ ./build_splici_ref.R -h
+```
+
+After you have run this script, your output directory should contain 3 files:
+
+```
+<output_dir>/transcriptome_splici_fl<target_read_length-5>.fa
+<output_dir>/transcriptome_splici_fl<target_read_length-5>_t2g.tsv
+<output_dir>/transcriptome_splici_fl<target_read_length-5>_t2g_3col.tsv
+```
+
+The first file contains the _splici_ reference sequence that you should index with `salmon`, and the third contains the 3-column transcript-to-gene mapping 
+that you should pass to `alevin-fry` during the `quant` phase.
+
+If you have any questions about preparing the splici reference, or otherwise about processing your data with `alevin-fry` please feel free to open an issue 
+here on GitHub!
+
