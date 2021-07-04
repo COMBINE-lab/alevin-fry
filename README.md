@@ -39,7 +39,7 @@ $ export PATH=`pwd`/target/release/:$PATH
 Alevin-fry is under active development.  However, you can find the documentation on [read the docs](https://alevin-fry.readthedocs.io/en/latest/).  We try to keep the documentation up to date with the latest developments in the software.  Additionally, there is a series of tutorial for using alevin-fry for processing different types of data that you can find [here](https://combine-lab.github.io/alevin-fry-tutorials/).
 
 
-## A note about preparing a _splici_ (spliced + intron) refernece
+## A note about preparing a _splici_ (spliced + intron) reference
 
 In [the manuscript describing alevin-fry](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1), we primarily make use of an index that is built over spliced + intron sequence, which we refer to as a _splici_ reference.  To make the construction of the relevant reference sequence (and the 3 column TSV file you will need for Unspliced/Spliced/Ambiguous (USA) quantification) simple, we have written an R script that will process a genome and GTF file and produce the splici reference which you can then index with [`salmon`](https://github.com/COMBINE-lab/salmon) as normal.
 
