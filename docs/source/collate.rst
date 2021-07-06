@@ -1,8 +1,7 @@
 collate
 =======
 
-This command takes as input a directory containing a RAD file (created by running alevin with the ``--justAlign`` flag), as well as the directory generated as the result of running the ``generate-permit-list`` command of ``alevin-fry``, and it will produce an output RAD file that is *collated* by (corrected) cellular barcode.  The collated RAD file can then be quantified with the ``alevin-fry`` ``quant`` command.  It also takes two other arguments (described below) that 
-dictate how the collation and filtering will be performed.
+This command takes as input a directory containing a RAD file (created by running alevin with the ``--justAlign`` and/or ``--sketch`` flags), as well as the directory generated as the result of running the ``generate-permit-list`` command of ``alevin-fry``, and it will produce an output RAD file that is *collated* by (corrected) cellular barcode.  The collated RAD file can then be quantified with the ``alevin-fry`` ``quant`` command.  It also takes two other arguments (described below) that dictate how the collation and filtering will be performed.
 
 * ``-r, --rad-dir <rad-dir>`` : The directory containing the RAD file to be collated.  This is the *same* directory on which you have previously run ``generate-permit-list`` and that was obtained by running ``alevin`` with the ``--justAlign`` flag).
 
