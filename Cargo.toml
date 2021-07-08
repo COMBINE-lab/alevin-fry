@@ -19,7 +19,7 @@ include = [
     "/CODE_OF_CONDUCT.md"
 ]
 keywords = ["single-cell", "preprocessing", 
-	    "RNA-seq", "quantification", "single-nucleus", "RNA-velocity"]
+	    "RNA-seq", "single-nucleus", "RNA-velocity"]
 categories = ["command-line-utilities", "science"]
 
 [workspace]
