@@ -18,7 +18,7 @@ include = [
     "/CONTRIBUTING.md",
     "/CODE_OF_CONDUCT.md"
 ]
-keywords = ["single-cell", "single-cell RNA-seq", "single-cell preprocessing", 
+keywords = ["single-cell", "preprocessing", 
 	    "RNA-seq", "quantification", "single-nucleus", "RNA-velocity"]
 categories = ["command-line-utilities", "science"]
 
@@ -36,7 +36,7 @@ mimalloc = { version = "0.1.22", default-features = false }
 num_cpus = "1.13.0"
 bio-types = "0.11.0"
 itertools = "0.10.0"
-statrs = "0.15.0" #{ git = "https://github.com/boxtown/statrs.git", rev="8f08cda54e54d3892a9235d79daf6f72adadda52" }
+statrs = "0.15.0" 
 
 
 [dependencies.clap]
