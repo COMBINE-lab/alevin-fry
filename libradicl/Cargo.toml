@@ -3,6 +3,21 @@ name = "libradicl"
 version = "0.4.0"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
+description = "support library for alevin-fry"
+license-file = "LICENSE"
+readme= "README.md"
+repository = "https://github.com/COMBINE-lab/alevin-fry"
+homepage = "https://github.com/COMBINE-lab/alevin-fry"
+documentation = "https://alevin-fry.readthedocs.io/en/latest/"
+include = [
+    "src/*.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+]
+keywords = ["single-cell", "single-cell RNA-seq", "single-cell preprocessing", 
+	    "RNA-seq", "quantification", "single-nucleus", "RNA-velocity"]
+categories = ["command-line-utilities", "science"]
 
 [dependencies]
 arrayvec = "0.7.0"
@@ -28,8 +43,7 @@ bio-types = "0.11.0"
 quickersort = "3.0.1"
 needletail = "0.4.1"
 num-format = "0.4.0"
-# statrs = "0.13.0"
-statrs = { git = "https://github.com/boxtown/statrs.git", rev="8f08cda54e54d3892a9235d79daf6f72adadda52" }
+statrs = "0.15.0" #{ git = "https://github.com/boxtown/statrs.git", rev="8f08cda54e54d3892a9235d79daf6f72adadda52" }
 rand = "0.8.3"
 flate2 = "1.0.16"
 smallvec = "1.4.1"
