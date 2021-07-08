@@ -15,7 +15,7 @@ include = [
     "/README.md",
     "/LICENSE",
 ]
-keywords = ["single-cell", "single-cell RNA-seq", "single-cell preprocessing", 
+keywords = ["single-cell", "preprocessing", 
 	    "RNA-seq", "quantification", "single-nucleus", "RNA-velocity"]
 categories = ["command-line-utilities", "science"]
 
