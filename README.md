@@ -28,10 +28,18 @@ With `bioconda` in the appropriate place in your channel list, you should simply
 $ conda install alevin-fry
 ``` 
 
+## Installing from crates.io
+
+Alevin-fry can also be installed from [`crates.io`](https://crates.io/crates/alevin-fry) using `cargo`.  This can be done with the following command:
+
+```{bash}
+$ cargo install alevin-fry
+```
+
+## Building from source
+
 If you want to use features or fixes that may only be available in the latest develop branch (or want to build for a different 
 architecture), then you have to build from source.  Luckily, `cargo` makes that easy; see below.
-
-## Building
 
 Alevin-fry is built and tested with the latest (major & minor) stable version of [Rust](https://www.rust-lang.org/). While it will likely compile fine with slightly older versions of Rust, this is not a guarantee and is not a support priority.  Unlike with C++, Rust has a frequent and stable release cadence, is designed to be installed and updated from user space, and is easy to keep up to date with [rustup](https://rustup.rs/). Thanks to cargo, building should be as easy as:
 
