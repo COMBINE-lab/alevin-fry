@@ -3,11 +3,29 @@ name = "alevin-fry"
 version = "0.4.0"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
+description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
+license-file = "LICENSE"
+readme= "README.md"
+repository = "https://github.com/COMBINE-lab/alevin-fry"
+homepage = "https://github.com/COMBINE-lab/alevin-fry"
+documentation = "https://alevin-fry.readthedocs.io/en/latest/"
+include = [
+    "/libradicl/src/*.rs",
+    "/src/*.rs",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md"
+]
+keywords = ["single-cell", "preprocessing", 
+	    "RNA-seq", "single-nucleus", "RNA-velocity"]
+categories = ["command-line-utilities", "science"]
 
 [workspace]
 
 [dependencies]	
-libradicl = { path = "libradicl" }
+libradicl = { path = "libradicl", version = "0.4.0" }
 slog = "2.5.2"
 slog-term = "2.6.0"
 slog-async = "2.5.0"
@@ -18,8 +36,7 @@ mimalloc = { version = "0.1.22", default-features = false }
 num_cpus = "1.13.0"
 bio-types = "0.11.0"
 itertools = "0.10.0"
-# statrs = "0.13.0"
-statrs = { git = "https://github.com/boxtown/statrs.git", rev="8f08cda54e54d3892a9235d79daf6f72adadda52" }
+statrs = "0.15.0" 
 
 
 [dependencies.clap]
