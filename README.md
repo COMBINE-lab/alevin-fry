@@ -6,7 +6,9 @@
 
 You can read the pre-print describing alevin-fry : ["Alevin-fry unlocks rapid, accurate, and memory-frugal quantification of single-cell RNA-seq data"](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1) on bioRxiv.
 
-**Relationship to alevin**: Alevin-fry has been designed as the successor to alevin. It subsumes the core features of alevin, while also providing important new capabilities and considerably improving the performance profile. We anticipate that new method development and feature additions will take place primarily within the alevin-fry codebase.  Thus, we encourage users of alevin to migrate to alevin-fry when feasible.  That being said, alevin is still actively-maintained and supported, so if you are using it and not ready to migrate you can continue to ask questions and post issues in [the salmon repository](https://github.com/COMBINE-lab/salmon).
+* [**Quickstart guide with a unified singularity container**](https://github.com/COMBINE-lab/alevin-fry#a-quick-start-run-through-on-sample-data)
+
+* **Relationship to alevin**: Alevin-fry has been designed as the successor to alevin. It subsumes the core features of alevin, while also providing important new capabilities and considerably improving the performance profile. We anticipate that new method development and feature additions will take place primarily within the alevin-fry codebase.  Thus, we encourage users of alevin to migrate to alevin-fry when feasible.  That being said, alevin is still actively-maintained and supported, so if you are using it and not ready to migrate you can continue to ask questions and post issues in [the salmon repository](https://github.com/COMBINE-lab/salmon).
 
 ## Documentation 
 
@@ -54,9 +56,103 @@ be done (in bash-like shells) using:
 $ export PATH=`pwd`/target/release/:$PATH
 ```
 
+## A quick start run through on sample data
+
+Here, we show how to perform a completely analysis on the [1k PBMCs from a Healthy Donor data from 10X Genomics](https://www.10xgenomics.com/resources/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard).  This run through includes **all steps**, even extracting the _splici_ sequence and building the salmon index, which you typically would not do _per-sample_.  To make this sample as easy as possible to follow, we have bundled all of the required software and utilities in a singularity container that we use in the commands below.
+
+### Download input data and singularity container
+
+First, create a working directory with sufficient space to download all of the input data and to hold the output (50GB should be sufficient).  We alias this directory and use the alias below so that you can easily set it to something else if you want and still copy and paste the later commands.
+
+```{bash}
+$ mkdir af_test_workdir
+$ export AF_SAMPLE_DIR=af_test_workdir
+```
+
+Then, we download all of our test data.  This consist of the human reference genome and annotation (based, in this case, on the [CellRanger](https://support.10xgenomics.com/single-cell-gene-expression/software/overview/welcome) 3.0 reference annotation) and the FASTQ files from the [PBMC1k (v3) healthy donor samples](https://www.10xgenomics.com/resources/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard).
+
+```{bash}
+$ cd $AF_SAMPLE_DIR
+$ mkdir -p human_CR_3.0/fasta
+$ mkdir -p human_CR_3.0/genes
+$ wget -v -O human_CR_3.0/fasta/genome.fa -L https://umd.box.com/shared/static/3kuh1lc03bxg1d3hi1jfloez7zoutfjc
+$ wget -v -O human_CR_3.0/genes/genes.gtf -L https://umd.box.com/shared/static/tvyg43710ufuuvp8mnuoanowm6xmkbjk
+$ mkdir -p data/pbmc_1k_v3_fastqs
+$ wget -v -O data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L001_R2_001.fastq.gz -L https://umd.box.com/shared/static/bmhtt9db8ojhmbkb6d98mt7fnsdhsymm
+$ wget -v -O data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L002_R2_001.fastq.gz -L https://umd.box.com/shared/static/h8ymvs2njqiygfsu50jla2uce6p6etke
+$ wget -v -O data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L001_R1_001.fastq.gz -L https://umd.box.com/shared/static/hi8mkx1yltmhnl9kn22n96xtic2wqm5i
+$ wget -v -O data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L002_R1_001.fastq.gz -L https://umd.box.com/shared/static/4sn4pio63kk7pku52eo3xg9ztf5tq1ul
+```
+
+Finally, we'll download the [singularity](https://sylabs.io/singularity/) image that contains all of the software we'll need to do our processing.
+
+```{bash}
+$ wget -v -O usefulaf.sif https://umd.box.com/shared/static/0twj103udhafoc3xggpecwptjsmgvbiw
+```
+
+### Info about the singularity container
+
+The singularity container we just downloaded above contains a recent release of `salmon` (v1.5.1) and `alevin-fry` (v0.4.0), as well as an installation of `R` and all of the packages needed to build the _splici_ index.
+
+To build the reference index (and quantify) we'll use the [simpleaf](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf) wrapper.  This is a shell script written around `salmon`, `alevin-fry`, and the _splici_ index construction code that simplifies processing by grouping together related commands, using a fixed directory structure for processing, and also by eliminating some different options that are otherwise exposed by `salmon` and `alevin-fry` (e.g. it builds the `sparse` index, maps in `sketch` mode etc.).  If you would like to run the "raw" commands, the Singularity image contains `salmon` and `alevin-fry` in the path, and the `R` script to construct the _splici_ index at `/usefulaf/R/build_splici_ref.R`, so you can explore more detailed options.
+
+### Building the splici reference and index
+
+To build our reference index (this will both extract the _splici_ fasta and transcript to gene mapping, and build the `salmon` index on it), use the following command:
+
+```{bash}
+$ singularity exec --cleanenv \
+--bind $AF_SAMPLE_DIR:/workdir \
+--pwd /usefulaf/bash usefulaf.sif \
+./simpleaf index \
+-f /workdir/human_CR_3.0/fasta/genome.fa \
+-g /workdir/human_CR_3.0/genes/genes.gtf \
+-l 91 -t 16 -o /workdir/human_CR_3.0_splici
+```
+
+### Quantifying the sample
+
+Given the constructed index (which will be written by the above command to `$AF_SAMPLE_DIR/human_CR_3.0_splici/index`), the next step is to quantify the sample against this index.  This can be done with the following command, which will run `salmon` to generate the RAD file in `sketch` mode, perform _unfiltered_ permit-list generation --- automatically downloading the appropriate external permit-list --- collate the RAD file and quantify the gene counts using the `cr-like` strategy):
+
+```{bash}
+$ singularity exec --cleanenv \
+--bind $AF_SAMPLE_DIR:/workdir \
+--pwd /usefulaf/bash usefulaf.sif \
+./simpleaf quant \
+-1 /workdir/data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L001_R1_001.fastq.gz,/workdir/data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L002_R1_001.fastq.gz \
+-2 /workdir/data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L001_R2_001.fastq.gz,/workdir/data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L002_R2_001.fastq.gz \
+-i /workdir/human_CR_3.0_splici/index \
+-o /workdir/quants/pbmc1k_v3 \
+-f u -c v3 -r cr-like \
+-m /workdir/human_CR_3.0_splici/ref/transcriptome_splici_fl86_t2g_3col.tsv \
+-t 16
+```
+
+### Output
+
+At the end of this process, the directory `$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant` will have the final output of running `alevin-fry`'s `quant` command.  The `alevin` subdirectory will include a file specifying the row names (cell barcode), the column names (unspliced, spliced and ambiguous genes) and the counts (in MTX coordinate format).  You can load these counts up in your favorite analysis environment to explore further.
+
+**R** : In [R](https://www.r-project.org/), you can make use of the `R` [`load_fry()`](https://github.com/COMBINE-lab/usefulaf/blob/main/R/load_fry.R) function here, and read the input with the command:
+
+```{R}
+m <- load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant", which_counts=c('S', 'A'))
+```
+
+where `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a [SingleCellExperiment](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object containing the counts for this experiment.  The stand-alone `load_fry()` function has been merged into the [`fishpond`](https://bioconductor.org/packages/release/bioc/html/fishpond.html) package and will be part of the next release.
+
+**Python** : In [python](https://www.python.org/), you can make use of the `python` [`load_fry()`](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) function, which relies on [scanpy](https://scanpy.readthedocs.io/en/stable/).  To read the input you can use the following command:
+
+```{python}
+m = load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant", which_counts=['S','A'])
+```
+
+where, again `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a `scanpy` [`AnnData`](https://anndata.readthedocs.io/en/latest/) object with the counts.
+
+From here, you can use your favorite downstream analysis packages (like [`Seurat` in R](https://satijalab.org/seurat/) or [`scanpy` in python](https://scanpy.readthedocs.io/en/stable/)) to perform quality control, filtering and analysis of your data.
+
 ## A note about preparing a _splici_ (spliced + intron) reference
 
-In [the manuscript describing alevin-fry](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1), we primarily make use of an index that is built over spliced + intron sequence, which we refer to as a _splici_ reference.  To make the construction of the relevant reference sequence (and the 3 column TSV file you will need for Unspliced/Spliced/Ambiguous (USA) quantification) simple, we have written an R script that will process a genome and GTF file and produce the splici reference which you can then index with [`salmon`](https://github.com/COMBINE-lab/salmon) as normal.
+In [the manuscript describing alevin-fry](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1), we primarily make use of an index that is built over spliced + intron sequence, which we refer to as a _splici_ reference.  This is also what we build in the quick start example above. To make the construction of the relevant reference sequence (and the 3 column TSV file you will need for Unspliced/Spliced/Ambiguous (USA) quantification) simple, we have written an R script that will process a genome and GTF file and produce the splici reference which you can then index with [`salmon`](https://github.com/COMBINE-lab/salmon) as normal.
 
 First, checkout the [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository and navigate to the `R` directory.  Then, we'll run the 
 `build_splici_ref.R` script.
