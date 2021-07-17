@@ -66,7 +66,7 @@ First, create a working directory with sufficient space to download all of the i
 
 ```{bash}
 $ mkdir af_test_workdir
-$ export AF_SAMPLE_DIR=`pwd`/af_test_workdir
+$ export AF_SAMPLE_DIR=$PWD/af_test_workdir
 ```
 
 Then, we download all of our test data.  This consist of the human reference genome and annotation (based, in this case, on the [CellRanger](https://support.10xgenomics.com/single-cell-gene-expression/software/overview/welcome) 3.0 reference annotation) and the FASTQ files from the [PBMC1k (v3) healthy donor samples](https://www.10xgenomics.com/resources/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard).
