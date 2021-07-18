@@ -58,7 +58,7 @@ $ export PATH=`pwd`/target/release/:$PATH
 
 ## A quick start run through on sample data
 
-Here, we show how to perform a completely analysis on the [1k PBMCs from a Healthy Donor data from 10X Genomics](https://www.10xgenomics.com/resources/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard).  This run through includes **all steps**, even extracting the _splici_ sequence and building the salmon index, which you typically would not do _per-sample_.  To make this sample as easy as possible to follow, we have bundled all of the required software and utilities in a singularity container that we use in the commands below.
+Here, we show how to perform a complete analysis on the [1k PBMCs from a Healthy Donor data from 10X Genomics](https://www.10xgenomics.com/resources/datasets/1-k-pbm-cs-from-a-healthy-donor-v-3-chemistry-3-standard).  This run through includes **all steps**, even extracting the _splici_ sequence and building the salmon index, which you typically would not do _per-sample_.  To make this sample as easy as possible to follow, we have bundled all of the required software and utilities in a singularity container that we use in the commands below.
 
 ### Download input data and singularity container
 
@@ -89,6 +89,11 @@ Finally, we'll download the [singularity](https://sylabs.io/singularity/) image 
 ```{bash}
 $ wget -v -O usefulaf.sif https://umd.box.com/shared/static/0twj103udhafoc3xggpecwptjsmgvbiw
 ```
+or, alternatively, you can pull the docker image directly from Dockerhub and have singularity convert it for you
+
+```{bash}
+$ singularity pull docker://combinelab/usefulaf:latest
+```
 
 ### Info about the singularity container
 
@@ -98,7 +103,7 @@ To build the reference index (and quantify) we'll use the [simpleaf](https://git
 
 ### Building the splici reference and index
 
-To build our reference index (this will both extract the _splici_ fasta and transcript to gene mapping, and build the `salmon` index on it), use the following command:
+To build our reference index (this will both extract the _splici_ fasta and transcript to gene mapping, and build the `salmon` index on it), use the following command (this should generally take ~1hr or less):
 
 ```{bash}
 $ singularity exec --cleanenv \
@@ -112,7 +117,7 @@ $ singularity exec --cleanenv \
 
 ### Quantifying the sample
 
-Given the constructed index (which will be written by the above command to `$AF_SAMPLE_DIR/human_CR_3.0_splici/index`), the next step is to quantify the sample against this index.  This can be done with the following command, which will run `salmon` to generate the RAD file in `sketch` mode, perform _unfiltered_ permit-list generation --- automatically downloading the appropriate external permit-list --- collate the RAD file and quantify the gene counts using the `cr-like` strategy):
+Given the constructed index (which will be written by the above command to `$AF_SAMPLE_DIR/human_CR_3.0_splici/index`), the next step is to quantify the sample against this index.  This can be done with the following command (this should generally take only a few minutes), which will run `salmon` to generate the RAD file in `sketch` mode, perform _unfiltered_ permit-list generation --- automatically downloading the appropriate external permit-list --- collate the RAD file and quantify the gene counts using the `cr-like` strategy):
 
 ```{bash}
 $ singularity exec --cleanenv \
