@@ -1,5 +1,7 @@
 # Changelog
 
+Changelog for alevin-fry
+
 ## [Unreleased]
 
 Currently no unreleased features
@@ -16,3 +18,6 @@ This is a minor release, intended mostly to bump some version dependencies and t
 ### Removed
 
 - The `quant` command no longer writes a `cmd_info.json` file
+
+[unreleased]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.0...v0.4.1
