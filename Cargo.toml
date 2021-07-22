@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
@@ -25,17 +25,17 @@ categories = ["command-line-utilities", "science"]
 [workspace]
 
 [dependencies]	
-libradicl = { path = "libradicl", version = "0.4.0" }
-slog = "2.5.2"
-slog-term = "2.6.0"
-slog-async = "2.5.0"
-rand = "0.8.3"
+libradicl = { path = "libradicl", version = "0.4.1" }
+slog = "2.7.0"
+slog-term = "2.8.0"
+slog-async = "2.6.0"
+rand = "0.8.4"
 chrono = "0.4.13"
 csv = "1.1.6"
-mimalloc = { version = "0.1.22", default-features = false }
+mimalloc = { version = "0.1.26", default-features = false }
 num_cpus = "1.13.0"
-bio-types = "0.11.0"
-itertools = "0.10.0"
+bio-types = "0.12.0"
+itertools = "0.10.1"
 statrs = "0.15.0" 
 
 
