@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+Currently no unreleased features
+
 ## [0.4.1] - 2021-07-22
 
-  This is a minor release, intended mostly to bump some version dependencies and to address [Issue #22](https://github.com/COMBINE-lab/alevin-fry/issues/22).
+This is a minor release, intended mostly to bump some version dependencies and to address [Issue #22](https://github.com/COMBINE-lab/alevin-fry/issues/22).
 
 ### Changed
 
