@@ -110,6 +110,7 @@ pub fn collate(
         total_to_collate,
         compress_out,
         cmdline,
+        version_str,
         log,
     )
 
@@ -226,6 +227,7 @@ pub fn collate_with_temp(
     total_to_collate: u64,
     compress_out: bool,
     cmdline: &str,
+    version: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // the number of corrected cells we'll write
@@ -286,6 +288,7 @@ pub fn collate_with_temp(
     {
         let collate_meta = json!({
             "cmd" : cmdline,
+            "version_str" : version,
             "compressed_output" : compress_out,
         });
 
@@ -569,10 +572,11 @@ pub fn collate_with_temp(
 
     // read each chunk
     pbar_inner.reset();
-    pbar_inner.set_message(&format!(
+    let pb_msg = format!(
         "processing {} / {} total records",
         total_allocated_records, total_to_collate
-    ));
+    );
+    pbar_inner.set_message(pb_msg);
 
     // read chunks from the input file and pass them to the
     // worker threads.

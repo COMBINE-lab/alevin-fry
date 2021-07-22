@@ -380,7 +380,7 @@ pub fn infer(
     }
 
     let pb_msg = format!("finished quantifying {} cells.", num_cells);
-    pbar.finish_with_message(&pb_msg);
+    pbar.finish_with_message(pb_msg);
 
     // finally, we write our output matrix of gene
     // counts.
