@@ -685,6 +685,7 @@ pub fn quantify(
     small_thresh: usize,
     filter_list: Option<&str>,
     cmdline: &str,
+    version: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -723,6 +724,7 @@ pub fn quantify(
             small_thresh,
             filter_list,
             cmdline,
+            version,
             &log,
         )
     } else {
@@ -750,6 +752,7 @@ pub fn quantify(
             small_thresh,
             filter_list,
             cmdline,
+            version,
             &log,
         )
     }
@@ -774,6 +777,7 @@ pub fn do_quantify<T: Read>(
     small_thresh: usize,
     filter_list: Option<&str>,
     cmdline: &str,
+    version: &str,
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
@@ -1601,7 +1605,7 @@ pub fn do_quantify<T: Read>(
         "finished quantifying {} cells.",
         num_cells.to_formatted_string(&Locale::en)
     );
-    pbar.finish_with_message(&pb_msg);
+    pbar.finish_with_message(pb_msg);
 
     info!(
         log,
@@ -1621,6 +1625,7 @@ pub fn do_quantify<T: Read>(
 
     let meta_info = json!({
         "cmd" : cmdline,
+        "version_str": version,
         "resolution_strategy" : resolution.to_string(),
         "num_quantified_cells" : num_cells,
         "num_genes" : num_rows,
@@ -1629,27 +1634,28 @@ pub fn do_quantify<T: Read>(
         "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
-    let mut meta_info_file = File::create(output_path.join("meta_info.json"))
-        .expect("couldn't create meta_info.json file.");
+    let mut meta_info_file =
+        File::create(output_path.join("quant.json")).expect("couldn't create quant.json file.");
     let aux_info_str = serde_json::to_string_pretty(&meta_info).expect("could not format json.");
     meta_info_file
         .write_all(aux_info_str.as_bytes())
-        .expect("cannot write to meta_info.json file");
+        .expect("cannot write to quant.json file");
 
     // k3yavi: Todo delete after api stability
     // creating a dummy cmd_info.json for R compatibility
+    /*
     let cmd_info = json!({
          "salmon_version": "1.4.0",
          "auxDir": "aux_info"
     });
-    let mut cmd_info_file = File::create(output_path.join("cmd_info.json"))
-        .expect("couldn't create cmd_info.json file.");
+    let mut cmd_info_file = File::create(output_path.join("quant_cmd_info.json"))
+        .expect("couldn't create quant_cmd_info.json file.");
     let cmd_info_str =
-        serde_json::to_string_pretty(&cmd_info).expect("could not format cmd_info json.");
+        serde_json::to_string_pretty(&cmd_info).expect("could not format quant_cmd_info json.");
     cmd_info_file
         .write_all(cmd_info_str.as_bytes())
-        .expect("cannot write to cmd_info.json file");
-
+        .expect("cannot write to quant_cmd_info.json file");
+    */
     Ok(())
 }
 
@@ -1671,6 +1677,7 @@ pub fn velo_quantify(
     _small_thresh: usize,
     _filter_list: Option<&str>,
     _cmdline: &str,
+    _version: &str,
     _log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unimplemented!("not implemented on this branch yet");

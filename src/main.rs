@@ -33,9 +33,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 // grab the version from the Cargo file.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-// static VERSION: &str = "0.0.1";
-// static AUTHORS: &str = "Avi Srivastava, Rob Patro";
-
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
     const CHARSET: &[u8] = b"ACGT";
@@ -430,6 +427,7 @@ fn main() {
                     small_thresh,
                     filter_list,
                     &cmdline,
+                    &VERSION,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -469,6 +467,7 @@ fn main() {
                     small_thresh,
                     filter_list,
                     &cmdline,
+                    &VERSION,
                     &log,
                 ) {
                     // if we're all good; then great!

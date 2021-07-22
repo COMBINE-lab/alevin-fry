@@ -23,7 +23,7 @@ use self::libradicl::utils::MASK_LOWER_31_U32;
 use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
-use rust_htslib::{bam, bam::Read};
+use rust_htslib::{bam, bam::record::Aux, bam::Read};
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
@@ -206,8 +206,20 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             .expect("coudn't write to output file");
 
         // read-level
-        let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
-        let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
+        let bc_string_in;
+        if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
+            bc_string_in = bcs.to_string();
+        } else {
+            panic!("Input record missing CR tag!");
+        }
+
+        let umi_string_in;
+        if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
+            umi_string_in = umis.to_string();
+        } else {
+            panic!("Input record missing UR tag!");
+        }
+
         let bclen = bc_string_in.len() as u16;
         let umilen = umi_string_in.len() as u16;
 
@@ -378,8 +390,19 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         // if this is a new read update the old variables
         {
-            let bc_string_in = str::from_utf8(rec.aux(b"CR").unwrap().string()).unwrap();
-            let umi_string_in = str::from_utf8(rec.aux(b"UR").unwrap().string()).unwrap();
+            let bc_string_in;
+            if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
+                bc_string_in = bcs.to_string();
+            } else {
+                panic!("Input record missing CR tag!");
+            }
+
+            let umi_string_in;
+            if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
+                umi_string_in = umis.to_string();
+            } else {
+                panic!("Input record missing UR tag!");
+            }
 
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);
