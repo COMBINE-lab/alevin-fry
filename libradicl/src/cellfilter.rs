@@ -17,6 +17,7 @@ use crate::BarcodeLookupMap;
 use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
 use libradicl::exit_codes;
+use libradicl::rad_types;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde_json::json;
@@ -222,7 +223,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 fn process_unfiltered(
     mut hm: HashMap<u64, u64, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
-    ft_vals: &libradicl::FileTags,
+    ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
@@ -441,7 +442,7 @@ fn process_unfiltered(
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_filtered(
     hm: &HashMap<u64, u64, ahash::RandomState>,
-    ft_vals: &libradicl::FileTags,
+    ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &str,
@@ -638,10 +639,10 @@ pub fn generate_permit_list(
         hdr.num_chunks.to_formatted_string(&Locale::en)
     );
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
@@ -654,7 +655,7 @@ pub fn generate_permit_list(
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if rt.name == BNAME || rt.name == UNAME {
-            if libradicl::decode_int_type_tag(rt.typeid).is_none() {
+            if rad_types::decode_int_type_tag(rt.typeid).is_none() {
                 crit!(
                     log,
                     "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
@@ -672,17 +673,17 @@ pub fn generate_permit_list(
     }
 
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let al_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
     let mut num_reads: usize = 0;
 
-    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present."))
+    let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
         .expect("unknown barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present"))
+    let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
         .expect("unknown barcode type id.");
 
     // if dealing with filtered type

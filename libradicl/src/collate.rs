@@ -19,6 +19,7 @@ use crate::utils::InternalVersionInfo;
 use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
+use self::libradicl::rad_types;
 use self::libradicl::schema::TempCellInfo;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
@@ -338,16 +339,16 @@ pub fn collate_with_temp(
     );
 
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let al_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
     let bct = rl_tags.tags[0].typeid;
@@ -412,7 +413,7 @@ pub fn collate_with_temp(
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    let cc = libradicl::ChunkConfig {
+    let cc = rad_types::ChunkConfig {
         num_chunks: hdr.num_chunks,
         bc_type: bct,
         umi_type: umit,
@@ -501,9 +502,9 @@ pub fn collate_with_temp(
         // the number of chunks remaining to be processed
         let chunks_remaining = chunks_to_process.clone();
         // and knowledge of the UMI and BC types
-        let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
         let umi_type =
-            libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
         let nbuckets = temp_buckets.len();
         let loc_temp_buckets = temp_buckets.clone();
         //let owrite = owriter.clone();
@@ -668,9 +669,9 @@ pub fn collate_with_temp(
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
-        let bc_type = libradicl::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
         let umi_type =
-            libradicl::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
         // have access to the input directory
         let input_dir = input_dir.clone();
         // the output file

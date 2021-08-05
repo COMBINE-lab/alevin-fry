@@ -17,7 +17,6 @@ extern crate serde;
 extern crate slog;
 
 use self::indicatif::{ProgressBar, ProgressStyle};
-use self::petgraph::prelude::*;
 #[allow(unused_imports)]
 use self::slog::{crit, info, warn};
 use crate as libradicl;
@@ -27,11 +26,9 @@ use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
-use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
-use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
@@ -46,220 +43,9 @@ use flate2::Compression;
 
 use self::libradicl::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use self::libradicl::pugutils;
-use self::libradicl::schema::{
-    EqMap, IndexedEqList, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel,
-};
+use self::libradicl::rad_types;
+use self::libradicl::schema::{EqMap, IndexedEqList, ResolutionStrategy, SplicedAmbiguityModel};
 use self::libradicl::utils::*;
-
-/// Extracts the parsimonious UMI graphs (PUGs) from the
-/// equivalence class map for a given cell.
-/// The returned graph is a directed graph (potentially with
-/// bidirected edges) where each node consists of an (equivalence
-/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply
-/// the rank of the UMI in the list of all distinct UMIs for this
-/// equivalence class.  There is a directed edge between any pair of
-/// vertices whose set of transcripts overlap and whose UMIs are within
-/// a Hamming distance of 1 of each other.  If one node has more than
-/// twice the frequency of the other, the edge is directed from the
-/// more frequent to the less freuqent node.  Otherwise, edges are
-/// added in both directions.
-fn extract_graph(
-    eqmap: &EqMap,
-    log: &slog::Logger,
-) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
-    let verbose = false;
-    let mut one_edit = 0u64;
-    let mut zero_edit = 0u64;
-
-    // given 2 pairs (UMI, count), determine if an edge exists
-    // between them, and if so, what type.
-    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
-        let hdist = count_diff_2_bit_packed(x.0, y.0);
-        if hdist == 0 {
-            zero_edit += 1;
-            return PugEdgeType::BiDirected;
-        }
-
-        if hdist < 2 {
-            one_edit += 1;
-            if x.1 > (2 * y.1 - 1) {
-                return PugEdgeType::XToY;
-            } else if y.1 > (2 * x.1 - 1) {
-                return PugEdgeType::YToX;
-            } else {
-                return PugEdgeType::BiDirected;
-            }
-        }
-        PugEdgeType::NoEdge
-    };
-
-    let mut _bidirected = 0u64;
-    let mut _unidirected = 0u64;
-
-    let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    let mut hset = vec![0u8; eqmap.num_eq_classes()];
-    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
-
-    // insert all of the nodes up front to avoid redundant
-    // checks later.
-    for eqid in 0..eqmap.num_eq_classes() {
-        // get the info Vec<(UMI, frequency)>
-        let eq = &eqmap.eqc_info[eqid];
-        let u1 = &eq.umis;
-        for (xi, _x) in u1.iter().enumerate() {
-            graph.add_node((eqid as u32, xi as u32));
-        }
-    }
-
-    // for every equivalence class in this cell
-    for eqid in 0..eqmap.num_eq_classes() {
-        if verbose && eqid % 1000 == 0 {
-            print!("\rprocessed {:?} eq classes", eqid);
-            io::stdout().flush().expect("Could not flush stdout");
-        }
-
-        // get the info Vec<(UMI, frequency)>
-        let eq = &eqmap.eqc_info[eqid];
-
-        // for each (umi, count) pair and its index
-        let u1 = &eq.umis;
-        for (xi, x) in u1.iter().enumerate() {
-            // add a node
-            // graph.add_node((eqid as u32, xi as u32));
-
-            // for each (umi, freq) pair and node after this one
-            for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
-                //for xi2 in (xi + 1)..u1.len() {
-                // x2 is the other (umi, freq) pair
-                //let x2 = &u1[xi2];
-
-                // add a node for it
-                // graph.add_node((eqid as u32, xi2 as u32));
-
-                // determine if an edge exists between x and x2, and if so, what kind
-                let et = has_edge(&x, &x2);
-                // for each type of edge, add the appropriate edge in the graph
-                match et {
-                    PugEdgeType::BiDirected => {
-                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
-                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        _bidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    bidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::XToY => {
-                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
-                        _unidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    unidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::YToX => {
-                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        _unidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    unidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::NoEdge => {}
-                }
-            }
-        }
-
-        //hset.clear();
-        //hset.resize(eqmap.num_eq_classes(), 0u8);
-        for i in &idxvec {
-            hset[*i as usize] = 0u8;
-        }
-        let stf = idxvec.len() > 128;
-        idxvec.clear();
-        if stf {
-            idxvec.shrink_to_fit();
-        }
-
-        // for every reference id in this eq class
-        for r in eqmap.refs_for_eqc(eqid as u32) {
-            // find the equivalence classes sharing this reference
-            for eq2id in eqmap.eq_classes_containing(*r).iter() {
-                // if eq2id <= eqid, then we already observed the relevant edges
-                // when we process eq2id
-                if (*eq2id as usize) <= eqid {
-                    continue;
-                }
-                // otherwise, if we have already processed this other equivalence
-                // class because it shares _another_ reference (apart from r) with
-                // the current equivalence class, then skip it.
-                if hset[*eq2id as usize] > 0 {
-                    continue;
-                }
-
-                // recall that we processed this eq class as a neighbor of eqid
-                hset[*eq2id as usize] = 1;
-                idxvec.push(*eq2id as u32);
-                let eq2 = &eqmap.eqc_info[*eq2id as usize];
-
-                // compare all the umis between eqid and eq2id
-                let u2 = &eq2.umis;
-                for (xi, x) in u1.iter().enumerate() {
-                    // Node for equiv : eqid and umi : xi
-                    // graph.add_node((eqid as u32, xi as u32));
-
-                    for (yi, y) in u2.iter().enumerate() {
-                        // Node for equiv : eq2id and umi : yi
-                        // graph.add_node((*eq2id as u32, yi as u32));
-
-                        let et = has_edge(&x, &y);
-                        match et {
-                            PugEdgeType::BiDirected => {
-                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
-                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                _bidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    bidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::XToY => {
-                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
-                                _unidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    unidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::YToX => {
-                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                _unidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    unidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::NoEdge => {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if verbose {
-        info!(
-            log,
-            "\n\nsize of graph ({:?}, {:?})\n\n",
-            graph.node_count(),
-            graph.edge_count()
-        );
-        let total_edits = (one_edit + zero_edit) as f64;
-        info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
-    }
-
-    graph
-}
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 struct BootstrapHelper {
@@ -560,7 +346,7 @@ fn fill_work_queue<T: Read>(
 /// any cell whose barcode is not in `keep_set`.
 fn fill_work_queue_filtered<T: Read>(
     keep_set: HashSet<u64, ahash::RandomState>,
-    rl_tags: &libradicl::TagSection,
+    rl_tags: &rad_types::TagSection,
     q: Arc<ArrayQueue<MetaChunk>>,
     mut br: T,
     num_chunks: usize,
@@ -568,8 +354,8 @@ fn fill_work_queue_filtered<T: Read>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
-    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
 
     const BUFSIZE: usize = 524208;
     // the buffer that will hold our records
@@ -616,7 +402,7 @@ fn fill_work_queue_filtered<T: Read>(
                 .unwrap();
             // get the barcode for this chunk
             let (bc, _umi) =
-                libradicl::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
+                rad_types::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
             if keep_set.contains(&bc) {
                 cells_in_chunk += 1;
                 cbytes += nbytes_chunk;
@@ -632,7 +418,7 @@ fn fill_work_queue_filtered<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }
@@ -781,7 +567,7 @@ pub fn do_quantify<T: Read>(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
-    let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
@@ -877,16 +663,16 @@ pub fn do_quantify<T: Read>(
         Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let al_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
     let bct = rl_tags.tags[0].typeid;
@@ -949,8 +735,8 @@ pub fn do_quantify<T: Read>(
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
     // the types for the barcodes and umis
-    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
 
@@ -1122,7 +908,7 @@ pub fn do_quantify<T: Read>(
                             BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
                         byte_offset += nbytes as usize;
 
-                        let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                        let mut c = rad_types::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
                         if c.reads.is_empty() {
                             warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
@@ -1231,7 +1017,7 @@ pub fn do_quantify<T: Read>(
                                 }
                                 ResolutionStrategy::Parsimony => {
                                     eq_map.init_from_chunk(&mut c);
-                                    let g = extract_graph(&eq_map, &log);
+                                    let g = pugutils::extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
@@ -1254,7 +1040,7 @@ pub fn do_quantify<T: Read>(
                                 }
                                 ResolutionStrategy::Full => {
                                     eq_map.init_from_chunk(&mut c);
-                                    let g = extract_graph(&eq_map, &log);
+                                    let g = pugutils::extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
