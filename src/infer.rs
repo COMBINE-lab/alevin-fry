@@ -7,9 +7,9 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use crate::cellfilter::permit_list_from_file;
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressStyle};
-use crate::cellfilter::permit_list_from_file;
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
 

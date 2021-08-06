@@ -6,6 +6,26 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
+use std::str::FromStr;
+use thiserror::Error;
+
+/*
+struct QuantArguments {
+    num_threads: u64,
+    num_bootstraps: u64,
+    init_uniform: bool,
+    summary_stat: bool,
+    dump_eq: bool,
+    use_mtx: bool,
+    input_dir: String,
+    output_dir: String,
+    tg_map: String,
+    resolution: ResolutionStrategy,
+    sa_model: SplicedAmbiguityModel,
+    small_thresh: u64,
+    filter_list: String
+}
+*/
 
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
@@ -676,9 +696,62 @@ pub fn is_velo_mode(input_dir: String) -> bool {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct InternalVersionInfo {
+    major: u32,
+    minor: u32,
+    patch: u32,
+}
+
+impl InternalVersionInfo {
+    pub fn is_compatible_with(&self, other: &InternalVersionInfo) -> Result<(), String> {
+        if self.major == other.major && self.minor == other.minor {
+            Ok(())
+        } else {
+            let s = format!(
+                "version {:?} is incompatible with version {:?}",
+                self, other
+            );
+            Err(s)
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum VersionParseError {
+    #[error("The version string should be of the format x.y.z; it was `{0}`")]
+    IncorrectFormat(String),
+}
+
+impl FromStr for InternalVersionInfo {
+    type Err = VersionParseError;
+
+    fn from_str(vs: &str) -> Result<Self, Self::Err> {
+        let versions: Vec<u32> = vs.split('.').map(|s| s.parse::<u32>().unwrap()).collect();
+        if versions.len() != 3 {
+            return Err(VersionParseError::IncorrectFormat(vs.to_string()));
+        }
+        Ok(Self {
+            major: versions[0],
+            minor: versions[1],
+            patch: versions[2],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    #[test]
+    fn test_version_info() {
+        let vi = InternalVersionInfo::from_string("1.2.3")?;
+        assert_eq!(
+            vi,
+            InternalVersionInfo{1, 2, 3}
+        );
+    }
 
     #[test]
     fn test_get_bit_mask() {

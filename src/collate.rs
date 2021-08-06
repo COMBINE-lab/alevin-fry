@@ -10,9 +10,9 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
+use crate::utils::InternalVersionInfo;
 use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
-use libradicl::utils::InternalVersionInfo;
 // use dashmap::DashMap;
 use libradicl::rad_types;
 use libradicl::schema::TempCellInfo;
@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -47,12 +48,12 @@ pub fn collate(
         File::open(&gpl_path).expect(&format!("Could not open the file {:?}.", gpl_path)[..]);
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
-    let calling_version = InternalVersionInfo::from_string(version_str);
+    let calling_version = InternalVersionInfo::from_str(version_str)?;
     let vd: InternalVersionInfo;
     match mdata.get("version_str") {
         Some(vs) => match vs.as_str() {
             Some(s) => {
-                vd = InternalVersionInfo::from_string(s);
+                vd = InternalVersionInfo::from_str(s)?;
             }
             None => {
                 return Err("The version_str field must be a string".into());
