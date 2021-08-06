@@ -22,7 +22,7 @@ use serde_json::json;
 use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read};
 //use std::io::BufRead;
 use bstr::io::BufReadExt;
 //use libradicl::utils::count_diff_2_bit_packed;
@@ -464,7 +464,7 @@ fn process_filtered(
 
             // collect all of the barcodes that have a frequency
             // >= to min_thresh.
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(&hm, min_freq);
             info!(
                 log,
                 "knee distance method resulted in the selection of {} permitted barcodes.",
@@ -482,10 +482,10 @@ fn process_filtered(
 
             // collect all of the barcodes that have a frequency
             // >= to min_thresh.
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(&hm, min_freq);
         }
         CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = libradicl::permit_list_from_file(valid_bc_file.clone(), ft_vals.bclen);
+            valid_bc = permit_list_from_file(valid_bc_file.clone(), ft_vals.bclen);
         }
         CellFilterMethod::ExpectCells(expected_num_cells) => {
             let robust_quantile = 0.99f64;
@@ -495,7 +495,7 @@ fn process_filtered(
             let ind = cmp::min(freq.len() - 1, robust_ind as usize);
             let robust_freq = freq[ind];
             let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(&hm, min_freq);
         }
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unimplemented!();
@@ -702,7 +702,7 @@ pub fn generate_permit_list(
             if let Some(mut hmu) = unfiltered_bc_counts {
                 for _ in 0..(hdr.num_chunks as usize) {
                     let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-                    num_orientation_compat_reads += libradicl::update_barcode_hist_unfiltered(
+                    num_orientation_compat_reads += update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
                         &mut max_ambiguity_read,
@@ -739,7 +739,7 @@ pub fn generate_permit_list(
         _ => {
             for _ in 0..(hdr.num_chunks as usize) {
                 let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
-                libradicl::update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
+                update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
                 num_reads += c.reads.len();
             }
             info!(
@@ -892,3 +892,127 @@ pub fn generate_permit_list(
     Ok(num_corrected)
     */
 }
+
+
+pub fn update_barcode_hist_unfiltered(
+	hist: &mut HashMap<u64, u64, ahash::RandomState>,
+	unmatched_bc: &mut Vec<u64>,
+	max_ambiguity_read: &mut usize,
+	chunk: &rad_types::Chunk,
+	expected_ori: &Strand,
+    ) -> usize {
+	let mut num_strand_compat_reads = 0usize;
+	match expected_ori {
+	    Strand::Unknown => {
+		for r in &chunk.reads {
+		    num_strand_compat_reads += 1;
+		    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+		    // lookup the barcode in the map of unfiltered known
+		    // barcodes
+		    match hist.get_mut(&r.bc) {
+			// if we find a match, increment the count
+			Some(c) => *c += 1,
+			// otherwise, push this into the unmatched list
+			None => {
+			    unmatched_bc.push(r.bc);
+			}
+		    }
+		}
+	    }
+	    Strand::Forward => {
+		for r in &chunk.reads {
+		    if r.dirs.iter().any(|&x| x) {
+			num_strand_compat_reads += 1;
+			*max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+			// lookup the barcode in the map of unfiltered known
+			// barcodes
+			match hist.get_mut(&r.bc) {
+			    // if we find a match, increment the count
+			    Some(c) => *c += 1,
+			    // otherwise, push this into the unmatched list
+			    None => {
+				unmatched_bc.push(r.bc);
+			    }
+			}
+		    }
+		}
+	    }
+	    Strand::Reverse => {
+		for r in &chunk.reads {
+		    if r.dirs.iter().any(|&x| !x) {
+			num_strand_compat_reads += 1;
+			*max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+			// lookup the barcode in the map of unfiltered known
+			// barcodes
+			match hist.get_mut(&r.bc) {
+			    // if we find a match, increment the count
+			    Some(c) => *c += 1,
+			    // otherwise, push this into the unmatched list
+			    None => {
+				unmatched_bc.push(r.bc);
+			    }
+			}
+		    }
+		}
+	    }
+	}
+	num_strand_compat_reads
+    }
+    
+    pub fn update_barcode_hist(
+	hist: &mut HashMap<u64, u64, ahash::RandomState>,
+	max_ambiguity_read: &mut usize,
+	chunk: &rad_types::Chunk,
+	expected_ori: &Strand,
+    ) {
+	match expected_ori {
+	    Strand::Unknown => {
+		for r in &chunk.reads {
+		    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+		    *hist.entry(r.bc).or_insert(0) += 1;
+		}
+	    }
+	    Strand::Forward => {
+		for r in &chunk.reads {
+		    if r.dirs.iter().any(|&x| x) {
+			*max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+			*hist.entry(r.bc).or_insert(0) += 1;
+		    }
+		}
+	    }
+	    Strand::Reverse => {
+		for r in &chunk.reads {
+		    if r.dirs.iter().any(|&x| !x) {
+			*max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+			*hist.entry(r.bc).or_insert(0) += 1;
+		    }
+		}
+	    }
+	}
+    }
+    
+    pub fn permit_list_from_threshold(
+	hist: &HashMap<u64, u64, ahash::RandomState>,
+	min_freq: u64,
+    ) -> Vec<u64> {
+	let valid_bc: Vec<u64> = hist
+	    .iter()
+	    .filter_map(|(k, v)| if v >= &min_freq { Some(*k) } else { None })
+	    .collect();
+	valid_bc
+    }
+    
+    pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
+	let f = File::open(ifile).expect("couldn't open input barcode file.");
+	let br = BufReader::new(f);
+	let mut bc = Vec::<u64>::with_capacity(10_000);
+    
+	for l in br.lines() {
+	    let line = l.expect("couldn't read line from barcode file.");
+	    let mut bnk = BitNuclKmer::new(line.as_bytes(), bclen as u8, false);
+	    let (_, k, _) = bnk.next().expect("can't extract kmer");
+	    bc.push(k.0);
+	}
+	bc
+    }
+

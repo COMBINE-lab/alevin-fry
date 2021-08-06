@@ -662,6 +662,20 @@ pub fn read_filter_list(
     Ok(fset)
 }
 
+pub fn is_velo_mode(input_dir: String) -> bool {
+    let parent = std::path::Path::new(&input_dir);
+    // open the metadata file and read the json
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
+        .expect("could not open the generate_permit_list.json file.");
+    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)
+        .expect("could not deseralize generate_permit_list.json");
+    let vm = mdata.get("velo_mode");
+    match vm {
+        Some(v) => v.as_bool().unwrap_or(false),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

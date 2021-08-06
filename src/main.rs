@@ -411,7 +411,7 @@ fn main() {
         // if the input directory contains the valid json file we want
         // then proceed.  otherwise print a critical error.
         if json_path.exists() {
-            let velo_mode = libradicl::utils::is_velo_mode(input_dir.to_string());
+            let velo_mode = alevin_fry::utils::is_velo_mode(input_dir.to_string());
             if velo_mode {
                 match alevin_fry::quant::velo_quantify(
                     input_dir,

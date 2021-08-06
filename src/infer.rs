@@ -9,7 +9,7 @@
 
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressStyle};
-use libradicl::permit_list_from_file;
+use crate::cellfilter::permit_list_from_file;
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
 
