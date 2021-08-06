@@ -21,11 +21,12 @@ use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
-use libradicl::cellfilter::{generate_permit_list, CellFilterMethod};
-use libradicl::schema::{ResolutionStrategy, SplicedAmbiguityModel};
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
+
+use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
+use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -326,7 +327,7 @@ fn main() {
         let input_file: String = t.value_of_t("bam").unwrap();
         let rad_file: String = t.value_of_t("output").unwrap();
         let num_threads: u32 = t.value_of_t("threads").unwrap();
-        libradicl::convert::bam2rad(input_file, rad_file, num_threads, &log)
+        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
 
     // convert a rad file to a textual representation and write to stdout
@@ -337,7 +338,7 @@ fn main() {
         if t.is_present("output") {
             out_file = t.value_of_t("output").unwrap();
         }
-        libradicl::convert::view(rad_file, print_header, out_file, &log)
+        alevin_fry::convert::view(rad_file, print_header, out_file, &log)
     }
 
     // collate a rad file to group together all records corresponding
@@ -348,7 +349,7 @@ fn main() {
         let num_threads = t.value_of_t("threads").unwrap();
         let compress_out = t.is_present("compress");
         let max_records: u32 = t.value_of_t("max-records").unwrap();
-        libradicl::collate::collate(
+        alevin_fry::collate::collate(
             input_dir,
             rad_dir,
             num_threads,
@@ -412,7 +413,7 @@ fn main() {
         if json_path.exists() {
             let velo_mode = libradicl::utils::is_velo_mode(input_dir.to_string());
             if velo_mode {
-                match libradicl::quant::velo_quantify(
+                match alevin_fry::quant::velo_quantify(
                     input_dir,
                     tg_map,
                     output_dir,
@@ -452,7 +453,7 @@ fn main() {
                     },
                 }; // end match if
             } else {
-                match libradicl::quant::quantify(
+                match alevin_fry::quant::quantify(
                     input_dir,
                     tg_map,
                     output_dir,
@@ -510,7 +511,7 @@ fn main() {
         let filter_list = t.value_of("quant-subset");
         //let bc_file = t.value_of_t("barcodes").unwrap();
 
-        libradicl::infer::infer(
+        alevin_fry::infer::infer(
             //num_bootstraps,
             //init_uniform,
             //summary_stat,

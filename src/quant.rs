@@ -7,20 +7,11 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate ahash;
-extern crate bincode;
-extern crate crossbeam_queue;
-extern crate indicatif;
-extern crate needletail;
-extern crate petgraph;
-extern crate serde;
-extern crate slog;
-
-use self::indicatif::{ProgressBar, ProgressStyle};
-#[allow(unused_imports)]
-use self::slog::{crit, info, warn};
-use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
+use indicatif::{ProgressBar, ProgressStyle};
+
+#[allow(unused_imports)]
+use slog::{crit, info, warn};
 
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
@@ -32,22 +23,74 @@ use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use std::fmt;
 //use std::ptr;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
-use self::libradicl::pugutils;
-use self::libradicl::rad_types;
-use self::libradicl::schema::{EqMap, IndexedEqList, ResolutionStrategy, SplicedAmbiguityModel};
-use self::libradicl::utils::*;
+use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
+use crate::eq_class::{EqMap, IndexedEqList};
+use crate::pugutils;
+use crate::utils as afutils;
+use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum SplicedAmbiguityModel {
+    PreferAmbiguity,
+    WinnerTakeAll,
+}
+
+// Implement the trait
+impl FromStr for SplicedAmbiguityModel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "prefer-ambig" => Ok(SplicedAmbiguityModel::PreferAmbiguity),
+            "winner-take-all" => Ok(SplicedAmbiguityModel::WinnerTakeAll),
+            _ => Err("no match"),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum ResolutionStrategy {
+    Trivial,
+    CellRangerLike,
+    CellRangerLikeEm,
+    Full,
+    Parsimony,
+}
+
+impl fmt::Display for ResolutionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+// Implement the trait
+impl FromStr for ResolutionStrategy {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trivial" => Ok(ResolutionStrategy::Trivial),
+            "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
+            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
+            "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
+            "parsimony" => Ok(ResolutionStrategy::Parsimony),
+            _ => Err("no match"),
+        }
+    }
+}
+
 struct BootstrapHelper {
     bsfile: Option<BufferedGzFile>,
     mean_var_files: Option<(BufferedGzFile, BufferedGzFile)>,
@@ -202,7 +245,7 @@ fn write_eqc_counts(
                     // if the gene label belongs to the same gene
                     // then it must be splicing ambiguous (because exact
                     // duplicate IDs can't occur in eq class labels).
-                    if same_gene(*cg, **ng, true) {
+                    if afutils::same_gene(*cg, **ng, true) {
                         gl = (cg >> 1) + ambig_offset;
                         gn_eq_writer
                             .write_all(format!("{}\t", gl).as_bytes())
@@ -216,7 +259,7 @@ fn write_eqc_counts(
                 // either the next element does *not* belong to the same
                 // gene, or there is no next element.  In either case, deal
                 // with this gene label individually.
-                if is_spliced(*cg) {
+                if afutils::is_spliced(*cg) {
                     gl = cg >> 1;
                 } else {
                     gl = (cg >> 1) + unspliced_offset;
@@ -306,17 +349,17 @@ fn fill_work_queue<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-           || // or if adding the next cell to this chunk would exceed the buffer size
-           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-           || // of if this was the last chunk
-           chunk_num == num_chunks
+	    || // or if adding the next cell to this chunk would exceed the buffer size
+	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+	    || // of if this was the last chunk
+	    chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -425,10 +468,10 @@ fn fill_work_queue_filtered<T: Read>(
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-           || // or if adding the next cell to this chunk would exceed the buffer size
-           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-           || // of if this was the last chunk
-           chunk_num == num_chunks
+	    || // or if adding the next cell to this chunk would exceed the buffer size
+	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+	    || // of if this was the last chunk
+	    chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -608,7 +651,7 @@ pub fn do_quantify<T: Read>(
     // e.g. just spliced, or 3-column tsv if we are dealing with
     // both spliced and unspliced.  The type will be automatically
     // determined.
-    match parse_tg_map(
+    match afutils::parse_tg_map(
         &tg_map,
         hdr.ref_count as usize,
         &rname_to_id,
@@ -620,14 +663,14 @@ pub fn do_quantify<T: Read>(
             with_unspliced = us;
             if with_unspliced {
                 assert_eq!(
-                    num_bootstraps, 0,
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-                );
+		     num_bootstraps, 0,
+		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
+		 );
                 assert!(
-                    matches!(resolution,
-                             ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
-                );
+		     matches!(resolution,
+			      ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
+		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
+		 );
             } else {
                 // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
                 // operating `with_unspliced`, so if the user has set that here, inform them
@@ -636,9 +679,9 @@ pub fn do_quantify<T: Read>(
                     SplicedAmbiguityModel::WinnerTakeAll => {}
                     _ => {
                         info!(
-                            log,
-                            "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
-                        );
+			     log,
+			     "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
+			 );
                         sa_model = SplicedAmbiguityModel::WinnerTakeAll;
                     }
                 }
@@ -681,7 +724,7 @@ pub fn do_quantify<T: Read>(
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
-        match read_filter_list(fname, ft_vals.bclen) {
+        match afutils::read_filter_list(fname, ft_vals.bclen) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process
@@ -759,9 +802,9 @@ pub fn do_quantify<T: Read>(
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
     writeln!(
-        ff_file,
-        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
-    )?;
+	 ff_file,
+	 "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+     )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
@@ -968,11 +1011,11 @@ pub fn do_quantify<T: Read>(
                                     match (with_unspliced, only_unique) {
                                         (true, true) => {
                                             // USA mode, only gene-unqique reads
-                                            counts = extract_counts(&gene_eqc, num_rows);
+                                            counts = afutils::extract_counts(&gene_eqc, num_rows);
                                         }
                                         (true, false) => {
                                             // USA mode, use EM
-                                            extract_usa_eqmap(
+                                            afutils::extract_usa_eqmap(
                                                 &gene_eqc,
                                                 num_rows,
                                                 &mut idx_eq_list,
@@ -1101,10 +1144,11 @@ pub fn do_quantify<T: Read>(
                                 // this special case
                                 match resolution {
                                     ResolutionStrategy::CellRangerLike => {
-                                        counts = extract_counts(&gene_eqc, num_rows);
+                                        counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
                                     ResolutionStrategy::CellRangerLikeEm => {
-                                        counts = extract_counts_mm_uniform(&gene_eqc, num_rows);
+                                        counts =
+                                            afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
                                     }
                                     _ => {
                                         counts = vec![0f32; num_genes];
@@ -1410,14 +1454,14 @@ pub fn do_quantify<T: Read>(
     }
 
     let meta_info = json!({
-        "cmd" : cmdline,
-        "version_str": version,
-        "resolution_strategy" : resolution.to_string(),
-        "num_quantified_cells" : num_cells,
-        "num_genes" : num_rows,
-        "dump_eq" : dump_eq,
-        "usa_mode" : with_unspliced,
-        "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
+    "cmd" : cmdline,
+    "version_str": version,
+    "resolution_strategy" : resolution.to_string(),
+    "num_quantified_cells" : num_cells,
+    "num_genes" : num_rows,
+    "dump_eq" : dump_eq,
+    "usa_mode" : with_unspliced,
+    "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
     });
 
     let mut meta_info_file =
@@ -1431,16 +1475,16 @@ pub fn do_quantify<T: Read>(
     // creating a dummy cmd_info.json for R compatibility
     /*
     let cmd_info = json!({
-         "salmon_version": "1.4.0",
-         "auxDir": "aux_info"
+     "salmon_version": "1.4.0",
+     "auxDir": "aux_info"
     });
     let mut cmd_info_file = File::create(output_path.join("quant_cmd_info.json"))
-        .expect("couldn't create quant_cmd_info.json file.");
+    .expect("couldn't create quant_cmd_info.json file.");
     let cmd_info_str =
-        serde_json::to_string_pretty(&cmd_info).expect("could not format quant_cmd_info json.");
+    serde_json::to_string_pretty(&cmd_info).expect("could not format quant_cmd_info json.");
     cmd_info_file
-        .write_all(cmd_info_str.as_bytes())
-        .expect("cannot write to quant_cmd_info.json file");
+    .write_all(cmd_info_str.as_bytes())
+    .expect("cannot write to quant_cmd_info.json file");
     */
     Ok(())
 }

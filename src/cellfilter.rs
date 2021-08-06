@@ -7,17 +7,15 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate slog;
-use self::slog::crit;
-use self::slog::info;
+use slog::crit;
+use slog::info;
 
-use crate as libradicl;
-use crate::BarcodeLookupMap;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
 use libradicl::exit_codes;
 use libradicl::rad_types;
+use libradicl::BarcodeLookupMap;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde_json::json;
@@ -31,6 +29,7 @@ use bstr::io::BufReadExt;
 //use rand::{thread_rng, Rng};
 use std::io::{BufWriter, Write};
 //use std::path::Path;
+use crate::utils as afutils;
 use itertools::Itertools;
 use std::str::from_utf8;
 use std::time::Instant;
@@ -163,7 +162,7 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
 
     // if we think we should include no cells, something is probably wrong.
     assert_ne!(max_idx, 0,
-              "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
+	       "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
 
     let mut iterations = 0;
     let iter_slack = 5;
@@ -181,7 +180,7 @@ fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
         let last_idx = std::cmp::min(cfreq.len() - 1, max_idx * iter_slack);
         max_idx = get_max_distance_index(&cfreq[0..last_idx], true);
         assert_ne!(max_idx, 0,
-              "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
+	       "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
     }
     max_idx
 }
@@ -413,12 +412,12 @@ fn process_unfiltered(
     bincode::serialize_into(&mut pm_writer, &hm).expect("couldn't serialize permit list mapping.");
 
     let meta_info = json!({
-        "velo_mode" : velo_mode,
-        "expected_ori" : *expected_ori.strand_symbol(),
-        "version_str" : version,
-        "max-ambig-record" : max_ambiguity_read,
-        "cmd" : cmdline,
-        "permit-list-type" : "unfiltered"
+    "velo_mode" : velo_mode,
+    "expected_ori" : *expected_ori.strand_symbol(),
+    "version_str" : version,
+    "max-ambig-record" : max_ambiguity_read,
+    "cmd" : cmdline,
+    "permit-list-type" : "unfiltered"
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -506,7 +505,7 @@ fn process_filtered(
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
     let full_permit_list =
-        libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
+        afutils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
 
     let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
@@ -559,12 +558,12 @@ fn process_filtered(
         .expect("couldn't serialize permit list.");
 
     let meta_info = json!({
-        "velo_mode" : velo_mode,
-        "expected_ori" : *expected_ori.strand_symbol(),
-        "version_str" : version,
-        "max-ambig-record" : max_ambiguity_read,
-        "cmd" : cmdline,
-        "permit-list-type" : "filtered"
+    "velo_mode" : velo_mode,
+    "expected_ori" : *expected_ori.strand_symbol(),
+    "version_str" : version,
+    "max-ambig-record" : max_ambiguity_read,
+    "cmd" : cmdline,
+    "permit-list-type" : "filtered"
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -630,7 +629,7 @@ pub fn generate_permit_list(
 
     let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    let hdr = rad_types::RadHeader::from_bytes(&mut br);
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -702,7 +701,7 @@ pub fn generate_permit_list(
             // the unfiltered_bc_count map must be valid in this branch
             if let Some(mut hmu) = unfiltered_bc_counts {
                 for _ in 0..(hdr.num_chunks as usize) {
-                    let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+                    let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
                     num_orientation_compat_reads += libradicl::update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
@@ -713,13 +712,13 @@ pub fn generate_permit_list(
                     num_reads += c.reads.len();
                 }
                 info!(
-                    log,
-                    "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
-                    num_reads.to_formatted_string(&Locale::en),
-                    num_orientation_compat_reads.to_formatted_string(&Locale::en),
-                    hdr.num_chunks.to_formatted_string(&Locale::en),
-                    max_ambiguity_read.to_formatted_string(&Locale::en)
-                );
+		     log,
+		     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
+		     num_reads.to_formatted_string(&Locale::en),
+		     num_orientation_compat_reads.to_formatted_string(&Locale::en),
+		     hdr.num_chunks.to_formatted_string(&Locale::en),
+		     max_ambiguity_read.to_formatted_string(&Locale::en)
+		 );
                 Ok(process_unfiltered(
                     hmu,
                     unmatched_bc,
@@ -739,7 +738,7 @@ pub fn generate_permit_list(
         }
         _ => {
             for _ in 0..(hdr.num_chunks as usize) {
-                let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+                let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
                 libradicl::update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
                 num_reads += c.reads.len();
             }
@@ -773,65 +772,65 @@ pub fn generate_permit_list(
 
     // select from among supported filter methods
     match filter_meth {
-        CellFilterMethod::KneeFinding => {
-            let num_bc = get_knee(&freq[..], 100, &log);
-            let min_freq = freq[num_bc];
+    CellFilterMethod::KneeFinding => {
+        let num_bc = get_knee(&freq[..], 100, &log);
+        let min_freq = freq[num_bc];
 
-            // collect all of the barcodes that have a frequency
-            // >= to min_thresh.
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-            info!(
-                log,
-                "knee distance method resulted in the selection of {} permitted barcodes.",
-                valid_bc.len()
-            );
-        }
-        CellFilterMethod::ForceCells(top_k) => {
-            let num_bc = if freq.len() < top_k {
-                freq.len() - 1
-            } else {
-                top_k - 1
-            };
+        // collect all of the barcodes that have a frequency
+        // >= to min_thresh.
+        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+        info!(
+        log,
+        "knee distance method resulted in the selection of {} permitted barcodes.",
+        valid_bc.len()
+        );
+    }
+    CellFilterMethod::ForceCells(top_k) => {
+        let num_bc = if freq.len() < top_k {
+        freq.len() - 1
+        } else {
+        top_k - 1
+        };
 
-            let min_freq = freq[num_bc];
+        let min_freq = freq[num_bc];
 
-            // collect all of the barcodes that have a frequency
-            // >= to min_thresh.
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-        }
-        CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
-        }
-        CellFilterMethod::ExpectCells(expected_num_cells) => {
-            let robust_quantile = 0.99f64;
-            let robust_div = 10.0f64;
-            let robust_ind = (expected_num_cells as f64 * robust_quantile).round() as u64;
-            // the robust ind must be valid
-            let ind = cmp::min(freq.len() - 1, robust_ind as usize);
-            let robust_freq = freq[ind];
-            let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-            valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-        }
-        CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
-            unimplemented!();
-        }
+        // collect all of the barcodes that have a frequency
+        // >= to min_thresh.
+        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+    }
+    CellFilterMethod::ExplicitList(valid_bc_file) => {
+        valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
+    }
+    CellFilterMethod::ExpectCells(expected_num_cells) => {
+        let robust_quantile = 0.99f64;
+        let robust_div = 10.0f64;
+        let robust_ind = (expected_num_cells as f64 * robust_quantile).round() as u64;
+        // the robust ind must be valid
+        let ind = cmp::min(freq.len() - 1, robust_ind as usize);
+        let robust_freq = freq[ind];
+        let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
+        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
+    }
+    CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
+        unimplemented!();
+    }
     }
 
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
     let full_permit_list =
-        libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
+    libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
 
     let s2 = RandomState::<Hash64>::new();
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
 
     let mut num_corrected = 0;
     for (k, v) in hm.iter() {
-        if let Some(&valid_key) = full_permit_list.get(k) {
-            *permitted_map.entry(valid_key).or_insert(0u64) += *v;
-            num_corrected += 1;
-            //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
-        }
+    if let Some(&valid_key) = full_permit_list.get(k) {
+        *permitted_map.entry(valid_key).or_insert(0u64) += *v;
+        num_corrected += 1;
+        //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
+    }
     }
 
     let parent = std::path::Path::new(&output_dir);
@@ -841,54 +840,54 @@ pub fn generate_permit_list(
     let mut writer = BufWriter::new(&output);
 
     for (k, v) in permitted_map {
-        //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-        writeln!(
-            &mut writer,
-            "{}\t{}",
-            k,
-            //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-            v
-        )
-        .expect("couldn't write to output file.");
+    //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
+    writeln!(
+        &mut writer,
+        "{}\t{}",
+        k,
+        //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
+        v
+    )
+    .expect("couldn't write to output file.");
     }
 
     let o_path = parent.join("all_freq.tsv");
     let output = std::fs::File::create(&o_path).expect("could not create output.");
     let mut writer = BufWriter::new(&output);
     for (k, v) in hm {
-        let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-        writeln!(
-            &mut writer,
-            "{}\t{}",
-            from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-            v
-        )
-        .expect("couldn't write to output file.");
+    let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
+    writeln!(
+        &mut writer,
+        "{}\t{}",
+        from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
+        v
+    )
+    .expect("couldn't write to output file.");
     }
 
     let s_path = parent.join("permit_map.bin");
     let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
-        .expect("couldn't serialize permit list.");
+    .expect("couldn't serialize permit list.");
 
     let meta_info = json!({
-        "expected_ori" : expected_ori.strand_symbol()
+    "expected_ori" : expected_ori.strand_symbol()
     });
 
     let m_path = parent.join("generate_permit_list.json");
     let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
 
     let meta_info_string =
-        serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+    serde_json::to_string_pretty(&meta_info).expect("could not format json.");
     m_file
-        .write_all(meta_info_string.as_bytes())
-        .expect("cannot write to generate_permit_list.json file");
+    .write_all(meta_info_string.as_bytes())
+    .expect("cannot write to generate_permit_list.json file");
 
     info!(
-        log,
-        "total number of corrected barcodes : {}",
-        num_corrected.to_formatted_string(&Locale::en)
+    log,
+    "total number of corrected barcodes : {}",
+    num_corrected.to_formatted_string(&Locale::en)
     );
     Ok(num_corrected)
     */

@@ -6,21 +6,15 @@
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
-extern crate indicatif;
-extern crate needletail;
-extern crate rust_htslib;
-extern crate scroll;
-extern crate slog;
-
-use self::indicatif::{ProgressBar, ProgressStyle};
-use self::slog::{crit, info};
+use indicatif::{ProgressBar, ProgressStyle};
+use slog::{crit, info};
 //use num_format::{Locale};
 use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
-use self::libradicl::rad_types;
-use self::libradicl::utils::MASK_LOWER_31_U32;
+use libradicl::rad_types;
+use libradicl::utils::MASK_LOWER_31_U32;
 use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
@@ -29,9 +23,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::str;
-// use anyhow::{anyhow, Result};
-
-use crate as libradicl;
 
 // pub fn reset_signal_pipe_handler() -> Result<()> {
 //     #[cfg(target_family = "unix")]
@@ -112,9 +103,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     let mut bam = bam::Reader::from_path(&input_file).unwrap();
     let bam_bytes = fs::metadata(&input_file).unwrap().len();
     info! {
-        log,
-        "Bam file size in bytes {:?}",
-        bam_bytes
+    log,
+    "Bam file size in bytes {:?}",
+    bam_bytes
     };
 
     if num_threads > 1 {
@@ -197,12 +188,12 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut umi_tag_str = "ulen";
 
         // str - type
-        rad_types::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // str - type
-        rad_types::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -254,11 +245,11 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
-        rad_types::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        rad_types::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -270,7 +261,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        rad_types::write_str_bin(&refid_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&refid_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -582,7 +573,7 @@ pub fn view2(
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
-        let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
         for read in c.reads.iter() {
             let bc_mer: BitKmer = (read.bc, ft_vals.bclen as u8);
             let umi_mer: BitKmer = (read.umi, ft_vals.umilen as u8);

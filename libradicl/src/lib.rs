@@ -16,7 +16,7 @@ extern crate sce;
 extern crate scroll;
 use crate as libradicl;
 
-use self::libradicl::rad_types::{Chunk, CorrectedCbChunk, RadHeader, RadIntId, ReadRecord};
+use self::libradicl::rad_types::{Chunk, CorrectedCbChunk, RadIntId, ReadRecord};
 use self::libradicl::schema::TempCellInfo;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
@@ -34,14 +34,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
-pub mod cellfilter;
-pub mod collate;
-pub mod convert;
-pub mod em;
 pub mod exit_codes;
-pub mod infer;
-pub mod pugutils;
-pub mod quant;
 pub mod rad_types;
 pub mod schema;
 pub mod utils;
@@ -680,7 +673,7 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     }
 }
 
-pub(crate) fn as_u8_slice(v: &[u32]) -> &[u8] {
+pub fn as_u8_slice(v: &[u32]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             v.as_ptr() as *const u8,

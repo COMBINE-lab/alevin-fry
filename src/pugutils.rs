@@ -7,11 +7,6 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate petgraph;
-extern crate quickersort;
-extern crate slog;
-use crate as libradicl;
-
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use arrayvec::ArrayVec;
@@ -25,12 +20,31 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use self::libradicl::schema::{EqMap, PugEdgeType, PugResolutionStatistics, SplicedAmbiguityModel};
+use libradicl::rad_types;
 
-use self::slog::{crit, info, warn};
-use crate::utils;
+use slog::{crit, info, warn};
+
+use crate::eq_class::EqMap;
+use crate::quant::SplicedAmbiguityModel;
+use crate::utils as afutils;
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
+
+#[derive(Debug)]
+pub enum PugEdgeType {
+    NoEdge,
+    BiDirected,
+    XToY,
+    YToX,
+}
+
+#[derive(Debug)]
+pub struct PugResolutionStatistics {
+    pub used_alternative_strategy: bool,
+    pub total_mccs: u64,
+    pub ambiguous_mccs: u64,
+    pub trivial_mccs: u64,
+}
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
 /// equivalence class map for a given cell.
@@ -44,7 +58,7 @@ type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 /// twice the frequency of the other, the edge is directed from the
 /// more frequent to the less freuqent node.  Otherwise, edges are
 /// added in both directions.
-pub(crate) fn extract_graph(
+pub fn extract_graph(
     eqmap: &EqMap,
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
@@ -55,7 +69,7 @@ pub(crate) fn extract_graph(
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
     let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
-        let hdist = utils::count_diff_2_bit_packed(x.0, y.0);
+        let hdist = afutils::count_diff_2_bit_packed(x.0, y.0);
         if hdist == 0 {
             zero_edit += 1;
             return PugEdgeType::BiDirected;
@@ -425,7 +439,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
             let prev_gid = *curr_gn.last().expect("not empty");
 
             // if the gene is the same (modulo splicing), add the counts
-            if utils::same_gene(gn, prev_gid, true) {
+            if afutils::same_gene(gn, prev_gid, true) {
                 // if the gene is the same modulo splicing, but
                 // curr_gn != gn, then this is gene will be set as ambiguous,
                 // this is the transition from counting occurrences
@@ -603,8 +617,8 @@ fn resolve_num_molecules_crlike_from_vec(
     }
 }
 
-pub(super) fn get_num_molecules_cell_ranger_like_small(
-    cell_chunk: &mut libradicl::Chunk,
+pub fn get_num_molecules_cell_ranger_like_small(
+    cell_chunk: &mut rad_types::Chunk,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -649,7 +663,7 @@ pub(super) fn get_num_molecules_cell_ranger_like_small(
     }
 }
 
-pub(super) fn get_num_molecules_cell_ranger_like(
+pub fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
@@ -707,7 +721,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     }
 }
 
-pub(super) fn get_num_molecules_trivial_discard_all_ambig(
+pub fn get_num_molecules_trivial_discard_all_ambig(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
@@ -923,7 +937,7 @@ fn get_num_molecules_large_component(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
-pub(super) fn get_num_molecules(
+pub fn get_num_molecules(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
@@ -999,7 +1013,7 @@ pub(super) fn get_num_molecules(
                 warn!(
                     log,
                     "\n\nfound connected component with {} vertices, \
-                    resolved into {} UMIs over {} genes with trivial resolution.\n\n",
+		     resolved into {} UMIs over {} genes with trivial resolution.\n\n",
                     comp_verts.len(),
                     numi,
                     ng
@@ -1170,73 +1184,73 @@ pub(super) fn get_num_molecules(
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {
-        salmon_eqclasses.push(SalmonEQClass {
-            labels: key,
-            counts: val,
-        });
+    salmon_eqclasses.push(SalmonEQClass {
+        labels: key,
+        counts: val,
+    });
     }
 
     let mut unique_evidence: Vec<bool> = vec![false; gid_map.len()];
     let mut no_ambiguity: Vec<bool> = vec![true; gid_map.len()];
     if is_only_cell {
-        info!("Total Networks: {}", comps.len());
-        let num_txp_unique_networks: usize = one_vertex_components.iter().sum();
-        let num_txp_ambiguous_networks: usize = comps.len() - num_txp_unique_networks;
-        info!(
-            ">1 vertices Network: {}, {}%",
-            num_txp_ambiguous_networks,
-            num_txp_ambiguous_networks as f32 * 100.0 / comps.len() as f32
-        );
-        info!(
-            "1 vertex Networks w/ 1 txp: {}, {}%",
-            one_vertex_components[0],
-            one_vertex_components[0] as f32 * 100.0 / comps.len() as f32
-        );
-        info!(
-            "1 vertex Networks w/ >1 txp: {}, {}%",
-            one_vertex_components[1],
-            one_vertex_components[1] as f32 * 100.0 / comps.len() as f32
-        );
+    info!("Total Networks: {}", comps.len());
+    let num_txp_unique_networks: usize = one_vertex_components.iter().sum();
+    let num_txp_ambiguous_networks: usize = comps.len() - num_txp_unique_networks;
+    info!(
+        ">1 vertices Network: {}, {}%",
+        num_txp_ambiguous_networks,
+        num_txp_ambiguous_networks as f32 * 100.0 / comps.len() as f32
+    );
+    info!(
+        "1 vertex Networks w/ 1 txp: {}, {}%",
+        one_vertex_components[0],
+        one_vertex_components[0] as f32 * 100.0 / comps.len() as f32
+    );
+    info!(
+        "1 vertex Networks w/ >1 txp: {}, {}%",
+        one_vertex_components[1],
+        one_vertex_components[1] as f32 * 100.0 / comps.len() as f32
+    );
 
-        //info!("Total Predicted Molecules {}", identified_txps.len());
+    //info!("Total Predicted Molecules {}", identified_txps.len());
 
-        // iterate and extract gene names
-        let mut gene_names: Vec<String> = vec!["".to_string(); gid_map.len()];
-        for (gene_name, gene_idx) in gid_map {
-            gene_names[*gene_idx as usize] = gene_name.clone();
-        }
+    // iterate and extract gene names
+    let mut gene_names: Vec<String> = vec!["".to_string(); gid_map.len()];
+    for (gene_name, gene_idx) in gid_map {
+        gene_names[*gene_idx as usize] = gene_name.clone();
+    }
 
-        if num_bootstraps > 0 {
-            //entry point for bootstrapping
-            let gene_counts: Vec<Vec<f32>> = do_bootstrapping(salmon_eqclasses,
-                &mut unique_evidence,
-                &mut no_ambiguity,
-                &num_bootstraps,
-                gid_map.len(),
-                only_unique);
+    if num_bootstraps > 0 {
+        //entry point for bootstrapping
+        let gene_counts: Vec<Vec<f32>> = do_bootstrapping(salmon_eqclasses,
+        &mut unique_evidence,
+        &mut no_ambiguity,
+        &num_bootstraps,
+        gid_map.len(),
+        only_unique);
 
-            write_bootstraps(gene_names, gene_counts, unique_evidence,
-                no_ambiguity, num_bootstraps);
-            return None;
-        }
-        else{
-            //entry point for EM
-            //println!("{:?}", subsample_gene_idx);
-            //println!("{:?}", &salmon_eqclasses);
-            let gene_counts: Vec<f32> = optimize(salmon_eqclasses, &mut unique_evidence,
-                &mut no_ambiguity, gid_map.len(), only_unique);
+        write_bootstraps(gene_names, gene_counts, unique_evidence,
+        no_ambiguity, num_bootstraps);
+        return None;
+    }
+    else{
+        //entry point for EM
+        //println!("{:?}", subsample_gene_idx);
+        //println!("{:?}", &salmon_eqclasses);
+        let gene_counts: Vec<f32> = optimize(salmon_eqclasses, &mut unique_evidence,
+        &mut no_ambiguity, gid_map.len(), only_unique);
 
-            write_quants(gene_names, gene_counts, unique_evidence, no_ambiguity);
-            return None;
-        } // end-else
+        write_quants(gene_names, gene_counts, unique_evidence, no_ambiguity);
+        return None;
+    } // end-else
     }
     else {
-        Some(optimize(salmon_eqclasses,
-            &mut unique_evidence,
-            &mut no_ambiguity,
-            gid_map.len(),
-            only_unique
-        ))
+    Some(optimize(salmon_eqclasses,
+        &mut unique_evidence,
+        &mut no_ambiguity,
+        gid_map.len(),
+        only_unique
+    ))
     }
     */
     //identified_txps
