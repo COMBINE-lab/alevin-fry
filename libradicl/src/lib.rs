@@ -301,6 +301,12 @@ pub fn dump_chunk(v: &mut CorrectedCbChunk, owriter: &Mutex<BufWriter<File>>) {
     owriter.lock().unwrap().write_all(v.data.get_ref()).unwrap();
 }
 
+/// Given a `BufReader<T>` from which to read a set of records that 
+/// should reside in the same collated bucket, this function will 
+/// collate the records by cell barcode, filling them into a chunk of 
+/// memory exactly as they will reside on disk.  If `compress` is true 
+/// the collated chunk will be compressed, and then the result will be 
+/// written to the output guarded by `owriter`.
 pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
     reader: &mut BufReader<T>,
     bct: &RadIntId,
@@ -354,6 +360,10 @@ pub fn collate_temporary_bucket_twopass<T: Read + Seek, U: Write>(
     total_bytes += cb_byte_map.len() * header_size as usize;
     let mut output_buffer = Cursor::new(vec![0u8; total_bytes]);
 
+    // loop over all distinct cell barcodes, write their 
+    // corresponding chunk header, and compute what the 
+    // offset in `output_buffer` is where the corresponding
+    // records should start.
     let mut next_offset = 0u64;
     for (_, v) in cb_byte_map.iter_mut() {
         // jump to the position where this chunk should start
@@ -541,6 +551,8 @@ pub fn process_corrected_cb_chunk<T: Read>(
     }
 }
 
+/// Represents a temporary bucket of barcodes whose records will
+/// be written together and then collated later in memory.
 pub struct TempBucket {
     pub bucket_id: u32,
     pub bucket_writer: Arc<Mutex<BufWriter<File>>>,
@@ -566,6 +578,11 @@ impl TempBucket {
     }
 }
 
+/// Read an input chunk from `reader` and write the 
+/// resulting records to the corresponding in-memory
+/// buffers `local_buffers`.  As soon as any buffer 
+/// reaches `flush_limit`, flush the buffer by writing 
+/// it to the `output_cache`.
 #[allow(clippy::too_many_arguments)]
 pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
     reader: &mut BufReader<T>,
