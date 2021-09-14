@@ -211,8 +211,8 @@ pub fn em_optimize_subset(
         }
     });
 
-    let alphas_sum: f32 = alphas_in.iter().sum();
-    assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
     alphas_in
 }
 
@@ -329,8 +329,8 @@ pub fn em_optimize(
             *alpha = 0.0_f32;
         }
     });
-    let alphas_sum: f32 = alphas_in.iter().sum();
-    assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
     info!(log,
     "Total Molecules after EM {}",

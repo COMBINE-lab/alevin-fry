@@ -806,6 +806,7 @@ pub fn do_quantify<T: Read>(
 	 "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
      )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
         (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize
@@ -883,6 +884,7 @@ pub fn do_quantify<T: Read>(
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
+        let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
@@ -1223,6 +1225,10 @@ pub fn do_quantify<T: Read>(
                             }
                         }
 
+                        if num_expr == 0 {
+                            empty_resolved_cells.lock().unwrap().push(cell_num as u64);
+                        }
+
                         let num_mapped = nrec;
                         let dedup_rate = sum_umi / num_mapped as f32;
 
@@ -1461,7 +1467,8 @@ pub fn do_quantify<T: Read>(
     "num_genes" : num_rows,
     "dump_eq" : dump_eq,
     "usa_mode" : with_unspliced,
-    "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
+    "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
+    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap()
     });
 
     let mut meta_info_file =
