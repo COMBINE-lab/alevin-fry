@@ -511,13 +511,13 @@ pub fn extract_usa_eqmap(
     }
 }
 
-fn get_bit_mask(nt_index: usize, fill_with: u64) -> u64 {
+pub fn get_bit_mask(nt_index: usize, fill_with: u64) -> u64 {
     let mut mask: u64 = fill_with;
     mask <<= 2 * (nt_index - 1);
     mask
 }
 
-fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
+pub fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
         bc <= 2u64.pow(2 * bc_length as u32),
         "the barcode id is larger than possible (based on barcode length)"
@@ -546,7 +546,7 @@ fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
     snps
 }
 
-fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
+pub fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
         bc <= 2u64.pow(2 * bc_length as u32),
         "the barcode id is larger than possible (based on barcode length)"
@@ -697,11 +697,11 @@ pub fn is_velo_mode(input_dir: String) -> bool {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct InternalVersionInfo {
-    major: u32,
-    minor: u32,
-    patch: u32,
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
 }
 
 impl InternalVersionInfo {
@@ -742,14 +742,25 @@ impl FromStr for InternalVersionInfo {
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::generate_whitelist_set;
+    use crate::utils::get_all_indels;
+    use crate::utils::get_all_one_edit_neighbors;
+    use crate::utils::get_all_snps;
+    use crate::utils::get_bit_mask;
+    use crate::utils::InternalVersionInfo;
     use std::collections::HashSet;
+    use std::str::FromStr;
 
     #[test]
     fn test_version_info() {
-        let vi = InternalVersionInfo::from_string("1.2.3")?;
+        let vi = InternalVersionInfo::from_str("1.2.3").unwrap();
         assert_eq!(
             vi,
-            InternalVersionInfo{1, 2, 3}
+            InternalVersionInfo {
+                major: 1,
+                minor: 2,
+                patch: 3
+            }
         );
     }
 
