@@ -6,20 +6,15 @@
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
-extern crate indicatif;
-extern crate needletail;
-extern crate rust_htslib;
-extern crate scroll;
-extern crate slog;
-
-use self::indicatif::{ProgressBar, ProgressStyle};
-use self::slog::{crit, info};
+use indicatif::{ProgressBar, ProgressStyle};
+use slog::{crit, info};
 //use num_format::{Locale};
 use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
-use self::libradicl::utils::MASK_LOWER_31_U32;
+use libradicl::rad_types;
+use libradicl::utils::MASK_LOWER_31_U32;
 use needletail::bitkmer::*;
 use rand::Rng;
 use rust_htslib::bam::HeaderView;
@@ -28,9 +23,6 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::str;
-// use anyhow::{anyhow, Result};
-
-use crate as libradicl;
 
 // pub fn reset_signal_pipe_handler() -> Result<()> {
 //     #[cfg(target_family = "unix")]
@@ -111,9 +103,9 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
     let mut bam = bam::Reader::from_path(&input_file).unwrap();
     let bam_bytes = fs::metadata(&input_file).unwrap().len();
     info! {
-        log,
-        "Bam file size in bytes {:?}",
-        bam_bytes
+    log,
+    "Bam file size in bytes {:?}",
+    bam_bytes
     };
 
     if num_threads > 1 {
@@ -196,12 +188,12 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut umi_tag_str = "ulen";
 
         // str - type
-        libradicl::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // str - type
-        libradicl::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -230,10 +222,10 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         // type is conditional on barcode and umi length
         let bc_typeid = match bclen {
-            1..=4 => libradicl::encode_type_tag(libradicl::RadType::U8).unwrap(),
-            5..=8 => libradicl::encode_type_tag(libradicl::RadType::U16).unwrap(),
-            9..=16 => libradicl::encode_type_tag(libradicl::RadType::U32).unwrap(),
-            17..=32 => libradicl::encode_type_tag(libradicl::RadType::U64).unwrap(),
+            1..=4 => rad_types::encode_type_tag(rad_types::RadType::U8).unwrap(),
+            5..=8 => rad_types::encode_type_tag(rad_types::RadType::U16).unwrap(),
+            9..=16 => rad_types::encode_type_tag(rad_types::RadType::U32).unwrap(),
+            17..=32 => rad_types::encode_type_tag(rad_types::RadType::U64).unwrap(),
             l => {
                 crit!(log, "cannot encode barcode of length {} > 32", l);
                 std::process::exit(1);
@@ -241,10 +233,10 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         };
 
         let umi_typeid = match umilen {
-            1..=4 => libradicl::encode_type_tag(libradicl::RadType::U8).unwrap(),
-            5..=8 => libradicl::encode_type_tag(libradicl::RadType::U16).unwrap(),
-            9..=16 => libradicl::encode_type_tag(libradicl::RadType::U32).unwrap(),
-            17..=32 => libradicl::encode_type_tag(libradicl::RadType::U64).unwrap(),
+            1..=4 => rad_types::encode_type_tag(rad_types::RadType::U8).unwrap(),
+            5..=8 => rad_types::encode_type_tag(rad_types::RadType::U16).unwrap(),
+            9..=16 => rad_types::encode_type_tag(rad_types::RadType::U32).unwrap(),
+            17..=32 => rad_types::encode_type_tag(rad_types::RadType::U64).unwrap(),
             l => {
                 crit!(log, "cannot encode umi of length {} > 32", l);
                 std::process::exit(1);
@@ -253,11 +245,11 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
-        libradicl::write_str_bin(&cb_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        libradicl::write_str_bin(&umi_tag_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -269,7 +261,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        libradicl::write_str_bin(&refid_str, &libradicl::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(&refid_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -508,7 +500,7 @@ pub fn view2(
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
-    let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    let hdr = rad_types::RadHeader::from_bytes(&mut br);
     // info!(
     //     log,
     //     "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -517,10 +509,10 @@ pub fn view2(
     //     hdr.num_chunks.to_formatted_string(&Locale::en)
     // );
     // file-level
-    let _fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let _fl_tags = rad_types::TagSection::from_bytes(&mut br);
     // info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
     // info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
@@ -533,7 +525,7 @@ pub fn view2(
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if rt.name == BNAME || rt.name == UNAME {
-            if libradicl::decode_int_type_tag(rt.typeid).is_none() {
+            if rad_types::decode_int_type_tag(rt.typeid).is_none() {
                 crit!(
                     log,
                     "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
@@ -551,17 +543,17 @@ pub fn view2(
     }
 
     // alignment-level
-    let _al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let _al_tags = rad_types::TagSection::from_bytes(&mut br);
     // info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     // info!(log, "File-level tag values {:?}", ft_vals);
 
     let mut num_reads: u64 = 0;
 
-    let bc_type = libradicl::decode_int_type_tag(bct.expect("no barcode tag description present."))
+    let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
         .expect("unknown barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit.expect("no umi tag description present"))
+    let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
         .expect("unknown barcode type id.");
 
     let stdout = stdout(); // get the global stdout entity
@@ -581,7 +573,7 @@ pub fn view2(
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
-        let c = libradicl::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
         for read in c.reads.iter() {
             let bc_mer: BitKmer = (read.bc, ft_vals.bclen as u8);
             let umi_mer: BitKmer = (read.umi, ft_vals.umilen as u8);

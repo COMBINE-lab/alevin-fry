@@ -7,22 +7,12 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate ahash;
-extern crate bincode;
-extern crate crossbeam_queue;
-extern crate indicatif;
-extern crate serde;
-extern crate slog;
-
-use self::indicatif::{ProgressBar, ProgressStyle};
-#[allow(unused_imports)]
-use self::slog::{crit, info, warn};
-use crate as libradicl;
-use crate::permit_list_from_file;
-use crate::utils::read_filter_list;
+use crate::cellfilter::permit_list_from_file;
 use crossbeam_queue::ArrayQueue;
+use indicatif::{ProgressBar, ProgressStyle};
+#[allow(unused_imports)]
+use slog::{crit, info, warn};
 
-// use fasthash::sea;
 use needletail::bitkmer::*;
 use sprs::TriMatI;
 use std::collections::HashSet;
@@ -32,7 +22,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use self::libradicl::em::{em_optimize_subset, EmInitType};
+use crate::em::{em_optimize_subset, EmInitType};
+use crate::utils::read_filter_list;
 
 pub fn infer(
     //num_bootstraps,
@@ -78,7 +69,7 @@ pub fn infer(
 
     // read in the global equivalence class representation
     let eq_label_path = std::path::Path::new(&eq_label_file);
-    let global_eq_classes = Arc::new(libradicl::schema::IndexedEqList::init_from_eqc_file(
+    let global_eq_classes = Arc::new(crate::eq_class::IndexedEqList::init_from_eqc_file(
         eq_label_path,
     ));
 
@@ -245,8 +236,8 @@ pub fn infer(
                     let dedup_rate = sum_umi / num_mapped as f32;
 
                     let num_unmapped = match unmapped_count.get(&bc) {
-                        Some(nu) => *nu,
-                        None => 0u32,
+                    Some(nu) => *nu,
+                    None => 0u32,
                     };
 
                     let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
@@ -255,11 +246,11 @@ pub fn infer(
                     let mean_expr = sum_umi / num_expr as f32;
                     // number of genes with expression > expressed mean
                     let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
-                        if x > &mean_expr {
-                            acc + 1u32
-                        } else {
-                            acc
-                        }
+                    if x > &mean_expr {
+                        acc + 1u32
+                    } else {
+                        acc
+                    }
                     });
                     // expressed mean / max expression
                     let mean_by_max = mean_expr / max_umi;
@@ -294,19 +285,19 @@ pub fn infer(
                         /*
                         if num_bootstraps > 0 {
                             if summary_stat {
-                                if let Some((meanf, varf)) =
-                                    &mut writer.bootstrap_helper.mean_var_files
-                                {
-                                    meanf
-                                        .write_all(&eds_mean_bytes)
-                                        .expect("can't write to bootstrap mean file.");
-                                    varf.write_all(&eds_var_bytes)
-                                        .expect("can't write to bootstrap var file.");
-                                }
+                            if let Some((meanf, varf)) =
+                                &mut writer.bootstrap_helper.mean_var_files
+                            {
+                                meanf
+                                .write_all(&eds_mean_bytes)
+                                .expect("can't write to bootstrap mean file.");
+                                varf.write_all(&eds_var_bytes)
+                                .expect("can't write to bootstrap var file.");
+                            }
                             } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                                bsfile
-                                    .write_all(&bt_eds_bytes)
-                                    .expect("can't write to bootstrap file");
+                            bsfile
+                                .write_all(&bt_eds_bytes)
+                                .expect("can't write to bootstrap file");
                             }
                         } // done bootstrap writing
                         */

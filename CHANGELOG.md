@@ -6,6 +6,12 @@ Changelog for alevin-fry
 
 Currently no unreleased features
 
+## [0.4.2] - in progress
+
+### Changed
+
+- Large _internal_ code re-organization, moving most alevin-fry related functionality out of the `libradicl` crate / library.
+
 ## [0.4.1] - 2021-07-22
 
 This is a minor release, intended mostly to bump some version dependencies and to address [Issue #22](https://github.com/COMBINE-lab/alevin-fry/issues/22).

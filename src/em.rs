@@ -7,16 +7,13 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate slog;
-use crate as libradicl;
-
 #[allow(unused_imports)]
-use self::slog::info;
+use crate::eq_class::IndexedEqList;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
-#[allow(unused_imports)]
-use libradicl::schema::IndexedEqList;
 use rand::{thread_rng, Rng};
+#[allow(unused_imports)]
+use slog::info;
 use statrs::distribution::Multinomial;
 use std::collections::HashMap;
 use std::f32;
@@ -36,7 +33,7 @@ const MAX_ITER: u32 = 100;
 const REL_DIFF_TOLERANCE: f32 = 1e-2;
 
 #[derive(Copy, Clone)]
-pub(crate) enum EmInitType {
+pub enum EmInitType {
     Informative,
     Uniform,
     Random,
@@ -104,7 +101,7 @@ pub(crate) fn em_update_subset(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn em_optimize_subset(
+pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     unique_evidence: &mut Vec<bool>,
@@ -214,8 +211,8 @@ pub(crate) fn em_optimize_subset(
         }
     });
 
-    let alphas_sum: f32 = alphas_in.iter().sum();
-    assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
     alphas_in
 }
 
@@ -247,7 +244,7 @@ pub fn em_update(
     }
 }
 
-pub(crate) fn em_optimize(
+pub fn em_optimize(
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
     unique_evidence: &mut Vec<bool>,
     no_ambiguity: &mut Vec<bool>,
@@ -332,12 +329,12 @@ pub(crate) fn em_optimize(
             *alpha = 0.0_f32;
         }
     });
-    let alphas_sum: f32 = alphas_in.iter().sum();
-    assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
     /*
     info!(log,
-        "Total Molecules after EM {}",
-        alphas_sum
+    "Total Molecules after EM {}",
+    alphas_sum
     );
     */
     alphas_in
