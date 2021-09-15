@@ -6,7 +6,7 @@
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
- 
+
 pub mod cellfilter;
 pub mod collate;
 pub mod convert;
