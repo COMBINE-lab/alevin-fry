@@ -70,6 +70,48 @@ fn std_deviation(data: &[f64]) -> Option<f64> {
     }
 }
 
+#[allow(dead_code)]
+#[inline(always)]
+fn spliced_idx_of(idx: u32, usa_offset: (usize, usize)) -> u32 {
+    // if this index is ambiguous, subtract off
+    // the ambig offset
+    if idx as usize >= usa_offset.1 {
+        idx - (usa_offset.1 as u32)
+    } else if idx as usize >= usa_offset.0 {
+        // otherwise, if it is unspliced, subtract
+        // off the unspliced offset
+        idx - (usa_offset.0 as u32)
+    } else {
+        // otherwise it is spliced, return it as is
+        idx
+    }
+}
+
+/// Based on the type of the index `idx` (spliced, unspliced or ambiguous)
+/// get the appropriate count for this gene, status pair to use in the EM.
+#[inline(always)]
+fn get_abundance_for(idx: u32, alphas_in: &[f32], usa_offset: (usize, usize)) -> f32 {
+    let index = idx as usize;
+    // if this index is ambiguous, subtract off
+    // the ambig offset
+    if index >= usa_offset.1 {
+        // in the ambiguous case, get the abundance
+        // of spliced / unspliced / and ambiguous
+        alphas_in[index - usa_offset.0] + // unspliced
+        alphas_in[index - usa_offset.1] + // spliced
+        alphas_in[index] // ambig
+    } else if index >= usa_offset.0 {
+        // in the unspliced case, get the abundance of
+        // unspliced and ambiguous
+        alphas_in[index + usa_offset.0] + // ambiguous
+        alphas_in[index] // unspliced
+    } else {
+        // otherwise it is spliced, return it as is
+        alphas_in[index + usa_offset.1] + // ambiguous
+        alphas_in[index] // spliced
+    }
+}
+
 pub(crate) fn em_update_subset(
     alphas_in: &[f32],
     alphas_out: &mut Vec<f32>,
@@ -100,6 +142,37 @@ pub(crate) fn em_update_subset(
     }
 }
 
+pub(crate) fn em_update_subset_usa(
+    alphas_in: &[f32],
+    alphas_out: &mut Vec<f32>,
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
+    usa_offsets: (usize, usize),
+) {
+    for (i, count) in cell_data {
+        let labels = eqclasses.refs_for_eqc(*i);
+
+        if labels.len() > 1 {
+            let mut denominator: f32 = 0.0;
+            for label in labels {
+                denominator += get_abundance_for(*label, alphas_in, usa_offsets);
+            }
+
+            if denominator > 0.0 {
+                let inv_denominator = *count as f32 / denominator;
+                for label in labels {
+                    let count = get_abundance_for(*label, alphas_in, usa_offsets) * inv_denominator;
+                    let index = *label as usize;
+                    alphas_out[index] += count;
+                }
+            }
+        } else {
+            let tidx = labels.get(0).expect("can't extract labels");
+            alphas_out[*tidx as usize] += *count as f32;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
@@ -109,6 +182,7 @@ pub fn em_optimize_subset(
     init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
+    usa_offsets: Option<(usize, usize)>,
     _log: &slog::Logger,
 ) -> Vec<f32> {
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
@@ -161,7 +235,14 @@ pub fn em_optimize_subset(
 
     while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) || last_round {
         // perform one round of em update
-        em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
+        match usa_offsets {
+            Some(otup) => {
+                em_update_subset_usa(&alphas_in, &mut alphas_out, eqclasses, cell_data, otup);
+            }
+            None => {
+                em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
+            }
+        }
 
         converged = true;
         let mut max_rel_diff = -f32::INFINITY;
@@ -401,6 +482,7 @@ pub(crate) fn run_bootstrap_subset(
             EmInitType::Random,
             num_alphas_us,
             false, // only unique
+            None,
             &_log,
         );
 

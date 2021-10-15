@@ -835,6 +835,12 @@ pub fn do_quantify<T: Read>(
         num_genes
     };
 
+    let usa_offsets = if with_unspliced {
+        Some(((num_rows / 3) as usize, (2 * num_rows / 3) as usize))
+    } else {
+        None
+    };
+
     let trimat =
         sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows as usize), tmcap);
 
@@ -1031,6 +1037,7 @@ pub fn do_quantify<T: Read>(
                                                 em_init_type,
                                                 num_rows,
                                                 only_unique,
+                                                usa_offsets,
                                                 &log,
                                             );
                                         }

@@ -25,12 +25,14 @@ use std::thread;
 use crate::em::{em_optimize_subset, EmInitType};
 use crate::utils::read_filter_list;
 
+#[allow(clippy::too_many_arguments)]
 pub fn infer(
     //num_bootstraps,
     //init_uniform,
     //summary_stat,
     count_mat_file: String,
     eq_label_file: String,
+    usa_mode: bool,
     _use_mtx: bool,
     num_threads: u32,
     filter_list: Option<&str>,
@@ -81,6 +83,12 @@ pub fn infer(
 
     // the number of genes (columns) that the output (gene-level) matrix will have
     let num_genes = global_eq_classes.num_genes;
+
+    let usa_offsets = if usa_mode {
+        Some(((num_genes / 3) as usize, (2 * num_genes / 3) as usize))
+    } else {
+        None
+    };
 
     // if we have a filter list, extract it here
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -203,6 +211,7 @@ pub fn infer(
                         EmInitType::Informative,
                         num_genes,
                         false,
+                        usa_offsets,
                         &log,
                     );
 

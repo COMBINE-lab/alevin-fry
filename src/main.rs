@@ -167,6 +167,7 @@ fn main() {
     .arg(Arg::from("-e, --eq-labels=<eq-labels> 'file containing the gene labels of the equivalence classes'").takes_value(true).required(true))
     .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'").takes_value(true).required(true))
     .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
+    .arg(Arg::from("--usa 'flag specifying that input equivalence classes were computed in USA mode'").takes_value(false).required(false))
     .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
 
@@ -509,6 +510,7 @@ fn main() {
         let count_mat = t.value_of_t("count-mat").unwrap();
         let eq_label_file = t.value_of_t("eq-labels").unwrap();
         let filter_list = t.value_of("quant-subset");
+        let usa_mode = t.is_present("usa");
         //let bc_file = t.value_of_t("barcodes").unwrap();
 
         alevin_fry::infer::infer(
@@ -517,6 +519,7 @@ fn main() {
             //summary_stat,
             count_mat,
             eq_label_file,
+            usa_mode,
             //bc_file,
             use_mtx,
             num_threads,
