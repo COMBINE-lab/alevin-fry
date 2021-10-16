@@ -359,7 +359,7 @@ impl Chunk {
         };
 
         for _ in 0..(nrec as usize) {
-            c.reads.push(ReadRecord::from_bytes(reader, &bct, &umit));
+            c.reads.push(ReadRecord::from_bytes(reader, bct, umit));
         }
 
         c

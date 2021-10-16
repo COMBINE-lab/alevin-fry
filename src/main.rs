@@ -218,7 +218,7 @@ fn main() {
     }
     */
 
-    if let Some(ref t) = opts.subcommand_matches("generate-permit-list") {
+    if let Some(t) = opts.subcommand_matches("generate-permit-list") {
         let input_dir: String = t.value_of_t("input").expect("no input directory specified");
         let output_dir: String = t
             .value_of_t("output-dir")
@@ -324,7 +324,7 @@ fn main() {
 
     // convert a BAM file, in *transcriptomic coordinates*, with
     // the appropriate barcode and umi tags, into a RAD file
-    if let Some(ref t) = opts.subcommand_matches("convert") {
+    if let Some(t) = opts.subcommand_matches("convert") {
         let input_file: String = t.value_of_t("bam").unwrap();
         let rad_file: String = t.value_of_t("output").unwrap();
         let num_threads: u32 = t.value_of_t("threads").unwrap();
@@ -332,7 +332,7 @@ fn main() {
     }
 
     // convert a rad file to a textual representation and write to stdout
-    if let Some(ref t) = opts.subcommand_matches("view") {
+    if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: String = t.value_of_t("rad").unwrap();
         let print_header = t.is_present("header");
         let mut out_file: String = String::from("");
@@ -344,7 +344,7 @@ fn main() {
 
     // collate a rad file to group together all records corresponding
     // to the same corrected barcode.
-    if let Some(ref t) = opts.subcommand_matches("collate") {
+    if let Some(t) = opts.subcommand_matches("collate") {
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let rad_dir: String = t.value_of_t("rad-dir").unwrap();
         let num_threads = t.value_of_t("threads").unwrap();
@@ -357,14 +357,14 @@ fn main() {
             max_records,
             compress_out,
             &cmdline,
-            &VERSION,
+            VERSION,
             &log,
         )
         .expect("could not collate.");
     }
 
     // perform quantification of a collated rad file.
-    if let Some(ref t) = opts.subcommand_matches("quant") {
+    if let Some(t) = opts.subcommand_matches("quant") {
         let num_threads = t.value_of_t("threads").unwrap();
         let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
         let init_uniform = t.is_present("init-uniform");
@@ -429,7 +429,7 @@ fn main() {
                     small_thresh,
                     filter_list,
                     &cmdline,
-                    &VERSION,
+                    VERSION,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -469,7 +469,7 @@ fn main() {
                     small_thresh,
                     filter_list,
                     &cmdline,
-                    &VERSION,
+                    VERSION,
                     &log,
                 ) {
                     // if we're all good; then great!
@@ -503,7 +503,7 @@ fn main() {
 
     // Given an input of equivalence class counts, perform inference
     // and output a target-by-cell count matrix.
-    if let Some(ref t) = opts.subcommand_matches("infer") {
+    if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = t.value_of_t("threads").unwrap();
         let use_mtx = t.is_present("use-mtx");
         let output_dir = t.value_of_t("output-dir").unwrap();

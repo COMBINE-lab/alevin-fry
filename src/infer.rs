@@ -349,7 +349,7 @@ pub fn infer(
             // write to barcode file
             let bc_bytes = &bitmer_to_bytes((*barcode, short_bc_len))[..];
             writeln!(&mut bc_writer, "{}", unsafe {
-                std::str::from_utf8_unchecked(&bc_bytes)
+                std::str::from_utf8_unchecked(bc_bytes)
             })
             .expect("can't write to barcode file.");
 

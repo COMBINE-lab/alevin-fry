@@ -401,7 +401,7 @@ pub fn collate_with_temp(
     // NOTE: the assumption of where the unmapped file will be
     // should be robustified
     let unmapped_file = i_dir.join("unmapped_bc_count.bin");
-    correct_unmapped_counts(&correct_map, &unmapped_file, &parent);
+    correct_unmapped_counts(&correct_map, &unmapped_file, parent);
 
     info!(
         log,

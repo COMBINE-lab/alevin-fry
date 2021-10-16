@@ -475,7 +475,7 @@ pub(crate) fn run_bootstrap_subset(
         }
 
         let alphas = em_optimize_subset(
-            &eqclasses,
+            eqclasses,
             &bootstrap_counts[..], // indices into eqclasses relevant for this cell
             &mut unique_evidence,
             &mut no_ambiguity,
@@ -483,7 +483,7 @@ pub(crate) fn run_bootstrap_subset(
             num_alphas_us,
             false, // only unique
             None,
-            &_log,
+            _log,
         );
 
         // clear out for the next iteration.

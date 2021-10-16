@@ -132,7 +132,7 @@ pub fn extract_graph(
                 // graph.add_node((eqid as u32, xi2 as u32));
 
                 // determine if an edge exists between x and x2, and if so, what kind
-                let et = has_edge(&x, &x2);
+                let et = has_edge(x, x2);
                 // for each type of edge, add the appropriate edge in the graph
                 match et {
                     PugEdgeType::BiDirected => {
@@ -204,7 +204,7 @@ pub fn extract_graph(
                         // Node for equiv : eq2id and umi : yi
                         // graph.add_node((*eq2id as u32, yi as u32));
 
-                        let et = has_edge(&x, &y);
+                        let et = has_edge(x, y);
                         match et {
                             PugEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
@@ -363,7 +363,7 @@ fn collapse_vertices(
                 // get the set of transcripts present in the
                 // label of the current node.
                 let n_labels = eqmap.refs_for_eqc(nv.0);
-                if let Ok(_n) = n_labels.binary_search(&txp) {
+                if let Ok(_n) = n_labels.binary_search(txp) {
                     bfs_list.push_back(n);
                 }
             }

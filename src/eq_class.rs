@@ -300,7 +300,6 @@ impl EqMap {
                         // if the umi is different
                         self.eqc_info[eq_num].umis.push((cumi, 1));
                     }
-                    prev_umi = cumi;
                 } else {
                     // new class
                     self.label_list_size += r.refs.len();
@@ -316,8 +315,8 @@ impl EqMap {
                         eq_num: eq_num as u32,
                     });
                     prev_hash = chash;
-                    prev_umi = cumi;
                 }
+                prev_umi = cumi;
             }
         }
         // final value to avoid special cases
