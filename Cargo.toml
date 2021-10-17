@@ -25,7 +25,10 @@ categories = ["command-line-utilities", "science"]
 [workspace]
 
 [dependencies]	
-libradicl = { path = "libradicl", version = "0.4.2" }
+# for release
+libradicl = "0.4.2" 
+# for local development
+# libradicl = "0.4.2" { path = "libradicl", version = "0.4.2" }
 arrayvec = "0.7.1"
 ahash = "0.7.6"
 bincode = "1.3.3"
