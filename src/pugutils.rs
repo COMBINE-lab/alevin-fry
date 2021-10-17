@@ -7,26 +7,254 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate petgraph;
-extern crate quickersort;
-extern crate slog;
-use crate as libradicl;
-
-use self::slog::{crit, warn};
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use arrayvec::ArrayVec;
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io;
+use std::io::Write;
 
 use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use crate::schema::{EqMap, PugResolutionStatistics, SplicedAmbiguityModel};
-use crate::utils;
+use libradicl::rad_types;
+
+use slog::{crit, info, warn};
+
+use crate::eq_class::EqMap;
+use crate::quant::SplicedAmbiguityModel;
+use crate::utils as afutils;
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
+
+#[derive(Debug)]
+pub enum PugEdgeType {
+    NoEdge,
+    BiDirected,
+    XToY,
+    YToX,
+}
+
+#[derive(Debug)]
+pub struct PugResolutionStatistics {
+    pub used_alternative_strategy: bool,
+    pub total_mccs: u64,
+    pub ambiguous_mccs: u64,
+    pub trivial_mccs: u64,
+}
+
+/// Extracts the parsimonious UMI graphs (PUGs) from the
+/// equivalence class map for a given cell.
+/// The returned graph is a directed graph (potentially with
+/// bidirected edges) where each node consists of an (equivalence
+/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply
+/// the rank of the UMI in the list of all distinct UMIs for this
+/// equivalence class.  There is a directed edge between any pair of
+/// vertices whose set of transcripts overlap and whose UMIs are within
+/// a Hamming distance of 1 of each other.  If one node has more than
+/// twice the frequency of the other, the edge is directed from the
+/// more frequent to the less freuqent node.  Otherwise, edges are
+/// added in both directions.
+pub fn extract_graph(
+    eqmap: &EqMap,
+    log: &slog::Logger,
+) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
+    let verbose = false;
+    let mut one_edit = 0u64;
+    let mut zero_edit = 0u64;
+
+    // given 2 pairs (UMI, count), determine if an edge exists
+    // between them, and if so, what type.
+    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
+        let hdist = afutils::count_diff_2_bit_packed(x.0, y.0);
+        if hdist == 0 {
+            zero_edit += 1;
+            return PugEdgeType::BiDirected;
+        }
+
+        if hdist < 2 {
+            one_edit += 1;
+            if x.1 > (2 * y.1 - 1) {
+                return PugEdgeType::XToY;
+            } else if y.1 > (2 * x.1 - 1) {
+                return PugEdgeType::YToX;
+            } else {
+                return PugEdgeType::BiDirected;
+            }
+        }
+        PugEdgeType::NoEdge
+    };
+
+    let mut _bidirected = 0u64;
+    let mut _unidirected = 0u64;
+
+    let mut graph = DiGraphMap::<(u32, u32), ()>::new();
+    let mut hset = vec![0u8; eqmap.num_eq_classes()];
+    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
+
+    // insert all of the nodes up front to avoid redundant
+    // checks later.
+    for eqid in 0..eqmap.num_eq_classes() {
+        // get the info Vec<(UMI, frequency)>
+        let eq = &eqmap.eqc_info[eqid];
+        let u1 = &eq.umis;
+        for (xi, _x) in u1.iter().enumerate() {
+            graph.add_node((eqid as u32, xi as u32));
+        }
+    }
+
+    // for every equivalence class in this cell
+    for eqid in 0..eqmap.num_eq_classes() {
+        if verbose && eqid % 1000 == 0 {
+            print!("\rprocessed {:?} eq classes", eqid);
+            io::stdout().flush().expect("Could not flush stdout");
+        }
+
+        // get the info Vec<(UMI, frequency)>
+        let eq = &eqmap.eqc_info[eqid];
+
+        // for each (umi, count) pair and its index
+        let u1 = &eq.umis;
+        for (xi, x) in u1.iter().enumerate() {
+            // add a node
+            // graph.add_node((eqid as u32, xi as u32));
+
+            // for each (umi, freq) pair and node after this one
+            for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
+                //for xi2 in (xi + 1)..u1.len() {
+                // x2 is the other (umi, freq) pair
+                //let x2 = &u1[xi2];
+
+                // add a node for it
+                // graph.add_node((eqid as u32, xi2 as u32));
+
+                // determine if an edge exists between x and x2, and if so, what kind
+                let et = has_edge(x, x2);
+                // for each type of edge, add the appropriate edge in the graph
+                match et {
+                    PugEdgeType::BiDirected => {
+                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
+                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
+                        _bidirected += 1;
+                        //if multi_gene_vec[eqid] == true {
+                        //    bidirected_in_multigene += 1;
+                        //}
+                    }
+                    PugEdgeType::XToY => {
+                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
+                        _unidirected += 1;
+                        //if multi_gene_vec[eqid] == true {
+                        //    unidirected_in_multigene += 1;
+                        //}
+                    }
+                    PugEdgeType::YToX => {
+                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
+                        _unidirected += 1;
+                        //if multi_gene_vec[eqid] == true {
+                        //    unidirected_in_multigene += 1;
+                        //}
+                    }
+                    PugEdgeType::NoEdge => {}
+                }
+            }
+        }
+
+        //hset.clear();
+        //hset.resize(eqmap.num_eq_classes(), 0u8);
+        for i in &idxvec {
+            hset[*i as usize] = 0u8;
+        }
+        let stf = idxvec.len() > 128;
+        idxvec.clear();
+        if stf {
+            idxvec.shrink_to_fit();
+        }
+
+        // for every reference id in this eq class
+        for r in eqmap.refs_for_eqc(eqid as u32) {
+            // find the equivalence classes sharing this reference
+            for eq2id in eqmap.eq_classes_containing(*r).iter() {
+                // if eq2id <= eqid, then we already observed the relevant edges
+                // when we process eq2id
+                if (*eq2id as usize) <= eqid {
+                    continue;
+                }
+                // otherwise, if we have already processed this other equivalence
+                // class because it shares _another_ reference (apart from r) with
+                // the current equivalence class, then skip it.
+                if hset[*eq2id as usize] > 0 {
+                    continue;
+                }
+
+                // recall that we processed this eq class as a neighbor of eqid
+                hset[*eq2id as usize] = 1;
+                idxvec.push(*eq2id as u32);
+                let eq2 = &eqmap.eqc_info[*eq2id as usize];
+
+                // compare all the umis between eqid and eq2id
+                let u2 = &eq2.umis;
+                for (xi, x) in u1.iter().enumerate() {
+                    // Node for equiv : eqid and umi : xi
+                    // graph.add_node((eqid as u32, xi as u32));
+
+                    for (yi, y) in u2.iter().enumerate() {
+                        // Node for equiv : eq2id and umi : yi
+                        // graph.add_node((*eq2id as u32, yi as u32));
+
+                        let et = has_edge(x, y);
+                        match et {
+                            PugEdgeType::BiDirected => {
+                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
+                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
+                                _bidirected += 1;
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    bidirected_in_multigene += 1;
+                                //}
+                            }
+                            PugEdgeType::XToY => {
+                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
+                                _unidirected += 1;
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    unidirected_in_multigene += 1;
+                                //}
+                            }
+                            PugEdgeType::YToX => {
+                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
+                                _unidirected += 1;
+                                //if multi_gene_vec[eqid] == true
+                                //    || multi_gene_vec[*eq2id as usize] == true
+                                //{
+                                //    unidirected_in_multigene += 1;
+                                //}
+                            }
+                            PugEdgeType::NoEdge => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if verbose {
+        info!(
+            log,
+            "\n\nsize of graph ({:?}, {:?})\n\n",
+            graph.node_count(),
+            graph.edge_count()
+        );
+        let total_edits = (one_edit + zero_edit) as f64;
+        info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
+    }
+
+    graph
+}
 
 /// Extract the weakly connected components from the directed graph
 /// G.  Interestingly, `petgraph` has a builtin algorithm for returning
@@ -135,7 +363,7 @@ fn collapse_vertices(
                 // get the set of transcripts present in the
                 // label of the current node.
                 let n_labels = eqmap.refs_for_eqc(nv.0);
-                if let Ok(_n) = n_labels.binary_search(&txp) {
+                if let Ok(_n) = n_labels.binary_search(txp) {
                     bfs_list.push_back(n);
                 }
             }
@@ -211,7 +439,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
             let prev_gid = *curr_gn.last().expect("not empty");
 
             // if the gene is the same (modulo splicing), add the counts
-            if utils::same_gene(gn, prev_gid, true) {
+            if afutils::same_gene(gn, prev_gid, true) {
                 // if the gene is the same modulo splicing, but
                 // curr_gn != gn, then this is gene will be set as ambiguous,
                 // this is the transition from counting occurrences
@@ -389,8 +617,8 @@ fn resolve_num_molecules_crlike_from_vec(
     }
 }
 
-pub(super) fn get_num_molecules_cell_ranger_like_small(
-    cell_chunk: &mut libradicl::Chunk,
+pub fn get_num_molecules_cell_ranger_like_small(
+    cell_chunk: &mut rad_types::Chunk,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -435,7 +663,7 @@ pub(super) fn get_num_molecules_cell_ranger_like_small(
     }
 }
 
-pub(super) fn get_num_molecules_cell_ranger_like(
+pub fn get_num_molecules_cell_ranger_like(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
@@ -493,7 +721,7 @@ pub(super) fn get_num_molecules_cell_ranger_like(
     }
 }
 
-pub(super) fn get_num_molecules_trivial_discard_all_ambig(
+pub fn get_num_molecules_trivial_discard_all_ambig(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
@@ -709,7 +937,7 @@ fn get_num_molecules_large_component(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
-pub(super) fn get_num_molecules(
+pub fn get_num_molecules(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
@@ -785,7 +1013,7 @@ pub(super) fn get_num_molecules(
                 warn!(
                     log,
                     "\n\nfound connected component with {} vertices, \
-                    resolved into {} UMIs over {} genes with trivial resolution.\n\n",
+		     resolved into {} UMIs over {} genes with trivial resolution.\n\n",
                     comp_verts.len(),
                     numi,
                     ng
@@ -956,73 +1184,73 @@ pub(super) fn get_num_molecules(
     /*
     let mut salmon_eqclasses = Vec::<SalmonEQClass>::new();
     for (key, val) in salmon_eqclass_hash {
-        salmon_eqclasses.push(SalmonEQClass {
-            labels: key,
-            counts: val,
-        });
+    salmon_eqclasses.push(SalmonEQClass {
+        labels: key,
+        counts: val,
+    });
     }
 
     let mut unique_evidence: Vec<bool> = vec![false; gid_map.len()];
     let mut no_ambiguity: Vec<bool> = vec![true; gid_map.len()];
     if is_only_cell {
-        info!("Total Networks: {}", comps.len());
-        let num_txp_unique_networks: usize = one_vertex_components.iter().sum();
-        let num_txp_ambiguous_networks: usize = comps.len() - num_txp_unique_networks;
-        info!(
-            ">1 vertices Network: {}, {}%",
-            num_txp_ambiguous_networks,
-            num_txp_ambiguous_networks as f32 * 100.0 / comps.len() as f32
-        );
-        info!(
-            "1 vertex Networks w/ 1 txp: {}, {}%",
-            one_vertex_components[0],
-            one_vertex_components[0] as f32 * 100.0 / comps.len() as f32
-        );
-        info!(
-            "1 vertex Networks w/ >1 txp: {}, {}%",
-            one_vertex_components[1],
-            one_vertex_components[1] as f32 * 100.0 / comps.len() as f32
-        );
+    info!("Total Networks: {}", comps.len());
+    let num_txp_unique_networks: usize = one_vertex_components.iter().sum();
+    let num_txp_ambiguous_networks: usize = comps.len() - num_txp_unique_networks;
+    info!(
+        ">1 vertices Network: {}, {}%",
+        num_txp_ambiguous_networks,
+        num_txp_ambiguous_networks as f32 * 100.0 / comps.len() as f32
+    );
+    info!(
+        "1 vertex Networks w/ 1 txp: {}, {}%",
+        one_vertex_components[0],
+        one_vertex_components[0] as f32 * 100.0 / comps.len() as f32
+    );
+    info!(
+        "1 vertex Networks w/ >1 txp: {}, {}%",
+        one_vertex_components[1],
+        one_vertex_components[1] as f32 * 100.0 / comps.len() as f32
+    );
 
-        //info!("Total Predicted Molecules {}", identified_txps.len());
+    //info!("Total Predicted Molecules {}", identified_txps.len());
 
-        // iterate and extract gene names
-        let mut gene_names: Vec<String> = vec!["".to_string(); gid_map.len()];
-        for (gene_name, gene_idx) in gid_map {
-            gene_names[*gene_idx as usize] = gene_name.clone();
-        }
+    // iterate and extract gene names
+    let mut gene_names: Vec<String> = vec!["".to_string(); gid_map.len()];
+    for (gene_name, gene_idx) in gid_map {
+        gene_names[*gene_idx as usize] = gene_name.clone();
+    }
 
-        if num_bootstraps > 0 {
-            //entry point for bootstrapping
-            let gene_counts: Vec<Vec<f32>> = do_bootstrapping(salmon_eqclasses,
-                &mut unique_evidence,
-                &mut no_ambiguity,
-                &num_bootstraps,
-                gid_map.len(),
-                only_unique);
+    if num_bootstraps > 0 {
+        //entry point for bootstrapping
+        let gene_counts: Vec<Vec<f32>> = do_bootstrapping(salmon_eqclasses,
+        &mut unique_evidence,
+        &mut no_ambiguity,
+        &num_bootstraps,
+        gid_map.len(),
+        only_unique);
 
-            write_bootstraps(gene_names, gene_counts, unique_evidence,
-                no_ambiguity, num_bootstraps);
-            return None;
-        }
-        else{
-            //entry point for EM
-            //println!("{:?}", subsample_gene_idx);
-            //println!("{:?}", &salmon_eqclasses);
-            let gene_counts: Vec<f32> = optimize(salmon_eqclasses, &mut unique_evidence,
-                &mut no_ambiguity, gid_map.len(), only_unique);
+        write_bootstraps(gene_names, gene_counts, unique_evidence,
+        no_ambiguity, num_bootstraps);
+        return None;
+    }
+    else{
+        //entry point for EM
+        //println!("{:?}", subsample_gene_idx);
+        //println!("{:?}", &salmon_eqclasses);
+        let gene_counts: Vec<f32> = optimize(salmon_eqclasses, &mut unique_evidence,
+        &mut no_ambiguity, gid_map.len(), only_unique);
 
-            write_quants(gene_names, gene_counts, unique_evidence, no_ambiguity);
-            return None;
-        } // end-else
+        write_quants(gene_names, gene_counts, unique_evidence, no_ambiguity);
+        return None;
+    } // end-else
     }
     else {
-        Some(optimize(salmon_eqclasses,
-            &mut unique_evidence,
-            &mut no_ambiguity,
-            gid_map.len(),
-            only_unique
-        ))
+    Some(optimize(salmon_eqclasses,
+        &mut unique_evidence,
+        &mut no_ambiguity,
+        gid_map.len(),
+        only_unique
+    ))
     }
     */
     //identified_txps

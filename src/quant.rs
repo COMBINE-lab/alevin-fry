@@ -7,261 +7,90 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate ahash;
-extern crate bincode;
-extern crate crossbeam_queue;
-extern crate indicatif;
-extern crate needletail;
-extern crate petgraph;
-extern crate serde;
-extern crate slog;
-
-use self::indicatif::{ProgressBar, ProgressStyle};
-use self::petgraph::prelude::*;
-#[allow(unused_imports)]
-use self::slog::{crit, info, warn};
-use crate as libradicl;
 use crossbeam_queue::ArrayQueue;
+use indicatif::{ProgressBar, ProgressStyle};
+
+#[allow(unused_imports)]
+use slog::{crit, info, warn};
 
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
-use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
-use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::io::{BufReader, BufWriter};
+use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use std::fmt;
 //use std::ptr;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use self::libradicl::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
-use self::libradicl::pugutils;
-use self::libradicl::schema::{
-    EqMap, IndexedEqList, PugEdgeType, ResolutionStrategy, SplicedAmbiguityModel,
-};
-use self::libradicl::utils::*;
-
-/// Extracts the parsimonious UMI graphs (PUGs) from the
-/// equivalence class map for a given cell.
-/// The returned graph is a directed graph (potentially with
-/// bidirected edges) where each node consists of an (equivalence
-/// class, UMI ID) pair.  Note, crucially, that the UMI ID is simply
-/// the rank of the UMI in the list of all distinct UMIs for this
-/// equivalence class.  There is a directed edge between any pair of
-/// vertices whose set of transcripts overlap and whose UMIs are within
-/// a Hamming distance of 1 of each other.  If one node has more than
-/// twice the frequency of the other, the edge is directed from the
-/// more frequent to the less freuqent node.  Otherwise, edges are
-/// added in both directions.
-fn extract_graph(
-    eqmap: &EqMap,
-    log: &slog::Logger,
-) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
-    let verbose = false;
-    let mut one_edit = 0u64;
-    let mut zero_edit = 0u64;
-
-    // given 2 pairs (UMI, count), determine if an edge exists
-    // between them, and if so, what type.
-    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
-        let hdist = count_diff_2_bit_packed(x.0, y.0);
-        if hdist == 0 {
-            zero_edit += 1;
-            return PugEdgeType::BiDirected;
-        }
-
-        if hdist < 2 {
-            one_edit += 1;
-            if x.1 > (2 * y.1 - 1) {
-                return PugEdgeType::XToY;
-            } else if y.1 > (2 * x.1 - 1) {
-                return PugEdgeType::YToX;
-            } else {
-                return PugEdgeType::BiDirected;
-            }
-        }
-        PugEdgeType::NoEdge
-    };
-
-    let mut _bidirected = 0u64;
-    let mut _unidirected = 0u64;
-
-    let mut graph = DiGraphMap::<(u32, u32), ()>::new();
-    let mut hset = vec![0u8; eqmap.num_eq_classes()];
-    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
-
-    // insert all of the nodes up front to avoid redundant
-    // checks later.
-    for eqid in 0..eqmap.num_eq_classes() {
-        // get the info Vec<(UMI, frequency)>
-        let eq = &eqmap.eqc_info[eqid];
-        let u1 = &eq.umis;
-        for (xi, _x) in u1.iter().enumerate() {
-            graph.add_node((eqid as u32, xi as u32));
-        }
-    }
-
-    // for every equivalence class in this cell
-    for eqid in 0..eqmap.num_eq_classes() {
-        if verbose && eqid % 1000 == 0 {
-            print!("\rprocessed {:?} eq classes", eqid);
-            io::stdout().flush().expect("Could not flush stdout");
-        }
-
-        // get the info Vec<(UMI, frequency)>
-        let eq = &eqmap.eqc_info[eqid];
-
-        // for each (umi, count) pair and its index
-        let u1 = &eq.umis;
-        for (xi, x) in u1.iter().enumerate() {
-            // add a node
-            // graph.add_node((eqid as u32, xi as u32));
-
-            // for each (umi, freq) pair and node after this one
-            for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
-                //for xi2 in (xi + 1)..u1.len() {
-                // x2 is the other (umi, freq) pair
-                //let x2 = &u1[xi2];
-
-                // add a node for it
-                // graph.add_node((eqid as u32, xi2 as u32));
-
-                // determine if an edge exists between x and x2, and if so, what kind
-                let et = has_edge(&x, &x2);
-                // for each type of edge, add the appropriate edge in the graph
-                match et {
-                    PugEdgeType::BiDirected => {
-                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
-                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        _bidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    bidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::XToY => {
-                        graph.add_edge((eqid as u32, xi as u32), (eqid as u32, xi2 as u32), ());
-                        _unidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    unidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::YToX => {
-                        graph.add_edge((eqid as u32, xi2 as u32), (eqid as u32, xi as u32), ());
-                        _unidirected += 1;
-                        //if multi_gene_vec[eqid] == true {
-                        //    unidirected_in_multigene += 1;
-                        //}
-                    }
-                    PugEdgeType::NoEdge => {}
-                }
-            }
-        }
-
-        //hset.clear();
-        //hset.resize(eqmap.num_eq_classes(), 0u8);
-        for i in &idxvec {
-            hset[*i as usize] = 0u8;
-        }
-        let stf = idxvec.len() > 128;
-        idxvec.clear();
-        if stf {
-            idxvec.shrink_to_fit();
-        }
-
-        // for every reference id in this eq class
-        for r in eqmap.refs_for_eqc(eqid as u32) {
-            // find the equivalence classes sharing this reference
-            for eq2id in eqmap.eq_classes_containing(*r).iter() {
-                // if eq2id <= eqid, then we already observed the relevant edges
-                // when we process eq2id
-                if (*eq2id as usize) <= eqid {
-                    continue;
-                }
-                // otherwise, if we have already processed this other equivalence
-                // class because it shares _another_ reference (apart from r) with
-                // the current equivalence class, then skip it.
-                if hset[*eq2id as usize] > 0 {
-                    continue;
-                }
-
-                // recall that we processed this eq class as a neighbor of eqid
-                hset[*eq2id as usize] = 1;
-                idxvec.push(*eq2id as u32);
-                let eq2 = &eqmap.eqc_info[*eq2id as usize];
-
-                // compare all the umis between eqid and eq2id
-                let u2 = &eq2.umis;
-                for (xi, x) in u1.iter().enumerate() {
-                    // Node for equiv : eqid and umi : xi
-                    // graph.add_node((eqid as u32, xi as u32));
-
-                    for (yi, y) in u2.iter().enumerate() {
-                        // Node for equiv : eq2id and umi : yi
-                        // graph.add_node((*eq2id as u32, yi as u32));
-
-                        let et = has_edge(&x, &y);
-                        match et {
-                            PugEdgeType::BiDirected => {
-                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
-                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                _bidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    bidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::XToY => {
-                                graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
-                                _unidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    unidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::YToX => {
-                                graph.add_edge((*eq2id, yi as u32), (eqid as u32, xi as u32), ());
-                                _unidirected += 1;
-                                //if multi_gene_vec[eqid] == true
-                                //    || multi_gene_vec[*eq2id as usize] == true
-                                //{
-                                //    unidirected_in_multigene += 1;
-                                //}
-                            }
-                            PugEdgeType::NoEdge => {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if verbose {
-        info!(
-            log,
-            "\n\nsize of graph ({:?}, {:?})\n\n",
-            graph.node_count(),
-            graph.edge_count()
-        );
-        let total_edits = (one_edit + zero_edit) as f64;
-        info!(log, "\n\n\n{}\n\n\n", one_edit as f64 / total_edits);
-    }
-
-    graph
-}
+use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
+use crate::eq_class::{EqMap, IndexedEqList};
+use crate::pugutils;
+use crate::utils as afutils;
+use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum SplicedAmbiguityModel {
+    PreferAmbiguity,
+    WinnerTakeAll,
+}
+
+// Implement the trait
+impl FromStr for SplicedAmbiguityModel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "prefer-ambig" => Ok(SplicedAmbiguityModel::PreferAmbiguity),
+            "winner-take-all" => Ok(SplicedAmbiguityModel::WinnerTakeAll),
+            _ => Err("no match"),
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub enum ResolutionStrategy {
+    Trivial,
+    CellRangerLike,
+    CellRangerLikeEm,
+    Full,
+    Parsimony,
+}
+
+impl fmt::Display for ResolutionStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+// Implement the trait
+impl FromStr for ResolutionStrategy {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "trivial" => Ok(ResolutionStrategy::Trivial),
+            "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
+            "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
+            "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
+            "parsimony" => Ok(ResolutionStrategy::Parsimony),
+            _ => Err("no match"),
+        }
+    }
+}
+
 struct BootstrapHelper {
     bsfile: Option<BufferedGzFile>,
     mean_var_files: Option<(BufferedGzFile, BufferedGzFile)>,
@@ -416,7 +245,7 @@ fn write_eqc_counts(
                     // if the gene label belongs to the same gene
                     // then it must be splicing ambiguous (because exact
                     // duplicate IDs can't occur in eq class labels).
-                    if same_gene(*cg, **ng, true) {
+                    if afutils::same_gene(*cg, **ng, true) {
                         gl = (cg >> 1) + ambig_offset;
                         gn_eq_writer
                             .write_all(format!("{}\t", gl).as_bytes())
@@ -430,7 +259,7 @@ fn write_eqc_counts(
                 // either the next element does *not* belong to the same
                 // gene, or there is no next element.  In either case, deal
                 // with this gene label individually.
-                if is_spliced(*cg) {
+                if afutils::is_spliced(*cg) {
                     gl = cg >> 1;
                 } else {
                     gl = (cg >> 1) + unspliced_offset;
@@ -520,17 +349,17 @@ fn fill_work_queue<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-           || // or if adding the next cell to this chunk would exceed the buffer size
-           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-           || // of if this was the last chunk
-           chunk_num == num_chunks
+	    || // or if adding the next cell to this chunk would exceed the buffer size
+	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+	    || // of if this was the last chunk
+	    chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -560,7 +389,7 @@ fn fill_work_queue<T: Read>(
 /// any cell whose barcode is not in `keep_set`.
 fn fill_work_queue_filtered<T: Read>(
     keep_set: HashSet<u64, ahash::RandomState>,
-    rl_tags: &libradicl::TagSection,
+    rl_tags: &rad_types::TagSection,
     q: Arc<ArrayQueue<MetaChunk>>,
     mut br: T,
     num_chunks: usize,
@@ -568,8 +397,8 @@ fn fill_work_queue_filtered<T: Read>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
-    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
 
     const BUFSIZE: usize = 524208;
     // the buffer that will hold our records
@@ -616,7 +445,7 @@ fn fill_work_queue_filtered<T: Read>(
                 .unwrap();
             // get the barcode for this chunk
             let (bc, _umi) =
-                libradicl::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
+                rad_types::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
             if keep_set.contains(&bc) {
                 cells_in_chunk += 1;
                 cbytes += nbytes_chunk;
@@ -632,17 +461,17 @@ fn fill_work_queue_filtered<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = libradicl::Chunk::read_header(&mut br);
+            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-           || // or if adding the next cell to this chunk would exceed the buffer size
-           ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-           || // of if this was the last chunk
-           chunk_num == num_chunks
+	    || // or if adding the next cell to this chunk would exceed the buffer size
+	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+	    || // of if this was the last chunk
+	    chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -725,7 +554,7 @@ pub fn quantify(
             filter_list,
             cmdline,
             version,
-            &log,
+            log,
         )
     } else {
         let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
@@ -753,7 +582,7 @@ pub fn quantify(
             filter_list,
             cmdline,
             version,
-            &log,
+            log,
         )
     }
 }
@@ -781,7 +610,7 @@ pub fn do_quantify<T: Read>(
     log: &slog::Logger,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
-    let hdr = libradicl::RadHeader::from_bytes(&mut br);
+    let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
@@ -822,7 +651,7 @@ pub fn do_quantify<T: Read>(
     // e.g. just spliced, or 3-column tsv if we are dealing with
     // both spliced and unspliced.  The type will be automatically
     // determined.
-    match parse_tg_map(
+    match afutils::parse_tg_map(
         &tg_map,
         hdr.ref_count as usize,
         &rname_to_id,
@@ -834,14 +663,14 @@ pub fn do_quantify<T: Read>(
             with_unspliced = us;
             if with_unspliced {
                 assert_eq!(
-                    num_bootstraps, 0,
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-                );
+		     num_bootstraps, 0,
+		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
+		 );
                 assert!(
-                    matches!(resolution,
-                             ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
-                );
+		     matches!(resolution,
+			      ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
+		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
+		 );
             } else {
                 // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
                 // operating `with_unspliced`, so if the user has set that here, inform them
@@ -850,9 +679,9 @@ pub fn do_quantify<T: Read>(
                     SplicedAmbiguityModel::WinnerTakeAll => {}
                     _ => {
                         info!(
-                            log,
-                            "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
-                        );
+			     log,
+			     "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
+			 );
                         sa_model = SplicedAmbiguityModel::WinnerTakeAll;
                     }
                 }
@@ -877,16 +706,16 @@ pub fn do_quantify<T: Read>(
         Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     // file-level
-    let fl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = libradicl::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = libradicl::TagSection::from_bytes(&mut br);
+    let al_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = libradicl::FileTags::from_bytes(&mut br);
+    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
     let bct = rl_tags.tags[0].typeid;
@@ -895,7 +724,7 @@ pub fn do_quantify<T: Read>(
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
-        match read_filter_list(fname, ft_vals.bclen) {
+        match afutils::read_filter_list(fname, ft_vals.bclen) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process
@@ -949,8 +778,8 @@ pub fn do_quantify<T: Read>(
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
     // the types for the barcodes and umis
-    let bc_type = libradicl::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = libradicl::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
 
@@ -973,10 +802,11 @@ pub fn do_quantify<T: Read>(
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
     writeln!(
-        ff_file,
-        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
-    )?;
+	 ff_file,
+	 "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+     )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
         (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize
@@ -1003,6 +833,12 @@ pub fn do_quantify<T: Read>(
         mid + (mid / 2)
     } else {
         num_genes
+    };
+
+    let usa_offsets = if with_unspliced {
+        Some(((num_rows / 3) as usize, (2 * num_rows / 3) as usize))
+    } else {
+        None
     };
 
     let trimat =
@@ -1054,6 +890,7 @@ pub fn do_quantify<T: Read>(
         // and will need to know the barcode length
         let bclen = ft_vals.bclen;
         let alt_res_cells = alt_res_cells.clone();
+        let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
@@ -1122,7 +959,7 @@ pub fn do_quantify<T: Read>(
                             BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
                         byte_offset += nbytes as usize;
 
-                        let mut c = libradicl::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                        let mut c = rad_types::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
                         if c.reads.is_empty() {
                             warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
@@ -1182,11 +1019,11 @@ pub fn do_quantify<T: Read>(
                                     match (with_unspliced, only_unique) {
                                         (true, true) => {
                                             // USA mode, only gene-unqique reads
-                                            counts = extract_counts(&gene_eqc, num_rows);
+                                            counts = afutils::extract_counts(&gene_eqc, num_rows);
                                         }
                                         (true, false) => {
                                             // USA mode, use EM
-                                            extract_usa_eqmap(
+                                            afutils::extract_usa_eqmap(
                                                 &gene_eqc,
                                                 num_rows,
                                                 &mut idx_eq_list,
@@ -1200,6 +1037,7 @@ pub fn do_quantify<T: Read>(
                                                 em_init_type,
                                                 num_rows,
                                                 only_unique,
+                                                usa_offsets,
                                                 &log,
                                             );
                                         }
@@ -1231,7 +1069,7 @@ pub fn do_quantify<T: Read>(
                                 }
                                 ResolutionStrategy::Parsimony => {
                                     eq_map.init_from_chunk(&mut c);
-                                    let g = extract_graph(&eq_map, &log);
+                                    let g = pugutils::extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
@@ -1254,7 +1092,7 @@ pub fn do_quantify<T: Read>(
                                 }
                                 ResolutionStrategy::Full => {
                                     eq_map.init_from_chunk(&mut c);
-                                    let g = extract_graph(&eq_map, &log);
+                                    let g = pugutils::extract_graph(&eq_map, &log);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
@@ -1315,10 +1153,11 @@ pub fn do_quantify<T: Read>(
                                 // this special case
                                 match resolution {
                                     ResolutionStrategy::CellRangerLike => {
-                                        counts = extract_counts(&gene_eqc, num_rows);
+                                        counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
                                     ResolutionStrategy::CellRangerLikeEm => {
-                                        counts = extract_counts_mm_uniform(&gene_eqc, num_rows);
+                                        counts =
+                                            afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
                                     }
                                     _ => {
                                         counts = vec![0f32; num_genes];
@@ -1393,6 +1232,10 @@ pub fn do_quantify<T: Read>(
                             }
                         }
 
+                        if num_expr == 0 {
+                            empty_resolved_cells.lock().unwrap().push(cell_num as u64);
+                        }
+
                         let num_mapped = nrec;
                         let dedup_rate = sum_umi / num_mapped as f32;
 
@@ -1454,7 +1297,7 @@ pub fn do_quantify<T: Read>(
                             // write to barcode file
                             let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
                             writeln!(&mut writer.barcode_file, "{}", unsafe {
-                                std::str::from_utf8_unchecked(&bc_bytes)
+                                std::str::from_utf8_unchecked(bc_bytes)
                             })
                             .expect("can't write to barcode file.");
 
@@ -1474,7 +1317,7 @@ pub fn do_quantify<T: Read>(
                             writeln!(
                                 &mut writer.feature_file,
                                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
+                                unsafe { std::str::from_utf8_unchecked(bc_bytes) },
                                 (num_mapped + num_unmapped),
                                 num_mapped,
                                 sum_umi,
@@ -1619,19 +1462,20 @@ pub fn do_quantify<T: Read>(
             num_rows,
             with_unspliced,
             &output_matrix_path,
-            &log,
+            log,
         );
     }
 
     let meta_info = json!({
-        "cmd" : cmdline,
-        "version_str": version,
-        "resolution_strategy" : resolution.to_string(),
-        "num_quantified_cells" : num_cells,
-        "num_genes" : num_rows,
-        "dump_eq" : dump_eq,
-        "usa_mode" : with_unspliced,
-        "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap()
+    "cmd" : cmdline,
+    "version_str": version,
+    "resolution_strategy" : resolution.to_string(),
+    "num_quantified_cells" : num_cells,
+    "num_genes" : num_rows,
+    "dump_eq" : dump_eq,
+    "usa_mode" : with_unspliced,
+    "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
+    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap()
     });
 
     let mut meta_info_file =
@@ -1645,16 +1489,16 @@ pub fn do_quantify<T: Read>(
     // creating a dummy cmd_info.json for R compatibility
     /*
     let cmd_info = json!({
-         "salmon_version": "1.4.0",
-         "auxDir": "aux_info"
+     "salmon_version": "1.4.0",
+     "auxDir": "aux_info"
     });
     let mut cmd_info_file = File::create(output_path.join("quant_cmd_info.json"))
-        .expect("couldn't create quant_cmd_info.json file.");
+    .expect("couldn't create quant_cmd_info.json file.");
     let cmd_info_str =
-        serde_json::to_string_pretty(&cmd_info).expect("could not format quant_cmd_info json.");
+    serde_json::to_string_pretty(&cmd_info).expect("could not format quant_cmd_info json.");
     cmd_info_file
-        .write_all(cmd_info_str.as_bytes())
-        .expect("cannot write to quant_cmd_info.json file");
+    .write_all(cmd_info_str.as_bytes())
+    .expect("cannot write to quant_cmd_info.json file");
     */
     Ok(())
 }
