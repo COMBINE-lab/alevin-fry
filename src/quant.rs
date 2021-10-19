@@ -554,7 +554,7 @@ pub fn quantify(
             filter_list,
             cmdline,
             version,
-            &log,
+            log,
         )
     } else {
         let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
@@ -582,7 +582,7 @@ pub fn quantify(
             filter_list,
             cmdline,
             version,
-            &log,
+            log,
         )
     }
 }
@@ -835,6 +835,12 @@ pub fn do_quantify<T: Read>(
         num_genes
     };
 
+    let usa_offsets = if with_unspliced {
+        Some(((num_rows / 3) as usize, (2 * num_rows / 3) as usize))
+    } else {
+        None
+    };
+
     let trimat =
         sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows as usize), tmcap);
 
@@ -1031,6 +1037,7 @@ pub fn do_quantify<T: Read>(
                                                 em_init_type,
                                                 num_rows,
                                                 only_unique,
+                                                usa_offsets,
                                                 &log,
                                             );
                                         }
@@ -1290,7 +1297,7 @@ pub fn do_quantify<T: Read>(
                             // write to barcode file
                             let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
                             writeln!(&mut writer.barcode_file, "{}", unsafe {
-                                std::str::from_utf8_unchecked(&bc_bytes)
+                                std::str::from_utf8_unchecked(bc_bytes)
                             })
                             .expect("can't write to barcode file.");
 
@@ -1310,7 +1317,7 @@ pub fn do_quantify<T: Read>(
                             writeln!(
                                 &mut writer.feature_file,
                                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                unsafe { std::str::from_utf8_unchecked(&bc_bytes) },
+                                unsafe { std::str::from_utf8_unchecked(bc_bytes) },
                                 (num_mapped + num_unmapped),
                                 num_mapped,
                                 sum_umi,
@@ -1455,7 +1462,7 @@ pub fn do_quantify<T: Read>(
             num_rows,
             with_unspliced,
             &output_matrix_path,
-            &log,
+            log,
         );
     }
 

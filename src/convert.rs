@@ -147,7 +147,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             let name_size = t.len() as u16;
             data.write_all(&name_size.to_le_bytes())
                 .expect("coudn't write to output file");
-            data.write_all(&t).expect("coudn't write to output file");
+            data.write_all(t).expect("coudn't write to output file");
         }
         let initial_num_chunks = 0u64;
         data.write_all(&initial_num_chunks.to_le_bytes())
@@ -188,12 +188,12 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         let mut umi_tag_str = "ulen";
 
         // str - type
-        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // str - type
-        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -245,11 +245,11 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
-        rad_types::write_str_bin(&cb_tag_str, &rad_types::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        rad_types::write_str_bin(&umi_tag_str, &rad_types::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -261,7 +261,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        rad_types::write_str_bin(&refid_str, &rad_types::RadIntId::U16, &mut data);
+        rad_types::write_str_bin(refid_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -490,7 +490,7 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 }
 
 pub fn view(rad_file: String, print_header: bool, out_file: String, log: &slog::Logger) {
-    let _read_num = view2(rad_file, print_header, out_file, &log).unwrap();
+    let _read_num = view2(rad_file, print_header, out_file, log).unwrap();
 }
 pub fn view2(
     rad_file: String,

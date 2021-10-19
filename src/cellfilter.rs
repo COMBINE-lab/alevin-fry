@@ -191,24 +191,22 @@ fn populate_unfiltered_barcode_map<T: Read>(
     // read through the external unfiltered barcode list
     // and generate a vector of encoded barcodes
     // let mut kv = Vec::<u64>::new();
-    for line in br.byte_lines() {
-        if let Ok(l) = line {
-            if *first_bclen == 0 {
-                *first_bclen = l.len();
-            } else {
-                assert_eq!(
-                    *first_bclen,
-                    l.len(),
-                    "found barcodes of different lenghts {} and {}",
-                    *first_bclen,
-                    l.len()
-                );
-            }
-            if let Some((_, km, _)) =
-                needletail::bitkmer::BitNuclKmer::new(&l[..], l.len() as u8, false).next()
-            {
-                hm.insert(km.0, 0);
-            }
+    for l in br.byte_lines().flatten() {
+        if *first_bclen == 0 {
+            *first_bclen = l.len();
+        } else {
+            assert_eq!(
+                *first_bclen,
+                l.len(),
+                "found barcodes of different lenghts {} and {}",
+                *first_bclen,
+                l.len()
+            );
+        }
+        if let Some((_, km, _)) =
+            needletail::bitkmer::BitNuclKmer::new(&l[..], l.len() as u8, false).next()
+        {
+            hm.insert(km.0, 0);
         }
     }
     hm
@@ -455,12 +453,12 @@ fn process_filtered(
     // select from among supported filter methods
     match filter_meth {
         CellFilterMethod::KneeFinding => {
-            let num_bc = get_knee(&freq[..], 100, &log);
+            let num_bc = get_knee(&freq[..], 100, log);
             let min_freq = freq[num_bc];
 
             // collect all of the barcodes that have a frequency
             // >= to min_thresh.
-            valid_bc = permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(hm, min_freq);
             info!(
                 log,
                 "knee distance method resulted in the selection of {} permitted barcodes.",
@@ -478,7 +476,7 @@ fn process_filtered(
 
             // collect all of the barcodes that have a frequency
             // >= to min_thresh.
-            valid_bc = permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(hm, min_freq);
         }
         CellFilterMethod::ExplicitList(valid_bc_file) => {
             valid_bc = permit_list_from_file(valid_bc_file.clone(), ft_vals.bclen);
@@ -491,7 +489,7 @@ fn process_filtered(
             let ind = cmp::min(freq.len() - 1, robust_ind as usize);
             let robust_freq = freq[ind];
             let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-            valid_bc = permit_list_from_threshold(&hm, min_freq);
+            valid_bc = permit_list_from_threshold(hm, min_freq);
         }
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unimplemented!();
@@ -722,11 +720,11 @@ pub fn generate_permit_list(
                     &filter_meth,
                     expected_ori,
                     &output_dir,
-                    &version,
+                    version,
                     max_ambiguity_read,
                     velo_mode,
                     cmdline,
-                    &log,
+                    log,
                 ))
             } else {
                 Ok(0)
@@ -751,11 +749,11 @@ pub fn generate_permit_list(
                 &filter_meth,
                 expected_ori,
                 &output_dir,
-                &version,
+                version,
                 max_ambiguity_read,
                 velo_mode,
                 cmdline,
-                &log,
+                log,
             ))
         }
     }
