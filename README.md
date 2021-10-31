@@ -87,7 +87,7 @@ $ wget -v -O data/pbmc_1k_v3_fastqs/pbmc_1k_v3_S1_L002_R1_001.fastq.gz -L https:
 Finally, we'll download the [singularity](https://sylabs.io/singularity/) image that contains all of the software we'll need to do our processing.
 
 ```{bash}
-$ wget -v -O usefulaf.sif https://umd.box.com/shared/static/0twj103udhafoc3xggpecwptjsmgvbiw
+$ wget -v -O usefulaf.sif https://umd.box.com/shared/static/bcd8io9fbjc321pfgcomues5oe2a12cz
 ```
 or, alternatively, you can pull the docker image directly from Dockerhub and have singularity convert it for you
 
