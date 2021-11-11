@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
@@ -26,9 +26,9 @@ categories = ["command-line-utilities", "science"]
 
 [dependencies]	
 # for release
-libradicl = "0.4.2" 
+# libradicl = "0.4.2" 
 # for local development
-# libradicl = { path = "libradicl", version = "0.4.2" }
+libradicl = { path = "libradicl", version = "0.4.3" }
 arrayvec = "0.7.1"
 ahash = "0.7.6"
 bincode = "1.3.3"
@@ -63,7 +63,7 @@ rust-htslib = { version = "0.38.2", default-features = false, features = ["bzip2
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.1" }
 
 [dependencies.clap]
-version = "3.0.0-beta.4"
+version = "3.0.0-beta.5"
 features = ["wrap_help"]
 
 [profile.release]

@@ -6,6 +6,12 @@ Changelog for alevin-fry
 
 Currently no unreleased features
 
+## [0.4.3] - 2021-11-11
+
+### Fixed
+
+- Fixed a bug that prevented the 1-edit rescue (in `generate-permit-list`) for barcodes of odd length, when using the unfiltered permit-list filtering mode. Thanks to @Gaura for helping to find and diagnose the issue.
+
 ## [0.4.2] - 2021-10-16
 
 ### Added
@@ -35,6 +41,7 @@ This is a minor release, intended mostly to bump some version dependencies and t
 
 - The `quant` command no longer writes a `cmd_info.json` file
 
-[unreleased]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.2...HEAD
+[unreleased]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.2...0.4.3
 [0.4.2]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/COMBINE-lab/alevin-fry/compare/v0.4.0...v0.4.1
