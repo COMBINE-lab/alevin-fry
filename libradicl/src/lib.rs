@@ -61,7 +61,7 @@ impl BarcodeLookupMap {
         let prefix_len = ((bclen + 1) / 2) as u64;
         let suffix_len = bclen - prefix_len as u32;
 
-        let prefix_bits = 2 * prefix_len;
+        let _prefix_bits = 2 * prefix_len;
         let suffix_bits = 2 * suffix_len;
 
         kv.sort_unstable();
@@ -71,7 +71,7 @@ impl BarcodeLookupMap {
         let mut prev_ind = 0xFFFF;
 
         for (n, &v) in kv.iter().enumerate() {
-            let ind = ((v & pref_mask) >> (prefix_bits)) as usize;
+            let ind = ((v & pref_mask) >> (suffix_bits)) as usize;
             if ind != prev_ind {
                 for item in offsets.iter_mut().take(ind).skip(prev_ind + 1) {
                     *item = n;
@@ -695,5 +695,53 @@ pub fn as_u8_slice(v: &[u32]) -> &[u8] {
             v.as_ptr() as *const u8,
             v.len() * std::mem::size_of::<u32>(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::BarcodeLookupMap;
+
+    #[test]
+    fn test_barcode_lookup_map() {
+        let barcode_sv_even = vec![
+            b"AACC", b"AAGG", b"CAGT", b"CATT", b"GACC", b"GATA", b"TCAG", b"TCGT",
+        ];
+        let barcode_sv_odd = vec![
+            b"AACCA", b"AAGGC", b"CAGTA", b"CATTG", b"GACCG", b"GATAC", b"TCAGA", b"TCGTG",
+        ];
+
+        let mut barcode_even = Vec::with_capacity(barcode_sv_even.len());
+        for b in barcode_sv_even.clone() {
+            if let Some((_, km, _)) =
+                needletail::bitkmer::BitNuclKmer::new(&b[..], b.len() as u8, false).next()
+            {
+                barcode_even.push(km.0);
+            }
+        }
+        let mut barcode_odd = Vec::with_capacity(barcode_sv_odd.len());
+        for b in barcode_sv_odd.clone() {
+            if let Some((_, km, _)) =
+                needletail::bitkmer::BitNuclKmer::new(&b[..], b.len() as u8, false).next()
+            {
+                barcode_odd.push(km.0);
+            }
+        }
+
+        let me = BarcodeLookupMap::new(barcode_even, 4);
+        let mo = BarcodeLookupMap::new(barcode_odd, 5);
+
+        let x = b"CAGA";
+        if let Some((_, et, _)) =
+            needletail::bitkmer::BitNuclKmer::new(&x[..], x.len() as u8, false).next()
+        {
+            assert_eq!((Some(2), 1), me.find_neighbors(et.0, false));
+        }
+        let x = b"CAATG";
+        if let Some((_, et, _)) =
+            needletail::bitkmer::BitNuclKmer::new(&x[..], x.len() as u8, false).next()
+        {
+            assert_eq!((Some(3), 1), mo.find_neighbors(et.0, false));
+        }
     }
 }
