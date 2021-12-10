@@ -17,7 +17,7 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{crate_authors, crate_version, App, AppSettings, Arg, ArgSettings};
+use clap::{arg, crate_authors, crate_version, App, AppSettings, ArgSettings};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
@@ -62,114 +62,106 @@ fn main() {
         .about("Convert a BAM file to a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(Arg::from("-b, --bam=<bam-file> 'input SAM/BAM file'"))
+        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file"))
         .arg(
-            Arg::from("-t, --threads 'number of threads to use for processing'")
+            arg!(-t --threads <THREADS> "number of threads to use for processing")
                 .default_value(&max_num_threads),
         )
-        .arg(Arg::from("-o, --output=<rad-file> 'output RAD file'"));
+        .arg(arg!(-o --output <RADFILE> "output RAD file"));
 
     let view_app = App::new("view")
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(Arg::from("-r, --rad=<rad-file> 'input RAD file'"))
+        .arg(arg!(-r --rad <RADFILE> "input RAD file"))
         .arg(
-            Arg::from("-h, --header 'flag for printing header'")
+            arg!(-h --header "flag for printing header")
                 .takes_value(false)
                 .required(false),
         )
-        .arg(Arg::from("-o, --output=<rad-file> 'output plain-text-file file'").required(false));
+        .arg(arg!(-o --output <RADFILE> "output plain-text-file file").required(false));
 
     let gen_app = App::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(Arg::from("-i, --input=<input>  'input directory containing the map.rad RAD file'"))
-        .arg(Arg::from("-d, --expected-ori=<expected-ori> 'the expected orientation of alignments'"))
-        .arg(Arg::from(
-            "-o, --output-dir=<output-dir>  'output directory'",
-        ))
-        .arg(Arg::from(
-            "-k, --knee-distance  'attempt to determine the number of barcodes to keep using the knee distance method."
+        .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file"))
+        .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments"))
+        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory"))
+        .arg(arg!(
+            -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells", "unfiltered-pl"])
         )
-        .arg(Arg::from(
-            "-e, --expect-cells=<expect-cells> 'defines the expected number of cells to use in determining the (read, not UMI) based cutoff'",
-        ).conflicts_with_all(&["force-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
+        .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff")
+             .conflicts_with_all(&["force-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
         )
-        .arg(Arg::from(
-            "-f, --force-cells=<force-cells>  'select the top-k most-frequent barcodes, based on read count, as valid (true)'"
-        ).conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
+        .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)")
+             .conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
         )
         .arg(
-            Arg::from(
-                "-b, --valid-bc=<valid-bc> 'uses true barcode collected from a provided file'",
-            )
+            arg!(-b --"valid-bc" <VALIDBC> "uses true barcode collected from a provided file")
             .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"]),
         )
         .arg(
-            Arg::from(
-                "-u, --unfiltered-pl=<unfiltered-pl> 'uses an unfiltered external permit list'",
-            )
+            arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "valid-bc"])
             .requires("min-reads")
         )
         .arg(
-            Arg::from("-m, --min-reads=<min-reads> 'minimum read count threshold; only used with --unfiltered-pl'")
+            arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .default_value("10")
                 .takes_value(true)
                 .required(true));
-    //.arg(Arg::from("-v, --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
+    //.arg(Arg::from("-v --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
 
     let collate_app = App::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
     .version(version)
     .author(crate_authors)
-    .arg(Arg::from("-i, --input-dir=<input-dir> 'input directory made by generate-permit-list'"))
-    .arg(Arg::from("-r, --rad-dir=<rad-file> 'the directory containing the RAD file to be collated'"))
-    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_collate_threads))
-    .arg(Arg::from("-c, --compress 'compress the output collated RAD file'").takes_value(false).required(false))
-    .arg(Arg::from("-m, --max-records=[max-records] 'the maximum number of read records to keep in memory at once'")
+    .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list"))
+    .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated"))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_collate_threads))
+    .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
+    .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
          .default_value("30000000"));
-    //.arg(Arg::from("-e, --expected-ori=[expected-ori] 'the expected orientation of alignments'")
-    //     .default_value("fw"));
+    //.arg(arg!(-e --expected-ori=[expected-ori] 'the expected orientation of alignments'")
+    //     .default_value(fw"));
 
     let quant_app = App::new("quant")
     .about("Quantify expression from a collated RAD file")
     .version(version)
     .author(crate_authors)
-    .arg(Arg::from("-i, --input-dir=<input-dir>  'input directory containing collated RAD file'"))
-    .arg(Arg::from("-m, --tg-map=<tg-map>  'transcript to gene map'"))
-    .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'"))
-    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
-    .arg(Arg::from("-d, --dump-eqclasses 'flag for dumping equivalence classes'").takes_value(false).required(false))
-    .arg(Arg::from("-b, --num-bootstraps 'number of bootstraps to use'").default_value("0"))
-    .arg(Arg::from("--init-uniform 'flag for uniform sampling'").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(Arg::from("--summary-stat 'flag for storing only summary statistics'").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false))
-    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
-    .arg(Arg::from("-r, --resolution 'the resolution strategy by which molecules will be counted'")
+    .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file"))
+    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map"))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written"))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
+    .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
+    .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").default_value("0"))
+    .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps").takes_value(false).required(false))
+    .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
+    .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em"])
-        .case_insensitive(true))
-    .arg(Arg::from("--sa-model 'preferred model of splicing ambiguity'")
+        .ignore_case(true))
+    .arg(arg!(--sa-model "preferred model of splicing ambiguity")
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .setting(ArgSettings::Hidden))
-    .arg(Arg::from("--small-thresh 'cells with fewer than these many reads will be resolved using a custom approach'").default_value("10").setting(ArgSettings::Hidden));
+    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10").setting(ArgSettings::Hidden));
 
     let infer_app = App::new("infer")
     .about("Perform inference on equivalence class count data")
     .version(version)
     .author(crate_authors)
-    .arg(Arg::from("-c, --count-mat=<eqc-mat> 'matrix of cells by equivalence class counts'").takes_value(true).required(true))
-    //.arg(Arg::from("-b, --barcodes=<barcodes> 'file containing the barcodes labeling the matrix rows'").takes_value(true).required(true))
-    .arg(Arg::from("-e, --eq-labels=<eq-labels> 'file containing the gene labels of the equivalence classes'").takes_value(true).required(true))
-    .arg(Arg::from("-o, --output-dir=<output-dir> 'output directory where quantification results will be written'").takes_value(true).required(true))
-    .arg(Arg::from("-t, --threads 'number of threads to use for processing'").default_value(&max_num_threads))
-    .arg(Arg::from("--usa 'flag specifying that input equivalence classes were computed in USA mode'").takes_value(false).required(false))
-    .arg(Arg::from("--quant-subset=<sfile> 'file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
-    .arg(Arg::from("--use-mtx 'flag for writing output matrix in matrix market instead of EDS'").takes_value(false).required(false));
+    .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts").takes_value(true).required(true))
+    //.arg(arg!(-b --barcodes=<barcodes> "file containing the barcodes labeling the matrix rows").takes_value(true).required(true))
+    .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes").takes_value(true).required(true))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").takes_value(true).required(true))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
+    .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false));
 
     let opts = App::new("alevin-fry")
         .setting(AppSettings::SubcommandRequiredElseHelp)
