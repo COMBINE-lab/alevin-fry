@@ -1,9 +1,9 @@
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
 use bstr::io::BufReadExt;
+use core::fmt;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
-use core::fmt;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
@@ -746,7 +746,7 @@ impl InternalVersionInfo {
 
 impl fmt::Display for InternalVersionInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,"v{}.{}.{}", self.major, self.minor, self.patch)
+        write!(f, "v{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 
