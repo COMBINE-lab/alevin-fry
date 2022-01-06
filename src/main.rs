@@ -47,7 +47,7 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
@@ -144,7 +144,7 @@ fn main() {
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em"])
         .ignore_case(true))
-    .arg(arg!(--sa-model "preferred model of splicing ambiguity")
+    .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .setting(ArgSettings::Hidden))
@@ -298,7 +298,7 @@ fn main() {
         // velo_mode --- currently, on this branch, it is always false
         let velo_mode = false; //t.is_present("velocity-mode");
 
-        let nc = generate_permit_list(
+        match generate_permit_list(
             input_dir,
             output_dir,
             fmeth,
@@ -307,11 +307,13 @@ fn main() {
             velo_mode,
             &cmdline,
             &log,
-        )
-        .unwrap();
-        if nc == 0 {
-            warn!(log, "found 0 corrected barcodes; please check the input.");
-        }
+        ) {
+            Ok(nc) if nc == 0 => {
+                warn!(log, "found 0 corrected barcodes; please check the input.");
+            }
+            Err(e) => return Err(e),
+            _ => (),
+        };
     }
 
     // convert a BAM file, in *transcriptomic coordinates*, with
@@ -432,7 +434,9 @@ fn main() {
                         Some(error) => {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
-                                ErrorKind::Deserialize { .. } => {}
+                                ErrorKind::Deserialize { .. } => {
+                                    return Err("execution terminated unexpectedly".into())
+                                }
                                 // if another type of error, just panic for now
                                 _ => {
                                     panic!("could not quantify rad file.");
@@ -472,7 +476,9 @@ fn main() {
                         Some(error) => {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
-                                ErrorKind::Deserialize { .. } => {}
+                                ErrorKind::Deserialize { .. } => {
+                                    return Err("execution terminated unexpectedly".into())
+                                }
                                 // if another type of error, just panic for now
                                 _ => {
                                     panic!("could not quantify rad file.");
@@ -521,4 +527,5 @@ fn main() {
         )
         .expect("could not perform inference from equivalence class counts.");
     }
+    Ok(())
 }

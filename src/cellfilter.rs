@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
-use std::str::from_utf8;
 use std::time::Instant;
 
 pub enum CellFilterMethod {
@@ -228,12 +227,6 @@ fn process_unfiltered(
 ) -> u64 {
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
-    /*
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let writer = BufWriter::new(&output);
-    */
-    //let num_corrected = 0;
 
     // the smallest number of reads we'll allow per barcode
     let min_freq;
@@ -374,13 +367,14 @@ fn process_unfiltered(
 
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
+    let o_path = parent.join("permit_freq.bin");
 
-    for (k, v) in hm.iter() {
-        writeln!(&mut writer, "{}\t{}", k, v).expect("couldn't write to output file.");
-    }
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
     /*
     // don't need this right now
@@ -515,35 +509,23 @@ fn process_filtered(
 
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
+    let o_path = parent.join("permit_freq.bin");
 
-    for (k, v) in permitted_map {
-        //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-        writeln!(
-            &mut writer,
-            "{}\t{}",
-            k,
-            //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-            v
-        )
-        .expect("couldn't write to output file.");
-    }
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &permitted_map) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
-    let o_path = parent.join("all_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
-    for (k, v) in hm {
-        let bc_mer: BitKmer = (*k, ft_vals.bclen as u8);
-        writeln!(
-            &mut writer,
-            "{}\t{}",
-            from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-            v
-        )
-        .expect("couldn't write to output file.");
-    }
+    let o_path = parent.join("all_freq.bin");
+
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
     let s_path = parent.join("permit_map.bin");
     let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
@@ -601,7 +583,8 @@ pub fn generate_permit_list(
 
     if !i_dir.exists() {
         crit!(log, "the input RAD path {} does not exist", rad_dir);
-        std::process::exit(1);
+        // std::process::exit(1);
+        return Err("execution terminated unexpectedly".into());
     }
 
     let mut first_bclen = 0usize;

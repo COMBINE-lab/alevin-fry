@@ -9,6 +9,7 @@
 
 pub mod cellfilter;
 pub mod collate;
+pub mod constants;
 pub mod convert;
 pub mod em;
 pub mod eq_class;
