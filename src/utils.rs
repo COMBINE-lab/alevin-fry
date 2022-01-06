@@ -1,6 +1,7 @@
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
 use bstr::io::BufReadExt;
+use core::fmt;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
@@ -735,11 +736,17 @@ impl InternalVersionInfo {
             Ok(())
         } else {
             let s = format!(
-                "version {:?} is incompatible with version {:?}",
-                self, other
+                "running alevin-fry {} on {} results, please regenerate the results using alevin-fry {} or greater",
+                self, other, self
             );
             Err(s)
         }
+    }
+}
+
+impl fmt::Display for InternalVersionInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "v{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 
