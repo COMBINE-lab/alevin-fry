@@ -27,7 +27,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
-use std::str::from_utf8;
 use std::time::Instant;
 
 pub enum CellFilterMethod {
@@ -228,12 +227,6 @@ fn process_unfiltered(
 ) -> u64 {
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
-    /*
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let writer = BufWriter::new(&output);
-    */
-    //let num_corrected = 0;
 
     // the smallest number of reads we'll allow per barcode
     let min_freq;
@@ -375,22 +368,13 @@ fn process_unfiltered(
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
     let o_path = parent.join("permit_freq.bin");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
 
-    {
-        // first u64 represents file format version, currently it is version 1.
-        writer.write_all(&1u64.to_le_bytes()).unwrap();
-
-        // second u64 represents barcode length
-        writer
-            .write_all(&(u64::from(ft_vals.bclen)).to_le_bytes())
-            .unwrap();
-
-        // the rest records the permitted barcode:freq hashmap
-        bincode::serialize_into(&mut writer, &hm)
-            .expect("couldn't write to permit_freq.bin.");
-    }
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
     /*
     // don't need this right now
@@ -526,40 +510,22 @@ fn process_filtered(
     let parent = std::path::Path::new(&output_dir);
     std::fs::create_dir_all(&parent).unwrap();
     let o_path = parent.join("permit_freq.bin");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
 
-    {
-        // first u64 represents file format version, currently it is version 1.
-        writer.write_all(&1u64.to_le_bytes()).unwrap();
-
-        // second u64 represents barcode length
-        writer
-            .write_all(&(u64::from(ft_vals.bclen)).to_le_bytes())
-            .unwrap();
-
-        // the rest records the permitted barcode:freq hashmap
-        bincode::serialize_into(&mut writer, &permitted_map)
-            .expect("couldn't write to permit_freq.bin.");
-    }
-
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &permitted_map) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
     let o_path = parent.join("all_freq.bin");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
 
-    {
-        // first u64 represents file format version, currently it is version 1.
-        writer.write_all(&1u64.to_le_bytes()).unwrap();
-
-        // second u64 represents barcode length
-        writer
-            .write_all(&(u64::from(ft_vals.bclen)).to_le_bytes())
-            .unwrap();
-
-        // the rest records the barcode:freq hashmap
-        bincode::serialize_into(&mut writer, &hm).expect("couldn't write to all_freq.bin.");
-    }
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+        Ok(_) => {}
+        Err(error) => {
+            panic!("Error: {}", error);
+        }
+    };
 
     let s_path = parent.join("permit_map.bin");
     let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
@@ -619,7 +585,6 @@ pub fn generate_permit_list(
         crit!(log, "the input RAD path {} does not exist", rad_dir);
         // std::process::exit(1);
         return Err("execution terminated unexpectedly".into());
-
     }
 
     let mut first_bclen = 0usize;

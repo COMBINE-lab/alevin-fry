@@ -10,6 +10,7 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
+use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
 use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
@@ -69,27 +70,41 @@ pub fn collate(
         return Err(es.into());
     }
 
+    // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
         crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
         // std::process::exit(1);
         return Err("execution terminated unexpectedly".into());
-    }    
-        // open file
-        let freq_file =
-            std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
+    }
 
-        // header buffer
-        let mut rbuf = [0u8; 8];
+    // open file
+    let freq_file =
+        std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
 
-        // read header
-        let mut rdr = BufReader::new(&freq_file);
-        rdr.read_exact(&mut rbuf).unwrap();
-        let _freq_file_version = rbuf.pread::<u64>(0).unwrap();
-        rdr.read_exact(&mut rbuf).unwrap();
-        let _bc_len = rbuf.pread::<u64>(0).unwrap();
-        let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
-        let total_to_collate = freq_hm.values().sum();
-        let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
+    // header buffer
+    let mut rbuf = [0u8; 8];
+
+    // read header
+    let mut rdr = BufReader::new(&freq_file);
+    rdr.read_exact(&mut rbuf).unwrap();
+    let freq_file_version = rbuf.pread::<u64>(0).unwrap();
+    // make sure versions match
+    if freq_file_version > afconst::PERMIT_FILE_VER {
+        crit!(log,
+              "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+              freq_file_version, afconst::PERMIT_FILE_VER
+        );
+        return Err("execution terminated unexpectedly".into());
+    }
+
+    // read the barcode length
+    rdr.read_exact(&mut rbuf).unwrap();
+    let _bc_len = rbuf.pread::<u64>(0).unwrap();
+
+    // read the barcode -> frequency hashmap
+    let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
+    let total_to_collate = freq_hm.values().sum();
+    let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.

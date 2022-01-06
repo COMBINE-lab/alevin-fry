@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.4.3"
+version = "0.5.0"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
