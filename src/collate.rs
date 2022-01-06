@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::iter::FromIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,22 +69,28 @@ pub fn collate(
         return Err(es.into());
     }
 
-    type TsvRec = (u64, u64);
-    let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
+    if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
+        crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
+        // std::process::exit(1);
+        return Err("execution terminated unexpectedly".into());
+    }    
+        // open file
+        let freq_file =
+            std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
 
-    let freq_file =
-        std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .delimiter(b'\t')
-        .from_reader(freq_file);
+        // header buffer
+        let mut rbuf = [0u8; 8];
 
-    let mut total_to_collate = 0;
-    for result in rdr.deserialize() {
-        let record: TsvRec = result?;
-        tsv_map.push(record);
-        total_to_collate += record.1;
-    }
+        // read header
+        let mut rdr = BufReader::new(&freq_file);
+        rdr.read_exact(&mut rbuf).unwrap();
+        let _freq_file_version = rbuf.pread::<u64>(0).unwrap();
+        rdr.read_exact(&mut rbuf).unwrap();
+        let _bc_len = rbuf.pread::<u64>(0).unwrap();
+        let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
+        let total_to_collate = freq_hm.values().sum();
+        let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
+
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
