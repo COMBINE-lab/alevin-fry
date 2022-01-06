@@ -1,3 +1,4 @@
+
 [package]
 name = "alevin-fry"
 version = "0.4.3"
@@ -30,6 +31,7 @@ libradicl = "0.4.3"
 # for local development
 # libradicl = { path = "libradicl", version = "0.4.3" }
 arrayvec = "0.7.1"
+
 ahash = "0.7.6"
 bincode = "1.3.3"
 bstr = "0.2.17"
@@ -63,7 +65,7 @@ rust-htslib = { version = "0.38.2", default-features = false, features = ["bzip2
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.1" }
 
 [dependencies.clap]
-version = "3.0.0-rc.4"
+version = "3.0.5"
 features = ["wrap_help", "cargo"]
 
 [profile.release]
