@@ -1,7 +1,7 @@
 quant
 =====
 
-The ``quant`` command takes a collated RAD file and performs feature (e.g. gene) quantification, outputting a sparse matrix of de-duplicated counts as well as a list of labels for the rows and columns.  The ``quant`` command takes an input directory containing the collated RAD file, a transcript-to-gene map, an output directory where the results will be written and a "resolution strategy" (described below).  Quantification is multi-threaded, so it also, optionally, takes as an arguments the number of threads to use concurrently.
+The ``quant`` command takes a collated RAD file and performs feature (e.g. gene) quantification, outputting a sparse matrix of de-duplicated counts as well as a list of labels for the rows and columns.  The ``quant`` command takes an input directory containing the collated RAD file, a transcript-to-gene map, an output directory where the results will be written, and a "resolution strategy" (described below).  Quantification is multi-threaded, so it also, optionally, takes as an arguments the number of threads to use concurrently.
 
 The transcript-to-gene map should be either:
 
@@ -36,7 +36,7 @@ Additionally, this command can optionally take the following flags (note that no
 output
 ------
 
-The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``counts.eds.gz`` (or ``quants_mat.mtx`` if run with the ``--use-mtx`` flag), ``quants_mat_cols.txt``, ``meta_info.json``, and ``features.txt``.  The ``meta_info.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``features.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
+The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``counts.eds.gz`` (or ``quants_mat.mtx`` if run with the ``--use-mtx`` flag), ``quants_mat_cols.txt``, ``quant.json``, and ``featureDump.txt``.  The ``quant.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``featureDump.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
 
 If ``quant`` was executed in USA mode, then the resulting count matrix will be of dimension ``C``x``3G`` where ``C`` is the number of quantified cells (barcodes) and ``G`` is the number of genes.  This is because, in USA mode, ``alevin-fry`` quantifies the UMI count attributable to each splicing state of each gene in each cell, where the splicing state is one of spliced (S), unspliced (U) or ambiguous (A).  If ``quant`` was run with a two-column transcript-to-gene map (not in USA-mode), then the resulting count matrix will be a ``C``x``G`` matrix, as splicing status is not tracked.  For more details on USA mode and its uses, please read the ``alevin-fry`` `preprint <https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1>`__, or the `corresponding tutorial <https://combine-lab.github.io/alevin-fry-tutorials/2021/improving-txome-specificity/>`__.
 
