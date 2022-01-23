@@ -14,6 +14,10 @@ You can read the pre-print describing alevin-fry : ["Alevin-fry unlocks rapid, a
 
 Alevin-fry is under active development.  However, you can find the documentation on [read the docs](https://alevin-fry.readthedocs.io/en/latest/).  We try to keep the documentation up to date with the latest developments in the software.  Additionally, there is a series of tutorial for using alevin-fry for processing different types of data that you can find [here](https://combine-lab.github.io/alevin-fry-tutorials/).
 
+## FAQs 
+
+Are you curious about processing details like [whether to use a sparse or dense index](https://github.com/COMBINE-lab/alevin-fry/discussions/38)? Do you have a question that isn't necessarily a bug report or feature request, and that isn't readily answered by the documentation or tutorials?  Then please feel free to ask over in the [Q&A](https://github.com/COMBINE-lab/alevin-fry/discussions/categories/q-a).
+
 ## Sister repositories
 
 The generation of the reduced alignment data (RAD) files processed by alevin-fry is done by [salmon](https://github.com/COMBINE-lab/salmon). The latest version of salmon is available [on GitHub](https://github.com/COMBINE-lab/salmon/releases), via [bioconda](https://bioconda.github.io/recipes/salmon/README.html), and on [dockerhub](https://hub.docker.com/layers/combinelab/salmon/latest/images/sha256-f86324c6aeacb627e3c589562ab9e2564a6d51a3892a697669d3f23d0b9d81a8?context=explore). 
@@ -22,9 +26,11 @@ The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains sc
 
 ## Installing from bioconda
 
+
 Alevin-fry is available for both x86 linux and OSX platforms [using bioconda](https://anaconda.org/bioconda/alevin-fry).
 
 With `bioconda` in the appropriate place in your channel list, you should simply be able to install via:
+
 
 ```{bash}
 $ conda install alevin-fry
@@ -65,6 +71,7 @@ Here, we show how to perform a complete analysis on the [1k PBMCs from a Healthy
 First, create a working directory with sufficient space to download all of the input data and to hold the output (50GB should be sufficient).  We alias this directory and use the alias below so that you can easily set it to something else if you want and still copy and paste the later commands.
 
 ```{bash}
+
 $ mkdir af_test_workdir
 $ export AF_SAMPLE_DIR=$PWD/af_test_workdir
 ```
@@ -104,6 +111,7 @@ To build the reference index (and quantify) we'll use the [simpleaf](https://git
 ### Building the splici reference and index
 
 To build our reference index (this will both extract the _splici_ fasta and transcript to gene mapping, and build the `salmon` index on it), use the following command (this should generally take ~1hr or less):
+
 
 ```{bash}
 $ singularity exec --cleanenv \
@@ -145,6 +153,7 @@ m <- load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant", which_counts=c('S', 'A'))
 
 where `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a [SingleCellExperiment](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object containing the counts for this experiment.  The stand-alone `load_fry()` function has been merged into the [`fishpond`](https://bioconductor.org/packages/release/bioc/html/fishpond.html) package and will be part of the next release.
 
+
 **Python** : In [python](https://www.python.org/), you can make use of the `python` [`load_fry()`](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) function, which relies on [scanpy](https://scanpy.readthedocs.io/en/stable/).  To read the input you can use the following command:
 
 ```{python}
@@ -185,4 +194,5 @@ that you should pass to `alevin-fry` during the `quant` phase.
 
 If you have any questions about preparing the splici reference, or otherwise about processing your data with `alevin-fry` please feel free to open an issue 
 here on GitHub!
+
 
