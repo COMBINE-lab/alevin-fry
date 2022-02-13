@@ -520,7 +520,7 @@ fn process_filtered(
 
     let o_path = parent.join("all_freq.bin");
 
-    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, hm) {
         Ok(_) => {}
         Err(error) => {
             panic!("Error: {}", error);
