@@ -91,7 +91,9 @@ fn distance_to_line(p1: &Point, p2: &Point, q: &Point) -> f64 {
 /// the distance of each point from L, and return the index of the point
 /// having the maximum distance.
 fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> usize {
-    assert!(sorted_frequencies.len() >= 2);
+    assert!(sorted_frequencies.len() >= 2,
+        "ERROR: when attempting to find a knee-distance threshold, the list of putative cells is only of length {}. Cannot proceed. Please check the mapping rate.",
+        sorted_frequencies.len());
     let first = sorted_frequencies
         .first()
         .expect("cannot process empty frequency list.");
