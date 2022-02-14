@@ -389,7 +389,7 @@ pub fn collate_with_temp(
         let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
 
         rfile
-            .read_exact(&mut hdr_buf.get_mut())
+            .read_exact(hdr_buf.get_mut())
             .expect("couldn't read input file header");
         hdr_buf.set_position(take_pos);
         hdr_buf
