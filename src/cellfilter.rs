@@ -31,7 +31,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -575,6 +575,7 @@ struct FilterPassInfo {
     num_reads: usize,
     num_orientation_compat_reads: usize,
     expected_ori: Strand,
+    num_records_processed: usize,
 }
 
 /// Given the input RAD file `input_file`, compute
@@ -672,7 +673,7 @@ pub fn generate_permit_list(
     let ft_vals = rad_types::FileTags::from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", ft_vals);
 
-    let mut num_reads: usize = 0;
+    let num_reads = 0usize;
 
     let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
         .expect("unknown barcode type id.");
@@ -688,21 +689,22 @@ pub fn generate_permit_list(
     let chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
 
     // the thread handles to hold the return values of the workers
-    let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
+    let mut thread_handles: Vec<thread::JoinHandle<FilterPassInfo>> = Vec::with_capacity(n_workers);
 
     // if dealing with filtered type
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut hm = HashMap::with_hasher(s);
+    let hm = HashMap::with_hasher(s);
 
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
-    let mut unmatched_bc: Vec<u64>;
-    let mut num_orientation_compat_reads = 0usize;
-    let mut max_ambiguity_read = 0usize;
+    let unmatched_bc: Vec<u64> = Vec::new();
+    let num_orientation_compat_reads = 0usize;
+    let max_ambiguity_read = 0usize;
+    let nrec_processed = 0usize;
 
     // this will be the information filled out
     // in our reader thread.
-    let fp_info = Arc::new(Mutex::new(FilterPassInfo {
+    let mut fp_info = FilterPassInfo {
         unfiltered_bc_counts,
         hm,
         unmatched_bc,
@@ -710,43 +712,88 @@ pub fn generate_permit_list(
         num_reads,
         num_orientation_compat_reads,
         expected_ori,
-    }));
+        num_records_processed: nrec_processed,
+    };
 
     // since we will use a move closure, we need clones of
     // all of the Arcs we will move into the thread
-
-    // our main struct holding important variables
-    let local_fp_info = fp_info.clone();
     // the filering method
     let local_filter_meth = filter_meth.clone();
     // each thread will need to access the work queue
     let in_q = q.clone();
     // and the atomic counter of remaining work
-    let chunks_remaining = chunks_to_process.clone();
+    let chunks_remaining = chunks_to_process;
     // the logger
     let thread_log = log.clone();
 
     // now, make the worker thread
     let handle = std::thread::spawn(move || {
-        let mut local_nrec = 0usize;
+        let local_nrec = &mut fp_info.num_records_processed;
         // nobody else should be able to get this
         // since there is only one worker thread.
-        if let Ok(mut fp) = local_fp_info.lock() {
-            let eo = fp.expected_ori.clone();
+        let eo = fp_info.expected_ori;
 
-            let mut hm = &mut fp.hm;
-            let mut ubc = &mut fp.unmatched_bc;
-            let mut mar = &mut fp.max_ambiguity_read;
-            let mut num_orientation_compat_reads = &mut fp.num_orientation_compat_reads;
-            let mut num_reads = &mut fp.num_reads;
+        let hm = &mut fp_info.hm;
+        let ubc = &mut fp_info.unmatched_bc;
+        let mar = &mut fp_info.max_ambiguity_read;
+        let num_orientation_compat_reads = &mut fp_info.num_orientation_compat_reads;
+        let num_reads = &mut fp_info.num_reads;
 
-            match local_filter_meth {
-                CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-                    *ubc = Vec::with_capacity(10000000);
+        if let CellFilterMethod::UnfilteredExternalList(_, _min_reads) = local_filter_meth {
+            *ubc = Vec::with_capacity(10000000);
+        };
+
+        // NOTE: The redundancy in the branches below seems unnecessary, but
+        // if we push the relevant `update_barcode_hist_unfiltered` and `update_barcode_hist`
+        // calls inside the `while` loop, the borrow checker complains about multiple mutable
+        // borrows over iterations of the loop.  Lookin to how to fix this.
+        // match local_filter_meth {
+        // CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
+        //     if let Some(ref mut hmu) = fp_info.unfiltered_bc_counts {
+        // pop MetaChunks from the work queue until everything is
+        // processed
+        while chunks_remaining.load(Ordering::SeqCst) > 0 {
+            if let Some((first_cell_in_chunk, cells_in_chunk, _nbytes_total, _nrec_total, buf)) =
+                in_q.pop()
+            {
+                // for every cell (chunk) within this meta-chunk
+                let mut byte_offset = 0usize;
+                for cn in 0..cells_in_chunk {
+                    chunks_remaining.fetch_sub(1, Ordering::SeqCst);
+                    let cell_num = first_cell_in_chunk + cn;
+                    // nbytes for the current cell
+                    let nbytes = buf[byte_offset..].pread::<u32>(0).unwrap();
+                    let nrec = buf[byte_offset..].pread::<u32>(4).unwrap();
+                    *local_nrec += nrec as usize;
+                    let mut nbr =
+                        BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
+                    byte_offset += nbytes as usize;
+
+                    let c = rad_types::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                    if c.reads.is_empty() {
+                        warn!(thread_log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
+                    }
+                    match local_filter_meth {
+                        CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
+                            if let Some(ref mut hmu) = fp_info.unfiltered_bc_counts {
+                                *num_orientation_compat_reads +=
+                                    update_barcode_hist_unfiltered(hmu, ubc, mar, &c, &eo);
+                                *num_reads += c.reads.len();
+                            }
+                        }
+                        _ => {
+                            update_barcode_hist(hm, mar, &c, &eo);
+                            *num_reads += c.reads.len();
+                        }
+                    }
                 }
-                _ => {}
-            };
-
+            }
+        }
+        fp_info
+        //}
+        //}
+        /*
+        _ => {
             // pop MetaChunks from the work queue until everything is
             // processed
             while chunks_remaining.load(Ordering::SeqCst) > 0 {
@@ -766,7 +813,7 @@ pub fn generate_permit_list(
                         // nbytes for the current cell
                         let nbytes = buf[byte_offset..].pread::<u32>(0).unwrap();
                         let nrec = buf[byte_offset..].pread::<u32>(4).unwrap();
-                        local_nrec += nrec as usize;
+                        *local_nrec += nrec as usize;
                         let mut nbr =
                             BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
                         byte_offset += nbytes as usize;
@@ -776,33 +823,27 @@ pub fn generate_permit_list(
                             warn!(thread_log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
 
-                        match local_filter_meth {
-                            CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-                                let mut hmu = fp.unfiltered_bc_counts.as_ref().unwrap();
-                                *num_orientation_compat_reads +=
-                                    update_barcode_hist_unfiltered(&mut hmu, &mut ubc, &mut mar, &c, &eo);
-                                *num_reads += c.reads.len();
-                            }
-                            _ => {
-                                update_barcode_hist(&mut hm, &mut mar, &c, &eo);
-                                *num_reads += c.reads.len();
-                            }
-                        }
+                        update_barcode_hist(hm, mar, &c, &eo);
+                        *num_reads += c.reads.len();
                     }
                 }
-            }
-        }
-        local_nrec
+                */
+        // }
+        //}
+        //}
+        //fp_info
     });
     thread_handles.push(handle);
 
     io_utils::fill_work_queue(q, br, hdr.num_chunks as usize, None)?;
 
     let mut _total_records = 0usize;
+    let mut fp_info = None;
     for h in thread_handles {
         match h.join() {
             Ok(rc) => {
-                _total_records += rc;
+                _total_records += rc.num_records_processed;
+                fp_info = Some(rc);
             }
             Err(_e) => {
                 info!(log, "thread panicked");
@@ -810,13 +851,12 @@ pub fn generate_permit_list(
         }
     }
 
-    let main_fp = fp_info.lock().unwrap();
+    if let Some(main_fp) = fp_info {
+        let unmatched_bc = main_fp.unmatched_bc;
 
-    let unmatched_bc = main_fp.unmatched_bc;
-
-    match filter_meth {
-        CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-            info!(
+        match filter_meth {
+            CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
+                info!(
                 log,
                 "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
                 main_fp.num_reads.to_formatted_string(&Locale::en),
@@ -825,42 +865,45 @@ pub fn generate_permit_list(
                 main_fp.max_ambiguity_read.to_formatted_string(&Locale::en)
             );
 
-            let hmu = main_fp.unfiltered_bc_counts.as_ref().unwrap();
-            Ok(process_unfiltered(
-                *hmu,
-                unmatched_bc,
-                &ft_vals,
-                &filter_meth,
-                expected_ori,
-                &output_dir,
-                version,
-                main_fp.max_ambiguity_read,
-                velo_mode,
-                cmdline,
-                log,
-            ))
+                let hmu = main_fp.unfiltered_bc_counts.unwrap();
+                Ok(process_unfiltered(
+                    hmu,
+                    unmatched_bc,
+                    &ft_vals,
+                    &filter_meth,
+                    expected_ori,
+                    &output_dir,
+                    version,
+                    main_fp.max_ambiguity_read,
+                    velo_mode,
+                    cmdline,
+                    log,
+                ))
+            }
+            _ => {
+                info!(
+                    log,
+                    "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
+                    main_fp.num_reads.to_formatted_string(&Locale::en),
+                    hdr.num_chunks.to_formatted_string(&Locale::en),
+                    main_fp.max_ambiguity_read.to_formatted_string(&Locale::en)
+                );
+                Ok(process_filtered(
+                    &main_fp.hm,
+                    &ft_vals,
+                    &filter_meth,
+                    expected_ori,
+                    &output_dir,
+                    version,
+                    main_fp.max_ambiguity_read,
+                    velo_mode,
+                    cmdline,
+                    log,
+                ))
+            }
         }
-        _ => {
-            info!(
-                log,
-                "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
-                main_fp.num_reads.to_formatted_string(&Locale::en),
-                hdr.num_chunks.to_formatted_string(&Locale::en),
-                main_fp.max_ambiguity_read.to_formatted_string(&Locale::en)
-            );
-            Ok(process_filtered(
-                &main_fp.hm,
-                &ft_vals,
-                &filter_meth,
-                expected_ori,
-                &output_dir,
-                version,
-                main_fp.max_ambiguity_read,
-                velo_mode,
-                cmdline,
-                log,
-            ))
-        }
+    } else {
+        Ok(0)
     }
     /*
     let valid_bc: Vec<u64>;
