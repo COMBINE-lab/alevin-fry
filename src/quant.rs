@@ -1194,7 +1194,7 @@ pub fn do_quantify<T: Read>(
         )?;
     } else {
         // we're quantifying everything
-        io_utils::fill_work_queue(q, br, hdr.num_chunks as usize, &pbar)?;
+        io_utils::fill_work_queue(q, br, hdr.num_chunks as usize, Some(&pbar))?;
     }
 
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");

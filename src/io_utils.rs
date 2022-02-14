@@ -14,7 +14,7 @@ pub(crate) fn fill_work_queue<T: Read>(
     q: Arc<ArrayQueue<MetaChunk>>,
     mut br: T,
     num_chunks: usize,
-    pbar: &ProgressBar,
+    pbar: Option<&ProgressBar>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const BUFSIZE: usize = 524208;
     // the buffer that will hold our records
@@ -88,8 +88,9 @@ pub(crate) fn fill_work_queue<T: Read>(
                 // no point trying to push if the queue is full
                 while q.is_full() {}
             }
-            pbar.inc(cells_in_chunk as u64);
-
+            if let Some(pb) = pbar {
+                pb.inc(cells_in_chunk as u64);
+            }
             // offset of the first cell in the next chunk
             first_cell += cells_in_chunk;
             // reset the counters
