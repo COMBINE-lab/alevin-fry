@@ -1,11 +1,13 @@
+use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
 use bstr::io::BufReadExt;
+use core::fmt;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -68,6 +70,30 @@ pub fn is_spliced(gid: u32) -> bool {
 pub fn is_unspliced(gid: u32) -> bool {
     // if it's not spliced, then it is unspliced
     !is_spliced(gid)
+}
+
+/// Write the permit_freq.bin and all_freq.bin files
+pub fn write_permit_list_freq(
+    o_path: &std::path::Path,
+    bclen: u16,
+    permit_freq_map: &HashMap<u64, u64, ahash::RandomState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::fs::File::create(&o_path)?;
+    let mut writer = BufWriter::new(&output);
+
+    {
+        // the first u64 represents file format version.
+        writer
+            .write_all(&afconst::PERMIT_FILE_VER.to_le_bytes())
+            .unwrap();
+
+        // the second u64 represents barcode length
+        writer.write_all(&(u64::from(bclen)).to_le_bytes()).unwrap();
+
+        // the rest records the permitted barcode:freq hashmap
+        bincode::serialize_into(&mut writer, &permit_freq_map)?;
+    }
+    Ok(())
 }
 
 /// Parse a 3 column tsv of the format
@@ -710,11 +736,17 @@ impl InternalVersionInfo {
             Ok(())
         } else {
             let s = format!(
-                "version {:?} is incompatible with version {:?}",
-                self, other
+                "running alevin-fry {} on {} results, please regenerate the results using alevin-fry {} or greater",
+                self, other, self
             );
             Err(s)
         }
+    }
+}
+
+impl fmt::Display for InternalVersionInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "v{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 

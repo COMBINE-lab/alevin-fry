@@ -7,14 +7,4 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-pub mod cellfilter;
-pub mod collate;
-pub mod constants;
-pub mod convert;
-pub mod em;
-pub mod eq_class;
-pub mod infer;
-pub mod io_utils;
-pub mod pugutils;
-pub mod quant;
-pub mod utils;
+pub(crate) const PERMIT_FILE_VER: u64 = 1;

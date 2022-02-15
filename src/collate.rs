@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
  *
  * This file is part of alevin-fry
  * (see https://github.com/COMBINE-lab/alevin-fry).
@@ -10,6 +10,7 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
+use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
 use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
@@ -23,6 +24,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::iter::FromIterator;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,22 +70,42 @@ pub fn collate(
         return Err(es.into());
     }
 
-    type TsvRec = (u64, u64);
-    let mut tsv_map = Vec::<TsvRec>::new(); //HashMap::<u64, u64>::new();
-
-    let freq_file =
-        std::fs::File::open(parent.join("permit_freq.tsv")).expect("couldn't open file");
-    let mut rdr = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .delimiter(b'\t')
-        .from_reader(freq_file);
-
-    let mut total_to_collate = 0;
-    for result in rdr.deserialize() {
-        let record: TsvRec = result?;
-        tsv_map.push(record);
-        total_to_collate += record.1;
+    // if only an *old* version of the permit_freq is present, then complain and exit
+    if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
+        crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
+        // std::process::exit(1);
+        return Err("execution terminated unexpectedly".into());
     }
+
+    // open file
+    let freq_file =
+        std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
+
+    // header buffer
+    let mut rbuf = [0u8; 8];
+
+    // read header
+    let mut rdr = BufReader::new(&freq_file);
+    rdr.read_exact(&mut rbuf).unwrap();
+    let freq_file_version = rbuf.pread::<u64>(0).unwrap();
+    // make sure versions match
+    if freq_file_version > afconst::PERMIT_FILE_VER {
+        crit!(log,
+              "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+              freq_file_version, afconst::PERMIT_FILE_VER
+        );
+        return Err("execution terminated unexpectedly".into());
+    }
+
+    // read the barcode length
+    rdr.read_exact(&mut rbuf).unwrap();
+    let _bc_len = rbuf.pread::<u64>(0).unwrap();
+
+    // read the barcode -> frequency hashmap
+    let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
+    let total_to_collate = freq_hm.values().sum();
+    let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
+
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
     quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
@@ -367,7 +389,7 @@ pub fn collate_with_temp(
         let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
 
         rfile
-            .read_exact(&mut hdr_buf.get_mut())
+            .read_exact(hdr_buf.get_mut())
             .expect("couldn't read input file header");
         hdr_buf.set_position(take_pos);
         hdr_buf

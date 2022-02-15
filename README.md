@@ -22,7 +22,11 @@ Are you curious about processing details like [whether to use a sparse or dense 
 
 The generation of the reduced alignment data (RAD) files processed by alevin-fry is done by [salmon](https://github.com/COMBINE-lab/salmon). The latest version of salmon is available [on GitHub](https://github.com/COMBINE-lab/salmon/releases), via [bioconda](https://bioconda.github.io/recipes/salmon/README.html), and on [dockerhub](https://hub.docker.com/layers/combinelab/salmon/latest/images/sha256-f86324c6aeacb627e3c589562ab9e2564a6d51a3892a697669d3f23d0b9d81a8?context=explore). 
 
-The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains scripts in functions that are useful in helping to prepare input for alevin-fry processing, importing alevin-fry output into downstream analysis evnironemnts, and even [running common configurations of alevin-fry more simply](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf.sh).
+The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains scripts in functions that are useful in helping to prepare input for alevin-fry processing, importing alevin-fry output into downstream analysis evnironemnts, and even [running common configurations of alevin-fry more simply](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf.sh).  This repository also contains the relevant [Python function](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) for loading fry output (specifically in USA mode) in a convenient way into [scanpy](https://scanpy.readthedocs.io/en/stable/) (i.e. as [AnnData](https://scanpy.readthedocs.io/en/latest/usage-principles.html#anndata) objects) for subsequent Python-based processing in scanpy.
+
+The [`fishpond`](https://github.com/mikelove/fishpond) package — maintained by @mikelove and his lab — contains the recommended relevant functions for reading `alevin-fry` output (particularly USA-mode output) into the R ecosystem, in the form of a [`singleCellExperiment`](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object.
+
+The [`alevinqc`](https://github.com/csoneson/alevinQC) package — maintained by @csoneson — provides tool and functions for performing quality control and assessment downstream of `alevin-fry`.
 
 ## Installing from bioconda
 
@@ -148,16 +152,16 @@ At the end of this process, the directory `$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant
 **R** : In [R](https://www.r-project.org/), you can make use of the `R` [`load_fry()`](https://github.com/COMBINE-lab/usefulaf/blob/main/R/load_fry.R) function here, and read the input with the command:
 
 ```{R}
-m <- load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant", which_counts=c('S', 'A'))
+m <- load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant")
 ```
 
-where `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a [SingleCellExperiment](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object containing the counts for this experiment.  The stand-alone `load_fry()` function has been merged into the [`fishpond`](https://bioconductor.org/packages/release/bioc/html/fishpond.html) package and will be part of the next release.
+where `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a [SingleCellExperiment](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object containing the counts for this experiment.  The stand-alone `load_fry()` function is part of [`fishpond`](https://bioconductor.org/packages/release/bioc/html/fishpond.html), and the function is documented in detail [here](https://mikelove.github.io/fishpond/reference/loadFry.html).
 
 
 **Python** : In [python](https://www.python.org/), you can make use of the `python` [`load_fry()`](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) function, which relies on [scanpy](https://scanpy.readthedocs.io/en/stable/).  To read the input you can use the following command:
 
 ```{python}
-m = load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant", which_counts=['S','A'])
+m = load_fry("$AF_SAMPLE_DIR/quants/pbmc1k_v3/quant")
 ```
 
 where, again `$AF_SAMPLE_DIR` is appropriately replaced by the path to the working directory we chose at the start of this exercise.  This will return a `scanpy` [`AnnData`](https://anndata.readthedocs.io/en/latest/) object with the counts.
@@ -194,4 +198,5 @@ that you should pass to `alevin-fry` during the `quant` phase.
 
 If you have any questions about preparing the splici reference, or otherwise about processing your data with `alevin-fry` please feel free to open an issue 
 here on GitHub!
+
 
