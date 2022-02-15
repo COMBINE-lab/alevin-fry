@@ -22,7 +22,11 @@ Are you curious about processing details like [whether to use a sparse or dense 
 
 The generation of the reduced alignment data (RAD) files processed by alevin-fry is done by [salmon](https://github.com/COMBINE-lab/salmon). The latest version of salmon is available [on GitHub](https://github.com/COMBINE-lab/salmon/releases), via [bioconda](https://bioconda.github.io/recipes/salmon/README.html), and on [dockerhub](https://hub.docker.com/layers/combinelab/salmon/latest/images/sha256-f86324c6aeacb627e3c589562ab9e2564a6d51a3892a697669d3f23d0b9d81a8?context=explore). 
 
-The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains scripts in functions that are useful in helping to prepare input for alevin-fry processing, importing alevin-fry output into downstream analysis evnironemnts, and even [running common configurations of alevin-fry more simply](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf.sh).
+The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains scripts in functions that are useful in helping to prepare input for alevin-fry processing, importing alevin-fry output into downstream analysis evnironemnts, and even [running common configurations of alevin-fry more simply](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf.sh).  This repository also contains the relevant [Python function](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) for loading fry output (specifically in USA mode) in a convenient way into [scanpy](https://scanpy.readthedocs.io/en/stable/) (i.e. as [AnnData](https://scanpy.readthedocs.io/en/latest/usage-principles.html#anndata) objects) for subsequent Python-based processing in scanpy.
+
+The [`fishpond`](https://github.com/mikelove/fishpond) package — maintained by @mikelove and his lab — contains the recommended relevant functions for reading `alevin-fry` output (particularly USA-mode output) into the R ecosystem, in the form of a [`singleCellExperiment`](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object.
+
+The [`alevinqc`](https://github.com/csoneson/alevinQC) package — maintained by @csoneson — provides tool and functions for performing quality control and assessment downstream of `alevin-fry`.
 
 ## Installing from bioconda
 
