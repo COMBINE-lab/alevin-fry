@@ -57,6 +57,7 @@ pub struct Chunk {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CorrectedCbChunk {
     pub(crate) remaining_records: u32,
     pub(crate) corrected_bc: u64,

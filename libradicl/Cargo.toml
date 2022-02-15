@@ -1,6 +1,6 @@
 [package]
 name = "libradicl"
-version = "0.4.3"
+version = "0.4.4"
 authors = ["Avi Srivastava <avi.srivastava@nyu.edu>", "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>", "Dongze He <dhe17@umd.edu>", "Mohsen Zakeri <mzakeri@cs.umd.edu>", "Rob Patro <rob@cs.umd.edu>"]
 edition = "2018"
 description = "support library for alevin-fry"
@@ -21,21 +21,21 @@ categories = ["command-line-utilities", "science"]
 
 [dependencies]
 snap = "1"
-scroll = "0.10.2"
+scroll = "0.11.0"
 num = "0.4.0"
 ahash = "0.7.6"
 slog = "2.7.0"
 bstr = "0.2.17"
-serde = { version = "1.0.130", features = ["derive"] }
+serde = { version = "1.0.136", features = ["derive"] }
 csv = "1.1.6"
-dashmap = "^4.0.2"
-crossbeam-channel = "0.5.1"
-bio-types = "0.12.0"
+dashmap = "^5.1.0"
+crossbeam-channel = "0.5.2"
+bio-types = "0.12.1"
 quickersort = "3.0.1"
 needletail = "0.4.1"
 flate2 = "1.0.22"
-smallvec = "1.7.0"
-serde_json = "1.0.68"
+smallvec = "1.8.0"
+serde_json = "1.0.79"
 sprs = "0.11.0"
 rust-htslib = { version = "0.38.2", default-features = false, features = ["bzip2", "lzma"] }
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.1" }
