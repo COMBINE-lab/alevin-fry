@@ -108,7 +108,7 @@ $ singularity pull docker://combinelab/usefulaf:latest
 
 ### Info about the singularity container
 
-The singularity container we just downloaded above contains a recent release of `salmon` (v1.5.1) and `alevin-fry` (v0.4.0), as well as an installation of `R` and all of the packages needed to build the _splici_ index.
+The singularity container we just downloaded above contains a recent release of `salmon` (v1.7.0) and `alevin-fry` (v0.5.0), as well as an installation of `R` and all of the packages needed to build the _splici_ index.
 
 To build the reference index (and quantify) we'll use the [simpleaf](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf) wrapper.  This is a shell script written around `salmon`, `alevin-fry`, and the _splici_ index construction code that simplifies processing by grouping together related commands, using a fixed directory structure for processing, and also by eliminating some different options that are otherwise exposed by `salmon` and `alevin-fry` (e.g. it builds the `sparse` index, maps in `sketch` mode etc.).  If you would like to run the "raw" commands, the Singularity image contains `salmon` and `alevin-fry` in the path, and the `R` script to construct the _splici_ index at `/usefulaf/R/build_splici_ref.R`, so you can explore more detailed options.
 
