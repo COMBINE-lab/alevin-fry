@@ -24,6 +24,8 @@ The generation of the reduced alignment data (RAD) files processed by alevin-fry
 
 The [`usefulaf`](https://github.com/COMBINE-lab/usefulaf) repository contains scripts in functions that are useful in helping to prepare input for alevin-fry processing, importing alevin-fry output into downstream analysis evnironemnts, and even [running common configurations of alevin-fry more simply](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf.sh).  This repository also contains the relevant [Python function](https://github.com/COMBINE-lab/usefulaf/blob/main/python/load_fry.py) for loading fry output (specifically in USA mode) in a convenient way into [scanpy](https://scanpy.readthedocs.io/en/stable/) (i.e. as [AnnData](https://scanpy.readthedocs.io/en/latest/usage-principles.html#anndata) objects) for subsequent Python-based processing in scanpy.
 
+The [`roe`](https://github.com/COMBINE-lab/roe) and [`pyroe`](https://github.com/COMBINE-lab/pyroe) repositories provide tools to help easily construct a _splici_ transcriptome from a reference genome and GTF file in `R` and `python` respectively.
+
 The [`fishpond`](https://github.com/mikelove/fishpond) package — maintained by @mikelove and his lab — contains the recommended relevant functions for reading `alevin-fry` output (particularly USA-mode output) into the R ecosystem, in the form of a [`singleCellExperiment`](https://bioconductor.org/packages/release/bioc/html/SingleCellExperiment.html) object.
 
 The [`alevinqc`](https://github.com/csoneson/alevinQC) package — maintained by @csoneson — provides tool and functions for performing quality control and assessment downstream of `alevin-fry`.
