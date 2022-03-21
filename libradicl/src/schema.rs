@@ -9,7 +9,6 @@
 
 use bio_types;
 
-
 #[allow(unused_imports)]
 use bio_types::strand::Strand;
 
