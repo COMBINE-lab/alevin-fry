@@ -51,7 +51,7 @@ snap = "1"
 rand = "0.8.5"
 chrono = "0.4.19"
 csv = "1.1.6"
-mimalloc = { version = "0.1.28", default-features = false }
+mimalloc = { version = "0.1.26", default-features = false }
 num-format = "0.4.0"
 num_cpus = "1.13.0"
 bio-types = "0.12.1"
@@ -62,9 +62,7 @@ statrs = "0.15.0"
 rust-htslib = { version = "0.38.2", default-features = false, features = ["bzip2", "lzma"] }
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.1" }
 
-[dependencies.clap]
-version = "3.0.14"
-features = ["wrap_help", "cargo"]
+clap = { version = ">=3.1.0", features = ["derive", "wrap_help", "cargo"] }
 
 [profile.release]
 #debug = true
