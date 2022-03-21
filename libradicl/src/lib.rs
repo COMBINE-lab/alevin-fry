@@ -9,11 +9,6 @@
 
 // scroll now, explore nom later
 
-
-
-
-
-
 use crate as libradicl;
 
 use self::libradicl::rad_types::{CorrectedCbChunk, RadIntId, ReadRecord};

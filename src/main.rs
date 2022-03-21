@@ -7,7 +7,6 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
