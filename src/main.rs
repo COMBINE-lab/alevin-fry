@@ -17,7 +17,7 @@ extern crate slog;
 extern crate slog_term;
 
 use bio_types::strand::Strand;
-use clap::{arg, crate_authors, crate_version, App, AppSettings, ArgSettings};
+use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // capture the entire command line as a string
     let cmdline = std::env::args().join(" ");
 
-    let convert_app = App::new("convert")
+    let convert_app = Command::new("convert")
         .about("Convert a BAM file to a RAD file")
         .version(version)
         .author(crate_authors)
@@ -69,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(arg!(-o --output <RADFILE> "output RAD file"));
 
-    let view_app = App::new("view")
+    let view_app = Command::new("view")
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(arg!(-o --output <RADFILE> "output plain-text-file file").required(false));
 
-    let gen_app = App::new("generate-permit-list")
+    let gen_app = Command::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
         .author(crate_authors)
@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .required(true));
     //.arg(Arg::from("-v --velocity-mode 'flag for velocity mode'").takes_value(false).required(false));
 
-    let collate_app = App::new("collate")
+    let collate_app = Command::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
     .version(version)
     .author(crate_authors)
@@ -127,7 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //.arg(arg!(-e --expected-ori=[expected-ori] 'the expected orientation of alignments'")
     //     .default_value(fw"));
 
-    let quant_app = App::new("quant")
+    let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")
     .version(version)
     .author(crate_authors)
@@ -147,10 +147,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
-        .setting(ArgSettings::Hidden))
-    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10").setting(ArgSettings::Hidden));
+        .hide(true)
+    )
+    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10").hide(true));
 
-    let infer_app = App::new("infer")
+    let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
     .version(version)
     .author(crate_authors)
@@ -163,8 +164,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false));
 
-    let opts = App::new("alevin-fry")
-        .setting(AppSettings::SubcommandRequiredElseHelp)
+    let opts = Command::new("alevin-fry")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
         .version(version)
         .author(crate_authors)
         .about("Process RAD files from the command line")
