@@ -198,19 +198,17 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
             .expect("coudn't write to output file");
 
         // read-level
-        let bc_string_in;
-        if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
-            bc_string_in = bcs.to_string();
+        let bc_string_in: String = if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
+            bcs.to_string()
         } else {
             panic!("Input record missing CR tag!");
-        }
+        };
 
-        let umi_string_in;
-        if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
-            umi_string_in = umis.to_string();
+        let umi_string_in: String = if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
+            umis.to_string()
         } else {
             panic!("Input record missing UR tag!");
-        }
+        };
 
         let bclen = bc_string_in.len() as u16;
         let umilen = umi_string_in.len() as u16;
@@ -382,19 +380,17 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
 
         // if this is a new read update the old variables
         {
-            let bc_string_in;
-            if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
-                bc_string_in = bcs.to_string();
+            let bc_string_in: String = if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
+                bcs.to_string()
             } else {
                 panic!("Input record missing CR tag!");
-            }
+            };
 
-            let umi_string_in;
-            if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
-                umi_string_in = umis.to_string();
+            let umi_string_in: String = if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
+                umis.to_string()
             } else {
                 panic!("Input record missing UR tag!");
-            }
+            };
 
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);

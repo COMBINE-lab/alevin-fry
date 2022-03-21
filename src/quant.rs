@@ -1152,7 +1152,7 @@ pub fn do_quantify<T: Read>(
                             let mut next_id = geqmap.global_eqc.len() as u64;
                             for (labels, count) in gene_eqc.iter() {
                                 let mut found = true;
-                                match geqmap.global_eqc.get(&labels.to_vec()) {
+                                match geqmap.global_eqc.get(labels) {
                                     Some(eqid) => {
                                         geqmap.cell_level_count.push((*eqid, *count));
                                     }

@@ -231,16 +231,15 @@ fn process_unfiltered(
     std::fs::create_dir_all(&parent).unwrap();
 
     // the smallest number of reads we'll allow per barcode
-    let min_freq;
-    match filter_meth {
+    let min_freq = match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
             info!(log, "minimum num reads for barcode pass = {}", *min_reads);
-            min_freq = *min_reads as u64;
+            *min_reads as u64
         }
         _ => {
             unimplemented!();
         }
-    }
+    };
 
     // the set of barcodes we'll keep
     let mut kept_bc = Vec::<u64>::new();

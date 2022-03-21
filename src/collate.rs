@@ -267,11 +267,8 @@ pub fn collate_with_temp(
 
     // velo_mode
     let velo_mode = mdata["velo_mode"].as_bool().unwrap();
-    let expected_ori: Strand;
-    match get_orientation(&mdata) {
-        Ok(o) => {
-            expected_ori = o;
-        }
+    let expected_ori: Strand = match get_orientation(&mdata) {
+        Ok(o) => o,
         Err(e) => {
             crit!(
                 log,
@@ -281,7 +278,7 @@ pub fn collate_with_temp(
             );
             return Err(e.into());
         }
-    }
+    };
 
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);
