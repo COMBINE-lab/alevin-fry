@@ -745,7 +745,7 @@ impl InternalVersionInfo {
 }
 
 impl fmt::Display for InternalVersionInfo {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "v{}.{}.{}", self.major, self.minor, self.patch)
     }
 }

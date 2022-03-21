@@ -7,14 +7,14 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate bio_types;
-extern crate chrono;
-extern crate clap;
-extern crate itertools;
-extern crate num_cpus;
-extern crate rand;
-extern crate slog;
-extern crate slog_term;
+
+use chrono;
+
+
+use num_cpus;
+use rand;
+use slog;
+use slog_term;
 
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
