@@ -8,12 +8,12 @@
  */
 
 // scroll now, explore nom later
-extern crate needletail;
-extern crate num;
-extern crate quickersort;
-extern crate rust_htslib;
-extern crate sce;
-extern crate scroll;
+
+
+
+
+
+
 use crate as libradicl;
 
 use self::libradicl::rad_types::{CorrectedCbChunk, RadIntId, ReadRecord};

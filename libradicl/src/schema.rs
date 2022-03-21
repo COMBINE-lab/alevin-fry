@@ -7,8 +7,8 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-extern crate bio_types;
-extern crate quickersort;
+use bio_types;
+
 
 #[allow(unused_imports)]
 use bio_types::strand::Strand;

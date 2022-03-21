@@ -8,14 +8,6 @@
  */
 
 
-use chrono;
-
-
-use num_cpus;
-use rand;
-use slog;
-use slog_term;
-
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
