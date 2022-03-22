@@ -1034,7 +1034,7 @@ pub fn get_num_molecules(
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
                 // best mcc covering
-                let mut best_covering_txp = std::u32::MAX;
+                let mut best_covering_txp = u32::MAX;
                 // for each vertex in the vertex set
                 for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
@@ -1060,7 +1060,7 @@ pub fn get_num_molecules(
                     }
                 }
 
-                if best_covering_txp == std::u32::MAX {
+                if best_covering_txp == u32::MAX {
                     crit!(log, "Could not find a covering transcript");
                     std::process::exit(1);
                 }

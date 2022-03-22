@@ -245,14 +245,14 @@ pub fn em_optimize_subset(
         }
 
         converged = true;
-        let mut max_rel_diff = -f32::INFINITY;
+        let mut max_rel_diff = -f64::INFINITY;
 
         for index in 0..num_alphas {
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
 
-                max_rel_diff = max_rel_diff.max(rel_diff);
+                max_rel_diff = max_rel_diff.max(rel_diff as f64);
 
                 if rel_diff > REL_DIFF_TOLERANCE {
                     converged = false;
@@ -380,16 +380,16 @@ pub fn em_optimize(
         em_update(&alphas_in, &mut alphas_out, eqclasses);
 
         converged = true;
-        let mut max_rel_diff = -f32::INFINITY;
+        let mut max_rel_diff = -f64::INFINITY;
 
         for index in 0..num_alphas {
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
 
-                max_rel_diff = match rel_diff > max_rel_diff {
-                    true => rel_diff,
-                    false => max_rel_diff,
+                max_rel_diff = match rel_diff > max_rel_diff as f32 {
+                    true => rel_diff as f64,
+                    false => max_rel_diff as f64,
                 };
 
                 if rel_diff > REL_DIFF_TOLERANCE {
@@ -648,17 +648,17 @@ pub fn run_bootstrap_old(
             em_update(&alphas, &mut alphas_prime, &eqclass_bootstrap);
 
             converged = true;
-            let mut max_rel_diff = -f32::INFINITY;
+            let mut max_rel_diff = -f64::INFINITY;
 
             for index in 0..gene_alpha.len() {
                 if alphas_prime[index] > ALPHA_CHECK_CUTOFF {
                     let diff = alphas[index] - alphas_prime[index];
                     let rel_diff = diff.abs();
 
-                    max_rel_diff = match rel_diff > max_rel_diff {
+                    max_rel_diff = match rel_diff > max_rel_diff as f32 {
                         true => rel_diff,
-                        false => max_rel_diff,
-                    };
+                        false => max_rel_diff as f32,
+                    } as f64;
 
                     if rel_diff > REL_DIFF_TOLERANCE {
                         converged = false;
