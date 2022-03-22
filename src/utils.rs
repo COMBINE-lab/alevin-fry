@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_get_all_snps() {
         let mut output: Vec<u64> = get_all_snps(7, 3).into_iter().collect();
-        output.sort();
+        output.sort_unstable();
 
         assert_eq!(output, vec![3, 4, 5, 6, 11, 15, 23, 39, 55]);
     }
