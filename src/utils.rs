@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn test_get_all_indels() {
         let mut output: Vec<u64> = get_all_indels(7, 3).into_iter().collect();
-        output.sort();
+        output.sort_unstable();
         output.dedup();
 
         assert_eq!(output, vec![1, 4, 5, 6, 9, 12, 13, 14, 15, 28, 29, 30, 31]);
@@ -830,7 +830,7 @@ mod tests {
 
         let mut output: Vec<u64> = neighbors.into_iter().collect();
 
-        output.sort();
+        output.sort_unstable();
         output.dedup();
 
         assert_eq!(
@@ -841,10 +841,10 @@ mod tests {
 
     #[test]
     fn test_generate_whitelist_hash() {
-        let neighbors: HashSet<u64> = generate_whitelist_set(&vec![7], 3).unwrap();
+        let neighbors: HashSet<u64> = generate_whitelist_set(&[7], 3).unwrap();
         let mut output: Vec<u64> = neighbors.into_iter().collect();
 
-        output.sort();
+        output.sort_unstable();
         output.dedup();
 
         assert_eq!(
