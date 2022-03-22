@@ -83,7 +83,7 @@ pub fn extract_graph(
                 PugEdgeType::YToX
             } else {
                 PugEdgeType::BiDirected
-            }
+            };
         }
         PugEdgeType::NoEdge
     };

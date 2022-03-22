@@ -267,10 +267,8 @@ pub fn collate_with_temp(
 
     // velo_mode
     let velo_mode = mdata["velo_mode"].as_bool().unwrap();
-    let expected_ori: Strand =  match get_orientation(&mdata) {
-        Ok(o) => {
-            o
-        }
+    let expected_ori: Strand = match get_orientation(&mdata) {
+        Ok(o) => o,
         Err(e) => {
             crit!(
                 log,
