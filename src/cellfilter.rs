@@ -474,7 +474,7 @@ fn process_filtered(
             valid_bc = permit_list_from_threshold(hm, min_freq);
         }
         CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = permit_list_from_file(valid_bc_file.clone(), ft_vals.bclen);
+            valid_bc = permit_list_from_file(valid_bc_file, ft_vals.bclen);
         }
         CellFilterMethod::ExpectCells(expected_num_cells) => {
             let robust_quantile = 0.99f64;
@@ -979,7 +979,7 @@ pub fn permit_list_from_threshold(
     valid_bc
 }
 
-pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
+pub fn permit_list_from_file(ifile: &str, bclen: u16) -> Vec<u64> {
     let f = File::open(ifile).expect("couldn't open input barcode file.");
     let br = BufReader::new(f);
     let mut bc = Vec::<u64>::with_capacity(10_000);

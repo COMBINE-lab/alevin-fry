@@ -111,10 +111,7 @@ pub fn infer(
         }
         bc_len = first_line.len() as u16;
     }
-    let bc_fname = bc_path
-        .to_str()
-        .expect("couldn't unwrap barcode file path")
-        .to_string();
+    let bc_fname = bc_path.to_str().expect("couldn't unwrap barcode file path");
     let bcvec = permit_list_from_file(bc_fname, bc_len);
 
     if let Some(fname) = filter_list {
