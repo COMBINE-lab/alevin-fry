@@ -77,12 +77,12 @@ pub fn extract_graph(
 
         if hdist < 2 {
             one_edit += 1;
-            if x.1 > (2 * y.1 - 1) {
-                return PugEdgeType::XToY;
+            return if x.1 > (2 * y.1 - 1) {
+                PugEdgeType::XToY
             } else if y.1 > (2 * x.1 - 1) {
-                return PugEdgeType::YToX;
+                PugEdgeType::YToX
             } else {
-                return PugEdgeType::BiDirected;
+                PugEdgeType::BiDirected
             }
         }
         PugEdgeType::NoEdge
