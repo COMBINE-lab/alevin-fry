@@ -114,7 +114,7 @@ fn get_abundance_for(idx: u32, alphas_in: &[f32], usa_offset: (usize, usize)) ->
 
 pub(crate) fn em_update_subset(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
 ) {
@@ -144,7 +144,7 @@ pub(crate) fn em_update_subset(
 
 pub(crate) fn em_update_subset_usa(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     usa_offsets: (usize, usize),
@@ -177,8 +177,8 @@ pub(crate) fn em_update_subset_usa(
 pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
-    unique_evidence: &mut Vec<bool>,
-    no_ambiguity: &mut Vec<bool>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
     init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
@@ -299,7 +299,7 @@ pub fn em_optimize_subset(
 
 pub fn em_update(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
@@ -327,8 +327,8 @@ pub fn em_update(
 
 pub fn em_optimize(
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
-    unique_evidence: &mut Vec<bool>,
-    no_ambiguity: &mut Vec<bool>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
     init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
