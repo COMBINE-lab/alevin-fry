@@ -267,11 +267,8 @@ pub fn collate_with_temp(
 
     // velo_mode
     let velo_mode = mdata["velo_mode"].as_bool().unwrap();
-    let expected_ori: Strand;
-    match get_orientation(&mdata) {
-        Ok(o) => {
-            expected_ori = o;
-        }
+    let expected_ori: Strand = match get_orientation(&mdata) {
+        Ok(o) => o,
         Err(e) => {
             crit!(
                 log,
@@ -281,7 +278,7 @@ pub fn collate_with_temp(
             );
             return Err(e.into());
         }
-    }
+    };
 
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);
@@ -649,12 +646,12 @@ pub fn collate_with_temp(
         // and the expected number of bytes in each file
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert!(expected == observed);
+        assert_eq!(expected, observed);
 
         let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
         let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
         let observed_bytes = md.len();
-        assert!(expected_bytes == observed_bytes);
+        assert_eq!(expected_bytes, observed_bytes);
     }
 
     //std::process::exit(1);
@@ -747,7 +744,7 @@ pub fn collate_with_temp(
         }
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert!(expected == observed);
+        assert_eq!(expected, observed);
     }
 
     // wait for all of the workers to finish
@@ -766,7 +763,7 @@ pub fn collate_with_temp(
 
     // make sure we wrote the same number of records that our
     // file suggested we should.
-    assert!(total_allocated_records == total_to_collate);
+    assert_eq!(total_allocated_records, total_to_collate);
 
     info!(
         log,

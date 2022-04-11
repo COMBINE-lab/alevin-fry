@@ -114,7 +114,7 @@ fn get_abundance_for(idx: u32, alphas_in: &[f32], usa_offset: (usize, usize)) ->
 
 pub(crate) fn em_update_subset(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
 ) {
@@ -144,7 +144,7 @@ pub(crate) fn em_update_subset(
 
 pub(crate) fn em_update_subset_usa(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
     usa_offsets: (usize, usize),
@@ -177,8 +177,8 @@ pub(crate) fn em_update_subset_usa(
 pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // indices into eqclasses relevant for this cell
-    unique_evidence: &mut Vec<bool>,
-    no_ambiguity: &mut Vec<bool>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
     init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
@@ -245,14 +245,14 @@ pub fn em_optimize_subset(
         }
 
         converged = true;
-        let mut max_rel_diff = -f32::INFINITY;
+        let mut max_rel_diff = -f64::INFINITY;
 
         for index in 0..num_alphas {
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
 
-                max_rel_diff = max_rel_diff.max(rel_diff);
+                max_rel_diff = max_rel_diff.max(rel_diff as f64);
 
                 if rel_diff > REL_DIFF_TOLERANCE {
                     converged = false;
@@ -299,7 +299,7 @@ pub fn em_optimize_subset(
 
 pub fn em_update(
     alphas_in: &[f32],
-    alphas_out: &mut Vec<f32>,
+    alphas_out: &mut [f32],
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
@@ -327,8 +327,8 @@ pub fn em_update(
 
 pub fn em_optimize(
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
-    unique_evidence: &mut Vec<bool>,
-    no_ambiguity: &mut Vec<bool>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
     init_type: EmInitType,
     num_alphas: usize,
     only_unique: bool,
@@ -380,16 +380,16 @@ pub fn em_optimize(
         em_update(&alphas_in, &mut alphas_out, eqclasses);
 
         converged = true;
-        let mut max_rel_diff = -f32::INFINITY;
+        let mut max_rel_diff = -f64::INFINITY;
 
         for index in 0..num_alphas {
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
 
-                max_rel_diff = match rel_diff > max_rel_diff {
-                    true => rel_diff,
-                    false => max_rel_diff,
+                max_rel_diff = match rel_diff > max_rel_diff as f32 {
+                    true => rel_diff as f64,
+                    false => max_rel_diff as f64,
                 };
 
                 if rel_diff > REL_DIFF_TOLERANCE {
@@ -648,17 +648,17 @@ pub fn run_bootstrap_old(
             em_update(&alphas, &mut alphas_prime, &eqclass_bootstrap);
 
             converged = true;
-            let mut max_rel_diff = -f32::INFINITY;
+            let mut max_rel_diff = -f64::INFINITY;
 
             for index in 0..gene_alpha.len() {
                 if alphas_prime[index] > ALPHA_CHECK_CUTOFF {
                     let diff = alphas[index] - alphas_prime[index];
                     let rel_diff = diff.abs();
 
-                    max_rel_diff = match rel_diff > max_rel_diff {
+                    max_rel_diff = match rel_diff > max_rel_diff as f32 {
                         true => rel_diff,
-                        false => max_rel_diff,
-                    };
+                        false => max_rel_diff as f32,
+                    } as f64;
 
                     if rel_diff > REL_DIFF_TOLERANCE {
                         converged = false;
