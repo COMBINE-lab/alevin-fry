@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .author(crate_authors)
         .arg(arg!(-r --rad <RADFILE> "input RAD file"))
         .arg(
-            arg!(-h --header "flag for printing header")
+            arg!(-H --header "flag for printing header")
                 .takes_value(false)
                 .required(false),
         )
