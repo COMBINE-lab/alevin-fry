@@ -70,7 +70,7 @@ itertools = "0.10.3"
 thiserror = "1.0.30"
 quickersort = "3.0.1"
 statrs = "0.15.0"
-rust-htslib = { version = "0.38.2", default-features = false, features = [
+rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", version = "0.38.2", default-features = false, features = [
   "bzip2",
   "lzma",
 ] }
