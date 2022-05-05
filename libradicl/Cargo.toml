@@ -47,4 +47,4 @@ rust-htslib = { version = "0.38.2", default-features = false, features = [
   "bzip2",
   "lzma",
 ] }
-sce = "0.1.1"
+sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.1" }
