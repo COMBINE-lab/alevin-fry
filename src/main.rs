@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::anyhow;
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
@@ -38,7 +39,8 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
+    //}, Box<dyn std::error::Error>> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
@@ -428,7 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
                                 ErrorKind::Deserialize { .. } => {
-                                    return Err("execution terminated unexpectedly".into())
+                                    return Err(anyhow!("execution terminated unexpectedly"));
                                 }
                                 // if another type of error, just panic for now
                                 _ => {
@@ -470,7 +472,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
                                 ErrorKind::Deserialize { .. } => {
-                                    return Err("execution terminated unexpectedly".into())
+                                    return Err(anyhow!("execution terminated unexpectedly"));
                                 }
                                 // if another type of error, just panic for now
                                 _ => {
