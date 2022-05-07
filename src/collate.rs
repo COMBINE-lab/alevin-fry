@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::{anyhow, Context};
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
@@ -41,13 +42,14 @@ pub fn collate(
     version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> { //}, Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
 
     // open the metadata file and read the json
     let gpl_path = parent.join("generate_permit_list.json");
     let meta_data_file =
-        File::open(&gpl_path).expect(&format!("Could not open the file {:?}.", gpl_path)[..]);
+        File::open(&gpl_path).with_context( ||
+            format!("Could not open the file {:?}.", gpl_path)[..])?;
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
     let calling_version = InternalVersionInfo::from_str(version_str)?;
@@ -67,42 +69,43 @@ pub fn collate(
     };
 
     if let Err(es) = calling_version.is_compatible_with(&vd) {
-        return Err(es.into());
+        return Err(anyhow!(es));
     }
 
     // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
         crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
         // std::process::exit(1);
-        return Err("execution terminated unexpectedly".into());
+        return Err(anyhow!("execution terminated unexpectedly"));
     }
 
     // open file
     let freq_file =
-        std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
+        std::fs::File::open(parent.join("permit_freq.bin")).context("couldn't open file")?;
 
     // header buffer
     let mut rbuf = [0u8; 8];
 
     // read header
     let mut rdr = BufReader::new(&freq_file);
-    rdr.read_exact(&mut rbuf).unwrap();
-    let freq_file_version = rbuf.pread::<u64>(0).unwrap();
+    rdr.read_exact(&mut rbuf).context("couldn't read freq file header")?;
+    let freq_file_version = rbuf.pread::<u64>(0).context("couldn't read freq file version")?;
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
         crit!(log,
               "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
               freq_file_version, afconst::PERMIT_FILE_VER
         );
-        return Err("execution terminated unexpectedly".into());
+        return Err(anyhow!("execution terminated unexpectedly"));
     }
 
     // read the barcode length
-    rdr.read_exact(&mut rbuf).unwrap();
-    let _bc_len = rbuf.pread::<u64>(0).unwrap();
+    rdr.read_exact(&mut rbuf).context("couldn't read freq file buffer")?;
+    let _bc_len = rbuf.pread::<u64>(0).context("couldn't read freq file barcode length")?;
 
     // read the barcode -> frequency hashmap
-    let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
+    let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).context(
+        "couldn't deserialize barcode to frequency map.")?;
     let total_to_collate = freq_hm.values().sum();
     let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
 
@@ -248,7 +251,7 @@ pub fn collate_with_temp(
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> { //Box<dyn std::error::Error>> {
     // the number of corrected cells we'll write
     let expected_output_chunks = tsv_map.len() as u64;
     // the parent input directory
