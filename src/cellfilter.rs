@@ -403,9 +403,11 @@ fn process_unfiltered(
     }
 
     let pm_path = parent.join("permit_map.bin");
-    let pm_file = std::fs::File::create(&pm_path).expect("could not create serialization file.");
+    let pm_file =
+        std::fs::File::create(&pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
-    bincode::serialize_into(&mut pm_writer, &hm).expect("couldn't serialize permit list mapping.");
+    bincode::serialize_into(&mut pm_writer, &hm)
+        .context("couldn't serialize permit list mapping.")?;
 
     let meta_info = json!({
     "velo_mode" : velo_mode,
@@ -417,13 +419,13 @@ fn process_unfiltered(
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
+    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
-        serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+        serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
     m_file
         .write_all(meta_info_string.as_bytes())
-        .expect("cannot write to generate_permit_list.json file");
+        .context("cannot write to generate_permit_list.json file")?;
 
     info!(
         log,
@@ -544,7 +546,7 @@ fn process_filtered(
     let s_file = std::fs::File::create(&s_path).context("could not create serialization file.")?;
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
-        .expect("couldn't serialize permit list.");
+        .context("couldn't serialize permit list.")?;
 
     let meta_info = json!({
     "velo_mode" : velo_mode,
@@ -617,7 +619,7 @@ pub fn generate_permit_list(
         );
     }
 
-    let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
+    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let mut br = BufReader::new(i_file);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
     info!(
@@ -671,9 +673,9 @@ pub fn generate_permit_list(
     let mut num_reads: usize = 0;
 
     let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
     let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
 
     // if dealing with filtered type
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
