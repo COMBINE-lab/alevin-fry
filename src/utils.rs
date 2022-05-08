@@ -1,5 +1,6 @@
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
+use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
 use core::fmt;
 use libradicl::utils::SPLICE_MASK_U32;
@@ -111,7 +112,7 @@ fn parse_tg_spliced_unspliced(
     rname_to_id: &HashMap<String, u32, ahash::RandomState>,
     gene_names: &mut Vec<String>,
     gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
-) -> Result<(Vec<u32>, bool), Box<dyn std::error::Error>> {
+) -> anyhow::Result<(Vec<u32>, bool)> {
     // map each transcript id to the corresponding gene id
     // the transcript name can be looked up from the id in the RAD header,
     // and the gene name can be looked up from the id in the gene_names
@@ -159,7 +160,9 @@ fn parse_tg_spliced_unspliced(
                 // first gid of this gene
                 tid_to_gid[*transcript_id as usize] = spliced_of(gene_id);
             } else {
-                return Err("Third column in 3 column txp-to-gene file must be S or U".into());
+                return Err(anyhow!(
+                    "Third column in 3 column txp-to-gene file must be S or U"
+                ));
             }
         }
     }
@@ -178,7 +181,7 @@ fn parse_tg_spliced(
     rname_to_id: &HashMap<String, u32, ahash::RandomState>,
     gene_names: &mut Vec<String>,
     gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
-) -> Result<(Vec<u32>, bool), Box<dyn std::error::Error>> {
+) -> anyhow::Result<(Vec<u32>, bool)> {
     // map each transcript id to the corresponding gene id
     // the transcript name can be looked up from the id in the RAD header,
     // and the gene name can be looked up from the id in the gene_names
@@ -220,7 +223,10 @@ fn parse_tg_spliced(
                 e
                 );
                 */
-                return Err(Box::new(e));
+                return Err(anyhow!(
+                    "failed to parse the transcript-to-gene map : {}.",
+                    e
+                ));
             }
         }
     }
@@ -239,8 +245,8 @@ pub fn parse_tg_map(
     rname_to_id: &HashMap<String, u32, ahash::RandomState>,
     gene_names: &mut Vec<String>,
     gene_name_to_id: &mut HashMap<String, u32, ahash::RandomState>,
-) -> Result<(Vec<u32>, bool), Box<dyn std::error::Error>> {
-    let t2g_file = std::fs::File::open(tg_map).expect("couldn't open file");
+) -> anyhow::Result<(Vec<u32>, bool)> {
+    let t2g_file = std::fs::File::open(tg_map).context("couldn't open file")?;
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(false)
         .delimiter(b'\t')
@@ -270,7 +276,9 @@ pub fn parse_tg_map(
         }
         _ => {
             // not supported
-            Err("Transcript-gene mapping must have either 2 or 3 columns.".into())
+            Err(anyhow!(
+                "Transcript-gene mapping must have either 2 or 3 columns."
+            ))
         }
     }
 }
@@ -688,18 +696,18 @@ pub fn generate_permitlist_map(
 pub fn read_filter_list(
     flist: &str,
     bclen: u16,
-) -> Result<HashSet<u64, ahash::RandomState>, Box<dyn std::error::Error>> {
+) -> anyhow::Result<HashSet<u64, ahash::RandomState>> {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut fset = HashSet::<u64, ahash::RandomState>::with_hasher(s);
 
-    let filt_file = std::fs::File::open(flist).expect("couldn't open file");
+    let filt_file = std::fs::File::open(flist).context("couldn't open file")?;
     let reader = BufReader::new(filt_file);
 
     // Read the file line by line using the lines() iterator from std::io::BufRead.
     reader
         .for_byte_line(|line| {
             let mut bnk = BitNuclKmer::new(line, bclen as u8, false);
-            let (_, k, _) = bnk.next().expect("can't extract kmer");
+            let (_, k, _) = bnk.next().unwrap();
             fset.insert(k.0);
             Ok(true)
         })

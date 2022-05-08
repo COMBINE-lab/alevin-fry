@@ -8,6 +8,7 @@
  */
 
 use crate::cellfilter::permit_list_from_file;
+use anyhow::anyhow;
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressStyle};
 #[allow(unused_imports)]
@@ -38,7 +39,8 @@ pub fn infer(
     filter_list: Option<&str>,
     output_dir: String,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
+    // Box<dyn std::error::Error>> {
     info!(
         log,
         "inferring abundances from equivalence class count input."
@@ -56,7 +58,7 @@ pub fn infer(
             Ok(t) => t.to_csr(),
             Err(e) => {
                 warn!(log, "error reading mtx file{:?}", e);
-                return Err(Box::new(e));
+                return Err(anyhow!("error reading mtx format matrix : {}", e));
             }
         };
 
