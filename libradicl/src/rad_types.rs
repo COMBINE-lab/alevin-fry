@@ -290,7 +290,7 @@ impl ReadRecord {
         }
 
         // make sure these are sorted in this step.
-        quickersort::sort(&mut rec.refs[..]);
+        rec.refs.sort_unstable();
         rec
     }
 
@@ -332,7 +332,7 @@ impl ReadRecord {
         }
 
         // make sure these are sorted in this step.
-        quickersort::sort(&mut rec.refs[..]);
+        rec.refs.sort_unstable();
         rec
     }
 }

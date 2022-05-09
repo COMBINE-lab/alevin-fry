@@ -537,7 +537,6 @@ pub fn extract_usa_eqmap(
                 // however, because we know the original eqc labels
                 // and the USA mode labels are 1-1, we don't need this
                 // so avoid the sort here.
-                // quickersort::sort(tvec);
                 idx_eq_list.add_label_vec(tvec.as_slice());
                 eq_id_count.push((ctr as u32, *count));
             }

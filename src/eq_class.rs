@@ -283,7 +283,7 @@ impl EqMap {
             })
             .collect();
 
-        quickersort::sort(&mut hash_vec[..]);
+        hash_vec.sort_unstable();
 
         let mut prev_hash = 0u64;
         let mut prev_umi = u64::MAX;
@@ -408,7 +408,7 @@ impl EqMap {
 
             let v = &mut self.eqc_info[idx];
             // sort so dups are adjacent
-            quickersort::sort(&mut v.umis[..]);
+            v.umis.sort_unstable();
             // we need a copy of the vector b/c we
             // can't easily modify it in place
             // at least I haven't seen how (@k3yavi, help here if you can).

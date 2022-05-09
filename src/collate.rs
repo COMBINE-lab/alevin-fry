@@ -117,7 +117,7 @@ pub fn collate(
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
-    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
+    tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
     /*
     let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
