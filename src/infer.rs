@@ -40,7 +40,6 @@ pub fn infer(
     output_dir: String,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
-    // Box<dyn std::error::Error>> {
     info!(
         log,
         "inferring abundances from equivalence class count input."

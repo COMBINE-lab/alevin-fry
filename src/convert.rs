@@ -6,6 +6,8 @@
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
+
+use anyhow::Context;
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use num_format::{Locale};
@@ -493,7 +495,7 @@ pub fn view2(
     print_header: bool,
     _out_file: String,
     log: &slog::Logger,
-) -> Result<u64, Box<dyn std::error::Error>> {
+) -> anyhow::Result<u64> { 
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
@@ -548,9 +550,9 @@ pub fn view2(
     let mut num_reads: u64 = 0;
 
     let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
     let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();

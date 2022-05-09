@@ -43,7 +43,6 @@ pub fn collate(
     //expected_ori: Strand,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
-    //}, Box<dyn std::error::Error>> {
     let parent = std::path::Path::new(&input_dir);
 
     // open the metadata file and read the json
@@ -258,7 +257,6 @@ pub fn collate_with_temp(
     version: &str,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
-    //Box<dyn std::error::Error>> {
     // the number of corrected cells we'll write
     let expected_output_chunks = tsv_map.len() as u64;
     // the parent input directory
