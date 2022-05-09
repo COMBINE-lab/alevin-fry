@@ -70,7 +70,7 @@ bio-types = "0.12.1"
 itertools = "0.10.3"
 thiserror = "1.0.30"
 statrs = "0.15.0"
-rust-htslib = { git = "https://github.com/rust-bio/rust-htslib", version = "0.39.5", default-features = false, features = [
+rust-htslib = { version = "0.39.5", default-features = false, features = [
   "bzip2",
   "lzma",
 ] }
