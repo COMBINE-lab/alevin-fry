@@ -495,7 +495,7 @@ pub fn view2(
     print_header: bool,
     _out_file: String,
     log: &slog::Logger,
-) -> anyhow::Result<u64> { 
+) -> anyhow::Result<u64> {
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
