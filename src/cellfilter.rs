@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::{anyhow, Context};
 use slog::crit;
 use slog::info;
 
@@ -226,21 +227,21 @@ fn process_unfiltered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
-) -> u64 {
+) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(&output_dir);
-    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::create_dir_all(&parent)
+        .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
 
     // the smallest number of reads we'll allow per barcode
-    let min_freq;
-    match filter_meth {
+    let min_freq = match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
             info!(log, "minimum num reads for barcode pass = {}", *min_reads);
-            min_freq = *min_reads as u64;
+            *min_reads as u64
         }
         _ => {
             unimplemented!();
         }
-    }
+    };
 
     // the set of barcodes we'll keep
     let mut kept_bc = Vec::<u64>::new();
@@ -368,7 +369,12 @@ fn process_unfiltered(
     );
 
     let parent = std::path::Path::new(&output_dir);
-    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::create_dir_all(&parent).with_context(|| {
+        format!(
+            "couldn't create path to output directory {}",
+            parent.display()
+        )
+    })?;
     let o_path = parent.join("permit_freq.bin");
 
     match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
@@ -397,9 +403,11 @@ fn process_unfiltered(
     }
 
     let pm_path = parent.join("permit_map.bin");
-    let pm_file = std::fs::File::create(&pm_path).expect("could not create serialization file.");
+    let pm_file =
+        std::fs::File::create(&pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
-    bincode::serialize_into(&mut pm_writer, &hm).expect("couldn't serialize permit list mapping.");
+    bincode::serialize_into(&mut pm_writer, &hm)
+        .context("couldn't serialize permit list mapping.")?;
 
     let meta_info = json!({
     "velo_mode" : velo_mode,
@@ -411,13 +419,13 @@ fn process_unfiltered(
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
+    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
-        serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+        serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
     m_file
         .write_all(meta_info_string.as_bytes())
-        .expect("cannot write to generate_permit_list.json file");
+        .context("cannot write to generate_permit_list.json file")?;
 
     info!(
         log,
@@ -425,7 +433,7 @@ fn process_unfiltered(
         num_corrected.to_formatted_string(&Locale::en)
     );
 
-    num_corrected
+    Ok(num_corrected)
 }
 
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
@@ -440,7 +448,7 @@ fn process_filtered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
-) -> u64 {
+) -> anyhow::Result<u64> {
     let valid_bc: Vec<u64>;
     let mut freq: Vec<u64> = hm.values().cloned().collect();
     freq.sort_unstable();
@@ -475,7 +483,7 @@ fn process_filtered(
             valid_bc = permit_list_from_threshold(hm, min_freq);
         }
         CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = permit_list_from_file(valid_bc_file.clone(), ft_vals.bclen);
+            valid_bc = permit_list_from_file(valid_bc_file, ft_vals.bclen);
         }
         CellFilterMethod::ExpectCells(expected_num_cells) => {
             let robust_quantile = 0.99f64;
@@ -510,7 +518,12 @@ fn process_filtered(
     }
 
     let parent = std::path::Path::new(&output_dir);
-    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::create_dir_all(&parent).with_context(|| {
+        format!(
+            "failed to create path to output location {}",
+            parent.display()
+        )
+    })?;
     let o_path = parent.join("permit_freq.bin");
 
     match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &permitted_map) {
@@ -530,10 +543,10 @@ fn process_filtered(
     };
 
     let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
+    let s_file = std::fs::File::create(&s_path).context("could not create serialization file.")?;
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
-        .expect("couldn't serialize permit list.");
+        .context("couldn't serialize permit list.")?;
 
     let meta_info = json!({
     "velo_mode" : velo_mode,
@@ -545,13 +558,13 @@ fn process_filtered(
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
+    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
-        serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+        serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
     m_file
         .write_all(meta_info_string.as_bytes())
-        .expect("cannot write to generate_permit_list.json file");
+        .context("cannot write to generate_permit_list.json file")?;
 
     info!(
         log,
@@ -559,7 +572,7 @@ fn process_filtered(
         num_corrected.to_formatted_string(&Locale::en)
     );
 
-    num_corrected
+    Ok(num_corrected)
 }
 
 /// Given the input RAD file `input_file`, compute
@@ -580,19 +593,19 @@ pub fn generate_permit_list(
     //valid_bc_file: Option<String>,
     //use_knee_distance: bool,
     log: &slog::Logger,
-) -> Result<u64, Box<dyn std::error::Error>> {
+) -> anyhow::Result<u64> {
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
         crit!(log, "the input RAD path {} does not exist", rad_dir);
         // std::process::exit(1);
-        return Err("execution terminated unexpectedly".into());
+        return Err(anyhow!("execution terminated unexpectedly"));
     }
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
-        let i_file = File::open(&fname).expect("could not open input file");
+        let i_file = File::open(&fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
         info!(
@@ -606,7 +619,7 @@ pub fn generate_permit_list(
         );
     }
 
-    let i_file = File::open(i_dir.join("map.rad")).expect("could not open input rad file");
+    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let mut br = BufReader::new(i_file);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
     info!(
@@ -660,9 +673,9 @@ pub fn generate_permit_list(
     let mut num_reads: usize = 0;
 
     let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
     let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
-        .expect("unknown barcode type id.");
+        .context("unknown barcode type id.")?;
 
     // if dealing with filtered type
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -691,14 +704,14 @@ pub fn generate_permit_list(
                     num_reads += c.reads.len();
                 }
                 info!(
-		     log,
-		     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
-		     num_reads.to_formatted_string(&Locale::en),
-		     num_orientation_compat_reads.to_formatted_string(&Locale::en),
-		     hdr.num_chunks.to_formatted_string(&Locale::en),
-		     max_ambiguity_read.to_formatted_string(&Locale::en)
-		 );
-                Ok(process_unfiltered(
+                    log,
+                    "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
+                    num_reads.to_formatted_string(&Locale::en),
+                    num_orientation_compat_reads.to_formatted_string(&Locale::en),
+                    hdr.num_chunks.to_formatted_string(&Locale::en),
+                    max_ambiguity_read.to_formatted_string(&Locale::en)
+                );
+                process_unfiltered(
                     hmu,
                     unmatched_bc,
                     &ft_vals,
@@ -710,7 +723,7 @@ pub fn generate_permit_list(
                     velo_mode,
                     cmdline,
                     log,
-                ))
+                )
             } else {
                 Ok(0)
             }
@@ -728,7 +741,7 @@ pub fn generate_permit_list(
                 hdr.num_chunks.to_formatted_string(&Locale::en),
                 max_ambiguity_read.to_formatted_string(&Locale::en)
             );
-            Ok(process_filtered(
+            process_filtered(
                 &hm,
                 &ft_vals,
                 &filter_meth,
@@ -739,7 +752,7 @@ pub fn generate_permit_list(
                 velo_mode,
                 cmdline,
                 log,
-            ))
+            )
         }
     }
 
@@ -980,7 +993,7 @@ pub fn permit_list_from_threshold(
     valid_bc
 }
 
-pub fn permit_list_from_file(ifile: String, bclen: u16) -> Vec<u64> {
+pub fn permit_list_from_file(ifile: &str, bclen: u16) -> Vec<u64> {
     let f = File::open(ifile).expect("couldn't open input barcode file.");
     let br = BufReader::new(f);
     let mut bc = Vec::<u64>::with_capacity(10_000);

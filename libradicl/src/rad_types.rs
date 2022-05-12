@@ -190,25 +190,25 @@ pub fn decode_int_type_tag(type_id: u8) -> Option<RadIntId> {
 
 fn read_into_u64<T: Read>(reader: &mut T, rt: &RadIntId) -> u64 {
     let mut rbuf = [0u8; 8];
-    let v: u64;
-    match rt {
+
+    let v: u64 = match rt {
         RadIntId::U8 => {
             reader.read_exact(&mut rbuf[0..1]).unwrap();
-            v = rbuf.pread::<u8>(0).unwrap() as u64;
+            rbuf.pread::<u8>(0).unwrap() as u64
         }
         RadIntId::U16 => {
             reader.read_exact(&mut rbuf[0..2]).unwrap();
-            v = rbuf.pread::<u16>(0).unwrap() as u64;
+            rbuf.pread::<u16>(0).unwrap() as u64
         }
         RadIntId::U32 => {
             reader.read_exact(&mut rbuf[0..4]).unwrap();
-            v = rbuf.pread::<u32>(0).unwrap() as u64;
+            rbuf.pread::<u32>(0).unwrap() as u64
         }
         RadIntId::U64 => {
             reader.read_exact(&mut rbuf[0..8]).unwrap();
-            v = rbuf.pread::<u64>(0).unwrap();
+            rbuf.pread::<u64>(0).unwrap()
         }
-    }
+    };
     v
 }
 
@@ -290,7 +290,7 @@ impl ReadRecord {
         }
 
         // make sure these are sorted in this step.
-        quickersort::sort(&mut rec.refs[..]);
+        rec.refs.sort_unstable();
         rec
     }
 
@@ -332,7 +332,7 @@ impl ReadRecord {
         }
 
         // make sure these are sorted in this step.
-        quickersort::sort(&mut rec.refs[..]);
+        rec.refs.sort_unstable();
         rec
     }
 }
@@ -374,36 +374,19 @@ impl Chunk {
         let bc_size = bct.bytes_for_type();
 
         let _na = buf.pread::<u32>(0).unwrap();
-        let bc;
-        match bct {
-            RadIntId::U8 => {
-                bc = buf.pread::<u8>(na_size).unwrap() as u64;
-            }
-            RadIntId::U16 => {
-                bc = buf.pread::<u16>(na_size).unwrap() as u64;
-            }
-            RadIntId::U32 => {
-                bc = buf.pread::<u32>(na_size).unwrap() as u64;
-            }
-            RadIntId::U64 => {
-                bc = buf.pread::<u64>(na_size).unwrap();
-            }
-        }
-        let umi;
-        match umit {
-            RadIntId::U8 => {
-                umi = buf.pread::<u8>(na_size + bc_size).unwrap() as u64;
-            }
-            RadIntId::U16 => {
-                umi = buf.pread::<u16>(na_size + bc_size).unwrap() as u64;
-            }
-            RadIntId::U32 => {
-                umi = buf.pread::<u32>(na_size + bc_size).unwrap() as u64;
-            }
-            RadIntId::U64 => {
-                umi = buf.pread::<u64>(na_size + bc_size).unwrap();
-            }
-        }
+
+        let bc = match bct {
+            RadIntId::U8 => buf.pread::<u8>(na_size).unwrap() as u64,
+            RadIntId::U16 => buf.pread::<u16>(na_size).unwrap() as u64,
+            RadIntId::U32 => buf.pread::<u32>(na_size).unwrap() as u64,
+            RadIntId::U64 => buf.pread::<u64>(na_size).unwrap(),
+        };
+        let umi = match umit {
+            RadIntId::U8 => buf.pread::<u8>(na_size + bc_size).unwrap() as u64,
+            RadIntId::U16 => buf.pread::<u16>(na_size + bc_size).unwrap() as u64,
+            RadIntId::U32 => buf.pread::<u32>(na_size + bc_size).unwrap() as u64,
+            RadIntId::U64 => buf.pread::<u64>(na_size + bc_size).unwrap(),
+        };
         (bc, umi)
     }
 }

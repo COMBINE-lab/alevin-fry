@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::anyhow;
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
@@ -38,7 +39,7 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
@@ -66,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .author(crate_authors)
         .arg(arg!(-r --rad <RADFILE> "input RAD file"))
         .arg(
-            arg!(-h --header "flag for printing header")
+            arg!(-H --header "flag for printing header")
                 .takes_value(false)
                 .required(false),
         )
@@ -184,25 +185,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
-    /*
-    if let Some(ref t) = opts.subcommand_matches("test") {
-        let input_file: String = t.value_of_t("input").expect("no input string specified");
-        let rad_dir: String = t.value_of_t("rad-dir").expect("no input string specified");
-        let min_reads: usize = t
-            .value_of_t("min-reads")
-            .expect("min-reads must be a valid integer");
-        if min_reads < 1 {
-            crit!(
-                log,
-                "min-reads < 1 is not supported, the value {} was provided",
-                min_reads
-            );
-            std::process::exit(1);
-        }
-        let _r = test_external_parse(input_file, rad_dir, min_reads, &log);
-    }
-    */
-
     if let Some(t) = opts.subcommand_matches("generate-permit-list") {
         let input_dir: String = t.value_of_t("input").expect("no input directory specified");
         let output_dir: String = t
@@ -428,7 +410,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
                                 ErrorKind::Deserialize { .. } => {
-                                    return Err("execution terminated unexpectedly".into())
+                                    return Err(anyhow!("execution terminated unexpectedly"));
                                 }
                                 // if another type of error, just panic for now
                                 _ => {
@@ -470,7 +452,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match *error.kind() {
                                 // if a deserialize error, we already complained about it
                                 ErrorKind::Deserialize { .. } => {
-                                    return Err("execution terminated unexpectedly".into())
+                                    return Err(anyhow!("execution terminated unexpectedly"));
                                 }
                                 // if another type of error, just panic for now
                                 _ => {

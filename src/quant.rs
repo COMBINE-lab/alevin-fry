@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -168,7 +169,7 @@ fn write_eqc_counts(
     usa_mode: bool,
     output_path: &std::path::Path,
     log: &slog::Logger,
-) -> bool {
+) -> anyhow::Result<bool> {
     let eqmap_deref = eqid_map_lock.lock();
     let geqmap = eqmap_deref.unwrap();
     let num_eqclasses = geqmap.global_eqc.len();
@@ -197,7 +198,7 @@ fn write_eqc_counts(
 
     // and write it to file.
     let mtx_path = output_path.join("geqc_counts.mtx");
-    sprs::io::write_matrix_market(&mtx_path, &eqmat).expect("could not write geqc_counts.mtx");
+    sprs::io::write_matrix_market(&mtx_path, &eqmat).context("could not write geqc_counts.mtx")?;
 
     // write the sets of genes that define each eqc
     let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
@@ -209,12 +210,12 @@ fn write_eqc_counts(
     // number of genes
     gn_eq_writer
         .write_all(format!("{}\n", num_genes).as_bytes())
-        .expect("could not write to gene_eqclass.txt.gz");
+        .context("could not write to gene_eqclass.txt.gz")?;
 
     // number of classes
     gn_eq_writer
         .write_all(format!("{}\n", num_eqclasses).as_bytes())
-        .expect("could not write to gene_eqclass.txt.gz");
+        .context("could not write to gene_eqclass.txt.gz")?;
 
     // each line describes a class in terms of
     // the tab-separated tokens
@@ -267,11 +268,11 @@ fn write_eqc_counts(
                 }
                 gn_eq_writer
                     .write_all(format!("{}\t", gl).as_bytes())
-                    .expect("could not write to gene_eqclass.txt.gz")
+                    .context("could not write to gene_eqclass.txt.gz")?;
             }
             gn_eq_writer
                 .write_all(format!("{}\n", eqid).as_bytes())
-                .expect("could not write to gene_eqclass.txt.gz");
+                .context("could not write to gene_eqclass.txt.gz")?;
         }
     } else {
         // if we are running the *standard* mode, then the gene_id
@@ -280,14 +281,14 @@ fn write_eqc_counts(
             for g in gene_list.iter() {
                 gn_eq_writer
                     .write_all(format!("{}\t", g).as_bytes())
-                    .expect("could not write to gene_eqclass.txt.gz");
+                    .context("could not write to gene_eqclass.txt.gz")?;
             }
             gn_eq_writer
                 .write_all(format!("{}\n", eqid).as_bytes())
-                .expect("could not write to gene_eqclass.txt.gz");
+                .context("could not write to gene_eqclass.txt.gz")?;
         }
     }
-    true
+    Ok(true)
 }
 
 // TODO: see if we'd rather pass an structure
@@ -310,20 +311,22 @@ pub fn quantify(
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let parent = std::path::Path::new(&input_dir);
 
     // read the collate metadata
     let collate_md_file =
-        File::open(parent.join("collate.json")).expect("could not open the collate.json file.");
+        File::open(parent.join("collate.json")).context("could not open the collate.json file.")?;
     let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
 
     // is the collated RAD file compressed?
-    let compressed_input = collate_md["compressed_output"].as_bool().unwrap();
+    let compressed_input = collate_md["compressed_output"]
+        .as_bool()
+        .context("could not read compressed_output field from collate metadata.")?;
 
     if compressed_input {
         let i_file =
-            File::open(parent.join("map.collated.rad.sz")).expect("run collate before quant");
+            File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
         let br = snap::read::FrameDecoder::new(BufReader::new(&i_file));
 
         info!(
@@ -351,7 +354,8 @@ pub fn quantify(
             log,
         )
     } else {
-        let i_file = File::open(parent.join("map.collated.rad")).expect("run collate before quant");
+        let i_file =
+            File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
         let br = BufReader::new(&i_file);
 
         info!(
@@ -402,7 +406,7 @@ pub fn do_quantify<T: Read>(
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let parent = std::path::Path::new(&input_dir);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
@@ -1152,7 +1156,7 @@ pub fn do_quantify<T: Read>(
                             let mut next_id = geqmap.global_eqc.len() as u64;
                             for (labels, count) in gene_eqc.iter() {
                                 let mut found = true;
-                                match geqmap.global_eqc.get(&labels.to_vec()) {
+                                match geqmap.global_eqc.get(labels) {
                                     Some(eqid) => {
                                         geqmap.cell_level_count.push((*eqid, *count));
                                     }
@@ -1264,7 +1268,7 @@ pub fn do_quantify<T: Read>(
             with_unspliced,
             &output_matrix_path,
             log,
-        );
+        )?;
     }
 
     let meta_info = json!({
@@ -1324,7 +1328,7 @@ pub fn velo_quantify(
     _cmdline: &str,
     _version: &str,
     _log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
 }

@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::{anyhow, Context};
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
@@ -41,13 +42,13 @@ pub fn collate(
     version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let parent = std::path::Path::new(&input_dir);
 
     // open the metadata file and read the json
     let gpl_path = parent.join("generate_permit_list.json");
-    let meta_data_file =
-        File::open(&gpl_path).expect(&format!("Could not open the file {:?}.", gpl_path)[..]);
+    let meta_data_file = File::open(&gpl_path)
+        .with_context(|| format!("Could not open the file {:?}.", gpl_path.display()))?;
     let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
 
     let calling_version = InternalVersionInfo::from_str(version_str)?;
@@ -58,57 +59,64 @@ pub fn collate(
                 vd = InternalVersionInfo::from_str(s)?;
             }
             None => {
-                return Err("The version_str field must be a string".into());
+                return Err(anyhow!("The version_str field must be a string"));
             }
         },
         None => {
-            return Err("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry".into());
+            return Err(anyhow!("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"));
         }
     };
 
     if let Err(es) = calling_version.is_compatible_with(&vd) {
-        return Err(es.into());
+        return Err(anyhow!(es));
     }
 
     // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
         crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
         // std::process::exit(1);
-        return Err("execution terminated unexpectedly".into());
+        return Err(anyhow!("execution terminated unexpectedly"));
     }
 
     // open file
     let freq_file =
-        std::fs::File::open(parent.join("permit_freq.bin")).expect("couldn't open file");
+        std::fs::File::open(parent.join("permit_freq.bin")).context("couldn't open file")?;
 
     // header buffer
     let mut rbuf = [0u8; 8];
 
     // read header
     let mut rdr = BufReader::new(&freq_file);
-    rdr.read_exact(&mut rbuf).unwrap();
-    let freq_file_version = rbuf.pread::<u64>(0).unwrap();
+    rdr.read_exact(&mut rbuf)
+        .context("couldn't read freq file header")?;
+    let freq_file_version = rbuf
+        .pread::<u64>(0)
+        .context("couldn't read freq file version")?;
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
         crit!(log,
               "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
               freq_file_version, afconst::PERMIT_FILE_VER
         );
-        return Err("execution terminated unexpectedly".into());
+        return Err(anyhow!("execution terminated unexpectedly"));
     }
 
     // read the barcode length
-    rdr.read_exact(&mut rbuf).unwrap();
-    let _bc_len = rbuf.pread::<u64>(0).unwrap();
+    rdr.read_exact(&mut rbuf)
+        .context("couldn't read freq file buffer")?;
+    let _bc_len = rbuf
+        .pread::<u64>(0)
+        .context("couldn't read freq file barcode length")?;
 
     // read the barcode -> frequency hashmap
-    let freq_hm: HashMap<u64, u64> = bincode::deserialize_from(rdr).unwrap();
+    let freq_hm: HashMap<u64, u64> =
+        bincode::deserialize_from(rdr).context("couldn't deserialize barcode to frequency map.")?;
     let total_to_collate = freq_hm.values().sum();
     let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
-    quickersort::sort_by_key(&mut tsv_map[..], |&a: &(u64, u64)| std::cmp::Reverse(a.1));
+    tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
     /*
     let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
@@ -248,7 +256,7 @@ pub fn collate_with_temp(
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     // the number of corrected cells we'll write
     let expected_output_chunks = tsv_map.len() as u64;
     // the parent input directory
@@ -262,16 +270,15 @@ pub fn collate_with_temp(
 
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
-        .expect("could not open the generate_permit_list.json file.");
+        .context("could not open the generate_permit_list.json file.")?;
     let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
 
     // velo_mode
-    let velo_mode = mdata["velo_mode"].as_bool().unwrap();
-    let expected_ori: Strand;
-    match get_orientation(&mdata) {
-        Ok(o) => {
-            expected_ori = o;
-        }
+    let velo_mode = mdata["velo_mode"]
+        .as_bool()
+        .context("couldn't read velo_mode from meta data")?;
+    let expected_ori: Strand = match get_orientation(&mdata) {
+        Ok(o) => o,
         Err(e) => {
             crit!(
                 log,
@@ -279,9 +286,9 @@ pub fn collate_with_temp(
                 &meta_data_file,
                 e
             );
-            return Err(e.into());
+            return Err(anyhow!(e));
         }
-    }
+    };
 
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);
@@ -312,32 +319,35 @@ pub fn collate_with_temp(
         });
 
         let cm_path = parent.join("collate.json");
-        let mut cm_file = std::fs::File::create(&cm_path).expect("could not create metadata file.");
+        let mut cm_file =
+            std::fs::File::create(&cm_path).context("could not create metadata file.")?;
 
         let cm_info_string =
-            serde_json::to_string_pretty(&collate_meta).expect("could not format json.");
+            serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
         cm_file
             .write_all(cm_info_string.as_bytes())
-            .expect("cannot write to collate.json file");
+            .context("cannot write to collate.json file")?;
     }
 
     let oname = parent.join(cfname);
     if oname.exists() {
-        std::fs::remove_file(oname)?;
+        std::fs::remove_file(&oname)
+            .with_context(|| format!("could not remove {}", oname.display()))?;
     }
 
-    let ofile = File::create(parent.join(cfname)).unwrap();
+    let ofile = File::create(parent.join(cfname))
+        .with_context(|| format!("couldn't create directory {}", cfname))?;
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {
         crit!(log, "the input RAD path {} does not exist", rad_dir);
-        return Err("invalid input".into());
+        return Err(anyhow!("invalid input"));
     }
 
     let input_rad_path = i_dir.join("map.rad");
-    let i_file = File::open(&input_rad_path).unwrap();
+    let i_file = File::open(&input_rad_path).context("couldn't open input RAD file")?;
     let mut br = BufReader::new(i_file);
 
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
@@ -385,16 +395,16 @@ pub fn collate_with_temp(
 
         // This temporary file pointer and buffer will be dropped
         // at the end of this block (scope).
-        let mut rfile = File::open(&input_rad_path).unwrap();
+        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
         let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
 
         rfile
             .read_exact(hdr_buf.get_mut())
-            .expect("couldn't read input file header");
+            .context("couldn't read input file header")?;
         hdr_buf.set_position(take_pos);
         hdr_buf
             .write_all(&expected_output_chunks.to_le_bytes())
-            .expect("couldn't write num_chunks");
+            .context("couldn't write num_chunks")?;
         hdr_buf.set_position(0);
 
         // compress the header buffer to a compressed buffer
@@ -403,21 +413,22 @@ pub fn collate_with_temp(
                 snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
             compressed_buf
                 .write_all(hdr_buf.get_ref())
-                .expect("could not compress the output header.");
+                .context("could not compress the output header.")?;
             hdr_buf = compressed_buf
                 .into_inner()
-                .expect("couldn't unwrap the FrameEncoder.");
+                .context("couldn't unwrap the FrameEncoder.")?;
             hdr_buf.set_position(0);
         }
 
         if let Ok(mut oput) = owriter.lock() {
             oput.write_all(hdr_buf.get_ref())
-                .expect("could not write the output header.");
+                .context("could not write the output header.")?;
         }
     }
 
     // get the correction map
-    let cmfile = std::fs::File::open(parent.join("permit_map.bin")).unwrap();
+    let cmfile = std::fs::File::open(parent.join("permit_map.bin"))
+        .context("couldn't open output permit_map.bin file")?;
     let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
 
     // NOTE: the assumption of where the unmapped file will be
@@ -644,17 +655,17 @@ pub fn collate_with_temp(
             .lock()
             .unwrap()
             .flush()
-            .expect("could not flush temporary output file!");
+            .context("could not flush temporary output file!")?;
         // a sanity check that we have the correct number of records
         // and the expected number of bytes in each file
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert!(expected == observed);
+        assert_eq!(expected, observed);
 
         let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
         let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
         let observed_bytes = md.len();
-        assert!(expected_bytes == observed_bytes);
+        assert_eq!(expected_bytes, observed_bytes);
     }
 
     //std::process::exit(1);
@@ -687,9 +698,10 @@ pub fn collate_with_temp(
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // and knowledge of the UMI and BC types
-        let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let bc_type =
+            rad_types::decode_int_type_tag(cc.bc_type).context("unknown barcode type id.")?;
         let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+            rad_types::decode_int_type_tag(cc.umi_type).context("unknown barcode type id.")?;
         // have access to the input directory
         let input_dir = input_dir.clone();
         // the output file
@@ -747,7 +759,7 @@ pub fn collate_with_temp(
         }
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert!(expected == observed);
+        assert_eq!(expected, observed);
     }
 
     // wait for all of the workers to finish
@@ -766,7 +778,7 @@ pub fn collate_with_temp(
 
     // make sure we wrote the same number of records that our
     // file suggested we should.
-    assert!(total_allocated_records == total_to_collate);
+    assert_eq!(total_allocated_records, total_to_collate);
 
     info!(
         log,

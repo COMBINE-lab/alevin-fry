@@ -77,13 +77,13 @@ pub fn extract_graph(
 
         if hdist < 2 {
             one_edit += 1;
-            if x.1 > (2 * y.1 - 1) {
-                return PugEdgeType::XToY;
+            return if x.1 > (2 * y.1 - 1) {
+                PugEdgeType::XToY
             } else if y.1 > (2 * x.1 - 1) {
-                return PugEdgeType::YToX;
+                PugEdgeType::YToX
             } else {
-                return PugEdgeType::BiDirected;
-            }
+                PugEdgeType::BiDirected
+            };
         }
         PugEdgeType::NoEdge
     };
@@ -390,7 +390,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
     // first on umi
     // then on gene_id
     // then on count
-    quickersort::sort(umi_gene_count_vec);
+    umi_gene_count_vec.sort_unstable();
 
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
@@ -524,7 +524,7 @@ fn resolve_num_molecules_crlike_from_vec(
     // first on umi
     // then on gene_id
     // then on count
-    quickersort::sort(umi_gene_count_vec);
+    umi_gene_count_vec.sort_unstable();
 
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
@@ -640,7 +640,7 @@ pub fn get_num_molecules_cell_ranger_like_small(
             .map(|tid| tid_to_gid[*tid as usize])
             .collect();
         // and make the gene ids unique
-        quickersort::sort(&mut gset[..]);
+        gset.sort_unstable();
         gset.dedup();
         for g in &gset {
             umi_gene_count_vec.push((umi, *g, 1));
@@ -693,7 +693,7 @@ pub fn get_num_molecules_cell_ranger_like(
         // necessarily be adjacent here, since
         // they are always asigned adjacent ids
         // with spliced being even and unspliced odd.
-        quickersort::sort(&mut gset[..]);
+        gset.sort_unstable();
         gset.dedup();
 
         // add every (umi, count), gene pair as a triplet
@@ -772,7 +772,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
     // equivalence classes that still map to the same
     // gene.
     for (k, v) in gene_map.iter_mut() {
-        quickersort::sort(&mut v[..]);
+        v.sort_unstable();
         v.dedup();
         // the count is the number of distinct UMIs.
         counts[*k as usize] += v.len() as f32;
@@ -827,7 +827,7 @@ fn get_num_molecules_large_component(
             .map(|tid| tid_to_gid[*tid as usize])
             .collect();
         // and make the gene ids unique
-        quickersort::sort(&mut gset[..]);
+        gset.sort_unstable();
         gset.dedup();
 
         // add every (umi, count), gene pair as a triplet
@@ -843,7 +843,7 @@ fn get_num_molecules_large_component(
     // first on umi
     // then on gene_id
     // then on count
-    quickersort::sort(&mut umi_gene_count_vec[..]);
+    umi_gene_count_vec.sort_unstable();
 
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
@@ -1034,7 +1034,7 @@ pub fn get_num_molecules(
                 let mut best_mcc: Vec<u32> = Vec::new();
                 // the transcript that is responsible for the
                 // best mcc covering
-                let mut best_covering_txp = std::u32::MAX;
+                let mut best_covering_txp = u32::MAX;
                 // for each vertex in the vertex set
                 for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
@@ -1060,7 +1060,7 @@ pub fn get_num_molecules(
                     }
                 }
 
-                if best_covering_txp == std::u32::MAX {
+                if best_covering_txp == u32::MAX {
                     crit!(log, "Could not find a covering transcript");
                     std::process::exit(1);
                 }
@@ -1110,7 +1110,7 @@ pub fn get_num_molecules(
                     .map(|i| tid_to_gid[i as usize])
                     .collect();
                 // sort since we will be hashing the ordered vector
-                quickersort::sort(&mut global_genes[..]);
+                global_genes.sort_unstable();
                 // dedup as well since we don't care about duplicates
                 global_genes.dedup();
 
@@ -1154,7 +1154,7 @@ pub fn get_num_molecules(
             }
 
             let mut global_genes: Vec<u32> = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
-            quickersort::sort(&mut global_genes[..]);
+            global_genes.sort_unstable();
             global_genes.dedup();
 
             // extract gene-level eqclass and increment count by 1

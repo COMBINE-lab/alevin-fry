@@ -1,4 +1,5 @@
 /// some (hopefully) generally useful I/O related utilities
+use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use indicatif::ProgressBar;
 use scroll::Pwrite;
@@ -15,7 +16,7 @@ pub(crate) fn fill_work_queue<T: Read>(
     mut br: T,
     num_chunks: usize,
     pbar: &ProgressBar,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     const BUFSIZE: usize = 524208;
     // the buffer that will hold our records
     let mut buf = vec![0u8; BUFSIZE];
@@ -58,7 +59,7 @@ pub(crate) fn fill_work_queue<T: Read>(
             buf.pwrite::<u32>(nbytes_chunk, boffset)?;
             buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
             br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
-                .unwrap();
+                .context("failed to read from work queue.")?;
             cells_in_chunk += 1;
             cbytes += nbytes_chunk;
             crec += nrec_chunk;
@@ -113,11 +114,11 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
     mut br: T,
     num_chunks: usize,
     pbar: &ProgressBar,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> anyhow::Result<()> {
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
-    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    let bc_type = rad_types::decode_int_type_tag(bct).context("unsupported barcode type id.")?;
+    let umi_type = rad_types::decode_int_type_tag(umit).context("unsupported umi type id.")?;
 
     const BUFSIZE: usize = 524208;
     // the buffer that will hold our records
@@ -161,7 +162,7 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
             buf.pwrite::<u32>(nbytes_chunk, boffset)?;
             buf.pwrite::<u32>(nrec_chunk, boffset + 4)?;
             br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
-                .unwrap();
+                .context("failed to read from queue.")?;
             // get the barcode for this chunk
             let (bc, _umi) =
                 rad_types::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
