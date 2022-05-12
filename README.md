@@ -6,6 +6,14 @@
 
 You can read the paper describing alevin fry, "Alevin-fry unlocks rapid, accurate, and memory-frugal quantification of single-cell RNA-seq data" [here](https://www.nature.com/articles/s41592-022-01408-3), and the pre-print [on bioRxiv](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1).
 
+### Getting started with `alevin-fry`
+
+There are many resources to help you get started with `alevin-fry`, and to demonstrate how to perform various tasks and analyses in an idiomatic 
+way with `alevin-fry` --- for example, you can find a lot of information below in this README.  Nonetheless, as we attempt to restructure, centralize, and 
+refresh the documentation for `alevin-fry`, we intend for the the landing page and centralized jumping-off point to be the [Read The Docs page for `alevin-fry`](https://alevin-fry.readthedocs.io/en/latest/).
+
+### More information 
+
 * [**Quickstart guide with a unified singularity container**](https://github.com/COMBINE-lab/alevin-fry#a-quick-start-run-through-on-sample-data)
 
 * **Relationship to alevin**: Alevin-fry has been designed as the successor to alevin. It subsumes the core features of alevin, while also providing important new capabilities and considerably improving the performance profile. We anticipate that new method development and feature additions will take place primarily within the alevin-fry codebase.  Thus, we encourage users of alevin to migrate to alevin-fry when feasible.  That being said, alevin is still actively-maintained and supported, so if you are using it and not ready to migrate you can continue to ask questions and post issues in [the salmon repository](https://github.com/COMBINE-lab/salmon).
