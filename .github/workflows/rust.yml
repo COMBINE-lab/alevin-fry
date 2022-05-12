@@ -12,7 +12,7 @@ env:
 jobs:
   Formatting:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
-    runs-on: [ ubuntu-latest, macos-latest ]
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2.4.2
@@ -29,7 +29,7 @@ jobs:
 
   build:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
-    runs-on: [ ubuntu-latest, macos-latest ]
+    runs-on: macos-latest
 
     steps:
     - uses: actions/checkout@v2.4.2
@@ -40,7 +40,7 @@ jobs:
 
   Linting:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
-    runs-on: [ ubuntu-latest, macos-latest ]
+    runs-on: macos-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2.4.2
