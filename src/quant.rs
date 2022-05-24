@@ -465,7 +465,7 @@ pub fn do_quantify<T: Read>(
 		           "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
 		        );
 
-                match  resolution  {
+                match resolution {
                     ResolutionStrategy::Parsimony | ResolutionStrategy::Full => {
                         info!(log,
                         "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony or parsimony-em resolution is EXPERIMENTAL."
@@ -872,13 +872,17 @@ pub fn do_quantify<T: Read>(
                                 ResolutionStrategy::Parsimony | ResolutionStrategy::Full => {
                                     eq_map.init_from_chunk(&mut c);
                                     let g = pugutils::extract_graph(&eq_map, &log);
+                                    // for the PUG resolution algorithm, set the hasher
+                                    // that will be used based on the cell barcode.
+                                    let s =
+                                        ahash::RandomState::with_seeds(bc as u64, 7u64, 1u64, 8u64);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
                                         &tid_to_gid,
                                         num_genes,
                                         &mut gene_eqc,
-                                        usa_mode,
+                                        &s,
                                         &log,
                                     );
                                     alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -966,16 +970,18 @@ pub fn do_quantify<T: Read>(
                                 // we substitute EM with uniform allocation in
                                 // this special case
                                 match resolution {
-                                    ResolutionStrategy::CellRangerLike => {
+                                    ResolutionStrategy::CellRangerLike
+                                    | ResolutionStrategy::Parsimony => {
                                         counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
-                                    ResolutionStrategy::CellRangerLikeEm => {
+                                    ResolutionStrategy::CellRangerLikeEm
+                                    | ResolutionStrategy::Full => {
                                         counts =
                                             afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
                                     }
                                     _ => {
                                         counts = vec![0f32; num_genes];
-                                        warn!(log, "Should not reach here, only cr-like and cr-like-em are supported in USA-mode.");
+                                        warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony and parsimony-em are supported in USA-mode.");
                                     }
                                 }
                             } else {

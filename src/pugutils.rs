@@ -297,16 +297,16 @@ where
 /// equivalence class labels of all vertices in the arboresence).
 fn collapse_vertices(
     v: u32,
-    uncovered_vertices: &HashSet<u32>, // the set of vertices already covered
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>, // the set of vertices already covered
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
 ) -> (Vec<u32>, u32) {
     // get a new set to hold vertices
     type VertexSet = HashSet<u32, ahash::RandomState>;
-    fn get_set(cap: u32) -> VertexSet {
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        VertexSet::with_capacity_and_hasher(cap as usize, s)
-    }
+    let get_set = |cap: u32| {
+        VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone())
+    };
 
     // will hold the nodes in the largest arboresence found
     let mut largest_mcc: Vec<u32> = Vec::new();
@@ -791,6 +791,7 @@ fn get_num_molecules_large_component(
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     num_genes: usize,
+    hasher_state: &ahash::RandomState,
     _log: &slog::Logger,
 ) -> Vec<u32> {
     let mut counts = vec![0u32; num_genes];
@@ -802,8 +803,9 @@ fn get_num_molecules_large_component(
     // equivalence class id in the current subgraph
     // to the set of (UMI, frequency) pairs contained
     // in the subgraph
-    let ts = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut tmp_map = HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(ts);
+    //let ts = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut tmp_map =
+        HashMap::<u32, Vec<(u64, u32)>, ahash::RandomState>::with_hasher(hasher_state.clone());
 
     // for each vertex id in the subgraph
     for vertex_id in vertex_ids {
@@ -943,16 +945,16 @@ pub fn get_num_molecules(
     tid_to_gid: &[u32],
     num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
-    usa_mode: bool,
+    hasher_state: &ahash::RandomState,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
 {
     type U32Set = HashSet<u32, ahash::RandomState>;
-    fn get_set(cap: u32) -> U32Set {
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        U32Set::with_capacity_and_hasher(cap as usize, s)
-    }
+    let get_set = |cap: u32| {
+        //let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        U32Set::with_capacity_and_hasher(cap as usize, hasher_state.clone())
+    };
 
     let comps = weakly_connected_components(g);
     // a vector of length 2 that records at index 0
@@ -1000,7 +1002,13 @@ pub fn get_num_molecules(
                 let mut ng = 0u32;
                 let mut numi = 0u32;
                 let gene_increments = get_num_molecules_large_component(
-                    g, eqmap, comp_verts, tid_to_gid, num_genes, log,
+                    g,
+                    eqmap,
+                    comp_verts,
+                    tid_to_gid,
+                    num_genes,
+                    hasher_state,
+                    log,
                 );
                 for (gn, val) in gene_increments.iter().enumerate() {
                     if *val > 0 {
@@ -1025,7 +1033,24 @@ pub fn get_num_molecules(
 
             // uncovered_vertices will hold the set of vertices that are
             // *not yet* covered.
-            let mut uncovered_vertices = comp_verts.iter().cloned().collect::<HashSet<u32>>();
+            //
+            // Non-deterministic variant :
+            // NOTE: The line below places the vertices into a HashSet that uses
+            // a hasher with a RandomState which, by default, Rust will randomize between
+            // runs.  That means that the output of the entire algorithm will, in general,
+            // not be deterministic.  By using a RandomState with fixed seeds, this can
+            // be made deterministic (see below), but it is unclear if this will increase
+            // bias of resolving components in favor of certain transcripts (and therefore genes)
+            // that tend to appear first in hash iteration order.
+            // let mut uncovered_vertices = comp_verts.iter().cloned().collect::<HashSet<u32, ahash::RandomState>>();
+
+            // Deterministic variant : replacing the above line with these two lines will
+            // cause the parsimony resolution to be deterministic, but potentially at the
+            // cost of increasing bias.
+            let mut uncovered_vertices = get_set(comp_verts.len() as u32);
+            for v in comp_verts.iter().cloned() {
+                uncovered_vertices.insert(v);
+            }
 
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
@@ -1044,7 +1069,7 @@ pub fn get_num_molecules(
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
                     let (new_mcc, covering_txp) =
-                        collapse_vertices(*v, &uncovered_vertices, g, eqmap);
+                        collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
 
                     let mcc_len = new_mcc.len();
                     // if the new mcc is better than the current best, then
