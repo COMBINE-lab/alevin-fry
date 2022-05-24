@@ -304,9 +304,8 @@ fn collapse_vertices(
 ) -> (Vec<u32>, u32) {
     // get a new set to hold vertices
     type VertexSet = HashSet<u32, ahash::RandomState>;
-    let get_set = |cap: u32| {
-        VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone())
-    };
+    let get_set =
+        |cap: u32| VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone());
 
     // will hold the nodes in the largest arboresence found
     let mut largest_mcc: Vec<u32> = Vec::new();

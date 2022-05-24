@@ -326,7 +326,6 @@ pub fn extract_counts(
                         //eprintln!("ambig count {} at {}!", *count, idx);
                         counts[idx] += *count as f32;
                     } else {
-                        /*
                         // report spliced if we can
                         match (is_spliced(*g1), is_spliced(*g2)) {
                             (true, false) => {
@@ -337,12 +336,10 @@ pub fn extract_counts(
                             }
                             _ => { /* do nothing */ }
                         }
-                        */
                     }
                 }
             }
             3..=10 => {
-                /*
                 // if we don't have *too* many distinct genes matching this UMI
                 // then apply the prefer-spliced rule.
 
@@ -372,7 +369,6 @@ pub fn extract_counts(
                         }
                     }
                 }
-                */
             }
             _ => {}
         }
