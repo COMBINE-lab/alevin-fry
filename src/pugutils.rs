@@ -943,6 +943,7 @@ pub fn get_num_molecules(
     tid_to_gid: &[u32],
     num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    usa_mode: bool,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
