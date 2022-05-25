@@ -24,7 +24,7 @@ use libradicl::rad_types;
 
 use slog::{crit, info, warn};
 
-use crate::eq_class::EqMap;
+use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils as afutils;
 
@@ -795,6 +795,11 @@ fn get_num_molecules_large_component(
 ) -> Vec<u32> {
     let mut counts = vec![0u32; num_genes];
 
+    let gene_level_eq_map = match eq_map.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
+    };
+
     // TODO: better capacity
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
 
@@ -822,14 +827,20 @@ fn get_num_molecules_large_component(
         let umis = v; //&eqinfo.umis;
         let eqid = k; //&eqinfo.eq_num;
                       // project the transcript ids to gene ids
-        let mut gset: Vec<u32> = eq_map
-            .refs_for_eqc(*eqid)
-            .iter()
-            .map(|tid| tid_to_gid[*tid as usize])
-            .collect();
-        // and make the gene ids unique
-        gset.sort_unstable();
-        gset.dedup();
+        let mut gset: Vec<u32>;
+
+        if gene_level_eq_map {
+            gset = eq_map.refs_for_eqc(*eqid).to_vec();
+        } else {
+            gset = eq_map
+                .refs_for_eqc(*eqid)
+                .iter()
+                .map(|tid| tid_to_gid[*tid as usize])
+                .collect();
+            // and make the gene ids unique
+            gset.sort_unstable();
+            gset.dedup();
+        }
 
         // add every (umi, count), gene pair as a triplet
         // of (umi, gene_id, count) to the output vector
@@ -953,6 +964,11 @@ pub fn get_num_molecules(
     let get_set = |cap: u32| {
         //let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         U32Set::with_capacity_and_hasher(cap as usize, hasher_state.clone())
+    };
+
+    let gene_level_eq_map = match eqmap.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
     };
 
     let comps = weakly_connected_components(g);
@@ -1091,7 +1107,11 @@ pub fn get_num_molecules(
                 }
 
                 // get gene_id of best covering transcript
-                let best_covering_gene = tid_to_gid[best_covering_txp as usize];
+                let best_covering_gene = if gene_level_eq_map {
+                    best_covering_txp
+                } else {
+                    tid_to_gid[best_covering_txp as usize]
+                };
 
                 //unsafe {
                 global_txps.clear();
@@ -1129,11 +1149,15 @@ pub fn get_num_molecules(
 
                 // project each covering transcript to its
                 // corresponding gene, and dedup the list
-                let mut global_genes: Vec<u32> = global_txps
-                    .iter()
-                    .cloned()
-                    .map(|i| tid_to_gid[i as usize])
-                    .collect();
+                let mut global_genes: Vec<u32> = if gene_level_eq_map {
+                    global_txps.iter().cloned().collect()
+                } else {
+                    global_txps
+                        .iter()
+                        .cloned()
+                        .map(|i| tid_to_gid[i as usize])
+                        .collect()
+                };
                 // sort since we will be hashing the ordered vector
                 global_genes.sort_unstable();
                 // dedup as well since we don't care about duplicates
@@ -1178,9 +1202,15 @@ pub fn get_num_molecules(
                 one_vertex_components[1] += 1;
             }
 
-            let mut global_genes: Vec<u32> = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
-            global_genes.sort_unstable();
-            global_genes.dedup();
+            let mut global_genes: Vec<u32>;
+
+            if gene_level_eq_map {
+                global_genes = tl.to_vec();
+            } else {
+                global_genes = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
+                global_genes.sort_unstable();
+                global_genes.dedup();
+            }
 
             // extract gene-level eqclass and increment count by 1
             assert!(

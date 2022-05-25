@@ -37,7 +37,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
-use crate::eq_class::{EqMap, IndexedEqList};
+use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::io_utils;
 use crate::pugutils;
 use crate::utils as afutils;
@@ -70,6 +70,8 @@ pub enum ResolutionStrategy {
     CellRangerLikeEm,
     Full,
     Parsimony,
+    ParsimonyGeneEm,
+    ParsimonyGene,
 }
 
 impl fmt::Display for ResolutionStrategy {
@@ -88,6 +90,8 @@ impl FromStr for ResolutionStrategy {
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
             "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
+            "parsimony-gene" => Ok(ResolutionStrategy::ParsimonyGene),
+            "parsimony-gene-em" => Ok(ResolutionStrategy::ParsimonyGeneEm),
             _ => Err("no match"),
         }
     }
@@ -466,9 +470,12 @@ pub fn do_quantify<T: Read>(
 		        );
 
                 match resolution {
-                    ResolutionStrategy::Parsimony | ResolutionStrategy::Full => {
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::Full
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
                         info!(log,
-                        "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony or parsimony-em resolution is EXPERIMENTAL."
+                        "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony(-gene) or parsimony(-gene)-em resolution is EXPERIMENTAL."
                         );
                     }
                     _ => {}
@@ -696,13 +703,36 @@ pub fn do_quantify<T: Read>(
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
+        // if we are performing parsimony-gene or parsimony-gene-em
+        // resolution, then the equivalence classes will be immediately
+        // projected to the gene level.
+        let eq_map_type = match resolution {
+            ResolutionStrategy::ParsimonyGene | ResolutionStrategy::ParsimonyGeneEm => {
+                EqMapType::GeneLevel
+            }
+            _ => EqMapType::TranscriptLevel,
+        };
+
+        let num_eq_targets = match eq_map_type {
+            EqMapType::TranscriptLevel => ref_count,
+            EqMapType::GeneLevel => {
+                // get the max spliced gene ID and add 1 to get the unspliced ID
+                // and another 1 to get the size.
+                (gene_name_to_id
+                    .values()
+                    .max()
+                    .expect("gene name to id map should not be empty.")
+                    + 2) as u32
+            }
+        };
+
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             // these can be created once and cleared after processing
             // each cell.
             let mut unique_evidence = vec![false; num_rows];
             let mut no_ambiguity = vec![false; num_rows];
-            let mut eq_map = EqMap::new(ref_count);
+            let mut eq_map = EqMap::new(num_eq_targets, eq_map_type);
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
             let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
             let mut eds_bytes = Vec::<u8>::new();
@@ -869,8 +899,18 @@ pub fn do_quantify<T: Read>(
                                     mmrate.lock().unwrap()[cell_num] = ct.1;
                                     eq_map.clear();
                                 }
-                                ResolutionStrategy::Parsimony | ResolutionStrategy::Full => {
-                                    eq_map.init_from_chunk(&mut c);
+                                ResolutionStrategy::Parsimony
+                                | ResolutionStrategy::Full
+                                | ResolutionStrategy::ParsimonyGene
+                                | ResolutionStrategy::ParsimonyGeneEm => {
+                                    if (resolution == ResolutionStrategy::ParsimonyGene)
+                                        || (resolution == ResolutionStrategy::ParsimonyGeneEm)
+                                    {
+                                        eq_map.init_from_chunk_gene_level(&mut c, &tid_to_gid);
+                                    } else {
+                                        eq_map.init_from_chunk(&mut c);
+                                    }
+
                                     let g = pugutils::extract_graph(&eq_map, &log);
                                     // for the PUG resolution algorithm, set the hasher
                                     // that will be used based on the cell barcode.
@@ -888,7 +928,8 @@ pub fn do_quantify<T: Read>(
                                     alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                                     eq_map.clear();
 
-                                    let only_unique = resolution == ResolutionStrategy::Parsimony;
+                                    let only_unique = (resolution == ResolutionStrategy::Parsimony)
+                                        || (resolution == ResolutionStrategy::ParsimonyGene);
 
                                     // NOTE: This configuration seems overly complicated
                                     // see if we can simplify it.
@@ -971,17 +1012,19 @@ pub fn do_quantify<T: Read>(
                                 // this special case
                                 match resolution {
                                     ResolutionStrategy::CellRangerLike
-                                    | ResolutionStrategy::Parsimony => {
+                                    | ResolutionStrategy::Parsimony
+                                    | ResolutionStrategy::ParsimonyGene => {
                                         counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
                                     ResolutionStrategy::CellRangerLikeEm
-                                    | ResolutionStrategy::Full => {
+                                    | ResolutionStrategy::Full
+                                    | ResolutionStrategy::ParsimonyGeneEm => {
                                         counts =
                                             afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
                                     }
                                     _ => {
                                         counts = vec![0f32; num_genes];
-                                        warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony and parsimony-em are supported in USA-mode.");
+                                        warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode.");
                                     }
                                 }
                             } else {

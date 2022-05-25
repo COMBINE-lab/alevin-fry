@@ -134,7 +134,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
-        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em"])
+        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"])
         .ignore_case(true))
     .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
         .possible_values(&["prefer-ambig", "winner-take-all"])
