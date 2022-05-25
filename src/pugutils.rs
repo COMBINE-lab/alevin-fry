@@ -1036,8 +1036,7 @@ pub fn get_num_molecules(
 
                 warn!(
                     log,
-                    "\n\nfound connected component with {} vertices, \
-		     resolved into {} UMIs over {} genes with trivial resolution.\n\n",
+                    "found connected component with {} vertices, resolved into {} UMIs over {} genes with trivial resolution.",
                     comp_verts.len(),
                     numi,
                     ng

@@ -713,6 +713,16 @@ pub fn do_quantify<T: Read>(
             _ => EqMapType::TranscriptLevel,
         };
 
+        let num_gene_targets = if usa_mode {
+            (gene_name_to_id
+                .values()
+                .max()
+                .expect("gene name to id map should not be empty.")
+                + 2) as usize
+        } else {
+            num_genes as usize
+        };
+
         let num_eq_targets = match eq_map_type {
             EqMapType::TranscriptLevel => ref_count,
             EqMapType::GeneLevel => {
@@ -920,7 +930,7 @@ pub fn do_quantify<T: Read>(
                                         &g,
                                         &eq_map,
                                         &tid_to_gid,
-                                        num_genes,
+                                        num_gene_targets,
                                         &mut gene_eqc,
                                         &s,
                                         &log,
