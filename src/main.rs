@@ -140,6 +140,10 @@ fn main() -> anyhow::Result<()> {
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .hide(true))
+    .arg(arg!(--"pug-exact-umi" "only consider identical UMIs as having an edge when making the PUG for parsimony resolution modes")
+        .takes_value(false)
+        .required(false)
+        .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10")
         .hide(true));
 
@@ -340,6 +344,7 @@ fn main() -> anyhow::Result<()> {
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = t.is_present("use-mtx");
+        let pug_exact_umi = t.is_present("pug-exact-umi");
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
@@ -436,6 +441,7 @@ fn main() -> anyhow::Result<()> {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    pug_exact_umi,
                     sa_model,
                     small_thresh,
                     filter_list,

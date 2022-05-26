@@ -60,6 +60,7 @@ pub struct PugResolutionStatistics {
 /// added in both directions.
 pub fn extract_graph(
     eqmap: &EqMap,
+    pug_exact_umi: bool, // true if only identical UMIs induce an edge
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
@@ -69,7 +70,16 @@ pub fn extract_graph(
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
     let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
-        let hdist = afutils::count_diff_2_bit_packed(x.0, y.0);
+        let hdist = if pug_exact_umi {
+            if x.0 == y.0 {
+                0
+            } else {
+                usize::MAX
+            }
+        } else {
+            afutils::count_diff_2_bit_packed(x.0, y.0)
+        };
+
         if hdist == 0 {
             zero_edit += 1;
             return PugEdgeType::BiDirected;
@@ -517,7 +527,6 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
 fn resolve_num_molecules_crlike_from_vec(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
-    _with_unspliced: bool,
 ) {
     // sort the triplets
     // first on umi
@@ -621,7 +630,6 @@ pub fn get_num_molecules_cell_ranger_like_small(
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
-    with_unspliced: bool,
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) {
@@ -647,11 +655,7 @@ pub fn get_num_molecules_cell_ranger_like_small(
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(
-                &mut umi_gene_count_vec,
-                gene_eqclass_hash,
-                with_unspliced,
-            );
+            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
@@ -667,7 +671,6 @@ pub fn get_num_molecules_cell_ranger_like(
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
-    with_unspliced: bool,
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) {
@@ -705,11 +708,7 @@ pub fn get_num_molecules_cell_ranger_like(
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(
-                &mut umi_gene_count_vec,
-                gene_eqclass_hash,
-                with_unspliced,
-            );
+            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
@@ -789,12 +788,10 @@ fn get_num_molecules_large_component(
     eq_map: &EqMap,
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
-    num_genes: usize,
     hasher_state: &ahash::RandomState,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     _log: &slog::Logger,
-) -> Vec<u32> {
-    let mut counts = vec![0u32; num_genes];
-
+) {
     let gene_level_eq_map = match eq_map.map_type {
         EqMapType::GeneLevel => true,
         EqMapType::TranscriptLevel => false,
@@ -851,97 +848,7 @@ fn get_num_molecules_large_component(
         }
     }
 
-    // sort the triplets
-    // first on umi
-    // then on gene_id
-    // then on count
-    umi_gene_count_vec.sort_unstable();
-
-    // hold the current umi and gene we are examining
-    let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
-    let mut curr_gn = umi_gene_count_vec.first().expect("cell with no UMIs").1;
-    // hold the gene id having the max count for this umi
-    // and the maximum count value itself
-    let mut max_count_gene = 0u32;
-    let mut max_count = 0u32;
-    // to aggregate the count should a (umi, gene) pair appear
-    // more than once
-    let mut count_aggr = 0u32;
-    // could this UMI be assigned toa best gene or not
-    let mut unresolvable = false;
-    // to keep track of the current index in the vector
-    let mut cidx = 0usize;
-
-    // look over all sorted triplets
-    while cidx < umi_gene_count_vec.len() {
-        let (umi, gn, ct) = umi_gene_count_vec[cidx];
-
-        // if this umi is different than
-        // the one we are processing
-        // then decide what action to take
-        // on the previous umi
-        if umi != curr_umi {
-            // if previous was resolvable, add it to the appropriate gene
-            if !unresolvable {
-                counts[max_count_gene as usize] += 1;
-            }
-
-            // the next umi and gene
-            curr_umi = umi;
-            curr_gn = gn;
-
-            // the next umi will start as resolvable
-            unresolvable = false;
-
-            // current gene is current best
-            max_count_gene = gn;
-
-            // count aggr = max count = ct
-            count_aggr = ct;
-            max_count = ct;
-        } else {
-            // the umi was the same
-
-            // if the gene is the same, add the counts
-            if gn == curr_gn {
-                count_aggr += ct;
-            } else {
-                // if the gene is different, then restart the count_aggr
-                // and set the current gene id
-                count_aggr = ct;
-                curr_gn = gn;
-            }
-            // if the count aggregator exceeded the max
-            // then it is the new max, and this gene is
-            // the new max gene.  Having a distinct max
-            // also makes this UMI resolvable
-            match count_aggr.cmp(&max_count) {
-                Ordering::Greater => {
-                    max_count = count_aggr;
-                    max_count_gene = gn;
-                    unresolvable = false;
-                }
-                Ordering::Equal => {
-                    // if we have a tie for the max count
-                    // then the current UMI becomes unresolvable
-                    // it will stay this way unless we see a bigger
-                    // count for this UMI
-                    unresolvable = true;
-                }
-                Ordering::Less => {
-                    // we do nothing
-                }
-            }
-        }
-
-        // if this was the last UMI in the list
-        if cidx == umi_gene_count_vec.len() - 1 && !unresolvable {
-            counts[max_count_gene as usize] += 1;
-        }
-        cidx += 1;
-    }
-
-    counts
+    resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
 }
 
 /// Given the digraph `g` representing the PUGs within the current
@@ -953,7 +860,6 @@ pub fn get_num_molecules(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
-    num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     log: &slog::Logger,
@@ -1014,32 +920,19 @@ pub fn get_num_molecules(
             // (this should be _very_ rare) we will instead resolve
             // the UMIs in the component using a simpler algorithm.
             if comp_verts.len() > 1000 {
-                let mut ng = 0u32;
-                let mut numi = 0u32;
-                let gene_increments = get_num_molecules_large_component(
+                get_num_molecules_large_component(
                     g,
                     eqmap,
                     comp_verts,
                     tid_to_gid,
-                    num_genes,
                     hasher_state,
+                    gene_eqclass_hash,
                     log,
                 );
-                for (gn, val) in gene_increments.iter().enumerate() {
-                    if *val > 0 {
-                        let e = gene_eqclass_hash.entry(vec![gn as u32]).or_insert(0);
-                        *e += *val;
-                        ng += 1;
-                        numi += *val;
-                    }
-                }
-
                 warn!(
                     log,
-                    "found connected component with {} vertices, resolved into {} UMIs over {} genes with trivial resolution.",
+                    "found connected component with {} vertices; resolved with cr-like resolution.",
                     comp_verts.len(),
-                    numi,
-                    ng
                 );
                 pug_stats.used_alternative_strategy = true;
                 continue;

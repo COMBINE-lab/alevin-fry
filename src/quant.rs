@@ -309,6 +309,7 @@ pub fn quantify(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    pug_exact_umi: bool,
     sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
@@ -350,6 +351,7 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            pug_exact_umi,
             sa_model,
             small_thresh,
             filter_list,
@@ -379,6 +381,7 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            pug_exact_umi,
             sa_model,
             small_thresh,
             filter_list,
@@ -404,6 +407,7 @@ pub fn do_quantify<T: Read>(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    pug_exact_umi: bool,
     mut sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
     filter_list: Option<&str>,
@@ -713,16 +717,6 @@ pub fn do_quantify<T: Read>(
             _ => EqMapType::TranscriptLevel,
         };
 
-        let num_gene_targets = if usa_mode {
-            (gene_name_to_id
-                .values()
-                .max()
-                .expect("gene name to id map should not be empty.")
-                + 2) as usize
-        } else {
-            num_genes as usize
-        };
-
         let num_eq_targets = match eq_map_type {
             EqMapType::TranscriptLevel => ref_count,
             EqMapType::GeneLevel => {
@@ -836,7 +830,6 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
-                                            usa_mode,
                                             sa_model,
                                             &log,
                                         );
@@ -847,7 +840,6 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
-                                            usa_mode,
                                             sa_model,
                                             &log,
                                         );
@@ -921,7 +913,7 @@ pub fn do_quantify<T: Read>(
                                         eq_map.init_from_chunk(&mut c);
                                     }
 
-                                    let g = pugutils::extract_graph(&eq_map, &log);
+                                    let g = pugutils::extract_graph(&eq_map, pug_exact_umi, &log);
                                     // for the PUG resolution algorithm, set the hasher
                                     // that will be used based on the cell barcode.
                                     let s =
@@ -930,7 +922,6 @@ pub fn do_quantify<T: Read>(
                                         &g,
                                         &eq_map,
                                         &tid_to_gid,
-                                        num_gene_targets,
                                         &mut gene_eqc,
                                         &s,
                                         &log,
@@ -1011,7 +1002,6 @@ pub fn do_quantify<T: Read>(
                                 &tid_to_gid,
                                 num_genes,
                                 &mut gene_eqc,
-                                usa_mode,
                                 sa_model,
                                 &log,
                             );
