@@ -131,7 +131,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"])
@@ -158,7 +159,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false));
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"));
 
     let opts = Command::new("alevin-fry")
         .subcommand_required(true)
@@ -343,7 +345,7 @@ fn main() -> anyhow::Result<()> {
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
-        let use_mtx = t.is_present("use-mtx");
+        let use_mtx = !t.is_present("use-eds");
         let pug_exact_umi = t.is_present("pug-exact-umi");
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
@@ -484,7 +486,7 @@ fn main() -> anyhow::Result<()> {
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = t.value_of_t("threads").unwrap();
-        let use_mtx = t.is_present("use-mtx");
+        let use_mtx = !t.is_present("use-eds");
         let output_dir = t.value_of_t("output-dir").unwrap();
         let count_mat = t.value_of_t("count-mat").unwrap();
         let eq_label_file = t.value_of_t("eq-labels").unwrap();
