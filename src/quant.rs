@@ -68,7 +68,7 @@ pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
     CellRangerLikeEm,
-    Full,
+    ParsimonyEm,
     Parsimony,
     ParsimonyGeneEm,
     ParsimonyGene,
@@ -88,7 +88,7 @@ impl FromStr for ResolutionStrategy {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
-            "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
+            "parsimony-em" | "full" => Ok(ResolutionStrategy::ParsimonyEm),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             "parsimony-gene" => Ok(ResolutionStrategy::ParsimonyGene),
             "parsimony-gene-em" => Ok(ResolutionStrategy::ParsimonyGeneEm),
@@ -475,7 +475,7 @@ pub fn do_quantify<T: Read>(
 
                 match resolution {
                     ResolutionStrategy::Parsimony
-                    | ResolutionStrategy::Full
+                    | ResolutionStrategy::ParsimonyEm
                     | ResolutionStrategy::ParsimonyGene
                     | ResolutionStrategy::ParsimonyGeneEm => {
                         info!(log,
@@ -902,7 +902,7 @@ pub fn do_quantify<T: Read>(
                                     eq_map.clear();
                                 }
                                 ResolutionStrategy::Parsimony
-                                | ResolutionStrategy::Full
+                                | ResolutionStrategy::ParsimonyEm
                                 | ResolutionStrategy::ParsimonyGene
                                 | ResolutionStrategy::ParsimonyGeneEm => {
                                     if (resolution == ResolutionStrategy::ParsimonyGene)
@@ -1017,7 +1017,7 @@ pub fn do_quantify<T: Read>(
                                         counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
                                     ResolutionStrategy::CellRangerLikeEm
-                                    | ResolutionStrategy::Full
+                                    | ResolutionStrategy::ParsimonyEm
                                     | ResolutionStrategy::ParsimonyGeneEm => {
                                         counts =
                                             afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
@@ -1036,7 +1036,7 @@ pub fn do_quantify<T: Read>(
                                     } else {
                                         match resolution {
                                             ResolutionStrategy::CellRangerLikeEm
-                                            | ResolutionStrategy::Full => {
+                                            | ResolutionStrategy::ParsimonyEm => {
                                                 let contrib = 1.0 / (k.len() as f32);
                                                 for g in k.iter() {
                                                     counts[*g as usize] += contrib;

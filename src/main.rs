@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
@@ -141,8 +141,17 @@ fn main() -> anyhow::Result<()> {
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .hide(true))
-    .arg(arg!(--"pug-exact-umi" "only consider identical UMIs as having an edge when making the PUG for parsimony resolution modes")
-        .takes_value(false)
+    .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
+        .default_value_ifs(&[
+            ("resolution", Some("cr-like"), Some("0")),
+            ("resolution", Some("cr-like-em"), Some("0")),
+            ("resolution", Some("trivial"), Some("0")),
+            ("resolution", Some("parsimony"), Some("1")),
+            ("resolution", Some("parsimony-em"), Some("1")),
+            ("resolution", Some("full"), Some("1")),
+            ("resolution", Some("parsimony-gene"), Some("1")),
+            ("resolution", Some("parsimony-gene-em"), Some("1")),
+        ])
         .required(false)
         .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10")
@@ -346,7 +355,6 @@ fn main() -> anyhow::Result<()> {
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = !t.is_present("use-eds");
-        let pug_exact_umi = t.is_present("pug-exact-umi");
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
@@ -354,6 +362,58 @@ fn main() -> anyhow::Result<()> {
         let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
         let filter_list = t.value_of("quant-subset");
+        let umi_edit_dist: u32 = t.value_of_t("umi-edit-dist").unwrap();
+        let mut pug_exact_umi = false;
+
+        match umi_edit_dist {
+            0 => {
+                match resolution {
+                    ResolutionStrategy::Trivial
+                    | ResolutionStrategy::CellRangerLike
+                    | ResolutionStrategy::CellRangerLikeEm => {
+                        // already false, not pug_exact_umi because
+                        // these methods don't use PUG
+                    }
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::ParsimonyEm
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
+                        pug_exact_umi = true;
+                    }
+                }
+            }
+            1 => {
+                match resolution {
+                    ResolutionStrategy::Trivial
+                    | ResolutionStrategy::CellRangerLike
+                    | ResolutionStrategy::CellRangerLikeEm => {
+                        // these methods don't currently support 1 edit UMIs
+                        crit!(
+                            log,
+                            "\n\nResolution strategy {:?} doesn't currently support 1-edit UMI resolution",
+                            resolution
+                        );
+                        bail!("Invalid command line option");
+                    }
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::ParsimonyEm
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
+                        pug_exact_umi = false;
+                    }
+                }
+            }
+            j => {
+                // no method currently supported edit distance 2 or greater correction
+                crit!(
+                    log,
+                    "\n\nResolution strategy {:?} doesn't currently support {}-edit UMI resolution",
+                    resolution,
+                    j
+                );
+                bail!("Invalid command line option");
+            }
+        }
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
@@ -365,12 +425,14 @@ fn main() -> anyhow::Result<()> {
 
         if num_bootstraps > 0 {
             match resolution {
-                ResolutionStrategy::CellRangerLikeEm | ResolutionStrategy::Full => {
+                ResolutionStrategy::CellRangerLikeEm
+                | ResolutionStrategy::ParsimonyEm
+                | ResolutionStrategy::ParsimonyGeneEm => {
                     // sounds good
                 }
                 _ => {
                     eprintln!(
-                        "\n\nThe num_bootstraps argument was set to {}, but bootstrapping can only be used with the cr-like-em or full resolution strategies",
+                        "\n\nThe num_bootstraps argument was set to {}, but bootstrapping can only be used with the cr-like-em, parsimony-em, or parsimony-gene-em resolution strategies",
                         num_bootstraps
                     );
                     std::process::exit(1);
