@@ -227,10 +227,9 @@ impl CorrectedCbChunk {
             remaining_records: num_remain,
             corrected_bc: corrected_bc_in,
             nrec: 0u32,
-            data: Cursor::new(Vec::<u8>::with_capacity((num_remain * 24) as usize))
-            //umis: Vec::<u64>::with_capacity(num_remain as usize),
-            //ref_offsets: Vec::<u32>::with_capacity(num_remain as usize),
-            //ref_ids: Vec::<u32>::with_capacity(3 * num_remain as usize),
+            data: Cursor::new(Vec::<u8>::with_capacity((num_remain * 24) as usize)), //umis: Vec::<u64>::with_capacity(num_remain as usize),
+                                                                                     //ref_offsets: Vec::<u32>::with_capacity(num_remain as usize),
+                                                                                     //ref_ids: Vec::<u32>::with_capacity(3 * num_remain as usize),
         };
         let dummy = 0u32;
         cc.data.write_all(&dummy.to_le_bytes()).unwrap();
