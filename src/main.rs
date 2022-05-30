@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use bio_types::strand::Strand;
 use clap::{arg, crate_authors, crate_version, Command};
 use csv::Error as CSVError;
@@ -131,14 +131,28 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
-        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em"])
+        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"])
         .ignore_case(true))
     .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
         .possible_values(&["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
+        .hide(true))
+    .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
+        .default_value_ifs(&[
+            ("resolution", Some("cr-like"), Some("0")),
+            ("resolution", Some("cr-like-em"), Some("0")),
+            ("resolution", Some("trivial"), Some("0")),
+            ("resolution", Some("parsimony"), Some("1")),
+            ("resolution", Some("parsimony-em"), Some("1")),
+            ("resolution", Some("full"), Some("1")),
+            ("resolution", Some("parsimony-gene"), Some("1")),
+            ("resolution", Some("parsimony-gene-em"), Some("1")),
+        ])
+        .required(false)
         .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10")
         .hide(true));
@@ -154,7 +168,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market instead of EDS").takes_value(false).required(false));
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"));
 
     let opts = Command::new("alevin-fry")
         .subcommand_required(true)
@@ -339,7 +354,7 @@ fn main() -> anyhow::Result<()> {
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
-        let use_mtx = t.is_present("use-mtx");
+        let use_mtx = !t.is_present("use-eds");
         let input_dir: String = t.value_of_t("input-dir").unwrap();
         let output_dir = t.value_of_t("output-dir").unwrap();
         let tg_map = t.value_of_t("tg-map").unwrap();
@@ -347,6 +362,58 @@ fn main() -> anyhow::Result<()> {
         let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
         let filter_list = t.value_of("quant-subset");
+        let umi_edit_dist: u32 = t.value_of_t("umi-edit-dist").unwrap();
+        let mut pug_exact_umi = false;
+
+        match umi_edit_dist {
+            0 => {
+                match resolution {
+                    ResolutionStrategy::Trivial
+                    | ResolutionStrategy::CellRangerLike
+                    | ResolutionStrategy::CellRangerLikeEm => {
+                        // already false, not pug_exact_umi because
+                        // these methods don't use PUG
+                    }
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::ParsimonyEm
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
+                        pug_exact_umi = true;
+                    }
+                }
+            }
+            1 => {
+                match resolution {
+                    ResolutionStrategy::Trivial
+                    | ResolutionStrategy::CellRangerLike
+                    | ResolutionStrategy::CellRangerLikeEm => {
+                        // these methods don't currently support 1 edit UMIs
+                        crit!(
+                            log,
+                            "\n\nResolution strategy {:?} doesn't currently support 1-edit UMI resolution",
+                            resolution
+                        );
+                        bail!("Invalid command line option");
+                    }
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::ParsimonyEm
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
+                        pug_exact_umi = false;
+                    }
+                }
+            }
+            j => {
+                // no method currently supported edit distance 2 or greater correction
+                crit!(
+                    log,
+                    "\n\nResolution strategy {:?} doesn't currently support {}-edit UMI resolution",
+                    resolution,
+                    j
+                );
+                bail!("Invalid command line option");
+            }
+        }
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
             crit!(
@@ -358,12 +425,14 @@ fn main() -> anyhow::Result<()> {
 
         if num_bootstraps > 0 {
             match resolution {
-                ResolutionStrategy::CellRangerLikeEm | ResolutionStrategy::Full => {
+                ResolutionStrategy::CellRangerLikeEm
+                | ResolutionStrategy::ParsimonyEm
+                | ResolutionStrategy::ParsimonyGeneEm => {
                     // sounds good
                 }
                 _ => {
                     eprintln!(
-                        "\n\nThe num_bootstraps argument was set to {}, but bootstrapping can only be used with the cr-like-em or full resolution strategies",
+                        "\n\nThe num_bootstraps argument was set to {}, but bootstrapping can only be used with the cr-like-em, parsimony-em, or parsimony-gene-em resolution strategies",
                         num_bootstraps
                     );
                     std::process::exit(1);
@@ -436,6 +505,7 @@ fn main() -> anyhow::Result<()> {
                     dump_eq,
                     use_mtx,
                     resolution,
+                    pug_exact_umi,
                     sa_model,
                     small_thresh,
                     filter_list,
@@ -478,7 +548,7 @@ fn main() -> anyhow::Result<()> {
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = t.value_of_t("threads").unwrap();
-        let use_mtx = t.is_present("use-mtx");
+        let use_mtx = !t.is_present("use-eds");
         let output_dir = t.value_of_t("output-dir").unwrap();
         let count_mat = t.value_of_t("count-mat").unwrap();
         let eq_label_file = t.value_of_t("eq-labels").unwrap();

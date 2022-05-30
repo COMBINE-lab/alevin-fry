@@ -528,7 +528,7 @@ pub fn extract_usa_eqmap(
                         // this is unspliced, so even if there is a next element
                         // it cannot belong to the same gene.
                         // modify the index so the contribution is
-                        // to the unspliced geen index.
+                        // to the unspliced gene index.
                         idx += unspliced_offset;
                     }
                     tvec.push(idx as u32);
