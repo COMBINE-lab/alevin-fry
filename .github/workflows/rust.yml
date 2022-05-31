@@ -74,7 +74,7 @@ jobs:
     steps:
     - uses: actions/checkout@v2.4.2
     - name: Install
-      run: cargo build --install
+      run: cargo build --release
     - name: sample run
       run: |
         wget https://umd.box.com/shared/static/75a80udhx51fjndbgnm6dmm25qsia5ks.gz -O toy_set.tar.gz
