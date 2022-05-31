@@ -917,9 +917,9 @@ pub fn get_num_molecules(
         if comp_verts.len() > 1 {
             // the current parsimony resolution algorithm
             // can become slow for connected components that
-            // are very large.  For components with > 1000 vertices
-            // (this should be _very_ rare) we will instead resolve
-            // the UMIs in the component using a simpler algorithm.
+            // are very large.  For components with > large_graph_thresh
+            // vertices (this should be _very_ rare) we will instead
+            // resolve the UMIs in the component using a simpler algorithm.
             if comp_verts.len() > large_graph_thresh {
                 get_num_molecules_large_component(
                     g,
