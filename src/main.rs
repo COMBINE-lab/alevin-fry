@@ -410,7 +410,6 @@ fn main() -> anyhow::Result<()> {
         let small_thresh = t.value_of_t("small-thresh").unwrap();
         let filter_list = t.value_of("quant-subset");
         let large_graph_thresh: usize = t.value_of_t("large-graph-thresh").unwrap();
-        crit!(log, "large graph thresh = {}", large_graph_thresh);
         let umi_edit_dist: u32 = t.value_of_t("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
 
