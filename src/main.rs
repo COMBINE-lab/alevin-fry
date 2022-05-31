@@ -40,10 +40,10 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
-/// Checks if the path pointed to by v exists.  It can be 
+/// Checks if the path pointed to by v exists.  It can be
 /// any valid entity (e.g. disk file, FIFO, directory, etc.).
-/// If there is any issue with permissions or failure to properly 
-/// resolve symlinks, or if the path is wrong, it returns 
+/// If there is any issue with permissions or failure to properly
+/// resolve symlinks, or if the path is wrong, it returns
 /// an Err(String), else Ok(()).
 fn file_exists_validator(v: &str) -> Result<(), String> {
     // NOTE: we explicitly *do not* check `is_file()` here
@@ -56,10 +56,10 @@ fn file_exists_validator(v: &str) -> Result<(), String> {
     }
 }
 
-/// Checks if the path pointed to by v exists and is 
-/// a valid directory on disk.  If there is any issue 
-/// with permissions or failure to properly 
-/// resolve symlinks, or if the path is wrong, it returns 
+/// Checks if the path pointed to by v exists and is
+/// a valid directory on disk.  If there is any issue
+/// with permissions or failure to properly
+/// resolve symlinks, or if the path is wrong, it returns
 /// an Err(String), else Ok(()).
 fn directory_exists_validator(v: &str) -> Result<(), String> {
     if !Path::new(v).is_dir() {
