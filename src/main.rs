@@ -16,6 +16,7 @@ use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
+use std::path::Path;
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
@@ -39,6 +40,35 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
+/// Checks if the path pointed to by v exists.  It can be 
+/// any valid entity (e.g. disk file, FIFO, directory, etc.).
+/// If there is any issue with permissions or failure to properly 
+/// resolve symlinks, or if the path is wrong, it returns 
+/// an Err(String), else Ok(()).
+fn file_exists_validator(v: &str) -> Result<(), String> {
+    // NOTE: we explicitly *do not* check `is_file()` here
+    // since we want to return true even if the path is to
+    // a FIFO/named pipe.
+    if !Path::new(v).exists() {
+        Err(String::from("No valid file was found at this path."))
+    } else {
+        Ok(())
+    }
+}
+
+/// Checks if the path pointed to by v exists and is 
+/// a valid directory on disk.  If there is any issue 
+/// with permissions or failure to properly 
+/// resolve symlinks, or if the path is wrong, it returns 
+/// an Err(String), else Ok(()).
+fn directory_exists_validator(v: &str) -> Result<(), String> {
+    if !Path::new(v).is_dir() {
+        Err(String::from("No valid directory was found at this path."))
+    } else {
+        Ok(())
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
@@ -54,7 +84,7 @@ fn main() -> anyhow::Result<()> {
         .about("Convert a BAM file to a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file"))
+        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file").validator(file_exists_validator))
         .arg(
             arg!(-t --threads <THREADS> "number of threads to use for processing")
                 .default_value(&max_num_threads),
@@ -65,7 +95,7 @@ fn main() -> anyhow::Result<()> {
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-r --rad <RADFILE> "input RAD file"))
+        .arg(arg!(-r --rad <RADFILE> "input RAD file").validator(file_exists_validator))
         .arg(
             arg!(-H --header "flag for printing header")
                 .takes_value(false)
@@ -77,7 +107,8 @@ fn main() -> anyhow::Result<()> {
         .about("Generate a permit list of barcodes from a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file"))
+        .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file")
+            .validator(directory_exists_validator))
         .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments"))
         .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory"))
         .arg(arg!(
@@ -110,8 +141,10 @@ fn main() -> anyhow::Result<()> {
     .about("Collate a RAD file by corrected cell barcode")
     .version(version)
     .author(crate_authors)
-    .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list"))
-    .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated"))
+    .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list")
+        .validator(directory_exists_validator))
+    .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
+        .validator(directory_exists_validator))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
@@ -123,8 +156,9 @@ fn main() -> anyhow::Result<()> {
     .about("Quantify expression from a collated RAD file")
     .version(version)
     .author(crate_authors)
-    .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file"))
-    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map"))
+    .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file")
+        .validator(directory_exists_validator))
+    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").validator(file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written"))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
@@ -161,9 +195,11 @@ fn main() -> anyhow::Result<()> {
     .about("Perform inference on equivalence class count data")
     .version(version)
     .author(crate_authors)
-    .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts").takes_value(true).required(true))
+    .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts")
+        .validator(file_exists_validator).takes_value(true).required(true))
     //.arg(arg!(-b --barcodes=<barcodes> "file containing the barcodes labeling the matrix rows").takes_value(true).required(true))
-    .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes").takes_value(true).required(true))
+    .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
+        .validator(file_exists_validator).takes_value(true).required(true))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").takes_value(true).required(true))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
