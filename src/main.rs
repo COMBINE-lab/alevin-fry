@@ -188,6 +188,17 @@ fn main() -> anyhow::Result<()> {
         ])
         .required(false)
         .hide(true))
+    .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
+        .default_value_ifs(&[
+            ("resolution", Some("parsimony-gene-em"), Some("1000")),
+            ("resolution", Some("parsimony"), Some("1000")),
+            ("resolution", Some("full"), Some("1000")),
+            ("resolution", Some("parsimony-gene"), Some("1000")),
+            ("resolution", Some("parsimony-gene"), Some("1000")),
+        ])
+        .default_value("0") // for any other mode
+        .required(false)
+        .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10")
         .hide(true));
 
@@ -398,6 +409,8 @@ fn main() -> anyhow::Result<()> {
         let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
         let filter_list = t.value_of("quant-subset");
+        let large_graph_thresh: usize = t.value_of_t("large-graph-thresh").unwrap();
+        crit!(log, "large graph thresh = {}", large_graph_thresh);
         let umi_edit_dist: u32 = t.value_of_t("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
 
@@ -544,6 +557,7 @@ fn main() -> anyhow::Result<()> {
                     pug_exact_umi,
                     sa_model,
                     small_thresh,
+                    large_graph_thresh,
                     filter_list,
                     &cmdline,
                     VERSION,

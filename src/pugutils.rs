@@ -862,6 +862,7 @@ pub fn get_num_molecules(
     tid_to_gid: &[u32],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
+    large_graph_thresh: usize,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
@@ -919,7 +920,7 @@ pub fn get_num_molecules(
             // are very large.  For components with > 1000 vertices
             // (this should be _very_ rare) we will instead resolve
             // the UMIs in the component using a simpler algorithm.
-            if comp_verts.len() > 1000 {
+            if comp_verts.len() > large_graph_thresh {
                 get_num_molecules_large_component(
                     g,
                     eqmap,
