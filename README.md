@@ -6,6 +6,14 @@
 
 You can read the paper describing alevin fry, "Alevin-fry unlocks rapid, accurate, and memory-frugal quantification of single-cell RNA-seq data" [here](https://www.nature.com/articles/s41592-022-01408-3), and the pre-print [on bioRxiv](https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1).
 
+### Getting started with `alevin-fry`
+
+There are many resources to help you get started with `alevin-fry`, and to demonstrate how to perform various tasks and analyses in an idiomatic 
+way with `alevin-fry` --- for example, you can find a lot of information below in this README.  Nonetheless, as we attempt to restructure, centralize, and 
+refresh the documentation for `alevin-fry`, we intend for the the landing page and centralized jumping-off point to be the [Read The Docs page for `alevin-fry`](https://alevin-fry.readthedocs.io/en/latest/).
+
+### More information 
+
 * [**Quickstart guide with a unified singularity container**](https://github.com/COMBINE-lab/alevin-fry#a-quick-start-run-through-on-sample-data)
 
 * **Relationship to alevin**: Alevin-fry has been designed as the successor to alevin. It subsumes the core features of alevin, while also providing important new capabilities and considerably improving the performance profile. We anticipate that new method development and feature additions will take place primarily within the alevin-fry codebase.  Thus, we encourage users of alevin to migrate to alevin-fry when feasible.  That being said, alevin is still actively-maintained and supported, so if you are using it and not ready to migrate you can continue to ask questions and post issues in [the salmon repository](https://github.com/COMBINE-lab/salmon).
@@ -111,7 +119,7 @@ $ singularity pull docker://combinelab/usefulaf:latest
 
 ### Info about the singularity container
 
-The singularity container we just downloaded above contains a recent release of `salmon` (v1.8.0) and `alevin-fry` (v0.5.0), as well as an installation of `R` and all of the packages needed to build the _splici_ index.
+The singularity container we just downloaded above contains a recent release of `salmon` (v1.8.0) and `alevin-fry` (v0.5.1), as well as an installation of `R` and all of the packages needed to build the _splici_ index.
 
 To build the reference index (and quantify) we'll use the [simpleaf](https://github.com/COMBINE-lab/usefulaf/blob/main/bash/simpleaf) wrapper.  This is a shell script written around `salmon`, `alevin-fry`, and the _splici_ index construction code that simplifies processing by grouping together related commands, using a fixed directory structure for processing, and also by eliminating some different options that are otherwise exposed by `salmon` and `alevin-fry` (e.g. it builds the `sparse` index, maps in `sketch` mode etc.).  If you would like to run the "raw" commands, the Singularity image contains `salmon` and `alevin-fry` in the path, and the `R` script to construct the _splici_ index at `/usefulaf/R/build_splici_ref.R`, so you can explore more detailed options.
 
