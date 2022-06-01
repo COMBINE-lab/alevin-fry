@@ -37,7 +37,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 
 use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
-use crate::eq_class::{EqMap, IndexedEqList};
+use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::io_utils;
 use crate::pugutils;
 use crate::utils as afutils;
@@ -68,8 +68,10 @@ pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
     CellRangerLikeEm,
-    Full,
+    ParsimonyEm,
     Parsimony,
+    ParsimonyGeneEm,
+    ParsimonyGene,
 }
 
 impl fmt::Display for ResolutionStrategy {
@@ -86,8 +88,10 @@ impl FromStr for ResolutionStrategy {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
-            "parsimony-em" | "full" => Ok(ResolutionStrategy::Full),
+            "parsimony-em" | "full" => Ok(ResolutionStrategy::ParsimonyEm),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
+            "parsimony-gene" => Ok(ResolutionStrategy::ParsimonyGene),
+            "parsimony-gene-em" => Ok(ResolutionStrategy::ParsimonyGeneEm),
             _ => Err("no match"),
         }
     }
@@ -305,8 +309,10 @@ pub fn quantify(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    pug_exact_umi: bool,
     sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
+    large_graph_thresh: usize,
     filter_list: Option<&str>,
     cmdline: &str,
     version: &str,
@@ -346,8 +352,10 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            pug_exact_umi,
             sa_model,
             small_thresh,
+            large_graph_thresh,
             filter_list,
             cmdline,
             version,
@@ -375,8 +383,10 @@ pub fn quantify(
             dump_eq,
             use_mtx,
             resolution,
+            pug_exact_umi,
             sa_model,
             small_thresh,
+            large_graph_thresh,
             filter_list,
             cmdline,
             version,
@@ -400,8 +410,10 @@ pub fn do_quantify<T: Read>(
     dump_eq: bool,
     use_mtx: bool,
     resolution: ResolutionStrategy,
+    pug_exact_umi: bool,
     mut sa_model: SplicedAmbiguityModel,
     small_thresh: usize,
+    large_graph_thresh: usize,
     filter_list: Option<&str>,
     cmdline: &str,
     version: &str,
@@ -442,7 +454,7 @@ pub fn do_quantify<T: Read>(
     let mut gene_name_to_id: HashMap<String, u32, ahash::RandomState> =
         HashMap::with_hasher(gnhasher);
 
-    let with_unspliced;
+    let usa_mode;
     let tid_to_gid;
     // parse the tg-map; this is expected to be a 2-column
     // tsv file if we are dealing with one status of transcript
@@ -458,20 +470,27 @@ pub fn do_quantify<T: Read>(
     ) {
         Ok((v, us)) => {
             tid_to_gid = v;
-            with_unspliced = us;
-            if with_unspliced {
+            usa_mode = us;
+            if usa_mode {
                 assert_eq!(
-		     num_bootstraps, 0,
-		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-		 );
-                assert!(
-		     matches!(resolution,
-			      ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm),
-		     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis can only be used with cr-like or cr-like-em resolution."
-		 );
+		           num_bootstraps, 0,
+		           "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
+		        );
+
+                match resolution {
+                    ResolutionStrategy::Parsimony
+                    | ResolutionStrategy::ParsimonyEm
+                    | ResolutionStrategy::ParsimonyGene
+                    | ResolutionStrategy::ParsimonyGeneEm => {
+                        info!(log,
+                        "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony(-gene) or parsimony(-gene)-em resolution is EXPERIMENTAL."
+                        );
+                    }
+                    _ => {}
+                }
             } else {
                 // the SplicedAmbiguityModel of PreferAmbiguity only makes sense when we are
-                // operating `with_unspliced`, so if the user has set that here, inform them
+                // operating `usa_mode`, so if the user has set that here, inform them
                 // it will be changed back to winner-take-all
                 match sa_model {
                     SplicedAmbiguityModel::WinnerTakeAll => {}
@@ -613,7 +632,7 @@ pub fn do_quantify<T: Read>(
     };
 
     // the length of the vector of gene counts we'll use
-    let num_rows = if with_unspliced {
+    let num_rows = if usa_mode {
         // the number of genes should be the max gene id + 1
         // over the gene ids in gene_name_to_id.  The +2 is
         // because the ids in gene_name_to_id are only for
@@ -633,7 +652,7 @@ pub fn do_quantify<T: Read>(
         num_genes
     };
 
-    let usa_offsets = if with_unspliced {
+    let usa_offsets = if usa_mode {
         Some(((num_rows / 3) as usize, (2 * num_rows / 3) as usize))
     } else {
         None
@@ -692,13 +711,36 @@ pub fn do_quantify<T: Read>(
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
+        // if we are performing parsimony-gene or parsimony-gene-em
+        // resolution, then the equivalence classes will be immediately
+        // projected to the gene level.
+        let eq_map_type = match resolution {
+            ResolutionStrategy::ParsimonyGene | ResolutionStrategy::ParsimonyGeneEm => {
+                EqMapType::GeneLevel
+            }
+            _ => EqMapType::TranscriptLevel,
+        };
+
+        let num_eq_targets = match eq_map_type {
+            EqMapType::TranscriptLevel => ref_count,
+            EqMapType::GeneLevel => {
+                // get the max spliced gene ID and add 1 to get the unspliced ID
+                // and another 1 to get the size.
+                (gene_name_to_id
+                    .values()
+                    .max()
+                    .expect("gene name to id map should not be empty.")
+                    + 2) as u32
+            }
+        };
+
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             // these can be created once and cleared after processing
             // each cell.
             let mut unique_evidence = vec![false; num_rows];
             let mut no_ambiguity = vec![false; num_rows];
-            let mut eq_map = EqMap::new(ref_count);
+            let mut eq_map = EqMap::new(num_eq_targets, eq_map_type);
             let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
             let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
             let mut eds_bytes = Vec::<u8>::new();
@@ -792,7 +834,6 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
-                                            with_unspliced,
                                             sa_model,
                                             &log,
                                         );
@@ -803,7 +844,6 @@ pub fn do_quantify<T: Read>(
                                             &tid_to_gid,
                                             num_genes,
                                             &mut gene_eqc,
-                                            with_unspliced,
                                             sa_model,
                                             &log,
                                         );
@@ -814,7 +854,7 @@ pub fn do_quantify<T: Read>(
 
                                     // NOTE: This configuration seems overly complicated
                                     // see if we can simplify it.
-                                    match (with_unspliced, only_unique) {
+                                    match (usa_mode, only_unique) {
                                         (true, true) => {
                                             // USA mode, only gene-unqique reads
                                             counts = afutils::extract_counts(&gene_eqc, num_rows);
@@ -865,51 +905,78 @@ pub fn do_quantify<T: Read>(
                                     mmrate.lock().unwrap()[cell_num] = ct.1;
                                     eq_map.clear();
                                 }
-                                ResolutionStrategy::Parsimony => {
-                                    eq_map.init_from_chunk(&mut c);
-                                    let g = pugutils::extract_graph(&eq_map, &log);
+                                ResolutionStrategy::Parsimony
+                                | ResolutionStrategy::ParsimonyEm
+                                | ResolutionStrategy::ParsimonyGene
+                                | ResolutionStrategy::ParsimonyGeneEm => {
+                                    if (resolution == ResolutionStrategy::ParsimonyGene)
+                                        || (resolution == ResolutionStrategy::ParsimonyGeneEm)
+                                    {
+                                        eq_map.init_from_chunk_gene_level(&mut c, &tid_to_gid);
+                                    } else {
+                                        eq_map.init_from_chunk(&mut c);
+                                    }
+
+                                    let g = pugutils::extract_graph(&eq_map, pug_exact_umi, &log);
+                                    // for the PUG resolution algorithm, set the hasher
+                                    // that will be used based on the cell barcode.
+                                    let s =
+                                        ahash::RandomState::with_seeds(bc as u64, 7u64, 1u64, 8u64);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
                                         &tid_to_gid,
-                                        num_genes,
                                         &mut gene_eqc,
+                                        &s,
+                                        large_graph_thresh,
                                         &log,
                                     );
                                     alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        em_init_type,
-                                        num_genes,
-                                        true, // only unqique evidence
-                                        &log,
-                                    );
                                     eq_map.clear();
-                                }
-                                ResolutionStrategy::Full => {
-                                    eq_map.init_from_chunk(&mut c);
-                                    let g = pugutils::extract_graph(&eq_map, &log);
-                                    let pug_stats = pugutils::get_num_molecules(
-                                        &g,
-                                        &eq_map,
-                                        &tid_to_gid,
-                                        num_genes,
-                                        &mut gene_eqc,
-                                        &log,
-                                    );
-                                    alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        em_init_type,
-                                        num_genes,
-                                        false, // only unqique evidence
-                                        &log,
-                                    );
-                                    eq_map.clear();
+
+                                    let only_unique = (resolution == ResolutionStrategy::Parsimony)
+                                        || (resolution == ResolutionStrategy::ParsimonyGene);
+
+                                    // NOTE: This configuration seems overly complicated
+                                    // see if we can simplify it.
+                                    match (usa_mode, only_unique) {
+                                        (true, true) => {
+                                            // USA mode, only gene-unqique reads
+                                            counts = afutils::extract_counts(&gene_eqc, num_rows);
+                                        }
+                                        (true, false) => {
+                                            // USA mode, use EM
+                                            afutils::extract_usa_eqmap(
+                                                &gene_eqc,
+                                                num_rows,
+                                                &mut idx_eq_list,
+                                                &mut eq_id_count,
+                                            );
+                                            counts = em_optimize_subset(
+                                                &idx_eq_list,
+                                                &eq_id_count,
+                                                &mut unique_evidence,
+                                                &mut no_ambiguity,
+                                                em_init_type,
+                                                num_rows,
+                                                only_unique,
+                                                usa_offsets,
+                                                &log,
+                                            );
+                                        }
+                                        (false, _) => {
+                                            // not USA-mode
+                                            counts = em_optimize(
+                                                &gene_eqc,
+                                                &mut unique_evidence,
+                                                &mut no_ambiguity,
+                                                em_init_type,
+                                                num_genes,
+                                                only_unique,
+                                                &log,
+                                            );
+                                        }
+                                    }
                                 }
                             }
 
@@ -940,26 +1007,29 @@ pub fn do_quantify<T: Read>(
                                 &tid_to_gid,
                                 num_genes,
                                 &mut gene_eqc,
-                                with_unspliced,
                                 sa_model,
                                 &log,
                             );
                             // USA-mode
-                            if with_unspliced {
+                            if usa_mode {
                                 // here, just like for non-USA mode,
                                 // we substitute EM with uniform allocation in
                                 // this special case
                                 match resolution {
-                                    ResolutionStrategy::CellRangerLike => {
+                                    ResolutionStrategy::CellRangerLike
+                                    | ResolutionStrategy::Parsimony
+                                    | ResolutionStrategy::ParsimonyGene => {
                                         counts = afutils::extract_counts(&gene_eqc, num_rows);
                                     }
-                                    ResolutionStrategy::CellRangerLikeEm => {
+                                    ResolutionStrategy::CellRangerLikeEm
+                                    | ResolutionStrategy::ParsimonyEm
+                                    | ResolutionStrategy::ParsimonyGeneEm => {
                                         counts =
                                             afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
                                     }
                                     _ => {
                                         counts = vec![0f32; num_genes];
-                                        warn!(log, "Should not reach here, only cr-like and cr-like-em are supported in USA-mode.");
+                                        warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode.");
                                     }
                                 }
                             } else {
@@ -971,7 +1041,7 @@ pub fn do_quantify<T: Read>(
                                     } else {
                                         match resolution {
                                             ResolutionStrategy::CellRangerLikeEm
-                                            | ResolutionStrategy::Full => {
+                                            | ResolutionStrategy::ParsimonyEm => {
                                                 let contrib = 1.0 / (k.len() as f32);
                                                 for g in k.iter() {
                                                     counts[*g as usize] += contrib;
@@ -1206,7 +1276,7 @@ pub fn do_quantify<T: Read>(
     let mut gn_writer = BufWriter::new(gn_file);
 
     // if we are not using unspliced then just write the gene names
-    if !with_unspliced {
+    if !usa_mode {
         for g in gene_names {
             gn_writer.write_all(format!("{}\n", g).as_bytes())?;
         }
@@ -1262,13 +1332,7 @@ pub fn do_quantify<T: Read>(
     );
 
     if dump_eq {
-        write_eqc_counts(
-            &eqid_map_lock,
-            num_rows,
-            with_unspliced,
-            &output_matrix_path,
-            log,
-        )?;
+        write_eqc_counts(&eqid_map_lock, num_rows, usa_mode, &output_matrix_path, log)?;
     }
 
     let meta_info = json!({
@@ -1278,7 +1342,7 @@ pub fn do_quantify<T: Read>(
     "num_quantified_cells" : num_cells,
     "num_genes" : num_rows,
     "dump_eq" : dump_eq,
-    "usa_mode" : with_unspliced,
+    "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
     "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap()
     });

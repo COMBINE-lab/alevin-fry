@@ -50,8 +50,8 @@ def compare_quants(args):
 	usa_mode = mode_ng_ref[0]
 	odict = None
 	if usa_mode:
-		a = load_fry.load_fry(ref_quant_dir, output_format='raw')
-		b = load_fry.load_fry(test_quant_dir, output_format='raw')
+		a = load_fry(ref_quant_dir, output_format='raw')
+		b = load_fry(test_quant_dir, output_format='raw')
 		
 		odict = { "nobs_ref" : a.n_obs, "nobs_test" : b.n_obs }
 
@@ -62,8 +62,8 @@ def compare_quants(args):
 		odict['obs_ref-obs_test'] = list(a.obs_names.difference(b.obs_names))
 		odict['obs_test-obs_ref'] = list(b.obs_names.difference(a.obs_names))
 	else:
-		a = load_fry.load_fry(ref_quant_dir, output_format='raw')
-		b = load_fry.load_fry(test_quant_dir, output_format='raw')
+		a = load_fry(ref_quant_dir, output_format='raw')
+		b = load_fry(test_quant_dir, output_format='raw')
 		
 		odict = { "nobs_ref" : a.n_obs, "nobs_test" : b.n_obs }
 

@@ -18,7 +18,7 @@ It makes use of the selective-alignment and tag processing framework of
    :maxdepth: 2
    :caption: Contents:
 
-   other_resources
+   overview
    installing
    getting_started
    commands

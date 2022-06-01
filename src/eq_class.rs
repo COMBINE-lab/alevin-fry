@@ -16,6 +16,12 @@ pub struct CellEqClass<'a> {
     pub umis: Vec<(u64, u32)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum EqMapType {
+    TranscriptLevel,
+    GeneLevel,
+}
+
 #[derive(Debug)]
 pub struct EqMapEntry {
     pub umis: Vec<(u64, u32)>,
@@ -212,6 +218,7 @@ pub struct EqMap {
     // all transcripts
     pub ref_labels: Vec<u32>,
     eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState>,
+    pub map_type: EqMapType,
 }
 
 impl EqMap {
@@ -232,11 +239,11 @@ impl EqMap {
 
         self.ref_offsets.clear();
         self.ref_labels.clear();
-
+        // keep map_type
         //self.eqid_map.clear();
     }
 
-    pub fn new(nref_in: u32) -> EqMap {
+    pub fn new(nref_in: u32, map_type: EqMapType) -> EqMap {
         let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         EqMap {
             eqc_info: vec![], //HashMap::with_hasher(rs),
@@ -248,6 +255,7 @@ impl EqMap {
             ref_offsets: vec![],
             ref_labels: vec![],
             eqid_map: HashMap::with_hasher(rand_state),
+            map_type,
         }
     }
 
@@ -335,6 +343,98 @@ impl EqMap {
         }
     }
 
+    pub fn init_from_chunk_gene_level(
+        &mut self,
+        cell_chunk: &mut rad_types::Chunk,
+        tid_to_gid: &[u32],
+    ) {
+        self.eqid_map.clear();
+
+        let mut gvec: Vec<u32> = vec![];
+        // gather the equivalence class info
+        for r in &mut cell_chunk.reads {
+            // project from txp-level to gene-level
+            gvec.extend(r.refs.iter().map(|x| tid_to_gid[*x as usize]));
+            gvec.sort_unstable();
+            gvec.dedup();
+
+            match self.eqid_map.get_mut(&gvec) {
+                // if we've seen this equivalence class before, just add the new
+                // umi.
+                Some(v) => {
+                    self.eqc_info[*v as usize].umis.push((r.umi, 1));
+                }
+                // otherwise, add the new umi, but we also have some extra bookkeeping
+                None => {
+                    // each reference in this equivalence class label
+                    // will have to point to this equivalence class id
+                    let eq_num = self.eqc_info.len() as u32;
+                    self.label_list_size += gvec.len();
+                    for r in gvec.iter() {
+                        let ridx = *r as usize;
+                        self.label_counts[ridx] += 1;
+                        //ref_to_eqid[*r as usize].push(eq_num);
+                    }
+                    self.eq_label_starts.push(self.eq_labels.len() as u32);
+                    self.eq_labels.extend(&gvec);
+                    self.eqc_info.push(EqMapEntry {
+                        umis: vec![(r.umi, 1)],
+                        eq_num,
+                    });
+                    self.eqid_map.insert(gvec.clone(), eq_num);
+                }
+            }
+
+            gvec.clear();
+        }
+        // final value to avoid special cases
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
+
+        self.fill_ref_offsets();
+        self.fill_label_sizes();
+
+        // initially we inserted duplicate UMIs
+        // here, collapse them and keep track of their count
+        for idx in 0..self.num_eq_classes() {
+            // for each reference in this
+            // label, put it in the next free spot
+            // TODO: @k3yavi, can we avoid this copy?
+            let label = self.refs_for_eqc(idx as u32).to_vec();
+            //println!("{:?}", label);
+            for r in label {
+                self.ref_offsets[r as usize] -= 1;
+                self.ref_labels[self.ref_offsets[r as usize] as usize] = self.eqc_info[idx].eq_num;
+            }
+
+            let v = &mut self.eqc_info[idx];
+            // sort so dups are adjacent
+            v.umis.sort_unstable();
+            // we need a copy of the vector b/c we
+            // can't easily modify it in place
+            // at least I haven't seen how (@k3yavi, help here if you can).
+            let cv = v.umis.clone();
+            // since we have a copy, clear the original to fill it
+            // with the new contents.
+            v.umis.clear();
+
+            let mut count = 1;
+            let mut cur_elem = cv.first().unwrap().0;
+            for e in cv.iter().skip(1) {
+                if e.0 == cur_elem {
+                    count += 1;
+                } else {
+                    v.umis.push((cur_elem, count));
+                    cur_elem = e.0;
+                    count = 1;
+                }
+            }
+
+            // remember to push the last element, since we
+            // won't see a subsequent "different" element.
+            v.umis.push((cur_elem, count));
+        }
+    }
+
     pub fn init_from_chunk(&mut self, cell_chunk: &mut rad_types::Chunk) {
         /*
         if cell_chunk.reads.len() < 10 {
@@ -393,15 +493,12 @@ impl EqMap {
         // initially we inserted duplicate UMIs
         // here, collapse them and keep track of their count
         for idx in 0..self.num_eq_classes() {
-            //} self.eqc_info.iter_mut().enumerate() {
-
             // for each reference in this
             // label, put it in the next free spot
             // TODO: @k3yavi, can we avoid this copy?
             let label = self.refs_for_eqc(idx as u32).to_vec();
             //println!("{:?}", label);
             for r in label {
-                // k.iter() {
                 self.ref_offsets[r as usize] -= 1;
                 self.ref_labels[self.ref_offsets[r as usize] as usize] = self.eqc_info[idx].eq_num;
             }
