@@ -2,7 +2,7 @@
 
 Changelog for alevin-fry
 
-## 0.6.0 (2022-06-01)
+## [0.6.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.5.1...v0.6.0) (2022-06-01)
 
 ### ⚠ BREAKING CHANGES
 
@@ -23,24 +23,15 @@ Changelog for alevin-fry
 * toy run in github actions ([7331542](https://github.com/COMBINE-lab/alevin-fry/commit/7331542c4c71d53316d1781a783962307a596824))
 * toy run in github actions ([f343bda](https://github.com/COMBINE-lab/alevin-fry/commit/f343bda9f121d1add7ff98cb7aa1deca7d0fd3b4))
 
-
 ### Bug Fixes
 
-* autobump is wrong ([12b505d](https://github.com/COMBINE-lab/alevin-fry/commit/12b505df5fecb72cc9198e275aad441eeffb5816))
-* bump libradicl patch ([8ac479e](https://github.com/COMBINE-lab/alevin-fry/commit/8ac479e95b09e917d8678d5aa1d91f646b3a0001))
 * **resolution:** Fix indexing in alternative resolution for usa parsimony ([8ebd3be](https://github.com/COMBINE-lab/alevin-fry/commit/8ebd3bed6caf74786d149899814c8715c994c041))
 * **resolution:** revert prefer splicing heuristic ([4806146](https://github.com/COMBINE-lab/alevin-fry/commit/4806146394767bdbe2256ab8efa3c53a5f903c11))
 * update compare_counts.py to user newer pyroe ([9a812a7](https://github.com/COMBINE-lab/alevin-fry/commit/9a812a7f8b57e42dce11a42983114311670856a4))
-* version number ([9f269ee](https://github.com/COMBINE-lab/alevin-fry/commit/9f269eefcafea7c2e3799b91e9f7936d85dae48f))
-
 
 ### Code Refactoring
 
 * **cmd_interface:** remove --pug-exact-umi add --umi-edit-dist ([7145d64](https://github.com/COMBINE-lab/alevin-fry/commit/7145d64c2cabf8afd087dff2e4acb526d09a3bcb))
-
-## [Unreleased]
-
-Currently no unreleased features
 
 ## [0.4.3] - 2021-11-11
 
