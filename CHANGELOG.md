@@ -2,8 +2,7 @@
 
 Changelog for alevin-fry
 
-## 0.1.0 (2022-06-01)
-
+## 0.6.0 (2022-06-01)
 
 ### ⚠ BREAKING CHANGES
 
