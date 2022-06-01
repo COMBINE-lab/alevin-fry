@@ -1,6 +1,6 @@
 [package]
 name = "libradicl"
-version = "0.4.6"
+version = "0.1.0"
 authors = [
   "Avi Srivastava <avi.srivastava@nyu.edu>",
   "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
