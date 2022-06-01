@@ -38,7 +38,7 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl directory
 # but when published, pull the specified version
-libradicl = { path = "libradicl", version = "0.4.5" }
+libradicl = { path = "libradicl", version = "0.4.6" }
 anyhow = "1.0.57"
 arrayvec = "0.7.2"
 ahash = "0.7.6"
