@@ -2,6 +2,43 @@
 
 Changelog for alevin-fry
 
+## 0.1.0 (2022-06-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cmd_interface:** Add a (hidden) --umi-edit-dist option that take a value informing the underlying resolution algorithm of which edit distances to consider for collapse among potentially colliding UMIs. Right now, 0 works with all methods, while 1 only works with parsimony(-gene) and parimony(-gene)-em. The default remain as before, 1 for parsimony(-gene) and parsimony(-gene)-em, and 0 for all other methods. If the user attempts to set an unsupported edit distance for a method, the program will complain and exit.
+
+### Features
+
+* add hidden large PUG threshold cmd line option ([24fca6b](https://github.com/COMBINE-lab/alevin-fry/commit/24fca6b647a4686757a89f67e05808a151c6d231))
+* add release-please ([ec4678b](https://github.com/COMBINE-lab/alevin-fry/commit/ec4678b7aa576daf1b41798d6d0614b09e08bbab))
+* add toy run in github actions ([ea04c85](https://github.com/COMBINE-lab/alevin-fry/commit/ea04c855dbe556de2cdff324a1e02e6662656590))
+* add toy run in github actions ([722d850](https://github.com/COMBINE-lab/alevin-fry/commit/722d850a70d6872510d9f5056e4f9a610f0b463b))
+* cmdline file and directory validation ([9a21ee4](https://github.com/COMBINE-lab/alevin-fry/commit/9a21ee4c9ce0e06e63fee9f27f04fcf318a738b9))
+* **resolution:** Add exact UMI only dedup mode to parsimony ([ac61b1d](https://github.com/COMBINE-lab/alevin-fry/commit/ac61b1d169db6b231f598c20348107f28e62d7dc))
+* **resolution:** Add parsimony-gene and parsimony-gene-em modes ([1670faa](https://github.com/COMBINE-lab/alevin-fry/commit/1670faa4154042d2d855921a5a9df899c61ac5fa))
+* **resolution:** add USA support to parsimony and parsimony-em ([8acc61e](https://github.com/COMBINE-lab/alevin-fry/commit/8acc61e53448ab326c2f61f3507c170b9448ccba))
+* **resolution:** Improve parsimony in USA mode ([0f6eaa9](https://github.com/COMBINE-lab/alevin-fry/commit/0f6eaa940ab249cdf453a2868904e80a8b1d9383))
+* toy run in github actions ([8d160cb](https://github.com/COMBINE-lab/alevin-fry/commit/8d160cbc76defc75da7a8073a853403ca848a7c1))
+* toy run in github actions ([7331542](https://github.com/COMBINE-lab/alevin-fry/commit/7331542c4c71d53316d1781a783962307a596824))
+* toy run in github actions ([f343bda](https://github.com/COMBINE-lab/alevin-fry/commit/f343bda9f121d1add7ff98cb7aa1deca7d0fd3b4))
+
+
+### Bug Fixes
+
+* autobump is wrong ([12b505d](https://github.com/COMBINE-lab/alevin-fry/commit/12b505df5fecb72cc9198e275aad441eeffb5816))
+* bump libradicl patch ([8ac479e](https://github.com/COMBINE-lab/alevin-fry/commit/8ac479e95b09e917d8678d5aa1d91f646b3a0001))
+* **resolution:** Fix indexing in alternative resolution for usa parsimony ([8ebd3be](https://github.com/COMBINE-lab/alevin-fry/commit/8ebd3bed6caf74786d149899814c8715c994c041))
+* **resolution:** revert prefer splicing heuristic ([4806146](https://github.com/COMBINE-lab/alevin-fry/commit/4806146394767bdbe2256ab8efa3c53a5f903c11))
+* update compare_counts.py to user newer pyroe ([9a812a7](https://github.com/COMBINE-lab/alevin-fry/commit/9a812a7f8b57e42dce11a42983114311670856a4))
+* version number ([9f269ee](https://github.com/COMBINE-lab/alevin-fry/commit/9f269eefcafea7c2e3799b91e9f7936d85dae48f))
+
+
+### Code Refactoring
+
+* **cmd_interface:** remove --pug-exact-umi add --umi-edit-dist ([7145d64](https://github.com/COMBINE-lab/alevin-fry/commit/7145d64c2cabf8afd087dff2e4acb526d09a3bcb))
+
 ## [Unreleased]
 
 Currently no unreleased features
