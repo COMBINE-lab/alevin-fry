@@ -1,0 +1,54 @@
+on:
+  push:
+    branches:
+      - master
+
+name: release-please
+
+jobs:
+  release-please:
+    if: github.repository_owner == 'COMBINE-lab'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: GoogleCloudPlatform/release-please-action@v3
+        id: release_libradicl
+        with:
+          release-type: rust
+          package-name: libradicl
+          monorepo-tags: true
+          path: libradicl
+
+      - uses: GoogleCloudPlatform/release-please-action@v3
+        id: release_main
+        with:
+          release-type: rust
+          package-name: alevin-fry
+          bump-minor-pre-major: true
+          monorepo-tags: true
+          path: "."
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        if: ${{ steps.release_main.outputs.release_created || steps.release_libradicl.outputs.release_created }}
+        with:
+          toolchain: stable
+          override: true
+
+      - uses: Swatinem/rust-cache@v1.3.0
+        if: ${{ steps.release_main.outputs.release_created || steps.release_libradicl.outputs.release_created }}
+      
+      - name: Publish libradicl
+        if: ${{ steps.release_libradicl.outputs.release_created }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: --manifest-path libradicl/Cargo.toml --token ${{ secrets.CRATES_IO_TOKEN }}
+      
+      - name: Publish alevin-fry
+        if: ${{ steps.release_main.outputs.release_created }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: publish
+          args: --token ${{ secrets.CRATES_IO_TOKEN }}
