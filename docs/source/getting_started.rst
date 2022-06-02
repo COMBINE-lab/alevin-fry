@@ -8,13 +8,20 @@ First, we need to generate a RAD file using alevin.  The RAD file is created by 
 
 .. code:: bash
 
-    $ salmon alevin -lISR --chromium -1 <read1_files> -2 <read2_files> -o <alevin_odir> -i <index> -p <num_threads> --tgMap <tg_map> --sketch
+    $ salmon alevin -lISR --chromium -1 <read1_files> -2 <read2_files> -o <alevin_odir> -i <index> -p <num_threads> --sketch
 
-Given the output directory generated above, the next step is to let alevin-fry generate the permit list.  Here we use the "knee" method `-k`.
+Given the output directory generated above, the next step is to let alevin-fry generate the permit list.  First, we grab the 10x Chromium version 2
+permit list (if we had Chromium v3 chemistry, we would use that permit-list instead):
+
+.. code:: bash
+
+    $ wget https://umd.box.com/shared/static/jbs2wszgbj7k4ic2hass9ts6nhqkwq1p -O 10x_v2_permit.txt
+
+Now, we can use this permit list to scan the cell barcodes actually encountered in our reads and determine a set of cells that were likely present in our sample:
 
 .. code:: bash 
 
-    $ alevin-fry generate-permit-list --input <alevin_odir> --expected-ori fw --output-dir <fry_odir> -k
+    $ alevin-fry generate-permit-list --input <alevin_odir> --expected-ori fw --output-dir <fry_odir> --unfiltered-pl 10x_v2_permit.txt
 
 Next, given the permit list and barcode mapping (which resides in the `<fry_odir>` directory), we collate the original RAD file using the command below.
 
