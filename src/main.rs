@@ -19,6 +19,7 @@ use slog::{crit, o, warn, Drain};
 use std::path::Path;
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
+use alevin_fry::prog_opts::QuantOpts;
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[global_allocator]
@@ -403,8 +404,8 @@ fn main() -> anyhow::Result<()> {
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = !t.is_present("use-eds");
         let input_dir: String = t.value_of_t("input-dir").unwrap();
-        let output_dir = t.value_of_t("output-dir").unwrap();
-        let tg_map = t.value_of_t("tg-map").unwrap();
+        let output_dir: String = t.value_of_t("output-dir").unwrap();
+        let tg_map: String = t.value_of_t("tg-map").unwrap();
         let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
         let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
         let small_thresh = t.value_of_t("small-thresh").unwrap();
@@ -488,6 +489,29 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        let quant_opts = QuantOpts::builder()
+            .input_dir(input_dir.clone())
+            .tg_map(tg_map.clone())
+            .output_dir(output_dir.clone())
+            .num_threads(num_threads)
+            .num_bootstraps(num_bootstraps)
+            .init_uniform(init_uniform)
+            .summary_stat(summary_stat)
+            .dump_eq(dump_eq)
+            .use_mtx(use_mtx)
+            .resolution(resolution)
+            .sa_model(sa_model)
+            .small_thresh(small_thresh)
+            .large_graph_thresh(large_graph_thresh)
+            .filter_list(filter_list)
+            .pug_exact_umi(pug_exact_umi)
+            .cmdline(&cmdline)
+            .version(VERSION)
+            .log(&log)
+            .build();
+
+        println!("PO : {:?}", quant_opts);
+
         // first make sure that the input direcory passed in has the
         // appropriate json file in it.
         // we should take care to document this workflow explicitly.
@@ -500,24 +524,7 @@ fn main() -> anyhow::Result<()> {
         if json_path.exists() {
             let velo_mode = alevin_fry::utils::is_velo_mode(input_dir.to_string());
             if velo_mode {
-                match alevin_fry::quant::velo_quantify(
-                    input_dir,
-                    tg_map,
-                    output_dir,
-                    num_threads,
-                    num_bootstraps,
-                    init_uniform,
-                    summary_stat,
-                    dump_eq,
-                    use_mtx,
-                    resolution,
-                    sa_model,
-                    small_thresh,
-                    filter_list,
-                    &cmdline,
-                    VERSION,
-                    &log,
-                ) {
+                match alevin_fry::quant::velo_quantify(quant_opts) {
                     // if we're all good; then great!
                     Ok(_) => {}
                     // if we have an error, see if it's an error parsing
@@ -542,26 +549,7 @@ fn main() -> anyhow::Result<()> {
                     },
                 }; // end match if
             } else {
-                match alevin_fry::quant::quantify(
-                    input_dir,
-                    tg_map,
-                    output_dir,
-                    num_threads,
-                    num_bootstraps,
-                    init_uniform,
-                    summary_stat,
-                    dump_eq,
-                    use_mtx,
-                    resolution,
-                    pug_exact_umi,
-                    sa_model,
-                    small_thresh,
-                    large_graph_thresh,
-                    filter_list,
-                    &cmdline,
-                    VERSION,
-                    &log,
-                ) {
+                match alevin_fry::quant::quantify(quant_opts) {
                     // if we're all good; then great!
                     Ok(_) => {}
                     // if we have an error, see if it's an error parsing

@@ -39,6 +39,7 @@ use flate2::Compression;
 use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::io_utils;
+use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
 use libradicl::rad_types;
@@ -49,6 +50,12 @@ type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
     WinnerTakeAll,
+}
+
+impl Default for SplicedAmbiguityModel {
+    fn default() -> Self {
+        SplicedAmbiguityModel::WinnerTakeAll
+    }
 }
 
 // Implement the trait
@@ -72,6 +79,12 @@ pub enum ResolutionStrategy {
     Parsimony,
     ParsimonyGeneEm,
     ParsimonyGene,
+}
+
+impl Default for ResolutionStrategy {
+    fn default() -> Self {
+        ResolutionStrategy::CellRangerLike
+    }
 }
 
 impl fmt::Display for ResolutionStrategy {
@@ -298,27 +311,9 @@ fn write_eqc_counts(
 // TODO: see if we'd rather pass an structure
 // with these options
 #[allow(clippy::too_many_arguments)]
-pub fn quantify(
-    input_dir: String,
-    tg_map: String,
-    output_dir: String,
-    num_threads: u32,
-    num_bootstraps: u32,
-    init_uniform: bool,
-    summary_stat: bool,
-    dump_eq: bool,
-    use_mtx: bool,
-    resolution: ResolutionStrategy,
-    pug_exact_umi: bool,
-    sa_model: SplicedAmbiguityModel,
-    small_thresh: usize,
-    large_graph_thresh: usize,
-    filter_list: Option<&str>,
-    cmdline: &str,
-    version: &str,
-    log: &slog::Logger,
-) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&input_dir);
+pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
+    let parent = std::path::Path::new(&quant_opts.input_dir);
+    let log = quant_opts.log;
 
     // read the collate metadata
     let collate_md_file =
@@ -341,25 +336,25 @@ pub fn quantify(
         );
 
         do_quantify(
-            input_dir,
+            quant_opts.input_dir,
             br,
-            tg_map,
-            output_dir,
-            num_threads,
-            num_bootstraps,
-            init_uniform,
-            summary_stat,
-            dump_eq,
-            use_mtx,
-            resolution,
-            pug_exact_umi,
-            sa_model,
-            small_thresh,
-            large_graph_thresh,
-            filter_list,
-            cmdline,
-            version,
-            log,
+            quant_opts.tg_map,
+            quant_opts.output_dir,
+            quant_opts.num_threads,
+            quant_opts.num_bootstraps,
+            quant_opts.init_uniform,
+            quant_opts.summary_stat,
+            quant_opts.dump_eq,
+            quant_opts.use_mtx,
+            quant_opts.resolution,
+            quant_opts.pug_exact_umi,
+            quant_opts.sa_model,
+            quant_opts.small_thresh,
+            quant_opts.large_graph_thresh,
+            quant_opts.filter_list,
+            quant_opts.cmdline,
+            quant_opts.version,
+            &log,
         )
     } else {
         let i_file =
@@ -372,25 +367,25 @@ pub fn quantify(
         );
 
         do_quantify(
-            input_dir,
+            quant_opts.input_dir,
             br,
-            tg_map,
-            output_dir,
-            num_threads,
-            num_bootstraps,
-            init_uniform,
-            summary_stat,
-            dump_eq,
-            use_mtx,
-            resolution,
-            pug_exact_umi,
-            sa_model,
-            small_thresh,
-            large_graph_thresh,
-            filter_list,
-            cmdline,
-            version,
-            log,
+            quant_opts.tg_map,
+            quant_opts.output_dir,
+            quant_opts.num_threads,
+            quant_opts.num_bootstraps,
+            quant_opts.init_uniform,
+            quant_opts.summary_stat,
+            quant_opts.dump_eq,
+            quant_opts.use_mtx,
+            quant_opts.resolution,
+            quant_opts.pug_exact_umi,
+            quant_opts.sa_model,
+            quant_opts.small_thresh,
+            quant_opts.large_graph_thresh,
+            quant_opts.filter_list,
+            quant_opts.cmdline,
+            quant_opts.version,
+            &log,
         )
     }
 }
@@ -1375,24 +1370,7 @@ pub fn do_quantify<T: Read>(
 // TODO: see if we'd rather pass an structure
 // with these options
 #[allow(clippy::too_many_arguments)]
-pub fn velo_quantify(
-    _input_dir: String,
-    _tg_map: String,
-    _output_dir: String,
-    _num_threads: u32,
-    _num_bootstraps: u32,
-    _init_uniform: bool,
-    _summary_stat: bool,
-    _dump_eq: bool,
-    _use_mtx: bool,
-    _resolution: ResolutionStrategy,
-    mut _sa_model: SplicedAmbiguityModel,
-    _small_thresh: usize,
-    _filter_list: Option<&str>,
-    _cmdline: &str,
-    _version: &str,
-    _log: &slog::Logger,
-) -> anyhow::Result<()> {
+pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
 }
