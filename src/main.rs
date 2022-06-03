@@ -489,10 +489,17 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
+        // first make sure that the input direcory passed in has the
+        // appropriate json file in it.
+        // we should take care to document this workflow explicitly.
+        let parent = std::path::Path::new(&input_dir);
+        let json_path = parent.join("generate_permit_list.json");
+
+        // build the QuantOpts structure
         let quant_opts = QuantOpts::builder()
-            .input_dir(input_dir.clone())
-            .tg_map(tg_map.clone())
-            .output_dir(output_dir.clone())
+            .input_dir(input_dir)
+            .tg_map(tg_map)
+            .output_dir(output_dir)
             .num_threads(num_threads)
             .num_bootstraps(num_bootstraps)
             .init_uniform(init_uniform)
@@ -510,19 +517,10 @@ fn main() -> anyhow::Result<()> {
             .log(&log)
             .build();
 
-        println!("PO : {:?}", quant_opts);
-
-        // first make sure that the input direcory passed in has the
-        // appropriate json file in it.
-        // we should take care to document this workflow explicitly.
-
-        let parent = std::path::Path::new(&input_dir);
-        let json_path = parent.join("generate_permit_list.json");
-
         // if the input directory contains the valid json file we want
         // then proceed.  otherwise print a critical error.
         if json_path.exists() {
-            let velo_mode = alevin_fry::utils::is_velo_mode(input_dir.to_string());
+            let velo_mode = alevin_fry::utils::is_velo_mode(quant_opts.input_dir.to_string());
             if velo_mode {
                 match alevin_fry::quant::velo_quantify(quant_opts) {
                     // if we're all good; then great!

@@ -310,7 +310,6 @@ fn write_eqc_counts(
 
 // TODO: see if we'd rather pass an structure
 // with these options
-#[allow(clippy::too_many_arguments)]
 pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(&quant_opts.input_dir);
     let log = quant_opts.log;
@@ -1322,7 +1321,6 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
 
 // TODO: see if we'd rather pass an structure
 // with these options
-#[allow(clippy::too_many_arguments)]
 pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
