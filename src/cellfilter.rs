@@ -11,6 +11,7 @@ use anyhow::{anyhow, Context};
 use slog::crit;
 use slog::info;
 
+use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
@@ -30,6 +31,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
+#[derive(Debug)]
 pub enum CellFilterMethod {
     // cut off at this cell in
     // the frequency sorted list
@@ -580,20 +582,16 @@ fn process_filtered(
 /// (i.e. "permitted") barcode values, as well as
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_permit_list(
-    rad_dir: String,
-    output_dir: String,
-    filter_meth: CellFilterMethod,
-    expected_ori: Strand,
-    version: &str,
-    velo_mode: bool,
-    cmdline: &str,
-    //top_k: Option<usize>,
-    //valid_bc_file: Option<String>,
-    //use_knee_distance: bool,
-    log: &slog::Logger,
-) -> anyhow::Result<u64> {
+pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
+    let rad_dir = gpl_opts.input_dir;
+    let output_dir = gpl_opts.output_dir;
+    let filter_meth = gpl_opts.fmeth;
+    let expected_ori = gpl_opts.expected_ori;
+    let version = gpl_opts.version;
+    let velo_mode = gpl_opts.velo_mode;
+    let cmdline = gpl_opts.cmdline;
+    let log = gpl_opts.log;
+
     let i_dir = std::path::Path::new(&rad_dir);
 
     if !i_dir.exists() {

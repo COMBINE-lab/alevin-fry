@@ -19,7 +19,7 @@ use slog::{crit, o, warn, Drain};
 use std::path::Path;
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
-use alevin_fry::prog_opts::QuantOpts;
+use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[global_allocator]
@@ -336,16 +336,18 @@ fn main() -> anyhow::Result<()> {
         // velo_mode --- currently, on this branch, it is always false
         let velo_mode = false; //t.is_present("velocity-mode");
 
-        match generate_permit_list(
-            input_dir,
-            output_dir,
-            fmeth,
-            expected_ori,
-            VERSION,
-            velo_mode,
-            &cmdline,
-            &log,
-        ) {
+        let gpl_opts = GenPermitListOpts::builder()
+            .input_dir(input_dir)
+            .output_dir(output_dir)
+            .fmeth(fmeth)
+            .expected_ori(expected_ori)
+            .version(VERSION)
+            .velo_mode(velo_mode)
+            .cmdline(&cmdline)
+            .log(&log)
+            .build();
+
+        match generate_permit_list(gpl_opts) {
             Ok(nc) if nc == 0 => {
                 warn!(log, "found 0 corrected barcodes; please check the input.");
             }
@@ -589,16 +591,11 @@ fn main() -> anyhow::Result<()> {
         let eq_label_file = t.value_of_t("eq-labels").unwrap();
         let filter_list = t.value_of("quant-subset");
         let usa_mode = t.is_present("usa");
-        //let bc_file = t.value_of_t("barcodes").unwrap();
 
         alevin_fry::infer::infer(
-            //num_bootstraps,
-            //init_uniform,
-            //summary_stat,
             count_mat,
             eq_label_file,
             usa_mode,
-            //bc_file,
             use_mtx,
             num_threads,
             filter_list,

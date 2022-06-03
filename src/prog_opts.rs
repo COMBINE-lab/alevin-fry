@@ -1,6 +1,10 @@
-use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 //use derive_builder::Builder;
+use bio_types::strand::Strand;
+use slog;
 use typed_builder::TypedBuilder;
+
+use crate::cellfilter::CellFilterMethod;
+use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[derive(TypedBuilder, Debug)]
 //#[builder(name = "QuantOptsBuilder")]
@@ -23,4 +27,16 @@ pub struct QuantOpts<'a, 'b, 'c, 'd> {
     pub cmdline: &'b str,
     pub version: &'c str,
     pub log: &'d slog::Logger,
+}
+
+#[derive(TypedBuilder, Debug)]
+pub struct GenPermitListOpts<'a, 'b, 'c> {
+    pub input_dir: String,
+    pub output_dir: String,
+    pub fmeth: CellFilterMethod,
+    pub expected_ori: Strand,
+    pub velo_mode: bool,
+    pub cmdline: &'a str,
+    pub version: &'b str,
+    pub log: &'c slog::Logger,
 }
