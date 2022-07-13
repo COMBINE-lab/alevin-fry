@@ -9,13 +9,14 @@
 
 use anyhow::{anyhow, bail};
 use bio_types::strand::Strand;
-use clap::{arg, crate_authors, crate_version, Command};
+use clap::{arg, crate_authors, crate_version, value_parser, Command};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
+use std::borrow::ToOwned;
 use std::path::Path;
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
@@ -88,6 +89,7 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file").validator(file_exists_validator))
         .arg(
             arg!(-t --threads <THREADS> "number of threads to use for processing")
+                .value_parser(value_parser!(u32))
                 .default_value(&max_num_threads),
         )
         .arg(arg!(-o --output <RADFILE> "output RAD file"));
@@ -133,6 +135,7 @@ fn main() -> anyhow::Result<()> {
         )
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
+                .value_parser(value_parser!(u32))
                 .default_value("10")
                 .takes_value(true)
                 .required(true));
@@ -146,9 +149,10 @@ fn main() -> anyhow::Result<()> {
         .validator(directory_exists_validator))
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
         .validator(directory_exists_validator))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_collate_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+         .value_parser(value_parser!(u32))
          .default_value("30000000"));
     //.arg(arg!(-e --expected-ori=[expected-ori] 'the expected orientation of alignments'")
     //     .default_value(fw"));
@@ -161,22 +165,23 @@ fn main() -> anyhow::Result<()> {
         .validator(directory_exists_validator))
     .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").validator(file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written"))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
-    .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").default_value("0"))
+    .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
-        .possible_values(&["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"])
-        .ignore_case(true))
+         .ignore_case(true)
+         .value_parser(["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"]))
     .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
-        .possible_values(&["prefer-ambig", "winner-take-all"])
+        .value_parser(["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .hide(true))
     .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
+         .value_parser(value_parser!(u32))
         .default_value_ifs(&[
             ("resolution", Some("cr-like"), Some("0")),
             ("resolution", Some("cr-like-em"), Some("0")),
@@ -190,6 +195,7 @@ fn main() -> anyhow::Result<()> {
         .required(false)
         .hide(true))
     .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
+         .value_parser(value_parser!(usize))
         .default_value_ifs(&[
             ("resolution", Some("parsimony-gene-em"), Some("1000")),
             ("resolution", Some("parsimony"), Some("1000")),
@@ -200,7 +206,9 @@ fn main() -> anyhow::Result<()> {
         .default_value("0") // for any other mode
         .required(false)
         .hide(true))
-    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach").default_value("10")
+    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
+         .value_parser(value_parser!(usize))
+         .default_value("10")
         .hide(true));
 
     let infer_app = Command::new("infer")
@@ -213,7 +221,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
         .validator(file_exists_validator).takes_value(true).required(true))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").takes_value(true).required(true))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").default_value(&max_num_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
@@ -249,13 +257,13 @@ fn main() -> anyhow::Result<()> {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     if let Some(t) = opts.subcommand_matches("generate-permit-list") {
-        let input_dir: String = t.value_of_t("input").expect("no input directory specified");
+        let input_dir: String = t.get_one::<String>("input").expect("no input directory specified").to_string();
         let output_dir: String = t
-            .value_of_t("output-dir")
-            .expect("no input directory specified");
+            .get_one::<String>("output-dir")
+            .expect("no input directory specified").to_string();
 
         let valid_ori: bool;
-        let expected_ori = match t.value_of("expected-ori").unwrap().to_uppercase().as_str() {
+        let expected_ori = match t.get_one::<String>("expected-ori").unwrap().to_uppercase().as_str() {
             "RC" => {
                 valid_ori = true;
                 Strand::Reverse
@@ -289,38 +297,38 @@ fn main() -> anyhow::Result<()> {
 
         let mut fmeth = CellFilterMethod::KneeFinding;
 
-        let _expect_cells: Option<usize> = match t.value_of_t("expect-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ExpectCells(v);
-                Some(v)
+        let _expect_cells: Option<usize> = match t.get_one::<usize>("expect-cells") {
+            Some(v) => {
+                fmeth = CellFilterMethod::ExpectCells(*v);
+                Some(*v)
             }
-            Err(_) => None,
+            None => None,
         };
 
         if t.is_present("knee-distance") {
             fmeth = CellFilterMethod::KneeFinding;
         }
 
-        let _force_cells = match t.value_of_t("force-cells") {
-            Ok(v) => {
-                fmeth = CellFilterMethod::ForceCells(v);
-                Some(v)
+        let _force_cells = match t.get_one::<usize>("force-cells") {
+            Some(v) => {
+                fmeth = CellFilterMethod::ForceCells(*v);
+                Some(*v)
             }
-            Err(_) => None,
+            None => None,
         };
 
-        let _valid_bc = match t.value_of_t::<String>("valid-bc") {
-            Ok(v) => {
+        let _valid_bc = match t.get_one::<String>("valid-bc") {
+            Some(v) => {
                 fmeth = CellFilterMethod::ExplicitList(v.clone());
                 Some(v)
             }
-            Err(_) => None,
+            None => None,
         };
 
-        //let _unfiltered_pl = match t.value_of_t::<String>("unfiltered-pl") {
-        if let Ok(v) = t.value_of_t::<String>("unfiltered-pl") {
-            let min_reads: usize = t
-                .value_of_t("min-reads")
+        //let _unfiltered_pl = match t.get_one::<String>("unfiltered-pl") {
+        if let Some(v) = t.get_one::<String>("unfiltered-pl") {
+            let min_reads: usize = *t
+                .get_one("min-reads")
                 .expect("min-reads must be a valid integer");
             if min_reads < 1 {
                 crit!(
@@ -330,7 +338,7 @@ fn main() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            fmeth = CellFilterMethod::UnfilteredExternalList(v, min_reads);
+            fmeth = CellFilterMethod::UnfilteredExternalList(v.to_string(), min_reads);
         };
 
         // velo_mode --- currently, on this branch, it is always false
@@ -359,19 +367,19 @@ fn main() -> anyhow::Result<()> {
     // convert a BAM file, in *transcriptomic coordinates*, with
     // the appropriate barcode and umi tags, into a RAD file
     if let Some(t) = opts.subcommand_matches("convert") {
-        let input_file: String = t.value_of_t("bam").unwrap();
-        let rad_file: String = t.value_of_t("output").unwrap();
-        let num_threads: u32 = t.value_of_t("threads").unwrap();
+        let input_file: String = t.get_one::<String>("bam").unwrap().to_string();
+        let rad_file: String = t.get_one::<String>("output").unwrap().to_string();
+        let num_threads: u32 = *t.get_one("threads").unwrap();
         alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
 
     // convert a rad file to a textual representation and write to stdout
     if let Some(t) = opts.subcommand_matches("view") {
-        let rad_file: String = t.value_of_t("rad").unwrap();
+        let rad_file: String = t.get_one::<String>("rad").unwrap().to_string();
         let print_header = t.is_present("header");
         let mut out_file: String = String::from("");
         if t.is_present("output") {
-            out_file = t.value_of_t("output").unwrap();
+            out_file = t.get_one::<String>("output").unwrap().to_string();
         }
         alevin_fry::convert::view(rad_file, print_header, out_file, &log)
     }
@@ -379,11 +387,11 @@ fn main() -> anyhow::Result<()> {
     // collate a rad file to group together all records corresponding
     // to the same corrected barcode.
     if let Some(t) = opts.subcommand_matches("collate") {
-        let input_dir: String = t.value_of_t("input-dir").unwrap();
-        let rad_dir: String = t.value_of_t("rad-dir").unwrap();
-        let num_threads = t.value_of_t("threads").unwrap();
+        let input_dir: String = t.get_one::<String>("input-dir").unwrap().to_string();
+        let rad_dir: String = t.get_one::<String>("rad-dir").unwrap().to_string();
+        let num_threads = *t.get_one("threads").unwrap();
         let compress_out = t.is_present("compress");
-        let max_records: u32 = t.value_of_t("max-records").unwrap();
+        let max_records: u32 = *t.get_one("max-records").unwrap();
         alevin_fry::collate::collate(
             input_dir,
             rad_dir,
@@ -399,21 +407,21 @@ fn main() -> anyhow::Result<()> {
 
     // perform quantification of a collated rad file.
     if let Some(t) = opts.subcommand_matches("quant") {
-        let num_threads = t.value_of_t("threads").unwrap();
-        let num_bootstraps = t.value_of_t("num-bootstraps").unwrap();
+        let num_threads = *t.get_one("threads").unwrap();
+        let num_bootstraps = *t.get_one("num-bootstraps").unwrap();
         let init_uniform = t.is_present("init-uniform");
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = !t.is_present("use-eds");
-        let input_dir: String = t.value_of_t("input-dir").unwrap();
-        let output_dir: String = t.value_of_t("output-dir").unwrap();
-        let tg_map: String = t.value_of_t("tg-map").unwrap();
-        let resolution: ResolutionStrategy = t.value_of_t("resolution").unwrap();
-        let sa_model: SplicedAmbiguityModel = t.value_of_t("sa-model").unwrap();
-        let small_thresh = t.value_of_t("small-thresh").unwrap();
-        let filter_list = t.value_of("quant-subset");
-        let large_graph_thresh: usize = t.value_of_t("large-graph-thresh").unwrap();
-        let umi_edit_dist: u32 = t.value_of_t("umi-edit-dist").unwrap();
+        let input_dir: String = t.get_one::<String>("input-dir").unwrap().to_string();
+        let output_dir: String = t.get_one::<String>("output-dir").unwrap().to_string();
+        let tg_map: String = t.get_one::<String>("tg-map").unwrap().to_string();
+        let resolution: ResolutionStrategy = *t.get_one("resolution").unwrap();
+        let sa_model: SplicedAmbiguityModel = *t.get_one("sa-model").unwrap();
+        let small_thresh = *t.get_one("small-thresh").unwrap();
+        let filter_list = t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
+        let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
+        let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
 
         match umi_edit_dist {
@@ -584,12 +592,12 @@ fn main() -> anyhow::Result<()> {
     // Given an input of equivalence class counts, perform inference
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
-        let num_threads = t.value_of_t("threads").unwrap();
+        let num_threads = *t.get_one("threads").unwrap();
         let use_mtx = !t.is_present("use-eds");
-        let output_dir = t.value_of_t("output-dir").unwrap();
-        let count_mat = t.value_of_t("count-mat").unwrap();
-        let eq_label_file = t.value_of_t("eq-labels").unwrap();
-        let filter_list = t.value_of("quant-subset");
+        let output_dir = t.get_one::<String>("output-dir").unwrap().to_string();
+        let count_mat = t.get_one::<String>("count-mat").unwrap().to_string();
+        let eq_label_file = t.get_one::<String>("eq-labels").unwrap().to_string();
+        let filter_list = t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
         let usa_mode = t.is_present("usa");
 
         alevin_fry::infer::infer(

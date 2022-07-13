@@ -36,7 +36,7 @@ pub fn infer(
     usa_mode: bool,
     _use_mtx: bool,
     num_threads: u32,
-    filter_list: Option<&str>,
+    filter_list: Option<String>,
     output_dir: String,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
@@ -117,7 +117,7 @@ pub fn infer(
 
     if let Some(fname) = filter_list {
         // read in the fitler list
-        match read_filter_list(fname, bc_len) {
+        match read_filter_list(&fname, bc_len) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process

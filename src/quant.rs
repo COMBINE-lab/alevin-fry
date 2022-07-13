@@ -488,7 +488,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
-        match afutils::read_filter_list(fname, ft_vals.bclen) {
+        match afutils::read_filter_list(&fname, ft_vals.bclen) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process

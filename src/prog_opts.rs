@@ -8,7 +8,7 @@ use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[derive(TypedBuilder, Debug)]
 //#[builder(name = "QuantOptsBuilder")]
-pub struct QuantOpts<'a, 'b, 'c, 'd> {
+pub struct QuantOpts<'b, 'c, 'd> {
     pub input_dir: String,
     pub tg_map: String,
     pub output_dir: String,
@@ -23,7 +23,7 @@ pub struct QuantOpts<'a, 'b, 'c, 'd> {
     pub sa_model: SplicedAmbiguityModel,
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
-    pub filter_list: Option<&'a str>,
+    pub filter_list: Option<String>,
     pub cmdline: &'b str,
     pub version: &'c str,
     pub log: &'d slog::Logger,
