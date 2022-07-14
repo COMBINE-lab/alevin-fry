@@ -75,11 +75,7 @@ fn main() -> anyhow::Result<()> {
         .version(version)
         .author(crate_authors)
         .arg(arg!(-r --rad <RADFILE> "input RAD file").value_parser(pathbuf_file_exists_validator))
-        .arg(
-            arg!(-H --header "flag for printing header")
-                .takes_value(false)
-                .required(false),
-        );
+        .arg(arg!(-H --header "flag for printing header"));
 
     let gen_app = Command::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
@@ -93,22 +89,16 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory").value_parser(value_parser!(PathBuf)))
         .arg(arg!(
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
-            ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells", "unfiltered-pl"])
+            )
         )
-        .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff")
-             .conflicts_with_all(&["force-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
-        )
-        .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)")
-             .conflicts_with_all(&["expect-cells", "valid-bc", "knee-distance", "unfiltered-pl"])
-        )
+        .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff"))
+        .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)"))
         .arg(
             arg!(-b --"valid-bc" <VALIDBC> "uses true barcode collected from a provided file")
-            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"])
             .value_parser(pathbuf_file_exists_validator)
         )
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
-            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "valid-bc"])
             .value_parser(pathbuf_file_exists_validator)
         )
         .group(ArgGroup::new("filter-method")
@@ -129,7 +119,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
         .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_collate_threads))
-    .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
+    .arg(arg!(-c --compress "compress the output collated RAD file"))
     .arg(arg!(-m --"max-records" [MAXRECORDS] "the maximum number of read records to keep in memory at once")
          .value_parser(value_parser!(u32))
          .default_value("30000000"));
@@ -143,12 +133,12 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
-    .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
+    .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
     .arg(arg!(-b --"num-bootstraps" [NUMBOOTSTRAPS] "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
-    .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
+    .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
+    .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"))
     .arg(arg!(--"quant-subset" [SFILE] "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .ignore_case(true)
@@ -191,15 +181,15 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts")
-        .value_parser(pathbuf_file_exists_validator).takes_value(true))
+        .value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
-        .value_parser(pathbuf_file_exists_validator).takes_value(true))
-    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)).takes_value(true))
+        .value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
-    .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
+    .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
     .arg(arg!(--"quant-subset" [SFILE] "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"));
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
+    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"));
 
     let opts = Command::new("alevin-fry")
         .subcommand_required(true)
