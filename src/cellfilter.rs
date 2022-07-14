@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -43,11 +43,11 @@ pub enum CellFilterMethod {
     // correct all cells in an
     // edit distance of 1 of these
     // barcodes
-    ExplicitList(String),
+    ExplicitList(PathBuf),
     // barcodes will be provided in the
     // form of an *unfiltered* external
     // permit list
-    UnfilteredExternalList(String, usize),
+    UnfilteredExternalList(PathBuf, usize),
     // use the distance method to
     // automatically find the knee
     // in the curve
@@ -610,7 +610,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
-        let i_file = File::open(&fname).context("could not open input file")?;
+        let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
         info!(
@@ -998,7 +998,10 @@ pub fn permit_list_from_threshold(
     valid_bc
 }
 
-pub fn permit_list_from_file(ifile: &str, bclen: u16) -> Vec<u64> {
+pub fn permit_list_from_file<P>(ifile: P, bclen: u16) -> Vec<u64>
+where
+    P: AsRef<Path>,
+{
     let f = File::open(ifile).expect("couldn't open input barcode file.");
     let br = BufReader::new(f);
     let mut bc = Vec::<u64>::with_capacity(10_000);

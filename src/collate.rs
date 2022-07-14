@@ -26,16 +26,16 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
 #[allow(clippy::too_many_arguments)]
-pub fn collate(
-    input_dir: &PathBuf,
-    rad_dir: &PathBuf,
+pub fn collate<P1, P2>(
+    input_dir: P1,
+    rad_dir: P2,
     num_threads: u32,
     max_records: u32,
     compress_out: bool,
@@ -43,8 +43,13 @@ pub fn collate(
     version_str: &str,
     //expected_ori: Strand,
     log: &slog::Logger,
-) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(input_dir);
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let input_dir = input_dir.into();
+    let parent = std::path::Path::new(input_dir.as_path());
 
     // open the metadata file and read the json
     let gpl_path = parent.join("generate_permit_list.json");
@@ -246,9 +251,9 @@ fn correct_unmapped_counts(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn collate_with_temp(
-    input_dir: &PathBuf,
-    rad_dir: &PathBuf,
+pub fn collate_with_temp<P1, P2>(
+    input_dir: P1,
+    rad_dir: P2,
     num_threads: u32,
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
@@ -257,11 +262,16 @@ pub fn collate_with_temp(
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
     // the number of corrected cells we'll write
     let expected_output_chunks = tsv_map.len() as u64;
     // the parent input directory
-    let parent = std::path::Path::new(input_dir);
+    let input_dir = input_dir.into();
+    let parent = std::path::Path::new(input_dir.as_path());
 
     let n_workers = if num_threads > 1 {
         (num_threads - 1) as usize
@@ -340,13 +350,13 @@ pub fn collate_with_temp(
         .with_context(|| format!("couldn't create directory {}", cfname))?;
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
-    let i_dir = std::path::Path::new(rad_dir);
+    let i_dir = std::path::Path::new(rad_dir.as_ref());
 
     if !i_dir.exists() {
         crit!(
             log,
-            "the input RAD path {} does not exist",
-            rad_dir.display()
+            "the input RAD path {:?} does not exist",
+            rad_dir.as_ref()
         );
         return Err(anyhow!("invalid input"));
     }
@@ -708,7 +718,7 @@ pub fn collate_with_temp(
         let umi_type =
             rad_types::decode_int_type_tag(cc.umi_type).context("unknown barcode type id.")?;
         // have access to the input directory
-        let input_dir = input_dir.clone();
+        let input_dir: PathBuf = input_dir.clone();
         // the output file
         let owriter = owriter.clone();
         // and the progress bar

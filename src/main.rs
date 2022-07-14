@@ -45,22 +45,6 @@ fn gen_random_kmer(k: usize) -> String {
 /// any valid entity (e.g. disk file, FIFO, directory, etc.).
 /// If there is any issue with permissions or failure to properly
 /// resolve symlinks, or if the path is wrong, it returns
-/// an Err(String), else Ok(String).
-fn file_exists_validator(v: &str) -> Result<String, String> {
-    // NOTE: we explicitly *do not* check `is_file()` here
-    // since we want to return true even if the path is to
-    // a FIFO/named pipe.
-    if !Path::new(v).exists() {
-        Err(String::from("No valid file was found at this path."))
-    } else {
-        Ok(v.to_string())
-    }
-}
-
-/// Checks if the path pointed to by v exists.  It can be
-/// any valid entity (e.g. disk file, FIFO, directory, etc.).
-/// If there is any issue with permissions or failure to properly
-/// resolve symlinks, or if the path is wrong, it returns
 /// an Err(String), else Ok(PathBuf).
 fn pathbuf_file_exists_validator(v: &str) -> Result<PathBuf, String> {
     // NOTE: we explicitly *do not* check `is_file()` here
@@ -147,13 +131,13 @@ fn main() -> anyhow::Result<()> {
         .arg(
             arg!(-b --"valid-bc" <VALIDBC> "uses true barcode collected from a provided file")
             .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"])
-            .value_parser(file_exists_validator)
+            .value_parser(pathbuf_file_exists_validator)
         )
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "valid-bc"])
             .requires("min-reads")
-            .value_parser(file_exists_validator)
+            .value_parser(pathbuf_file_exists_validator)
         )
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
@@ -343,7 +327,7 @@ fn main() -> anyhow::Result<()> {
             None => None,
         };
 
-        let _valid_bc = match t.get_one::<String>("valid-bc") {
+        let _valid_bc = match t.get_one::<PathBuf>("valid-bc") {
             Some(v) => {
                 fmeth = CellFilterMethod::ExplicitList(v.clone());
                 Some(v)
@@ -352,7 +336,7 @@ fn main() -> anyhow::Result<()> {
         };
 
         //let _unfiltered_pl = match t.get_one::<String>("unfiltered-pl") {
-        if let Some(v) = t.get_one::<String>("unfiltered-pl") {
+        if let Some(v) = t.get_one::<PathBuf>("unfiltered-pl") {
             let min_reads: usize = *t
                 .get_one("min-reads")
                 .expect("min-reads must be a valid integer");
