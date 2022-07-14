@@ -79,8 +79,7 @@ fn main() -> anyhow::Result<()> {
             arg!(-H --header "flag for printing header")
                 .takes_value(false)
                 .required(false),
-        )
-        .arg(arg!(-o --output [RADFILE] "output plain-text-file file"));
+        );
 
     let gen_app = Command::new("generate-permit-list")
         .about("Generate a permit list of barcodes from a RAD file")
@@ -358,11 +357,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: &PathBuf = t.get_one("rad").unwrap();
         let print_header = t.is_present("header");
-        let mut out_file: String = String::from("");
-        if t.is_present("output") {
-            out_file = t.get_one::<String>("output").unwrap().clone();
-        }
-        alevin_fry::convert::view(rad_file, print_header, out_file, &log)
+        alevin_fry::convert::view(rad_file, print_header, &log)
     }
 
     // collate a rad file to group together all records corresponding
@@ -397,14 +392,8 @@ fn main() -> anyhow::Result<()> {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
-        let resolution = t
-            .get_one::<ResolutionStrategy>("resolution")
-            .unwrap()
-            .clone();
-        let sa_model = t
-            .get_one::<SplicedAmbiguityModel>("sa-model")
-            .unwrap()
-            .clone();
+        let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
+        let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();

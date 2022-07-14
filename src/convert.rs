@@ -491,18 +491,13 @@ where
     info!(log, "finished writing to {:?}.", rad_file.as_ref());
 }
 
-pub fn view<P>(rad_file: P, print_header: bool, out_file: String, log: &slog::Logger)
+pub fn view<P>(rad_file: P, print_header: bool, log: &slog::Logger)
 where
     P: AsRef<Path>,
 {
-    let _read_num = view2(rad_file, print_header, out_file, log).unwrap();
+    let _read_num = view2(rad_file, print_header, log).unwrap();
 }
-pub fn view2<P>(
-    rad_file: P,
-    print_header: bool,
-    _out_file: String,
-    log: &slog::Logger,
-) -> anyhow::Result<u64>
+pub fn view2<P>(rad_file: P, print_header: bool, log: &slog::Logger) -> anyhow::Result<u64>
 where
     P: AsRef<Path>,
 {
