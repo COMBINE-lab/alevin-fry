@@ -263,11 +263,11 @@ fn main() -> anyhow::Result<()> {
         let input_dir: String = t
             .get_one::<String>("input")
             .expect("no input directory specified")
-            .to_string();
+            .clone();
         let output_dir: String = t
             .get_one::<String>("output-dir")
             .expect("no input directory specified")
-            .to_string();
+            .clone();
 
         let valid_ori: bool;
         let expected_ori = match t
@@ -350,7 +350,7 @@ fn main() -> anyhow::Result<()> {
                 );
                 std::process::exit(1);
             }
-            fmeth = CellFilterMethod::UnfilteredExternalList(v.to_string(), min_reads);
+            fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
         };
 
         // velo_mode --- currently, on this branch, it is always false
@@ -379,19 +379,19 @@ fn main() -> anyhow::Result<()> {
     // convert a BAM file, in *transcriptomic coordinates*, with
     // the appropriate barcode and umi tags, into a RAD file
     if let Some(t) = opts.subcommand_matches("convert") {
-        let input_file: String = t.get_one::<String>("bam").unwrap().to_string();
-        let rad_file: String = t.get_one::<String>("output").unwrap().to_string();
+        let input_file: String = t.get_one::<String>("bam").unwrap().clone();
+        let rad_file: String = t.get_one::<String>("output").unwrap().clone();
         let num_threads: u32 = *t.get_one("threads").unwrap();
         alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
 
     // convert a rad file to a textual representation and write to stdout
     if let Some(t) = opts.subcommand_matches("view") {
-        let rad_file: String = t.get_one::<String>("rad").unwrap().to_string();
+        let rad_file: String = t.get_one::<String>("rad").unwrap().clone();
         let print_header = t.is_present("header");
         let mut out_file: String = String::from("");
         if t.is_present("output") {
-            out_file = t.get_one::<String>("output").unwrap().to_string();
+            out_file = t.get_one::<String>("output").unwrap().clone();
         }
         alevin_fry::convert::view(rad_file, print_header, out_file, &log)
     }
@@ -399,8 +399,8 @@ fn main() -> anyhow::Result<()> {
     // collate a rad file to group together all records corresponding
     // to the same corrected barcode.
     if let Some(t) = opts.subcommand_matches("collate") {
-        let input_dir: String = t.get_one::<String>("input-dir").unwrap().to_string();
-        let rad_dir: String = t.get_one::<String>("rad-dir").unwrap().to_string();
+        let input_dir: String = t.get_one::<String>("input-dir").unwrap().clone();
+        let rad_dir: String = t.get_one::<String>("rad-dir").unwrap().clone();
         let num_threads = *t.get_one("threads").unwrap();
         let compress_out = t.is_present("compress");
         let max_records: u32 = *t.get_one("max-records").unwrap();
@@ -425,9 +425,9 @@ fn main() -> anyhow::Result<()> {
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = !t.is_present("use-eds");
-        let input_dir: String = t.get_one::<String>("input-dir").unwrap().to_string();
-        let output_dir: String = t.get_one::<String>("output-dir").unwrap().to_string();
-        let tg_map: String = t.get_one::<String>("tg-map").unwrap().to_string();
+        let input_dir: String = t.get_one::<String>("input-dir").unwrap().clone();
+        let output_dir: String = t.get_one::<String>("output-dir").unwrap().clone();
+        let tg_map: String = t.get_one::<String>("tg-map").unwrap().clone();
         let resolution: ResolutionStrategy = *t.get_one("resolution").unwrap();
         let sa_model: SplicedAmbiguityModel = *t.get_one("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
@@ -606,10 +606,11 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
         let use_mtx = !t.is_present("use-eds");
-        let output_dir = t.get_one::<String>("output-dir").unwrap().to_string();
-        let count_mat = t.get_one::<String>("count-mat").unwrap().to_string();
-        let eq_label_file = t.get_one::<String>("eq-labels").unwrap().to_string();
-        let filter_list = t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
+        let output_dir = t.get_one::<String>("output-dir").unwrap().clone();
+        let count_mat = t.get_one::<String>("count-mat").unwrap().clone();
+        let eq_label_file = t.get_one::<String>("eq-labels").unwrap().clone();
+        let filter_list: Option<String> =
+            t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
         let usa_mode = t.is_present("usa");
 
         alevin_fry::infer::infer(
