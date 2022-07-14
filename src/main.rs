@@ -261,8 +261,9 @@ fn main() -> anyhow::Result<()> {
     // (as below), requesting just the name used, or both at the same time
     if let Some(t) = opts.subcommand_matches("generate-permit-list") {
         let input_dir: String = t
-            .get_one("input")
-            .expect("no input directory specified");
+            .get_one::<String>("input")
+            .expect("no input directory specified")
+            .to_string();
         let output_dir: String = t
             .get_one::<String>("output-dir")
             .expect("no input directory specified")
