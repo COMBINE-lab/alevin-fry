@@ -8,6 +8,7 @@
  */
 
 pub mod cellfilter;
+pub mod cmd_parse_utils;
 pub mod collate;
 pub mod constants;
 pub mod convert;

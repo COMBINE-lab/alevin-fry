@@ -101,7 +101,7 @@ impl FromStr for ResolutionStrategy {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
-            "parsimony-em" | "full" => Ok(ResolutionStrategy::ParsimonyEm),
+            "parsimony-em" => Ok(ResolutionStrategy::ParsimonyEm),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             "parsimony-gene" => Ok(ResolutionStrategy::ParsimonyGene),
             "parsimony-gene-em" => Ok(ResolutionStrategy::ParsimonyGeneEm),
