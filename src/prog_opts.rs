@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 #[derive(TypedBuilder, Debug)]
 //#[builder(name = "QuantOptsBuilder")]
-pub struct QuantOpts<'b, 'c, 'd> {
-    pub input_dir: String,
-    pub tg_map: String,
-    pub output_dir: String,
+pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
+    pub input_dir: &'a PathBuf,
+    pub tg_map: &'b PathBuf,
+    pub output_dir: &'c PathBuf,
     pub num_threads: u32,
     pub num_bootstraps: u32,
     pub init_uniform: bool,
@@ -25,10 +25,10 @@ pub struct QuantOpts<'b, 'c, 'd> {
     pub sa_model: SplicedAmbiguityModel,
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
-    pub filter_list: Option<String>,
-    pub cmdline: &'b str,
-    pub version: &'c str,
-    pub log: &'d slog::Logger,
+    pub filter_list: Option<&'d PathBuf>,
+    pub cmdline: &'e str,
+    pub version: &'f str,
+    pub log: &'g slog::Logger,
 }
 
 #[derive(TypedBuilder, Debug)]

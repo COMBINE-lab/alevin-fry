@@ -19,6 +19,7 @@ use sprs::TriMatI;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,13 +32,13 @@ pub fn infer(
     //num_bootstraps,
     //init_uniform,
     //summary_stat,
-    count_mat_file: String,
-    eq_label_file: String,
+    count_mat_file: &PathBuf,
+    eq_label_file: &PathBuf,
     usa_mode: bool,
     _use_mtx: bool,
     num_threads: u32,
-    filter_list: Option<String>,
-    output_dir: String,
+    filter_list: Option<&PathBuf>,
+    output_dir: &PathBuf,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
     info!(
@@ -46,7 +47,7 @@ pub fn infer(
     );
 
     // get the path for the equivalence class count matrix
-    let count_mat_path = std::path::Path::new(&count_mat_file);
+    let count_mat_path = std::path::Path::new(count_mat_file);
     let count_mat_parent = count_mat_path
         .parent()
         .unwrap_or_else(|| panic!("cannot get parent path of {:?}", count_mat_path));
@@ -71,7 +72,7 @@ pub fn infer(
     let mut num_cells = count_mat.rows();
 
     // read in the global equivalence class representation
-    let eq_label_path = std::path::Path::new(&eq_label_file);
+    let eq_label_path = std::path::Path::new(eq_label_file);
     let global_eq_classes = Arc::new(crate::eq_class::IndexedEqList::init_from_eqc_file(
         eq_label_path,
     ));
@@ -117,7 +118,7 @@ pub fn infer(
 
     if let Some(fname) = filter_list {
         // read in the fitler list
-        match read_filter_list(&fname, bc_len) {
+        match read_filter_list(fname, bc_len) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process
@@ -316,7 +317,7 @@ pub fn infer(
     }
 
     // create our output directory
-    let output_path = std::path::Path::new(&output_dir);
+    let output_path = std::path::Path::new(output_dir);
     fs::create_dir_all(output_path)?;
 
     let in_col_path = count_mat_parent.join("quants_mat_cols.txt");

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -240,7 +241,7 @@ fn parse_tg_spliced(
 }
 
 pub fn parse_tg_map(
-    tg_map: &str,
+    tg_map: &PathBuf,
     ref_count: usize,
     rname_to_id: &HashMap<String, u32, ahash::RandomState>,
     gene_names: &mut Vec<String>,
@@ -693,7 +694,7 @@ pub fn generate_permitlist_map(
 /// a HashSet containing the k-mer encoding of all barcodes or
 /// the Error that was encountered parsing the file.
 pub fn read_filter_list(
-    flist: &str,
+    flist: &PathBuf,
     bclen: u16,
 ) -> anyhow::Result<HashSet<u64, ahash::RandomState>> {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -715,8 +716,8 @@ pub fn read_filter_list(
     Ok(fset)
 }
 
-pub fn is_velo_mode(input_dir: String) -> bool {
-    let parent = std::path::Path::new(&input_dir);
+pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
+    let parent = std::path::Path::new(input_dir);
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .expect("could not open the generate_permit_list.json file.");

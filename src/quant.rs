@@ -311,7 +311,7 @@ fn write_eqc_counts(
 // TODO: see if we'd rather pass an structure
 // with these options
 pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&quant_opts.input_dir);
+    let parent = std::path::Path::new(quant_opts.input_dir);
     let log = quant_opts.log;
 
     // read the collate metadata
@@ -352,7 +352,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
 // TODO: see if we'd rather pass an structure
 // with these options
 pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&quant_opts.input_dir);
+    let parent = std::path::Path::new(quant_opts.input_dir);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
     let init_uniform = quant_opts.init_uniform;
@@ -409,7 +409,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     // both spliced and unspliced.  The type will be automatically
     // determined.
     match afutils::parse_tg_map(
-        &quant_opts.tg_map,
+        quant_opts.tg_map,
         hdr.ref_count as usize,
         &rname_to_id,
         &mut gene_names,
@@ -488,7 +488,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
-        match afutils::read_filter_list(&fname, ft_vals.bclen) {
+        match afutils::read_filter_list(fname, ft_vals.bclen) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process
@@ -548,7 +548,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     let num_genes = gene_name_to_id.len();
 
     // create our output directory
-    let output_path = std::path::Path::new(&quant_opts.output_dir);
+    let output_path = std::path::Path::new(quant_opts.output_dir);
     fs::create_dir_all(output_path)?;
 
     // create sub-directory for matrix

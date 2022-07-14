@@ -16,7 +16,6 @@ use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
-use std::borrow::ToOwned;
 use std::path::{Path, PathBuf};
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
@@ -71,19 +70,6 @@ fn pathbuf_file_exists_validator(v: &str) -> Result<PathBuf, String> {
         Err(String::from("No valid file was found at this path."))
     } else {
         Ok(PathBuf::from(v))
-    }
-}
-
-/// Checks if the path pointed to by v exists and is
-/// a valid directory on disk.  If there is any issue
-/// with permissions or failure to properly
-/// resolve symlinks, or if the path is wrong, it returns
-/// an Err(String), else Ok(String).
-fn directory_exists_validator(v: &str) -> Result<String, String> {
-    if !Path::new(v).is_dir() {
-        Err(String::from("No valid directory was found at this path."))
-    } else {
-        Ok(v.to_string())
     }
 }
 
@@ -196,9 +182,9 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file")
-        .value_parser(directory_exists_validator))
-    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").value_parser(file_exists_validator))
-    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written"))
+        .value_parser(pathbuf_directory_exists_validator))
+    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
@@ -206,7 +192,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
-    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(file_exists_validator))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .ignore_case(true)
         .value_parser(["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"]))
@@ -251,14 +237,14 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts")
-        .value_parser(file_exists_validator).takes_value(true).required(true))
+        .value_parser(pathbuf_file_exists_validator).takes_value(true).required(true))
     //.arg(arg!(-b --barcodes=<barcodes> "file containing the barcodes labeling the matrix rows").takes_value(true).required(true))
     .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
-        .value_parser(file_exists_validator).takes_value(true).required(true))
-    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").takes_value(true).required(true))
+        .value_parser(pathbuf_file_exists_validator).takes_value(true).required(true))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)).takes_value(true).required(true))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
-    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(file_exists_validator))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(pathbuf_file_exists_validator))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"));
 
@@ -453,13 +439,13 @@ fn main() -> anyhow::Result<()> {
         let summary_stat = t.is_present("summary-stat");
         let dump_eq = t.is_present("dump-eqclasses");
         let use_mtx = !t.is_present("use-eds");
-        let input_dir: String = t.get_one::<String>("input-dir").unwrap().clone();
-        let output_dir: String = t.get_one::<String>("output-dir").unwrap().clone();
-        let tg_map: String = t.get_one::<String>("tg-map").unwrap().clone();
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
+        let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
         let resolution: ResolutionStrategy = *t.get_one("resolution").unwrap();
         let sa_model: SplicedAmbiguityModel = *t.get_one("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
-        let filter_list = t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
+        let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
@@ -570,7 +556,7 @@ fn main() -> anyhow::Result<()> {
         // if the input directory contains the valid json file we want
         // then proceed.  otherwise print a critical error.
         if json_path.exists() {
-            let velo_mode = alevin_fry::utils::is_velo_mode(quant_opts.input_dir.to_string());
+            let velo_mode = alevin_fry::utils::is_velo_mode(quant_opts.input_dir);
             if velo_mode {
                 match alevin_fry::quant::velo_quantify(quant_opts) {
                     // if we're all good; then great!
@@ -634,11 +620,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
         let use_mtx = !t.is_present("use-eds");
-        let output_dir = t.get_one::<String>("output-dir").unwrap().clone();
-        let count_mat = t.get_one::<String>("count-mat").unwrap().clone();
-        let eq_label_file = t.get_one::<String>("eq-labels").unwrap().clone();
-        let filter_list: Option<String> =
-            t.get_one::<String>("quant-subset").map(ToOwned::to_owned);
+        let output_dir = t.get_one("output-dir").unwrap();
+        let count_mat = t.get_one("count-mat").unwrap();
+        let eq_label_file = t.get_one("eq-labels").unwrap();
+        let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let usa_mode = t.is_present("usa");
 
         alevin_fry::infer::infer(
