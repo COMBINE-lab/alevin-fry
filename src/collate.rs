@@ -26,6 +26,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,8 +34,8 @@ use std::thread;
 
 #[allow(clippy::too_many_arguments)]
 pub fn collate(
-    input_dir: String,
-    rad_dir: String,
+    input_dir: &PathBuf,
+    rad_dir: &PathBuf,
     num_threads: u32,
     max_records: u32,
     compress_out: bool,
@@ -43,7 +44,7 @@ pub fn collate(
     //expected_ori: Strand,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&input_dir);
+    let parent = std::path::Path::new(input_dir);
 
     // open the metadata file and read the json
     let gpl_path = parent.join("generate_permit_list.json");
@@ -246,8 +247,8 @@ fn correct_unmapped_counts(
 
 #[allow(clippy::too_many_arguments)]
 pub fn collate_with_temp(
-    input_dir: String,
-    rad_dir: String,
+    input_dir: &PathBuf,
+    rad_dir: &PathBuf,
     num_threads: u32,
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
@@ -260,7 +261,7 @@ pub fn collate_with_temp(
     // the number of corrected cells we'll write
     let expected_output_chunks = tsv_map.len() as u64;
     // the parent input directory
-    let parent = std::path::Path::new(&input_dir);
+    let parent = std::path::Path::new(input_dir);
 
     let n_workers = if num_threads > 1 {
         (num_threads - 1) as usize
@@ -339,10 +340,14 @@ pub fn collate_with_temp(
         .with_context(|| format!("couldn't create directory {}", cfname))?;
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
-    let i_dir = std::path::Path::new(&rad_dir);
+    let i_dir = std::path::Path::new(rad_dir);
 
     if !i_dir.exists() {
-        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        crit!(
+            log,
+            "the input RAD path {} does not exist",
+            rad_dir.display()
+        );
         return Err(anyhow!("invalid input"));
     }
 

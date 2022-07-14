@@ -6,6 +6,8 @@ use typed_builder::TypedBuilder;
 use crate::cellfilter::CellFilterMethod;
 use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
+use std::path::PathBuf;
+
 #[derive(TypedBuilder, Debug)]
 //#[builder(name = "QuantOptsBuilder")]
 pub struct QuantOpts<'b, 'c, 'd> {
@@ -30,13 +32,13 @@ pub struct QuantOpts<'b, 'c, 'd> {
 }
 
 #[derive(TypedBuilder, Debug)]
-pub struct GenPermitListOpts<'a, 'b, 'c> {
-    pub input_dir: String,
-    pub output_dir: String,
+pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
+    pub input_dir: &'a PathBuf,
+    pub output_dir: &'b PathBuf,
     pub fmeth: CellFilterMethod,
     pub expected_ori: Strand,
     pub velo_mode: bool,
-    pub cmdline: &'a str,
-    pub version: &'b str,
-    pub log: &'c slog::Logger,
+    pub cmdline: &'c str,
+    pub version: &'d str,
+    pub log: &'e slog::Logger,
 }

@@ -17,7 +17,7 @@ use mimalloc::MiMalloc;
 use rand::Rng;
 use slog::{crit, o, warn, Drain};
 use std::borrow::ToOwned;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
 use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
@@ -58,6 +58,22 @@ fn file_exists_validator(v: &str) -> Result<String, String> {
     }
 }
 
+/// Checks if the path pointed to by v exists.  It can be
+/// any valid entity (e.g. disk file, FIFO, directory, etc.).
+/// If there is any issue with permissions or failure to properly
+/// resolve symlinks, or if the path is wrong, it returns
+/// an Err(String), else Ok(PathBuf).
+fn pathbuf_file_exists_validator(v: &str) -> Result<PathBuf, String> {
+    // NOTE: we explicitly *do not* check `is_file()` here
+    // since we want to return true even if the path is to
+    // a FIFO/named pipe.
+    if !Path::new(v).exists() {
+        Err(String::from("No valid file was found at this path."))
+    } else {
+        Ok(PathBuf::from(v))
+    }
+}
+
 /// Checks if the path pointed to by v exists and is
 /// a valid directory on disk.  If there is any issue
 /// with permissions or failure to properly
@@ -68,6 +84,19 @@ fn directory_exists_validator(v: &str) -> Result<String, String> {
         Err(String::from("No valid directory was found at this path."))
     } else {
         Ok(v.to_string())
+    }
+}
+
+/// Checks if the path pointed to by v exists and is
+/// a valid directory on disk.  If there is any issue
+/// with permissions or failure to properly
+/// resolve symlinks, or if the path is wrong, it returns
+/// an Err(String), else Ok(PathBuf).
+fn pathbuf_directory_exists_validator(v: &str) -> Result<PathBuf, String> {
+    if !Path::new(v).is_dir() {
+        Err(String::from("No valid directory was found at this path."))
+    } else {
+        Ok(PathBuf::from(v))
     }
 }
 
@@ -86,19 +115,22 @@ fn main() -> anyhow::Result<()> {
         .about("Convert a BAM file to a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file").value_parser(file_exists_validator))
+        .arg(
+            arg!(-b --bam <BAMFILE> "input SAM/BAM file")
+                .value_parser(pathbuf_file_exists_validator),
+        )
         .arg(
             arg!(-t --threads <THREADS> "number of threads to use for processing")
                 .value_parser(value_parser!(u32))
                 .default_value(&max_num_threads),
         )
-        .arg(arg!(-o --output <RADFILE> "output RAD file"));
+        .arg(arg!(-o --output <RADFILE> "output RAD file").value_parser(value_parser!(PathBuf)));
 
     let view_app = Command::new("view")
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-r --rad <RADFILE> "input RAD file").value_parser(file_exists_validator))
+        .arg(arg!(-r --rad <RADFILE> "input RAD file").value_parser(pathbuf_file_exists_validator))
         .arg(
             arg!(-H --header "flag for printing header")
                 .takes_value(false)
@@ -111,11 +143,11 @@ fn main() -> anyhow::Result<()> {
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file")
-            .value_parser(directory_exists_validator))
+            .value_parser(pathbuf_directory_exists_validator))
         .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments")
              .ignore_case(true)
              .value_parser(["fw", "rc", "both", "either"]))
-        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory"))
+        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory").value_parser(value_parser!(PathBuf)))
         .arg(arg!(
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             ).conflicts_with_all(&["force-cell", "valid-bc", "expect-cells", "unfiltered-pl"])
@@ -150,9 +182,9 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list")
-        .value_parser(directory_exists_validator))
+        .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
-        .value_parser(directory_exists_validator))
+        .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
@@ -260,14 +292,10 @@ fn main() -> anyhow::Result<()> {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     if let Some(t) = opts.subcommand_matches("generate-permit-list") {
-        let input_dir: String = t
-            .get_one::<String>("input")
-            .expect("no input directory specified")
-            .clone();
-        let output_dir: String = t
-            .get_one::<String>("output-dir")
-            .expect("no input directory specified")
-            .clone();
+        let input_dir: &PathBuf = t.get_one("input").expect("no input directory specified");
+        let output_dir: &PathBuf = t
+            .get_one("output-dir")
+            .expect("no output directory specified");
 
         let valid_ori: bool;
         let expected_ori = match t
@@ -379,15 +407,15 @@ fn main() -> anyhow::Result<()> {
     // convert a BAM file, in *transcriptomic coordinates*, with
     // the appropriate barcode and umi tags, into a RAD file
     if let Some(t) = opts.subcommand_matches("convert") {
-        let input_file: String = t.get_one::<String>("bam").unwrap().clone();
-        let rad_file: String = t.get_one::<String>("output").unwrap().clone();
+        let input_file: &PathBuf = t.get_one("bam").unwrap();
+        let rad_file: &PathBuf = t.get_one("output").unwrap();
         let num_threads: u32 = *t.get_one("threads").unwrap();
         alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
     }
 
     // convert a rad file to a textual representation and write to stdout
     if let Some(t) = opts.subcommand_matches("view") {
-        let rad_file: String = t.get_one::<String>("rad").unwrap().clone();
+        let rad_file: &PathBuf = t.get_one("rad").unwrap();
         let print_header = t.is_present("header");
         let mut out_file: String = String::from("");
         if t.is_present("output") {
@@ -399,8 +427,8 @@ fn main() -> anyhow::Result<()> {
     // collate a rad file to group together all records corresponding
     // to the same corrected barcode.
     if let Some(t) = opts.subcommand_matches("collate") {
-        let input_dir: String = t.get_one::<String>("input-dir").unwrap().clone();
-        let rad_dir: String = t.get_one::<String>("rad-dir").unwrap().clone();
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
         let num_threads = *t.get_one("threads").unwrap();
         let compress_out = t.is_present("compress");
         let max_records: u32 = *t.get_one("max-records").unwrap();

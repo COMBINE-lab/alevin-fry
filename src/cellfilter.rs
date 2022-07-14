@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug)]
@@ -223,14 +224,14 @@ fn process_unfiltered(
     ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &str,
+    output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
 ) -> anyhow::Result<u64> {
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent)
         .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
 
@@ -370,7 +371,7 @@ fn process_unfiltered(
         not_found.to_formatted_string(&Locale::en)
     );
 
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent).with_context(|| {
         format!(
             "couldn't create path to output directory {}",
@@ -444,7 +445,7 @@ fn process_filtered(
     ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &str,
+    output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
@@ -519,7 +520,7 @@ fn process_filtered(
         }
     }
 
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent).with_context(|| {
         format!(
             "failed to create path to output location {}",
@@ -594,8 +595,14 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let i_dir = std::path::Path::new(&rad_dir);
 
+    // should we assume this condition was already checked
+    // during parsing?
     if !i_dir.exists() {
-        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        crit!(
+            log,
+            "the input RAD path {} does not exist",
+            rad_dir.display()
+        );
         // std::process::exit(1);
         return Err(anyhow!("execution terminated unexpectedly"));
     }
@@ -715,7 +722,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     &ft_vals,
                     &filter_meth,
                     expected_ori,
-                    &output_dir,
+                    output_dir,
                     version,
                     max_ambiguity_read,
                     velo_mode,
@@ -744,7 +751,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 &ft_vals,
                 &filter_meth,
                 expected_ori,
-                &output_dir,
+                output_dir,
                 version,
                 max_ambiguity_read,
                 velo_mode,
