@@ -46,15 +46,15 @@ fn gen_random_kmer(k: usize) -> String {
 /// any valid entity (e.g. disk file, FIFO, directory, etc.).
 /// If there is any issue with permissions or failure to properly
 /// resolve symlinks, or if the path is wrong, it returns
-/// an Err(String), else Ok(()).
-fn file_exists_validator(v: &str) -> Result<(), String> {
+/// an Err(String), else Ok(String).
+fn file_exists_validator(v: &str) -> Result<String, String> {
     // NOTE: we explicitly *do not* check `is_file()` here
     // since we want to return true even if the path is to
     // a FIFO/named pipe.
     if !Path::new(v).exists() {
         Err(String::from("No valid file was found at this path."))
     } else {
-        Ok(())
+        Ok(v.to_string())
     }
 }
 
@@ -62,12 +62,12 @@ fn file_exists_validator(v: &str) -> Result<(), String> {
 /// a valid directory on disk.  If there is any issue
 /// with permissions or failure to properly
 /// resolve symlinks, or if the path is wrong, it returns
-/// an Err(String), else Ok(()).
-fn directory_exists_validator(v: &str) -> Result<(), String> {
+/// an Err(String), else Ok(String).
+fn directory_exists_validator(v: &str) -> Result<String, String> {
     if !Path::new(v).is_dir() {
         Err(String::from("No valid directory was found at this path."))
     } else {
-        Ok(())
+        Ok(v.to_string())
     }
 }
 
@@ -86,7 +86,7 @@ fn main() -> anyhow::Result<()> {
         .about("Convert a BAM file to a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file").validator(file_exists_validator))
+        .arg(arg!(-b --bam <BAMFILE> "input SAM/BAM file").value_parser(file_exists_validator))
         .arg(
             arg!(-t --threads <THREADS> "number of threads to use for processing")
                 .value_parser(value_parser!(u32))
@@ -98,7 +98,7 @@ fn main() -> anyhow::Result<()> {
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-r --rad <RADFILE> "input RAD file").validator(file_exists_validator))
+        .arg(arg!(-r --rad <RADFILE> "input RAD file").value_parser(file_exists_validator))
         .arg(
             arg!(-H --header "flag for printing header")
                 .takes_value(false)
@@ -111,8 +111,10 @@ fn main() -> anyhow::Result<()> {
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file")
-            .validator(directory_exists_validator))
-        .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments"))
+            .value_parser(directory_exists_validator))
+        .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments")
+             .ignore_case(true)
+             .value_parser(["fw", "rc", "both", "either"]))
         .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory"))
         .arg(arg!(
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
@@ -126,12 +128,14 @@ fn main() -> anyhow::Result<()> {
         )
         .arg(
             arg!(-b --"valid-bc" <VALIDBC> "uses true barcode collected from a provided file")
-            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"]),
+            .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "unfiltered-pl"])
+            .value_parser(file_exists_validator)
         )
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .conflicts_with_all(&["force-cells", "expect-cells", "knee-distance", "valid-bc"])
             .requires("min-reads")
+            .value_parser(file_exists_validator)
         )
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
@@ -146,24 +150,22 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list")
-        .validator(directory_exists_validator))
+        .value_parser(directory_exists_validator))
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
-        .validator(directory_exists_validator))
+        .value_parser(directory_exists_validator))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file").takes_value(false).required(false))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
          .value_parser(value_parser!(u32))
          .default_value("30000000"));
-    //.arg(arg!(-e --expected-ori=[expected-ori] 'the expected orientation of alignments'")
-    //     .default_value(fw"));
 
     let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file")
-        .validator(directory_exists_validator))
-    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").validator(file_exists_validator))
+        .value_parser(directory_exists_validator))
+    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").value_parser(file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written"))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes").takes_value(false).required(false))
@@ -172,16 +174,17 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps").takes_value(false).required(false))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"))
-    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
-         .ignore_case(true)
-         .value_parser(["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"]))
+        .ignore_case(true)
+        .value_parser(["full", "trivial", "cr-like", "cr-like-em", "parsimony", "parsimony-em", "parsimony-gene", "parsimony-gene-em"]))
     .arg(arg!(--"sa-model" "preferred model of splicing ambiguity")
+        .ignore_case(true)
         .value_parser(["prefer-ambig", "winner-take-all"])
         .default_value("winner-take-all")
         .hide(true))
     .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
-         .value_parser(value_parser!(u32))
+        .value_parser(value_parser!(u32))
         .default_value_ifs(&[
             ("resolution", Some("cr-like"), Some("0")),
             ("resolution", Some("cr-like-em"), Some("0")),
@@ -195,7 +198,7 @@ fn main() -> anyhow::Result<()> {
         .required(false)
         .hide(true))
     .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
-         .value_parser(value_parser!(usize))
+        .value_parser(value_parser!(usize))
         .default_value_ifs(&[
             ("resolution", Some("parsimony-gene-em"), Some("1000")),
             ("resolution", Some("parsimony"), Some("1000")),
@@ -207,8 +210,8 @@ fn main() -> anyhow::Result<()> {
         .required(false)
         .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
-         .value_parser(value_parser!(usize))
-         .default_value("10")
+        .value_parser(value_parser!(usize))
+        .default_value("10")
         .hide(true));
 
     let infer_app = Command::new("infer")
@@ -216,14 +219,14 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts")
-        .validator(file_exists_validator).takes_value(true).required(true))
+        .value_parser(file_exists_validator).takes_value(true).required(true))
     //.arg(arg!(-b --barcodes=<barcodes> "file containing the barcodes labeling the matrix rows").takes_value(true).required(true))
     .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
-        .validator(file_exists_validator).takes_value(true).required(true))
+        .value_parser(file_exists_validator).takes_value(true).required(true))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").takes_value(true).required(true))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode").takes_value(false).required(false))
-    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").required(false).value_parser(file_exists_validator))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)").takes_value(false).required(false))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").takes_value(false).required(false).conflicts_with("use-mtx"));
 
@@ -257,13 +260,22 @@ fn main() -> anyhow::Result<()> {
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time
     if let Some(t) = opts.subcommand_matches("generate-permit-list") {
-        let input_dir: String = t.get_one::<String>("input").expect("no input directory specified").to_string();
+        let input_dir: String = t
+            .get_one::<String>("input")
+            .expect("no input directory specified")
+            .to_string();
         let output_dir: String = t
             .get_one::<String>("output-dir")
-            .expect("no input directory specified").to_string();
+            .expect("no input directory specified")
+            .to_string();
 
         let valid_ori: bool;
-        let expected_ori = match t.get_one::<String>("expected-ori").unwrap().to_uppercase().as_str() {
+        let expected_ori = match t
+            .get_one::<String>("expected-ori")
+            .unwrap()
+            .to_uppercase()
+            .as_str()
+        {
             "RC" => {
                 valid_ori = true;
                 Strand::Reverse
