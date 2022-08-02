@@ -11,6 +11,7 @@ use anyhow::{anyhow, Context};
 use slog::crit;
 use slog::info;
 
+use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
@@ -28,8 +29,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[derive(Debug)]
 pub enum CellFilterMethod {
     // cut off at this cell in
     // the frequency sorted list
@@ -40,11 +43,11 @@ pub enum CellFilterMethod {
     // correct all cells in an
     // edit distance of 1 of these
     // barcodes
-    ExplicitList(String),
+    ExplicitList(PathBuf),
     // barcodes will be provided in the
     // form of an *unfiltered* external
     // permit list
-    UnfilteredExternalList(String, usize),
+    UnfilteredExternalList(PathBuf, usize),
     // use the distance method to
     // automatically find the knee
     // in the curve
@@ -221,14 +224,14 @@ fn process_unfiltered(
     ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &str,
+    output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
 ) -> anyhow::Result<u64> {
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent)
         .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
 
@@ -368,7 +371,7 @@ fn process_unfiltered(
         not_found.to_formatted_string(&Locale::en)
     );
 
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent).with_context(|| {
         format!(
             "couldn't create path to output directory {}",
@@ -442,7 +445,7 @@ fn process_filtered(
     ft_vals: &rad_types::FileTags,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
-    output_dir: &str,
+    output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
     velo_mode: bool,
@@ -517,7 +520,7 @@ fn process_filtered(
         }
     }
 
-    let parent = std::path::Path::new(&output_dir);
+    let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent).with_context(|| {
         format!(
             "failed to create path to output location {}",
@@ -580,24 +583,26 @@ fn process_filtered(
 /// (i.e. "permitted") barcode values, as well as
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_permit_list(
-    rad_dir: String,
-    output_dir: String,
-    filter_meth: CellFilterMethod,
-    expected_ori: Strand,
-    version: &str,
-    velo_mode: bool,
-    cmdline: &str,
-    //top_k: Option<usize>,
-    //valid_bc_file: Option<String>,
-    //use_knee_distance: bool,
-    log: &slog::Logger,
-) -> anyhow::Result<u64> {
+pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
+    let rad_dir = gpl_opts.input_dir;
+    let output_dir = gpl_opts.output_dir;
+    let filter_meth = gpl_opts.fmeth;
+    let expected_ori = gpl_opts.expected_ori;
+    let version = gpl_opts.version;
+    let velo_mode = gpl_opts.velo_mode;
+    let cmdline = gpl_opts.cmdline;
+    let log = gpl_opts.log;
+
     let i_dir = std::path::Path::new(&rad_dir);
 
+    // should we assume this condition was already checked
+    // during parsing?
     if !i_dir.exists() {
-        crit!(log, "the input RAD path {} does not exist", rad_dir);
+        crit!(
+            log,
+            "the input RAD path {} does not exist",
+            rad_dir.display()
+        );
         // std::process::exit(1);
         return Err(anyhow!("execution terminated unexpectedly"));
     }
@@ -605,7 +610,7 @@ pub fn generate_permit_list(
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
-        let i_file = File::open(&fname).context("could not open input file")?;
+        let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
         info!(
@@ -717,7 +722,7 @@ pub fn generate_permit_list(
                     &ft_vals,
                     &filter_meth,
                     expected_ori,
-                    &output_dir,
+                    output_dir,
                     version,
                     max_ambiguity_read,
                     velo_mode,
@@ -746,7 +751,7 @@ pub fn generate_permit_list(
                 &ft_vals,
                 &filter_meth,
                 expected_ori,
-                &output_dir,
+                output_dir,
                 version,
                 max_ambiguity_read,
                 velo_mode,
@@ -993,7 +998,10 @@ pub fn permit_list_from_threshold(
     valid_bc
 }
 
-pub fn permit_list_from_file(ifile: &str, bclen: u16) -> Vec<u64> {
+pub fn permit_list_from_file<P>(ifile: P, bclen: u16) -> Vec<u64>
+where
+    P: AsRef<Path>,
+{
     let f = File::open(ifile).expect("couldn't open input barcode file.");
     let br = BufReader::new(f);
     let mut bc = Vec::<u64>::with_capacity(10_000);

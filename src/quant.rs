@@ -39,6 +39,7 @@ use flate2::Compression;
 use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::io_utils;
+use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
 use libradicl::rad_types;
@@ -49,6 +50,12 @@ type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
     WinnerTakeAll,
+}
+
+impl Default for SplicedAmbiguityModel {
+    fn default() -> Self {
+        SplicedAmbiguityModel::WinnerTakeAll
+    }
 }
 
 // Implement the trait
@@ -74,6 +81,12 @@ pub enum ResolutionStrategy {
     ParsimonyGene,
 }
 
+impl Default for ResolutionStrategy {
+    fn default() -> Self {
+        ResolutionStrategy::CellRangerLike
+    }
+}
+
 impl fmt::Display for ResolutionStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -88,7 +101,7 @@ impl FromStr for ResolutionStrategy {
             "trivial" => Ok(ResolutionStrategy::Trivial),
             "cr-like" => Ok(ResolutionStrategy::CellRangerLike),
             "cr-like-em" => Ok(ResolutionStrategy::CellRangerLikeEm),
-            "parsimony-em" | "full" => Ok(ResolutionStrategy::ParsimonyEm),
+            "parsimony-em" => Ok(ResolutionStrategy::ParsimonyEm),
             "parsimony" => Ok(ResolutionStrategy::Parsimony),
             "parsimony-gene" => Ok(ResolutionStrategy::ParsimonyGene),
             "parsimony-gene-em" => Ok(ResolutionStrategy::ParsimonyGeneEm),
@@ -297,28 +310,9 @@ fn write_eqc_counts(
 
 // TODO: see if we'd rather pass an structure
 // with these options
-#[allow(clippy::too_many_arguments)]
-pub fn quantify(
-    input_dir: String,
-    tg_map: String,
-    output_dir: String,
-    num_threads: u32,
-    num_bootstraps: u32,
-    init_uniform: bool,
-    summary_stat: bool,
-    dump_eq: bool,
-    use_mtx: bool,
-    resolution: ResolutionStrategy,
-    pug_exact_umi: bool,
-    sa_model: SplicedAmbiguityModel,
-    small_thresh: usize,
-    large_graph_thresh: usize,
-    filter_list: Option<&str>,
-    cmdline: &str,
-    version: &str,
-    log: &slog::Logger,
-) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&input_dir);
+pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
+    let parent = std::path::Path::new(quant_opts.input_dir);
+    let log = quant_opts.log;
 
     // read the collate metadata
     let collate_md_file =
@@ -340,27 +334,7 @@ pub fn quantify(
             "quantifying from compressed, collated RAD file {:?}", i_file
         );
 
-        do_quantify(
-            input_dir,
-            br,
-            tg_map,
-            output_dir,
-            num_threads,
-            num_bootstraps,
-            init_uniform,
-            summary_stat,
-            dump_eq,
-            use_mtx,
-            resolution,
-            pug_exact_umi,
-            sa_model,
-            small_thresh,
-            large_graph_thresh,
-            filter_list,
-            cmdline,
-            version,
-            log,
-        )
+        do_quantify(br, quant_opts)
     } else {
         let i_file =
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
@@ -371,56 +345,29 @@ pub fn quantify(
             "quantifying from uncompressed, collated RAD file {:?}", i_file
         );
 
-        do_quantify(
-            input_dir,
-            br,
-            tg_map,
-            output_dir,
-            num_threads,
-            num_bootstraps,
-            init_uniform,
-            summary_stat,
-            dump_eq,
-            use_mtx,
-            resolution,
-            pug_exact_umi,
-            sa_model,
-            small_thresh,
-            large_graph_thresh,
-            filter_list,
-            cmdline,
-            version,
-            log,
-        )
+        do_quantify(br, quant_opts)
     }
 }
 
 // TODO: see if we'd rather pass an structure
 // with these options
-#[allow(clippy::too_many_arguments)]
-pub fn do_quantify<T: Read>(
-    input_dir: String,
-    mut br: T,
-    tg_map: String,
-    output_dir: String,
-    num_threads: u32,
-    num_bootstraps: u32,
-    init_uniform: bool,
-    summary_stat: bool,
-    dump_eq: bool,
-    use_mtx: bool,
-    resolution: ResolutionStrategy,
-    pug_exact_umi: bool,
-    mut sa_model: SplicedAmbiguityModel,
-    small_thresh: usize,
-    large_graph_thresh: usize,
-    filter_list: Option<&str>,
-    cmdline: &str,
-    version: &str,
-    log: &slog::Logger,
-) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(&input_dir);
+pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
+    let parent = std::path::Path::new(quant_opts.input_dir);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
+
+    let init_uniform = quant_opts.init_uniform;
+    let summary_stat = quant_opts.summary_stat;
+    let dump_eq = quant_opts.dump_eq;
+    let use_mtx = quant_opts.use_mtx;
+    let resolution = quant_opts.resolution;
+    let pug_exact_umi = quant_opts.pug_exact_umi;
+    let mut sa_model = quant_opts.sa_model;
+    let small_thresh = quant_opts.small_thresh;
+    let large_graph_thresh = quant_opts.large_graph_thresh;
+    let filter_list = quant_opts.filter_list;
+    let log = quant_opts.log;
+    let num_threads = quant_opts.num_threads;
+    let num_bootstraps = quant_opts.num_bootstraps;
 
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
@@ -462,7 +409,7 @@ pub fn do_quantify<T: Read>(
     // both spliced and unspliced.  The type will be automatically
     // determined.
     match afutils::parse_tg_map(
-        &tg_map,
+        quant_opts.tg_map,
         hdr.ref_count as usize,
         &rname_to_id,
         &mut gene_names,
@@ -601,7 +548,7 @@ pub fn do_quantify<T: Read>(
     let num_genes = gene_name_to_id.len();
 
     // create our output directory
-    let output_path = std::path::Path::new(&output_dir);
+    let output_path = std::path::Path::new(quant_opts.output_dir);
     fs::create_dir_all(output_path)?;
 
     // create sub-directory for matrix
@@ -1336,8 +1283,8 @@ pub fn do_quantify<T: Read>(
     }
 
     let meta_info = json!({
-    "cmd" : cmdline,
-    "version_str": version,
+    "cmd" : quant_opts.cmdline,
+    "version_str": quant_opts.version,
     "resolution_strategy" : resolution.to_string(),
     "num_quantified_cells" : num_cells,
     "num_genes" : num_rows,
@@ -1374,25 +1321,7 @@ pub fn do_quantify<T: Read>(
 
 // TODO: see if we'd rather pass an structure
 // with these options
-#[allow(clippy::too_many_arguments)]
-pub fn velo_quantify(
-    _input_dir: String,
-    _tg_map: String,
-    _output_dir: String,
-    _num_threads: u32,
-    _num_bootstraps: u32,
-    _init_uniform: bool,
-    _summary_stat: bool,
-    _dump_eq: bool,
-    _use_mtx: bool,
-    _resolution: ResolutionStrategy,
-    mut _sa_model: SplicedAmbiguityModel,
-    _small_thresh: usize,
-    _filter_list: Option<&str>,
-    _cmdline: &str,
-    _version: &str,
-    _log: &slog::Logger,
-) -> anyhow::Result<()> {
+pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
 }

@@ -92,15 +92,19 @@ pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
     dict
 }
 
-pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slog::Logger) {
-    let oname = Path::new(&rad_file);
+pub fn bam2rad<P1, P2>(input_file: P1, rad_file: P2, num_threads: u32, log: &slog::Logger)
+where
+    P1: AsRef<Path>,
+    P2: AsRef<Path>,
+{
+    let oname = Path::new(rad_file.as_ref());
     let parent = oname.parent().unwrap();
     std::fs::create_dir_all(&parent).unwrap();
 
     if oname.exists() {
         std::fs::remove_file(oname).expect("could not be deleted");
     }
-    let ofile = File::create(&rad_file).unwrap();
+    let ofile = File::create(rad_file.as_ref()).unwrap();
 
     let mut bam = bam::Reader::from_path(&input_file).unwrap();
     let bam_bytes = fs::metadata(&input_file).unwrap().len();
@@ -484,18 +488,19 @@ pub fn bam2rad(input_file: String, rad_file: String, num_threads: u32, log: &slo
         .write_all(&num_output_chunks.to_le_bytes())
         .expect("couldn't write to output file.");
 
-    info!(log, "finished writing to {:?}.", rad_file);
+    info!(log, "finished writing to {:?}.", rad_file.as_ref());
 }
 
-pub fn view(rad_file: String, print_header: bool, out_file: String, log: &slog::Logger) {
-    let _read_num = view2(rad_file, print_header, out_file, log).unwrap();
+pub fn view<P>(rad_file: P, print_header: bool, log: &slog::Logger)
+where
+    P: AsRef<Path>,
+{
+    let _read_num = view2(rad_file, print_header, log).unwrap();
 }
-pub fn view2(
-    rad_file: String,
-    print_header: bool,
-    _out_file: String,
-    log: &slog::Logger,
-) -> anyhow::Result<u64> {
+pub fn view2<P>(rad_file: P, print_header: bool, log: &slog::Logger) -> anyhow::Result<u64>
+where
+    P: AsRef<Path>,
+{
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
     let hdr = rad_types::RadHeader::from_bytes(&mut br);

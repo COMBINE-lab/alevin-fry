@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.6.0"
+version = "0.6.1"
 authors = [
   "Avi Srivastava <avi.srivastava@nyu.edu>",
   "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
@@ -46,6 +46,8 @@ bincode = "1.3.3"
 bstr = "0.2.17"
 crossbeam-channel = "0.5.4"
 crossbeam-queue = "0.3.5"
+# derive_builder = "0.11.2"
+typed-builder = "0.10.0"
 indicatif = "0.16.2"
 needletail = "0.4.1"
 petgraph = "0.6.0"
@@ -75,7 +77,9 @@ rust-htslib = { version = "0.39.5", default-features = false, features = [
 ] }
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.2" }
 
-clap = { version = ">=3.1.18", features = ["derive", "wrap_help", "cargo"] }
+# no shenanigans; clap makes breaking "fixes" too often to allow variability
+# in the version different from what we tested with
+clap = { version = "=3.2.16", features = ["derive", "wrap_help", "cargo"] }
 
 [profile.release]
 #debug = true
