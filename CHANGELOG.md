@@ -2,6 +2,17 @@
 
 Changelog for alevin-fry
 
+## [0.7.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.6.0...v0.7.0) (2022-08-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* try to force release-please
+
+### Miscellaneous Chores
+
+* try to force release-please ([4df099d](https://github.com/COMBINE-lab/alevin-fry/commit/4df099d9ee9e7c8cc81ef826d8723c7b6a5453ae))
+
 ## [0.6.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.5.1...v0.6.0) (2022-06-01)
 
 ### ⚠ BREAKING CHANGES
