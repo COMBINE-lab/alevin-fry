@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - uses: GoogleCloudPlatform/release-please-action@v3
+      - uses: GoogleCloudPlatform/release-please-action@v3.2.10
         id: release_main
         with:
           release-type: rust
