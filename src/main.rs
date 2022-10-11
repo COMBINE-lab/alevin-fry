@@ -91,8 +91,10 @@ fn main() -> anyhow::Result<()> {
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             )
         )
-        .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff"))
-        .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)"))
+        .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff")
+             .value_parser(value_parser!(usize)))
+        .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)")
+             .value_parser(value_parser!(usize)))
         .arg(
             arg!(-b --"valid-bc" <VALIDBC> "uses true barcode collected from a provided file")
             .value_parser(pathbuf_file_exists_validator)
