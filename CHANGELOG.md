@@ -2,6 +2,17 @@
 
 Changelog for alevin-fry
 
+## [0.8.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.7.0...v0.8.0) (2022-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* fix parsing of force-cells and expect-cells
+
+### Bug Fixes
+
+* fix parsing of force-cells and expect-cells ([aa0f4ab](https://github.com/COMBINE-lab/alevin-fry/commit/aa0f4abb388e464491652fb2e1b682e33b1df05c))
+
 ## [0.7.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.6.0...v0.7.0) (2022-08-02)
 
 
