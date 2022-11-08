@@ -8,7 +8,7 @@
  */
 
 use anyhow::{anyhow, Context};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
@@ -514,9 +514,14 @@ where
         .template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
         )
+        .expect("ProgressStyle template was invalid")
         .progress_chars("╢▌▌░╟");
 
-    let pbar_inner = ProgressBar::new(cc.num_chunks);
+    let pbar_inner = ProgressBar::with_draw_target(
+        Some(cc.num_chunks),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
+
     pbar_inner.set_style(sty.clone());
     pbar_inner.tick();
 

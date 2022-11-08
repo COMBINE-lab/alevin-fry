@@ -10,7 +10,7 @@
 use crate::cellfilter::permit_list_from_file;
 use anyhow::anyhow;
 use crossbeam_queue::ArrayQueue;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
 
@@ -133,12 +133,17 @@ pub fn infer(
     }
 
     // the progress bar we'll use to monitor progress of the EM
-    let pbar = ProgressBar::new(num_cells as u64);
+    let pbar = ProgressBar::with_draw_target(
+        Some(num_cells as u64),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
+
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
             )
+            .expect("ProgressStyle template was invalid.")
             .progress_chars("╢▌▌░╟"),
     );
 

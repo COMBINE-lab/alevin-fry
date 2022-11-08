@@ -299,6 +299,7 @@ where
         .template(
             "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
         )
+        .expect("ProgressStyle template was invalid.")
         .progress_chars("╢▌▌░╟");
 
     let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);

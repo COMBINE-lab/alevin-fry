@@ -701,7 +701,7 @@ pub fn read_filter_list(
     let mut fset = HashSet::<u64, ahash::RandomState>::with_hasher(s);
 
     let filt_file = std::fs::File::open(flist).context("couldn't open file")?;
-    let reader = BufReader::new(filt_file);
+    let mut reader = BufReader::new(filt_file);
 
     // Read the file line by line using the lines() iterator from std::io::BufRead.
     reader

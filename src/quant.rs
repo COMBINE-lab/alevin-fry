@@ -9,7 +9,7 @@
 
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
@@ -503,16 +503,18 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
 
     let mut _num_reads: usize = 0;
 
-    let pbar = ProgressBar::new(num_cells);
+    let pbar = ProgressBar::with_draw_target(
+        Some(num_cells),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
             )
+            .expect("ProgressStyle template was invalid.")
             .progress_chars("╢▌▌░╟"),
     );
-    let ddelta = 500_u64.min(num_cells / 10);
-    pbar.set_draw_delta(ddelta);
 
     // Trying this parallelization strategy to avoid
     // many temporary data structures.
