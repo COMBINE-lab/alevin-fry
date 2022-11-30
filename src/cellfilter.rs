@@ -203,7 +203,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
             assert_eq!(
                 *first_bclen,
                 l.len(),
-                "found barcodes of different lenghts {} and {}",
+                "found barcodes of different lengths {} and {}",
                 *first_bclen,
                 l.len()
             );
