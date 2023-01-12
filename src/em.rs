@@ -136,7 +136,7 @@ pub(crate) fn em_update_subset(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -167,7 +167,7 @@ pub(crate) fn em_update_subset_usa(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -192,7 +192,7 @@ pub fn em_optimize_subset(
     for (i, count) in cell_data {
         let labels = eqclasses.refs_for_eqc(*i);
         if labels.len() == 1 {
-            let idx = labels.get(0).expect("can't extract labels");
+            let idx = labels.first().expect("can't extract labels");
             alphas_in[*idx as usize] += *count as f32;
             unique_evidence[*idx as usize] = true;
         } else {
@@ -319,7 +319,7 @@ pub fn em_update(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -339,7 +339,7 @@ pub fn em_optimize(
 
     for (labels, count) in eqclasses {
         if labels.len() == 1 {
-            let idx = labels.get(0).expect("can't extract labels");
+            let idx = labels.first().expect("can't extract labels");
             alphas_in[*idx as usize] += *count as f32;
             unique_evidence[*idx as usize] = true;
         } else {

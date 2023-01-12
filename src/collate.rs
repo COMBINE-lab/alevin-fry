@@ -217,7 +217,7 @@ fn correct_unmapped_counts(
     unmapped_file: &std::path::Path,
     parent: &std::path::Path,
 ) {
-    let i_file = File::open(&unmapped_file).unwrap();
+    let i_file = File::open(unmapped_file).unwrap();
     let mut br = BufReader::new(i_file);
 
     // enough to hold a key value pair (a u64 key and u32 value)
@@ -244,7 +244,7 @@ fn correct_unmapped_counts(
     }
 
     let s_path = parent.join("unmapped_bc_count_collated.bin");
-    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
+    let s_file = std::fs::File::create(s_path).expect("could not create serialization file.");
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &unmapped_count)
         .expect("couldn't serialize corrected unmapped bc count.");

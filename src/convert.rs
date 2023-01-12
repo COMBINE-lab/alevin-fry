@@ -99,7 +99,7 @@ where
 {
     let oname = Path::new(rad_file.as_ref());
     let parent = oname.parent().unwrap();
-    std::fs::create_dir_all(&parent).unwrap();
+    std::fs::create_dir_all(parent).unwrap();
 
     if oname.exists() {
         std::fs::remove_file(oname).expect("could not be deleted");

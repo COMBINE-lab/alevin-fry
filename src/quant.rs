@@ -47,7 +47,7 @@ use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
-#[derive(PartialEq, Debug, Clone, Copy, Serialize)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
     WinnerTakeAll,
@@ -71,7 +71,7 @@ impl FromStr for SplicedAmbiguityModel {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy, Serialize)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,

@@ -80,7 +80,7 @@ pub fn write_permit_list_freq(
     bclen: u16,
     permit_freq_map: &HashMap<u64, u64, ahash::RandomState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output = std::fs::File::create(&o_path)?;
+    let output = std::fs::File::create(o_path)?;
     let mut writer = BufWriter::new(&output);
 
     {
@@ -731,7 +731,7 @@ pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InternalVersionInfo {
     pub major: u32,
     pub minor: u32,

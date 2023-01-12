@@ -234,7 +234,7 @@ fn process_unfiltered(
     gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent)
+    std::fs::create_dir_all(parent)
         .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
 
     // the smallest number of reads we'll allow per barcode
@@ -374,7 +374,7 @@ fn process_unfiltered(
     );
 
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent).with_context(|| {
+    std::fs::create_dir_all(parent).with_context(|| {
         format!(
             "couldn't create path to output directory {}",
             parent.display()
@@ -409,7 +409,7 @@ fn process_unfiltered(
 
     let pm_path = parent.join("permit_map.bin");
     let pm_file =
-        std::fs::File::create(&pm_path).context("could not create serialization file.")?;
+        std::fs::File::create(pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
     bincode::serialize_into(&mut pm_writer, &hm)
         .context("couldn't serialize permit list mapping.")?;
@@ -425,7 +425,7 @@ fn process_unfiltered(
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
+    let mut m_file = std::fs::File::create(m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
         serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
@@ -525,7 +525,7 @@ fn process_filtered(
     }
 
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent).with_context(|| {
+    std::fs::create_dir_all(parent).with_context(|| {
         format!(
             "failed to create path to output location {}",
             parent.display()
@@ -550,7 +550,7 @@ fn process_filtered(
     };
 
     let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(&s_path).context("could not create serialization file.")?;
+    let s_file = std::fs::File::create(s_path).context("could not create serialization file.")?;
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
         .context("couldn't serialize permit list.")?;
@@ -566,7 +566,7 @@ fn process_filtered(
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
+    let mut m_file = std::fs::File::create(m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
         serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
