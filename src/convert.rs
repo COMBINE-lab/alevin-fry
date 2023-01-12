@@ -305,7 +305,7 @@ where
     let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);
     // let expected_bar_length = 50u64 ;// bam_bytes / ((buf_limit as u64) * 24);
 
-    let pbar_inner = ProgressBar::new(expected_bar_length as u64);
+    let pbar_inner = ProgressBar::new(expected_bar_length);
     pbar_inner.set_style(sty);
     pbar_inner.tick();
 

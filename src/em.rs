@@ -41,7 +41,7 @@ pub enum EmInitType {
 
 #[allow(dead_code)]
 fn mean(data: &[f64]) -> Option<f64> {
-    let sum = data.iter().sum::<f64>() as f64;
+    let sum = data.iter().sum::<f64>();
     let count = data.len();
 
     match count {
@@ -57,7 +57,7 @@ fn std_deviation(data: &[f64]) -> Option<f64> {
             let variance = data
                 .iter()
                 .map(|value| {
-                    let diff = data_mean - (*value as f64);
+                    let diff = data_mean - *value;
 
                     diff * diff
                 })
@@ -389,7 +389,7 @@ pub fn em_optimize(
 
                 max_rel_diff = match rel_diff > max_rel_diff as f32 {
                     true => rel_diff as f64,
-                    false => max_rel_diff as f64,
+                    false => max_rel_diff,
                 };
 
                 if rel_diff > REL_DIFF_TOLERANCE {

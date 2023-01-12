@@ -250,7 +250,7 @@ fn correct_unmapped_counts(
         .expect("couldn't serialize corrected unmapped bc count.");
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
 pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
@@ -331,7 +331,7 @@ where
 
         let cm_path = parent.join("collate.json");
         let mut cm_file =
-            std::fs::File::create(&cm_path).context("could not create metadata file.")?;
+            std::fs::File::create(cm_path).context("could not create metadata file.")?;
 
         let cm_info_string =
             serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
@@ -536,7 +536,7 @@ where
     let min_rec_len = 24usize; // smallest size an individual record can be loaded in memory
     let max_rec = max_records as usize;
     let num_buckets = temp_buckets.len();
-    let num_threads = n_workers as usize;
+    let num_threads = n_workers;
     let loc_buffer_size = (min_rec_len + (most_ambig_record * 4_usize) - 4_usize).max(
         (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(262_144_usize),
     ); //131072_usize);
@@ -682,7 +682,7 @@ where
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         assert_eq!(expected, observed);
 
-        let md = std::fs::metadata(parent.join(&format!("bucket_{}.tmp", i)))?;
+        let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
         let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
         let observed_bytes = md.len();
         assert_eq!(expected_bytes, observed_bytes);
@@ -691,7 +691,7 @@ where
     //std::process::exit(1);
 
     // to hold the temp buckets threads will process
-    let slack = ((n_workers / 2) as usize).max(1_usize);
+    let slack = (n_workers / 2).max(1_usize);
     let temp_bucket_queue_size = slack + n_workers;
     let fq = Arc::new(ArrayQueue::<(
         u32,
@@ -740,7 +740,7 @@ where
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
                     cmap.clear();
 
-                    let fname = parent.join(&format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);

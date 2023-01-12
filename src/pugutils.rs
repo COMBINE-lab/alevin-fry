@@ -201,7 +201,7 @@ pub fn extract_graph(
 
                 // recall that we processed this eq class as a neighbor of eqid
                 hset[*eq2id as usize] = 1;
-                idxvec.push(*eq2id as u32);
+                idxvec.push(*eq2id);
                 let eq2 = &eqmap.eqc_info[*eq2id as usize];
 
                 // compare all the umis between eqid and eq2id

@@ -44,6 +44,7 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
+#[allow(clippy::manual_clamp)]
 fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();

@@ -87,7 +87,7 @@ pub fn infer(
     let num_genes = global_eq_classes.num_genes;
 
     let usa_offsets = if usa_mode {
-        Some(((num_genes / 3) as usize, (2 * num_genes / 3) as usize))
+        Some((num_genes / 3, (2 * num_genes / 3)))
     } else {
         None
     };
@@ -277,7 +277,7 @@ pub fn infer(
 
                         // fill out the triplet matrix in memory
                         for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                            writer.add_triplet(row_index as usize, *ind, *val);
+                            writer.add_triplet(row_index, *ind, *val);
                         }
                         /*
                         writeln!(
@@ -391,7 +391,7 @@ pub fn infer(
     let output_matrix_path = output_path.join("quants_mat.mtx");
     let writer_deref = trimat.lock();
     let writer = &*writer_deref.unwrap();
-    sprs::io::write_matrix_market(&output_matrix_path, writer)?;
+    sprs::io::write_matrix_market(output_matrix_path, writer)?;
 
     Ok(())
 }
