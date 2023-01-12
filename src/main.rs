@@ -552,7 +552,7 @@ fn main() -> anyhow::Result<()> {
             crit!(log,
             "The provided input directory lacks a generate_permit_list.json file; this should not happen."
            );
-           bail!("The provided input directory lacks a generate_permit_list.json file; this should not happen.");
+            bail!("The provided input directory lacks a generate_permit_list.json file; this should not happen.");
         }
     } // end quant if
 
