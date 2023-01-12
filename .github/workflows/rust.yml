@@ -18,7 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2.6.0
+        uses: actions/checkout@v3
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -36,7 +36,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v2.6.0
+    - uses: actions/checkout@v3
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -50,7 +51,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2.6.0
+        uses: actions/checkout@v3
+
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -70,7 +72,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v2.6.0
+    - uses: actions/checkout@v3
+    
     - name: Install
       run: cargo build --release
     - name: sample run

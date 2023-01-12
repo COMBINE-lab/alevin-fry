@@ -10,7 +10,7 @@
 use crate::cellfilter::permit_list_from_file;
 use anyhow::anyhow;
 use crossbeam_queue::ArrayQueue;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
 
@@ -87,7 +87,7 @@ pub fn infer(
     let num_genes = global_eq_classes.num_genes;
 
     let usa_offsets = if usa_mode {
-        Some(((num_genes / 3) as usize, (2 * num_genes / 3) as usize))
+        Some((num_genes / 3, (2 * num_genes / 3)))
     } else {
         None
     };
@@ -133,12 +133,17 @@ pub fn infer(
     }
 
     // the progress bar we'll use to monitor progress of the EM
-    let pbar = ProgressBar::new(num_cells as u64);
+    let pbar = ProgressBar::with_draw_target(
+        Some(num_cells as u64),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
+
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
             )
+            .expect("ProgressStyle template was invalid.")
             .progress_chars("╢▌▌░╟"),
     );
 
@@ -272,7 +277,7 @@ pub fn infer(
 
                         // fill out the triplet matrix in memory
                         for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                            writer.add_triplet(row_index as usize, *ind, *val);
+                            writer.add_triplet(row_index, *ind, *val);
                         }
                         /*
                         writeln!(
@@ -386,7 +391,7 @@ pub fn infer(
     let output_matrix_path = output_path.join("quants_mat.mtx");
     let writer_deref = trimat.lock();
     let writer = &*writer_deref.unwrap();
-    sprs::io::write_matrix_market(&output_matrix_path, writer)?;
+    sprs::io::write_matrix_market(output_matrix_path, writer)?;
 
     Ok(())
 }

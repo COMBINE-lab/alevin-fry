@@ -44,6 +44,7 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
+#[allow(clippy::manual_clamp)]
 fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
@@ -61,20 +62,30 @@ fn main() -> anyhow::Result<()> {
         .author(crate_authors)
         .arg(
             arg!(-b --bam <BAMFILE> "input SAM/BAM file")
+                .required(true)
                 .value_parser(pathbuf_file_exists_validator),
         )
         .arg(
-            arg!(-t --threads [THREADS] "number of threads to use for processing")
+            arg!(-t --threads <THREADS> "number of threads to use for processing")
+                .required(false)
                 .value_parser(value_parser!(u32))
-                .default_value(&max_num_threads),
+                .default_value(max_num_threads.clone()),
         )
-        .arg(arg!(-o --output <RADFILE> "output RAD file").value_parser(value_parser!(PathBuf)));
+        .arg(
+            arg!(-o --output <RADFILE> "output RAD file")
+                .required(true)
+                .value_parser(value_parser!(PathBuf)),
+        );
 
     let view_app = Command::new("view")
         .about("View a RAD file")
         .version(version)
         .author(crate_authors)
-        .arg(arg!(-r --rad <RADFILE> "input RAD file").value_parser(pathbuf_file_exists_validator))
+        .arg(
+            arg!(-r --rad <RADFILE> "input RAD file")
+                .required(true)
+                .value_parser(pathbuf_file_exists_validator),
+        )
         .arg(arg!(-H --header "flag for printing header"));
 
     let gen_app = Command::new("generate-permit-list")
@@ -82,11 +93,13 @@ fn main() -> anyhow::Result<()> {
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad RAD file")
+            .required(true)
             .value_parser(pathbuf_directory_exists_validator))
         .arg(arg!(-d --"expected-ori" <EXPECTEDORI> "the expected orientation of alignments")
+             .required(true)
              .ignore_case(true)
              .value_parser(["fw", "rc", "both", "either"]))
-        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory").value_parser(value_parser!(PathBuf)))
+        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory").required(true).value_parser(value_parser!(PathBuf)))
         .arg(arg!(
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             )
@@ -104,11 +117,11 @@ fn main() -> anyhow::Result<()> {
             .value_parser(pathbuf_file_exists_validator)
         )
         .group(ArgGroup::new("filter-method")
-               .args(&["knee-distance", "expect-cells", "force-cells", "valid-bc", "unfiltered-pl"])
+               .args(["knee-distance", "expect-cells", "force-cells", "valid-bc", "unfiltered-pl"])
                .required(true)
                )
         .arg(
-            arg!(-m --"min-reads" [MINREADS] "minimum read count threshold; only used with --unfiltered-pl")
+            arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .value_parser(value_parser!(usize))
                 .default_value("10"));
 
@@ -117,12 +130,14 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list")
+        .required(true)
         .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
+        .required(true)
         .value_parser(pathbuf_directory_exists_validator))
-    .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_collate_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file"))
-    .arg(arg!(-m --"max-records" [MAXRECORDS] "the maximum number of read records to keep in memory at once")
+    .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
          .value_parser(value_parser!(u32))
          .default_value("30000000"));
 
@@ -131,49 +146,50 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file")
+        .required(true)
         .value_parser(pathbuf_directory_exists_validator))
-    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)))
-    .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
+    .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").required(true).value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
-    .arg(arg!(-b --"num-bootstraps" [NUMBOOTSTRAPS] "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
+    .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"))
-    .arg(arg!(--"quant-subset" [SFILE] "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
+        .required(true)
         .ignore_case(true)
         .value_parser(value_parser!(ResolutionStrategy)))
-    .arg(arg!(--"sa-model" [SAMODEL] "preferred model of splicing ambiguity")
+    .arg(arg!(--"sa-model" <SAMODEL> "preferred model of splicing ambiguity")
         .ignore_case(true)
         .value_parser(value_parser!(SplicedAmbiguityModel))
         .default_value("winner-take-all")
         .hide(true))
-    .arg(arg!(--"umi-edit-dist" [EDIST] "the Hamming distance within which potentially colliding UMIs will be considered for correction")
+    .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
         .value_parser(value_parser!(u32))
-        .default_value_ifs(&[
-            ("resolution", Some("cr-like"), Some("0")),
-            ("resolution", Some("cr-like-em"), Some("0")),
-            ("resolution", Some("trivial"), Some("0")),
-            ("resolution", Some("parsimony"), Some("1")),
-            ("resolution", Some("parsimony-em"), Some("1")),
-            ("resolution", Some("parsimony-gene"), Some("1")),
-            ("resolution", Some("parsimony-gene-em"), Some("1")),
+        .default_value_ifs([
+            ("resolution", "cr-like", Some("0")),
+            ("resolution", "cr-like-em", Some("0")),
+            ("resolution", "trivial", Some("0")),
+            ("resolution", "parsimony", Some("1")),
+            ("resolution", "parsimony-em", Some("1")),
+            ("resolution", "parsimony-gene", Some("1")),
+            ("resolution", "parsimony-gene-em", Some("1")),
         ])
         .hide(true))
-    .arg(arg!(--"large-graph-thresh" [NVERT] "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
+    .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
         .value_parser(value_parser!(usize))
-        .default_value_ifs(&[
-            ("resolution", Some("parsimony-gene-em"), Some("1000")),
-            ("resolution", Some("parsimony"), Some("1000")),
-            ("resolution", Some("parsimony-em"), Some("1000")),
-            ("resolution", Some("parsimony-gene"), Some("1000")),
-            ("resolution", Some("parsimony-gene"), Some("1000")),
+        .default_value_ifs([
+            ("resolution", "parsimony-gene-em", Some("1000")),
+            ("resolution", "parsimony", Some("1000")),
+            ("resolution", "parsimony-em", Some("1000")),
+            ("resolution", "parsimony-gene", Some("1000")),
         ])
         .default_value("0") // for any other mode
         .hide(true))
-    .arg(arg!(--"small-thresh" [SMALLTHRESH] "cells with fewer than these many reads will be resolved using a custom approach")
+    .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
         .value_parser(value_parser!(usize))
         .default_value("10")
         .hide(true));
@@ -183,13 +199,15 @@ fn main() -> anyhow::Result<()> {
     .version(version)
     .author(crate_authors)
     .arg(arg!(-c --"count-mat" <EQCMAT> "matrix of cells by equivalence class counts")
+        .required(true)
         .value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-e --"eq-labels" <EQLABELS> "file containing the gene labels of the equivalence classes")
+        .required(true)
         .value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").value_parser(value_parser!(PathBuf)))
-    .arg(arg!(-t --threads [THREADS] "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
-    .arg(arg!(--"quant-subset" [SFILE] "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"));
 
@@ -275,7 +293,7 @@ fn main() -> anyhow::Result<()> {
             None => None,
         };
 
-        if t.is_present("knee-distance") {
+        if t.get_flag("knee-distance") {
             fmeth = CellFilterMethod::KneeFinding;
         }
 
@@ -312,7 +330,7 @@ fn main() -> anyhow::Result<()> {
         };
 
         // velo_mode --- currently, on this branch, it is always false
-        let velo_mode = false; //t.is_present("velocity-mode");
+        let velo_mode = false; //t.get_flag("velocity-mode");
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
@@ -346,7 +364,7 @@ fn main() -> anyhow::Result<()> {
     // convert a rad file to a textual representation and write to stdout
     if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: &PathBuf = t.get_one("rad").unwrap();
-        let print_header = t.is_present("header");
+        let print_header = t.get_flag("header");
         alevin_fry::convert::view(rad_file, print_header, &log)
     }
 
@@ -356,7 +374,7 @@ fn main() -> anyhow::Result<()> {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
         let num_threads = *t.get_one("threads").unwrap();
-        let compress_out = t.is_present("compress");
+        let compress_out = t.get_flag("compress");
         let max_records: u32 = *t.get_one("max-records").unwrap();
         alevin_fry::collate::collate(
             input_dir,
@@ -375,10 +393,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("quant") {
         let num_threads = *t.get_one("threads").unwrap();
         let num_bootstraps = *t.get_one("num-bootstraps").unwrap();
-        let init_uniform = t.is_present("init-uniform");
-        let summary_stat = t.is_present("summary-stat");
-        let dump_eq = t.is_present("dump-eqclasses");
-        let use_mtx = !t.is_present("use-eds");
+        let init_uniform = t.get_flag("init-uniform");
+        let summary_stat = t.get_flag("summary-stat");
+        let dump_eq = t.get_flag("dump-eqclasses");
+        let use_mtx = !t.get_flag("use-eds");
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
@@ -552,6 +570,7 @@ fn main() -> anyhow::Result<()> {
             crit!(log,
             "The provided input directory lacks a generate_permit_list.json file; this should not happen."
            );
+            bail!("The provided input directory lacks a generate_permit_list.json file; this should not happen.");
         }
     } // end quant if
 
@@ -559,12 +578,12 @@ fn main() -> anyhow::Result<()> {
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
-        let use_mtx = !t.is_present("use-eds");
+        let use_mtx = !t.get_flag("use-eds");
         let output_dir = t.get_one("output-dir").unwrap();
         let count_mat = t.get_one("count-mat").unwrap();
         let eq_label_file = t.get_one("eq-labels").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
-        let usa_mode = t.is_present("usa");
+        let usa_mode = t.get_flag("usa");
 
         alevin_fry::infer::infer(
             count_mat,

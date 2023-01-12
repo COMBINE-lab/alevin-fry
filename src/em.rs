@@ -41,7 +41,7 @@ pub enum EmInitType {
 
 #[allow(dead_code)]
 fn mean(data: &[f64]) -> Option<f64> {
-    let sum = data.iter().sum::<f64>() as f64;
+    let sum = data.iter().sum::<f64>();
     let count = data.len();
 
     match count {
@@ -57,7 +57,7 @@ fn std_deviation(data: &[f64]) -> Option<f64> {
             let variance = data
                 .iter()
                 .map(|value| {
-                    let diff = data_mean - (*value as f64);
+                    let diff = data_mean - *value;
 
                     diff * diff
                 })
@@ -136,7 +136,7 @@ pub(crate) fn em_update_subset(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -167,7 +167,7 @@ pub(crate) fn em_update_subset_usa(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -192,7 +192,7 @@ pub fn em_optimize_subset(
     for (i, count) in cell_data {
         let labels = eqclasses.refs_for_eqc(*i);
         if labels.len() == 1 {
-            let idx = labels.get(0).expect("can't extract labels");
+            let idx = labels.first().expect("can't extract labels");
             alphas_in[*idx as usize] += *count as f32;
             unique_evidence[*idx as usize] = true;
         } else {
@@ -319,7 +319,7 @@ pub fn em_update(
                 }
             }
         } else {
-            let tidx = labels.get(0).expect("can't extract labels");
+            let tidx = labels.first().expect("can't extract labels");
             alphas_out[*tidx as usize] += *count as f32;
         }
     }
@@ -339,7 +339,7 @@ pub fn em_optimize(
 
     for (labels, count) in eqclasses {
         if labels.len() == 1 {
-            let idx = labels.get(0).expect("can't extract labels");
+            let idx = labels.first().expect("can't extract labels");
             alphas_in[*idx as usize] += *count as f32;
             unique_evidence[*idx as usize] = true;
         } else {
@@ -389,7 +389,7 @@ pub fn em_optimize(
 
                 max_rel_diff = match rel_diff > max_rel_diff as f32 {
                     true => rel_diff as f64,
-                    false => max_rel_diff as f64,
+                    false => max_rel_diff,
                 };
 
                 if rel_diff > REL_DIFF_TOLERANCE {

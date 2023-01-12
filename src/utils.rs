@@ -80,7 +80,7 @@ pub fn write_permit_list_freq(
     bclen: u16,
     permit_freq_map: &HashMap<u64, u64, ahash::RandomState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let output = std::fs::File::create(&o_path)?;
+    let output = std::fs::File::create(o_path)?;
     let mut writer = BufWriter::new(&output);
 
     {
@@ -701,7 +701,7 @@ pub fn read_filter_list(
     let mut fset = HashSet::<u64, ahash::RandomState>::with_hasher(s);
 
     let filt_file = std::fs::File::open(flist).context("couldn't open file")?;
-    let reader = BufReader::new(filt_file);
+    let mut reader = BufReader::new(filt_file);
 
     // Read the file line by line using the lines() iterator from std::io::BufRead.
     reader
@@ -731,7 +731,7 @@ pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InternalVersionInfo {
     pub major: u32,
     pub minor: u32,

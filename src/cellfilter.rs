@@ -23,6 +23,7 @@ use libradicl::rad_types;
 use libradicl::BarcodeLookupMap;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
+use serde::Serialize;
 use serde_json::json;
 use std::cmp;
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum CellFilterMethod {
     // cut off at this cell in
     // the frequency sorted list
@@ -203,7 +204,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
             assert_eq!(
                 *first_bclen,
                 l.len(),
-                "found barcodes of different lenghts {} and {}",
+                "found barcodes of different lengths {} and {}",
                 *first_bclen,
                 l.len()
             );
@@ -230,9 +231,10 @@ fn process_unfiltered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent)
+    std::fs::create_dir_all(parent)
         .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
 
     // the smallest number of reads we'll allow per barcode
@@ -372,7 +374,7 @@ fn process_unfiltered(
     );
 
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent).with_context(|| {
+    std::fs::create_dir_all(parent).with_context(|| {
         format!(
             "couldn't create path to output directory {}",
             parent.display()
@@ -406,8 +408,7 @@ fn process_unfiltered(
     }
 
     let pm_path = parent.join("permit_map.bin");
-    let pm_file =
-        std::fs::File::create(&pm_path).context("could not create serialization file.")?;
+    let pm_file = std::fs::File::create(pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
     bincode::serialize_into(&mut pm_writer, &hm)
         .context("couldn't serialize permit list mapping.")?;
@@ -418,11 +419,12 @@ fn process_unfiltered(
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
-    "permit-list-type" : "unfiltered"
+    "permit-list-type" : "unfiltered",
+    "gpl_options" : &gpl_opts
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
+    let mut m_file = std::fs::File::create(m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
         serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
@@ -451,6 +453,7 @@ fn process_filtered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let valid_bc: Vec<u64>;
     let mut freq: Vec<u64> = hm.values().cloned().collect();
@@ -521,7 +524,7 @@ fn process_filtered(
     }
 
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(&parent).with_context(|| {
+    std::fs::create_dir_all(parent).with_context(|| {
         format!(
             "failed to create path to output location {}",
             parent.display()
@@ -546,7 +549,7 @@ fn process_filtered(
     };
 
     let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(&s_path).context("could not create serialization file.")?;
+    let s_file = std::fs::File::create(s_path).context("could not create serialization file.")?;
     let mut s_writer = BufWriter::new(&s_file);
     bincode::serialize_into(&mut s_writer, &full_permit_list)
         .context("couldn't serialize permit list.")?;
@@ -557,11 +560,12 @@ fn process_filtered(
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
-    "permit-list-type" : "filtered"
+    "permit-list-type" : "filtered",
+    "gpl_options" : &gpl_opts
     });
 
     let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).context("could not create metadata file.")?;
+    let mut m_file = std::fs::File::create(m_path).context("could not create metadata file.")?;
 
     let meta_info_string =
         serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
@@ -586,7 +590,7 @@ fn process_filtered(
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
-    let filter_meth = gpl_opts.fmeth;
+    let filter_meth = gpl_opts.fmeth.clone();
     let expected_ori = gpl_opts.expected_ori;
     let version = gpl_opts.version;
     let velo_mode = gpl_opts.velo_mode;
@@ -728,6 +732,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     velo_mode,
                     cmdline,
                     log,
+                    &gpl_opts,
                 )
             } else {
                 Ok(0)
@@ -757,6 +762,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 velo_mode,
                 cmdline,
                 log,
+                &gpl_opts,
             )
         }
     }

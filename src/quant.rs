@@ -9,7 +9,7 @@
 
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 #[allow(unused_imports)]
 use slog::{crit, info, warn};
@@ -17,6 +17,7 @@ use slog::{crit, info, warn};
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use scroll::Pread;
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -46,7 +47,7 @@ use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
     WinnerTakeAll,
@@ -70,7 +71,7 @@ impl FromStr for SplicedAmbiguityModel {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
@@ -215,7 +216,7 @@ fn write_eqc_counts(
 
     // and write it to file.
     let mtx_path = output_path.join("geqc_counts.mtx");
-    sprs::io::write_matrix_market(&mtx_path, &eqmat).context("could not write geqc_counts.mtx")?;
+    sprs::io::write_matrix_market(mtx_path, &eqmat).context("could not write geqc_counts.mtx")?;
 
     // write the sets of genes that define each eqc
     let gn_eq_path = output_path.join("gene_eqclass.txt.gz");
@@ -247,7 +248,7 @@ fn write_eqc_counts(
         // offset for unspliced gene ids
         let unspliced_offset = (num_genes / 3) as u32;
         // offset for ambiguous gene ids
-        let ambig_offset = (2 * unspliced_offset) as u32;
+        let ambig_offset = 2 * unspliced_offset;
         // to hold the gene labels as we write them.
         let mut gl;
 
@@ -503,16 +504,18 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
 
     let mut _num_reads: usize = 0;
 
-    let pbar = ProgressBar::new(num_cells);
+    let pbar = ProgressBar::with_draw_target(
+        Some(num_cells),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
     pbar.set_style(
         ProgressStyle::default_bar()
             .template(
                 "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
             )
+            .expect("ProgressStyle template was invalid.")
             .progress_chars("╢▌▌░╟"),
     );
-    let ddelta = 500_u64.min(num_cells / 10);
-    pbar.set_draw_delta(ddelta);
 
     // Trying this parallelization strategy to avoid
     // many temporary data structures.
@@ -600,13 +603,12 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     };
 
     let usa_offsets = if usa_mode {
-        Some(((num_rows / 3) as usize, (2 * num_rows / 3) as usize))
+        Some((num_rows / 3, (2 * num_rows / 3)))
     } else {
         None
     };
 
-    let trimat =
-        sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows as usize), tmcap);
+    let trimat = sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows), tmcap);
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::new(bc_file),
@@ -673,11 +675,11 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
             EqMapType::GeneLevel => {
                 // get the max spliced gene ID and add 1 to get the unspliced ID
                 // and another 1 to get the size.
-                (gene_name_to_id
+                gene_name_to_id
                     .values()
                     .max()
                     .expect("gene name to id map should not be empty.")
-                    + 2) as u32
+                    + 2
             }
         };
 
@@ -867,8 +869,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
                                     let g = pugutils::extract_graph(&eq_map, pug_exact_umi, &log);
                                     // for the PUG resolution algorithm, set the hasher
                                     // that will be used based on the cell barcode.
-                                    let s =
-                                        ahash::RandomState::with_seeds(bc as u64, 7u64, 1u64, 8u64);
+                                    let s = ahash::RandomState::with_seeds(bc, 7u64, 1u64, 8u64);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
@@ -1126,7 +1127,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
                             } else {
                                 // fill out the triplet matrix in memory
                                 for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                    writer.trimat.add_triplet(row_index as usize, *ind, *val);
+                                    writer.trimat.add_triplet(row_index, *ind, *val);
                                 }
                             }
                             writeln!(
@@ -1263,7 +1264,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         // now remove it
         fs::remove_file(&mat_path)?;
         let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        sprs::io::write_matrix_market(&mtx_path, &writer.trimat)?;
+        sprs::io::write_matrix_market(mtx_path, &writer.trimat)?;
     }
 
     let pb_msg = format!(
@@ -1291,7 +1292,8 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     "dump_eq" : dump_eq,
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
-    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap()
+    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap(),
+    "quant_options" : quant_opts
     });
 
     let mut meta_info_file =
