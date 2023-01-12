@@ -38,7 +38,7 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", version = "0.5.0" }
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", version = "0.5.1" }
 anyhow = "1.0.68"
 arrayvec = "0.7.2"
 ahash = "0.8.2"
