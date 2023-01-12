@@ -1,7 +1,7 @@
 //use derive_builder::Builder;
 use bio_types::strand::Strand;
-use slog;
 use serde::Serialize;
+use slog;
 use typed_builder::TypedBuilder;
 
 use crate::cellfilter::CellFilterMethod;

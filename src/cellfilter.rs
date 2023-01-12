@@ -231,7 +231,7 @@ fn process_unfiltered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
-    gpl_opts: &GenPermitListOpts, 
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent)
@@ -454,7 +454,7 @@ fn process_filtered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
-    gpl_opts: &GenPermitListOpts, 
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let valid_bc: Vec<u64>;
     let mut freq: Vec<u64> = hm.values().cloned().collect();
