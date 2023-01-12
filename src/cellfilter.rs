@@ -408,8 +408,7 @@ fn process_unfiltered(
     }
 
     let pm_path = parent.join("permit_map.bin");
-    let pm_file =
-        std::fs::File::create(pm_path).context("could not create serialization file.")?;
+    let pm_file = std::fs::File::create(pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
     bincode::serialize_into(&mut pm_writer, &hm)
         .context("couldn't serialize permit list mapping.")?;
