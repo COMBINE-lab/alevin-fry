@@ -18,13 +18,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2.4.2
+        uses: actions/checkout@v2.6.0
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          override: true
           components: rustfmt
       
       - name: Check format
@@ -37,7 +36,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v2.4.2
+    - uses: actions/checkout@v2.6.0
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -51,17 +50,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2.4.2
+        uses: actions/checkout@v2.6.0
 
       - name: Install stable toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          override: true
           components: clippy
       
       - name: Lint with clippy
-        uses: actions-rs/clippy-check@v1
+        uses: actions-rs-plus/clippy-check@cbcfbff5103c40b26d7077f164f0ec6052036081
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -72,7 +70,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v2.4.2
+    - uses: actions/checkout@v2.6.0
     - name: Install
       run: cargo build --release
     - name: sample run
