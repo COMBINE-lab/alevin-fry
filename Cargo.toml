@@ -79,7 +79,7 @@ sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0
 
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
-clap = { version = "=3.2.23", features = ["derive", "wrap_help", "cargo"] }
+clap = { version = "=4.0.32", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
 
 [profile.release]
 #debug = true
