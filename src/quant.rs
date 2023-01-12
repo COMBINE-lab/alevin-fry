@@ -17,6 +17,7 @@ use slog::{crit, info, warn};
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use scroll::Pread;
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -46,7 +47,7 @@ use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
     WinnerTakeAll,
@@ -70,7 +71,7 @@ impl FromStr for SplicedAmbiguityModel {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize)]
 pub enum ResolutionStrategy {
     Trivial,
     CellRangerLike,
@@ -1293,7 +1294,8 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     "dump_eq" : dump_eq,
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
-    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap()
+    "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap(),
+    "quant_options" : quant_opts
     });
 
     let mut meta_info_file =

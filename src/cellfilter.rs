@@ -23,6 +23,7 @@ use libradicl::rad_types;
 use libradicl::BarcodeLookupMap;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
+use serde::Serialize;
 use serde_json::json;
 use std::cmp;
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum CellFilterMethod {
     // cut off at this cell in
     // the frequency sorted list
@@ -230,6 +231,7 @@ fn process_unfiltered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(output_dir);
     std::fs::create_dir_all(&parent)
@@ -418,7 +420,8 @@ fn process_unfiltered(
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
-    "permit-list-type" : "unfiltered"
+    "permit-list-type" : "unfiltered",
+    "gpl_options" : &gpl_opts
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -451,6 +454,7 @@ fn process_filtered(
     velo_mode: bool,
     cmdline: &str,
     log: &slog::Logger,
+    gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let valid_bc: Vec<u64>;
     let mut freq: Vec<u64> = hm.values().cloned().collect();
@@ -557,7 +561,8 @@ fn process_filtered(
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
-    "permit-list-type" : "filtered"
+    "permit-list-type" : "filtered",
+    "gpl_options" : &gpl_opts
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -586,7 +591,7 @@ fn process_filtered(
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
-    let filter_meth = gpl_opts.fmeth;
+    let filter_meth = gpl_opts.fmeth.clone();
     let expected_ori = gpl_opts.expected_ori;
     let version = gpl_opts.version;
     let velo_mode = gpl_opts.velo_mode;
@@ -728,6 +733,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     velo_mode,
                     cmdline,
                     log,
+                    &gpl_opts,
                 )
             } else {
                 Ok(0)
@@ -757,6 +763,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 velo_mode,
                 cmdline,
                 log,
+                &gpl_opts,
             )
         }
     }

@@ -15,15 +15,15 @@ impl clap::ValueEnum for ResolutionStrategy {
         ]
     }
 
-    fn to_possible_value<'a>(&self) -> Option<clap::PossibleValue<'a>> {
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         match self {
-            Self::Trivial => Some(clap::PossibleValue::new("trivial")),
-            Self::CellRangerLike => Some(clap::PossibleValue::new("cr-like")),
-            Self::CellRangerLikeEm => Some(clap::PossibleValue::new("cr-like-em")),
-            Self::ParsimonyEm => Some(clap::PossibleValue::new("parsimony-em")),
-            Self::Parsimony => Some(clap::PossibleValue::new("parsimony")),
-            Self::ParsimonyGeneEm => Some(clap::PossibleValue::new("parsimony-gene-em")),
-            Self::ParsimonyGene => Some(clap::PossibleValue::new("parsimony-gene")),
+            Self::Trivial => Some(clap::builder::PossibleValue::new("trivial")),
+            Self::CellRangerLike => Some(clap::builder::PossibleValue::new("cr-like")),
+            Self::CellRangerLikeEm => Some(clap::builder::PossibleValue::new("cr-like-em")),
+            Self::ParsimonyEm => Some(clap::builder::PossibleValue::new("parsimony-em")),
+            Self::Parsimony => Some(clap::builder::PossibleValue::new("parsimony")),
+            Self::ParsimonyGeneEm => Some(clap::builder::PossibleValue::new("parsimony-gene-em")),
+            Self::ParsimonyGene => Some(clap::builder::PossibleValue::new("parsimony-gene")),
         }
     }
 }
@@ -33,10 +33,10 @@ impl clap::ValueEnum for SplicedAmbiguityModel {
         &[Self::PreferAmbiguity, Self::WinnerTakeAll]
     }
 
-    fn to_possible_value<'a>(&self) -> Option<clap::PossibleValue<'a>> {
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         match self {
-            Self::PreferAmbiguity => Some(clap::PossibleValue::new("prefer-ambig")),
-            Self::WinnerTakeAll => Some(clap::PossibleValue::new("winner-take-all")),
+            Self::PreferAmbiguity => Some(clap::builder::PossibleValue::new("prefer-ambig")),
+            Self::WinnerTakeAll => Some(clap::builder::PossibleValue::new("winner-take-all")),
         }
     }
 }
