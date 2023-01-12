@@ -37,6 +37,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests
@@ -51,6 +52,7 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -71,6 +73,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v3
+    
     - name: Install
       run: cargo build --release
     - name: sample run
