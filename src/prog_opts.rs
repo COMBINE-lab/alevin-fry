@@ -1,6 +1,7 @@
 //use derive_builder::Builder;
 use bio_types::strand::Strand;
 use slog;
+use serde::Serialize;
 use typed_builder::TypedBuilder;
 
 use crate::cellfilter::CellFilterMethod;
@@ -8,7 +9,7 @@ use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 use std::path::PathBuf;
 
-#[derive(TypedBuilder, Debug)]
+#[derive(TypedBuilder, Debug, Serialize)]
 //#[builder(name = "QuantOptsBuilder")]
 pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub input_dir: &'a PathBuf,
@@ -28,10 +29,11 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub filter_list: Option<&'d PathBuf>,
     pub cmdline: &'e str,
     pub version: &'f str,
+    #[serde(skip_serializing)]
     pub log: &'g slog::Logger,
 }
 
-#[derive(TypedBuilder, Debug)]
+#[derive(TypedBuilder, Debug, Serialize)]
 pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub input_dir: &'a PathBuf,
     pub output_dir: &'b PathBuf,
@@ -40,5 +42,6 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub velo_mode: bool,
     pub cmdline: &'c str,
     pub version: &'d str,
+    #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
 }

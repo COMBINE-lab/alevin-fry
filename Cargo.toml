@@ -67,7 +67,7 @@ csv = "1.1.6"
 mimalloc = { version = "0.1.34", default-features = false }
 num-format = "0.4.4"
 num_cpus = "1.15.0"
-bio-types = "0.13.0"
+bio-types = { version = "0.13.0", default-features = true, features = ["serde"] }
 itertools = "0.10.5"
 thiserror = "1.0.38"
 statrs = "0.16.0"

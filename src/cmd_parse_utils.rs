@@ -1,6 +1,5 @@
 use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 use clap;
-use clap::builder::PossibleValue;
 use std::path::{Path, PathBuf};
 
 impl clap::ValueEnum for ResolutionStrategy {

@@ -155,6 +155,7 @@ dependencies = [
  "derive-new",
  "lazy_static",
  "regex",
+ "serde",
  "strum_macros",
  "thiserror",
 ]
