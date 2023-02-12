@@ -8,7 +8,7 @@ You can read the paper describing alevin fry, "Alevin-fry unlocks rapid, accurat
 
 ### Getting started with `alevin-fry` and dedicated documentation
 
-While this `README` contains some useful information to get started and some pointers, `alevin-fry` has it's own dedicated documentation site, hosted on `ReadTheDocs`, that you can find [here](https://alevin-fry.readthedocs.io/en/latest/).
+While this `README` contains some useful information to get started and some pointers, `alevin-fry` has it's own [dedicated documentation site](https://alevin-fry.readthedocs.io/en/latest/), hosted on `ReadTheDocs`.
 
 ### More information 
 
@@ -40,7 +40,7 @@ With `bioconda` in the appropriate place in your channel list, you should simply
 
 
 ```{bash}
-$ conda install alevin-fry
+$ conda install -c bioconda alevin-fry
 ``` 
 
 ## Installing from crates.io
