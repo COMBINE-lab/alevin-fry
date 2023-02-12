@@ -2,6 +2,18 @@
 
 Changelog for alevin-fry
 
+## [0.8.1](https://github.com/COMBINE-lab/alevin-fry/compare/v0.8.0...v0.8.1) (2023-01-12)
+
+
+### Features
+
+* **update_deps:** update dependencies ([a77c96e](https://github.com/COMBINE-lab/alevin-fry/commit/a77c96e162758e8cf5f4e509263216158bb580c9))
+
+
+### Bug Fixes
+
+* address [#95](https://github.com/COMBINE-lab/alevin-fry/issues/95) ([ad8ce7d](https://github.com/COMBINE-lab/alevin-fry/commit/ad8ce7d69a619d5f6d8bff8156483186293458e3))
+
 ## [0.8.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.7.0...v0.8.0) (2022-10-11)
 
 
