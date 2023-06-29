@@ -369,8 +369,7 @@ where
 
     // the exact position at the end of the header,
     // precisely sizeof(u64) bytes beyond the num_chunks field.
-    let end_header_pos =
-        br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
+    let end_header_pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
 
     info!(
         log,
