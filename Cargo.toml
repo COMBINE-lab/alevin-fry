@@ -38,48 +38,48 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", version = "0.5.1" }
-anyhow = "1.0.68"
-arrayvec = "0.7.2"
-ahash = "0.8.2"
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.6.0" }
+anyhow = "1.0.71"
+arrayvec = "0.7.4"
+ahash = "0.8.3"
 bincode = "1.3.3"
-bstr = "1.1.0"
-crossbeam-channel = "0.5.6"
+bstr = "1.5.0"
+crossbeam-channel = "0.5.8"
 crossbeam-queue = "0.3.8"
 # derive_builder = "0.11.2"
-typed-builder = "0.11.0"
-indicatif = "0.17.2"
-needletail = "0.4.1"
-petgraph = "0.6.2"
-flate2 = "1.0.25"
+typed-builder = "0.14.0"
+indicatif = "0.17.5"
+needletail = "0.5.1"
+petgraph = "0.6.3"
+flate2 = "1.0.26"
 scroll = "0.11.0"
-serde = { version = "1.0.152", features = ["derive"] }
-serde_json = "1.0.91"
-sprs = "0.11.0"
+serde = { version = "1.0.164", features = ["derive"] }
+serde_json = "1.0.99"
+sprs = "0.11.1"
 slog = "2.7.0"
 slog-term = "2.9.0"
 slog-async = "2.7.0"
 smallvec = "1.10.0"
 snap = "1.1.0"
 rand = "0.8.5"
-chrono = "0.4.23"
-csv = "1.1.6"
-mimalloc = { version = "0.1.34", default-features = false }
+chrono = "0.4.26"
+csv = "1.2.2"
+mimalloc = { version = "0.1.37", default-features = false }
 num-format = "0.4.4"
-num_cpus = "1.15.0"
-bio-types = { version = "0.13.0", default-features = true, features = ["serde"] }
-itertools = "0.10.5"
-thiserror = "1.0.38"
+num_cpus = "1.16.0"
+bio-types = { version = "1.0.0", default-features = true, features = ["serde"] }
+itertools = "0.11.0"
+thiserror = "1.0.40"
 statrs = "0.16.0"
-rust-htslib = { version = "0.40.2", default-features = false, features = [
+rust-htslib = { version = "0.44.1", default-features = false, features = [
   "bzip2",
   "lzma",
 ] }
-sce = { git = "https://github.com/parazodiac/SingleCellExperiment", version = "0.1.2" }
+sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
-clap = { version = "=4.0.32", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
+clap = { version = "=4.3.9", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
 
 [profile.release]
 #debug = true
