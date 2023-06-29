@@ -24,7 +24,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -369,8 +369,7 @@ where
 
     // the exact position at the end of the header,
     // precisely sizeof(u64) bytes beyond the num_chunks field.
-    let end_header_pos =
-        br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
+    let end_header_pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
 
     info!(
         log,
@@ -398,7 +397,7 @@ where
     let umit = rl_tags.tags[1].typeid;
 
     // the exact position at the end of the header + file tags
-    let pos = br.get_ref().seek(SeekFrom::Current(0)).unwrap() - (br.buffer().len() as u64);
+    let pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
 
     // copy the header
     {

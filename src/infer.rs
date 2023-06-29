@@ -53,8 +53,8 @@ pub fn infer(
         .unwrap_or_else(|| panic!("cannot get parent path of {:?}", count_mat_path));
 
     // read the file and convert it to csr (rows are *cells*)
-    let count_mat: sprs::CsMatBase<u32, u32, Vec<u32>, Vec<u32>, Vec<u32>, _> =
-        match sprs::io::read_matrix_market::<u32, u32, &std::path::Path>(count_mat_path) {
+    let count_mat: sprs::CsMatBase<i32, u32, Vec<u32>, Vec<u32>, Vec<i32>, _> =
+        match sprs::io::read_matrix_market::<i32, u32, &std::path::Path>(count_mat_path) {
             Ok(t) => t.to_csr(),
             Err(e) => {
                 warn!(log, "error reading mtx file{:?}", e);
@@ -359,7 +359,11 @@ pub fn infer(
 
             // gather the data from the row's iterator into a vector of
             // (eq_id, count) tuples.
-            let cell_data: Vec<(u32, u32)> = row_vec.iter().map(|e| (e.0 as u32, *e.1)).collect();
+            // NOTE: because of the matrix market format requirements (and the compatible
+            // implmentation in sprs), we have read the matrix in with i32 instead of u32 entries.
+            // Here we convert the i32 counts (the second element of the tuple here) to u32.
+            let cell_data: Vec<(u32, u32)> =
+                row_vec.iter().map(|e| (e.0 as u32, *e.1 as u32)).collect();
             // keep pushing this data onto our work queue while we can.
             // launch off these cells on the queue
             let mut cd_clone = (processed_ind, cell_data.clone());
