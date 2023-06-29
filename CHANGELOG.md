@@ -2,6 +2,13 @@
 
 Changelog for alevin-fry
 
+## [0.8.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.8.1...v0.8.2) (2023-06-29)
+
+
+### Bug Fixes
+
+* update deps, make clippy happy ([ac1a316](https://github.com/COMBINE-lab/alevin-fry/commit/ac1a316001103f39a173b8a066c62810a8724875))
+
 ## [0.8.1](https://github.com/COMBINE-lab/alevin-fry/compare/v0.8.0...v0.8.1) (2023-01-12)
 
 
