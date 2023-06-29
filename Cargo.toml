@@ -1,6 +1,6 @@
 [package]
 name = "alevin-fry"
-version = "0.8.1"
+version = "0.8.2"
 authors = [
   "Avi Srivastava <avi.srivastava@nyu.edu>",
   "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
@@ -16,7 +16,6 @@ repository = "https://github.com/COMBINE-lab/alevin-fry"
 homepage = "https://github.com/COMBINE-lab/alevin-fry"
 documentation = "https://alevin-fry.readthedocs.io/en/latest/"
 include = [
-  "/libradicl/src/*.rs",
   "/src/*.rs",
   "/Cargo.toml",
   "/README.md",

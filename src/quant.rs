@@ -47,16 +47,11 @@ use libradicl::rad_types;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
     PreferAmbiguity,
+    #[default]
     WinnerTakeAll,
-}
-
-impl Default for SplicedAmbiguityModel {
-    fn default() -> Self {
-        SplicedAmbiguityModel::WinnerTakeAll
-    }
 }
 
 // Implement the trait
@@ -71,21 +66,16 @@ impl FromStr for SplicedAmbiguityModel {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize)]
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum ResolutionStrategy {
     Trivial,
+    #[default]
     CellRangerLike,
     CellRangerLikeEm,
     ParsimonyEm,
     Parsimony,
     ParsimonyGeneEm,
     ParsimonyGene,
-}
-
-impl Default for ResolutionStrategy {
-    fn default() -> Self {
-        ResolutionStrategy::CellRangerLike
-    }
 }
 
 impl fmt::Display for ResolutionStrategy {

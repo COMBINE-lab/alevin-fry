@@ -167,7 +167,7 @@ where
 
     // keep a pointer to header pos
     let end_header_pos =
-        data.seek(SeekFrom::Current(0)).unwrap() - std::mem::size_of::<u64>() as u64;
+        data.stream_position().unwrap() - std::mem::size_of::<u64>() as u64;
 
     // check header position
     info!(log, "end header pos: {:?}", end_header_pos,);
