@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::Context;
+use anyhow::bail;
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use num_format::{Locale};
@@ -15,13 +15,19 @@ use std::fs;
 use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
-use libradicl::rad_types;
+//
+use rust_htslib::{bam, bam::record::Aux, bam::Read};
+
+use libradicl::rad_types::{self, RadType, TagValue};
 use libradicl::utils::MASK_LOWER_31_U32;
+use libradicl::{
+    chunk,
+    header::RadPrelude,
+    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+};
+
 use needletail::bitkmer::*;
 use rand::Rng;
-use rust_htslib::bam::HeaderView;
-use rust_htslib::{bam, bam::record::Aux, bam::Read};
-use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 use std::str;
@@ -78,20 +84,6 @@ pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
     Ok(cb_id)
 }
 
-#[allow(dead_code)]
-pub fn tid_2_contig(h: &HeaderView) -> HashMap<u32, String> {
-    let mut dict: HashMap<u32, String> = HashMap::with_capacity(46);
-    for (i, t) in h
-        .target_names()
-        .iter()
-        .map(|a| str::from_utf8(a).unwrap())
-        .enumerate()
-    {
-        dict.insert(i as u32, t.to_owned());
-    }
-    dict
-}
-
 pub fn bam2rad<P1, P2>(input_file: P1, rad_file: P2, num_threads: u32, log: &slog::Logger)
 where
     P1: AsRef<Path>,
@@ -121,7 +113,6 @@ where
     }
 
     let hdrv = bam.header().to_owned();
-    // let tid_lookup: HashMap<u32, String>  = tid_2_contig(&hdrv);
     let mut data = Cursor::new(vec![]);
     // initialize the header (do we need this ?)
     // let mut hdr = libradicl::RadHeader::from_bam_header(&hdrv);
@@ -193,12 +184,12 @@ where
         let mut umi_tag_str = "ulen";
 
         // str - type
-        rad_types::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
+        libradicl::io::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
         // str - type
-        rad_types::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
+        libradicl::io::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -225,10 +216,10 @@ where
 
         // type is conditional on barcode and umi length
         let bc_typeid = match bclen {
-            1..=4 => rad_types::encode_type_tag(rad_types::RadType::U8).unwrap(),
-            5..=8 => rad_types::encode_type_tag(rad_types::RadType::U16).unwrap(),
-            9..=16 => rad_types::encode_type_tag(rad_types::RadType::U32).unwrap(),
-            17..=32 => rad_types::encode_type_tag(rad_types::RadType::U64).unwrap(),
+            1..=4 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U8)).unwrap(),
+            5..=8 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U16)).unwrap(),
+            9..=16 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U32)).unwrap(),
+            17..=32 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U64)).unwrap(),
             l => {
                 crit!(log, "cannot encode barcode of length {} > 32", l);
                 std::process::exit(1);
@@ -236,10 +227,10 @@ where
         };
 
         let umi_typeid = match umilen {
-            1..=4 => rad_types::encode_type_tag(rad_types::RadType::U8).unwrap(),
-            5..=8 => rad_types::encode_type_tag(rad_types::RadType::U16).unwrap(),
-            9..=16 => rad_types::encode_type_tag(rad_types::RadType::U32).unwrap(),
-            17..=32 => rad_types::encode_type_tag(rad_types::RadType::U64).unwrap(),
+            1..=4 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U8)).unwrap(),
+            5..=8 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U16)).unwrap(),
+            9..=16 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U32)).unwrap(),
+            17..=32 => rad_types::encode_type_tag(RadType::Int(rad_types::RadIntId::U64)).unwrap(),
             l => {
                 crit!(log, "cannot encode umi of length {} > 32", l);
                 std::process::exit(1);
@@ -248,11 +239,11 @@ where
 
         //info!(log, "CB LEN : {}, UMI LEN : {}", bclen, umilen);
 
-        rad_types::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
+        libradicl::io::write_str_bin(cb_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&bc_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
-        rad_types::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
+        libradicl::io::write_str_bin(umi_tag_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&umi_typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -264,7 +255,7 @@ where
         // reference id
         let refid_str = "compressed_ori_refid";
         typeid = 3u8;
-        rad_types::write_str_bin(refid_str, &rad_types::RadIntId::U16, &mut data);
+        libradicl::io::write_str_bin(refid_str, &rad_types::RadIntId::U16, &mut data);
         data.write_all(&typeid.to_le_bytes())
             .expect("coudn't write to output file");
 
@@ -503,7 +494,8 @@ where
 {
     let i_file = File::open(rad_file).unwrap();
     let mut br = BufReader::new(i_file);
-    let hdr = rad_types::RadHeader::from_bytes(&mut br);
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    let hdr = &prelude.hdr;
     // info!(
     //     log,
     //     "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -512,23 +504,23 @@ where
     //     hdr.num_chunks.to_formatted_string(&Locale::en)
     // );
     // file-level
-    let _fl_tags = rad_types::TagSection::from_bytes(&mut br);
+    //let _fl_tags = rad_types::TagSection::from_bytes(&mut br);
     // info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let rl_tags = &prelude.read_tags;
     // info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
     const BNAME: &str = "b";
     const UNAME: &str = "u";
 
-    let mut bct: Option<u8> = None;
-    let mut umit: Option<u8> = None;
+    let mut bct: Option<RadType> = None;
+    let mut umit: Option<RadType> = None;
 
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if rt.name == BNAME || rt.name == UNAME {
-            if rad_types::decode_int_type_tag(rt.typeid).is_none() {
+            if !rt.typeid.is_int_type() {
                 crit!(
                     log,
                     "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
@@ -544,20 +536,38 @@ where
             }
         }
     }
+    assert!(bct.is_some(), "barcode type tag was missing!");
+    assert!(umit.is_some(), "umi type tag was missing!");
 
     // alignment-level
-    let _al_tags = rad_types::TagSection::from_bytes(&mut br);
+    // let _al_tags = rad_types::TagSection::from_bytes(&mut br);
     // info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
-    // info!(log, "File-level tag values {:?}", ft_vals);
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    info!(log, "File-level tag map {:?}", file_tag_map);
+
+    let barcode_tag = file_tag_map
+        .get("cblen")
+        .expect("tag map must contain cblen");
+    let barcode_len = match barcode_tag {
+        &TagValue::U8(x) => x as u16,
+        &TagValue::U16(x) => x,
+        &TagValue::U32(x) => x as u16,
+        &TagValue::U64(x) => x as u16,
+        _ => bail!("unexpected tag type"),
+    };
+
+    let umi_tag = file_tag_map.get("ulen").expect("tag map must contain ulen");
+    let umi_len = match umi_tag {
+        &TagValue::U8(x) => x as u16,
+        &TagValue::U16(x) => x,
+        &TagValue::U32(x) => x as u16,
+        &TagValue::U64(x) => x as u16,
+        _ => bail!("unexpected tag type"),
+    };
 
     let mut num_reads: u64 = 0;
-
-    let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
-        .context("unknown barcode type id.")?;
-    let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
-        .context("unknown barcode type id.")?;
+    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();
@@ -576,10 +586,10 @@ where
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
-        let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+        let c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
         for read in c.reads.iter() {
-            let bc_mer: BitKmer = (read.bc, ft_vals.bclen as u8);
-            let umi_mer: BitKmer = (read.umi, ft_vals.umilen as u8);
+            let bc_mer: BitKmer = (read.bc, barcode_len as u8);
+            let umi_mer: BitKmer = (read.umi, umi_len as u8);
 
             // let umi = str::from_utf8(&umi_).unwrap();
             let num_entries = read.refs.len();

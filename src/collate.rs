@@ -16,8 +16,13 @@ use crate::utils::InternalVersionInfo;
 use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
+
+use libradicl::chunk;
+use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
+use libradicl::record::AlevinFryReadRecord;
 use libradicl::schema::TempCellInfo;
+
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
@@ -365,7 +370,7 @@ where
     let i_file = File::open(&input_rad_path).context("couldn't open input RAD file")?;
     let mut br = BufReader::new(i_file);
 
-    let hdr = rad_types::RadHeader::from_bytes(&mut br);
+    let hdr = RadHeader::from_bytes(&mut br)?;
 
     // the exact position at the end of the header,
     // precisely sizeof(u64) bytes beyond the num_chunks field.
@@ -381,17 +386,22 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br);
+    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
-    info!(log, "File-level tag values {:?}", ft_vals);
+    // create the prelude and rebind the variables we need
+    let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
+    let hdr = &prelude.hdr;
+    let rl_tags = &prelude.read_tags;
+
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
+    info!(log, "File-level tag values {:?}", file_tag_map);
 
     let bct = rl_tags.tags[0].typeid;
     let umit = rl_tags.tags[1].typeid;
@@ -456,10 +466,10 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    let cc = rad_types::ChunkConfig {
+    let cc = chunk::ChunkConfig {
         num_chunks: hdr.num_chunks,
-        bc_type: bct,
-        umi_type: umit,
+        bc_type: libradicl::rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
+        umi_type: libradicl::rad_types::encode_type_tag(umit).expect("valid umi tag type"),
     };
 
     // TODO: see if we can do this without the Arc
@@ -631,7 +641,7 @@ where
     // worker threads.
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(cc.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) = rad_types::Chunk::read_header(&mut br);
+        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
         buf.resize(nbytes_chunk as usize, 0);
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
@@ -720,7 +730,7 @@ where
         let bc_type =
             rad_types::decode_int_type_tag(cc.bc_type).context("unknown barcode type id.")?;
         let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).context("unknown barcode type id.")?;
+            rad_types::decode_int_type_tag(cc.umi_type).context("unknown umi type id.")?;
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file

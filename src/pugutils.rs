@@ -20,7 +20,8 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use libradicl::rad_types;
+use libradicl::chunk;
+use libradicl::record::AlevinFryReadRecord;
 
 use slog::{crit, info, warn};
 
@@ -626,7 +627,7 @@ fn resolve_num_molecules_crlike_from_vec(
 }
 
 pub fn get_num_molecules_cell_ranger_like_small(
-    cell_chunk: &mut rad_types::Chunk,
+    cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,

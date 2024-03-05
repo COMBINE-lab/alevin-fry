@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, bail, Context};
 use slog::crit;
 use slog::info;
 
@@ -19,8 +19,13 @@ use bio_types::strand::Strand;
 use bstr::io::BufReadExt;
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types;
+use libradicl::rad_types::{self, RadType, TagValue};
 use libradicl::BarcodeLookupMap;
+use libradicl::{
+    chunk,
+    header::RadPrelude,
+    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+};
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
@@ -222,7 +227,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 fn process_unfiltered(
     mut hm: HashMap<u64, u64, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
-    ft_vals: &rad_types::FileTags,
+    file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &PathBuf,
@@ -279,9 +284,20 @@ fn process_unfiltered(
         num_passing.to_formatted_string(&Locale::en)
     );
 
+    let barcode_tag = file_tag_map
+        .get("cblen")
+        .expect("tag map must contain cblen");
+    let barcode_len = match barcode_tag {
+        &TagValue::U8(x) => x as u16,
+        &TagValue::U16(x) => x,
+        &TagValue::U32(x) => x as u16,
+        &TagValue::U64(x) => x as u16,
+        _ => bail!("unexpected tag type"),
+    };
+
     // now, we create a second barcode map with just the barcodes
     // for cells we will keep / rescue.
-    let bcmap2 = BarcodeLookupMap::new(kept_bc, ft_vals.bclen as u32);
+    let bcmap2 = BarcodeLookupMap::new(kept_bc, barcode_len as u32);
     info!(
         log,
         "found {} cells with non-trivial number of reads by exact barcode match",
@@ -382,7 +398,7 @@ fn process_unfiltered(
     })?;
     let o_path = parent.join("permit_freq.bin");
 
-    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &hm) {
+    match afutils::write_permit_list_freq(&o_path, barcode_len, &hm) {
         Ok(_) => {}
         Err(error) => {
             panic!("Error: {}", error);
@@ -444,7 +460,7 @@ fn process_unfiltered(
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_filtered(
     hm: &HashMap<u64, u64, ahash::RandomState>,
-    ft_vals: &rad_types::FileTags,
+    file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &PathBuf,
@@ -459,6 +475,17 @@ fn process_filtered(
     let mut freq: Vec<u64> = hm.values().cloned().collect();
     freq.sort_unstable();
     freq.reverse();
+
+    let barcode_tag = file_tag_map
+        .get("cblen")
+        .expect("tag map must contain cblen");
+    let barcode_len = match barcode_tag {
+        &TagValue::U8(x) => x as u16,
+        &TagValue::U16(x) => x,
+        &TagValue::U32(x) => x as u16,
+        &TagValue::U64(x) => x as u16,
+        _ => bail!("unexpected tag type"),
+    };
 
     // select from among supported filter methods
     match filter_meth {
@@ -489,7 +516,7 @@ fn process_filtered(
             valid_bc = permit_list_from_threshold(hm, min_freq);
         }
         CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = permit_list_from_file(valid_bc_file, ft_vals.bclen);
+            valid_bc = permit_list_from_file(valid_bc_file, barcode_len);
         }
         CellFilterMethod::ExpectCells(expected_num_cells) => {
             let robust_quantile = 0.99f64;
@@ -509,7 +536,7 @@ fn process_filtered(
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
     let full_permit_list =
-        afutils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
+        afutils::generate_permitlist_map(&valid_bc, barcode_len as usize).unwrap();
 
     let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
@@ -532,7 +559,7 @@ fn process_filtered(
     })?;
     let o_path = parent.join("permit_freq.bin");
 
-    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, &permitted_map) {
+    match afutils::write_permit_list_freq(&o_path, barcode_len, &permitted_map) {
         Ok(_) => {}
         Err(error) => {
             panic!("Error: {}", error);
@@ -541,7 +568,7 @@ fn process_filtered(
 
     let o_path = parent.join("all_freq.bin");
 
-    match afutils::write_permit_list_freq(&o_path, ft_vals.bclen, hm) {
+    match afutils::write_permit_list_freq(&o_path, barcode_len, hm) {
         Ok(_) => {}
         Err(error) => {
             panic!("Error: {}", error);
@@ -630,7 +657,9 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let mut br = BufReader::new(i_file);
-    let hdr = rad_types::RadHeader::from_bytes(&mut br);
+
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    let hdr = &prelude.hdr;
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -638,24 +667,25 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         hdr.ref_count.to_formatted_string(&Locale::en),
         hdr.num_chunks.to_formatted_string(&Locale::en)
     );
+
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let fl_tags = &prelude.file_tags;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let rl_tags = &prelude.read_tags;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
     const BNAME: &str = "b";
     const UNAME: &str = "u";
 
-    let mut bct: Option<u8> = None;
-    let mut umit: Option<u8> = None;
+    let mut bct: Option<RadType> = None;
+    let mut umit: Option<RadType> = None;
 
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if rt.name == BNAME || rt.name == UNAME {
-            if rad_types::decode_int_type_tag(rt.typeid).is_none() {
+            if !rt.typeid.is_int_type() {
                 crit!(
                     log,
                     "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
@@ -671,20 +701,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             }
         }
     }
+    assert!(bct.is_some(), "barcode type tag must be present.");
+    assert!(umit.is_some(), "umi type tag must be present.");
 
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br);
+    let al_tags = &prelude.aln_tags;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
-    info!(log, "File-level tag values {:?}", ft_vals);
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    info!(log, "File-level tag values {:?}", file_tag_map);
 
+    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
     let mut num_reads: usize = 0;
-
-    let bc_type = rad_types::decode_int_type_tag(bct.expect("no barcode tag description present."))
-        .context("unknown barcode type id.")?;
-    let umi_type = rad_types::decode_int_type_tag(umit.expect("no umi tag description present"))
-        .context("unknown barcode type id.")?;
 
     // if dealing with filtered type
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -702,7 +730,8 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             // the unfiltered_bc_count map must be valid in this branch
             if let Some(mut hmu) = unfiltered_bc_counts {
                 for _ in 0..(hdr.num_chunks as usize) {
-                    let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+                    let c =
+                        chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
                     num_orientation_compat_reads += update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
@@ -723,7 +752,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 process_unfiltered(
                     hmu,
                     unmatched_bc,
-                    &ft_vals,
+                    &file_tag_map,
                     &filter_meth,
                     expected_ori,
                     output_dir,
@@ -740,7 +769,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         }
         _ => {
             for _ in 0..(hdr.num_chunks as usize) {
-                let c = rad_types::Chunk::from_bytes(&mut br, &bc_type, &umi_type);
+                let c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
                 update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
                 num_reads += c.reads.len();
             }
@@ -753,7 +782,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             );
             process_filtered(
                 &hm,
-                &ft_vals,
+                &file_tag_map,
                 &filter_meth,
                 expected_ori,
                 output_dir,
@@ -900,7 +929,7 @@ pub fn update_barcode_hist_unfiltered(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
-    chunk: &rad_types::Chunk,
+    chunk: &chunk::Chunk<AlevinFryReadRecord>,
     expected_ori: &Strand,
 ) -> usize {
     let mut num_strand_compat_reads = 0usize;
@@ -964,7 +993,7 @@ pub fn update_barcode_hist_unfiltered(
 pub fn update_barcode_hist(
     hist: &mut HashMap<u64, u64, ahash::RandomState>,
     max_ambiguity_read: &mut usize,
-    chunk: &rad_types::Chunk,
+    chunk: &chunk::Chunk<AlevinFryReadRecord>,
     expected_ori: &Strand,
 ) {
     match expected_ori {

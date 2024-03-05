@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2024 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
  *
  * This file is part of alevin-fry
  * (see https://github.com/COMBINE-lab/alevin-fry).
