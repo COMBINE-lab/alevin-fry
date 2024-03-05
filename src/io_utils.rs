@@ -163,7 +163,7 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
             // get the barcode for this chunk
             let (bc, _umi) = chunk::Chunk::<AlevinFryReadRecord>::peek_record(
                 &buf[boffset + 8..],
-                &record_context,
+                record_context,
             );
             if keep_set.contains(&bc) {
                 cells_in_chunk += 1;

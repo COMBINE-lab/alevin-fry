@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.8.1"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#232b2b32bc2b8a1aebd5f11dad6c495d4f0c86c1"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#58b0c8877cfc6ea32a85148946648f4d23917b62"
 dependencies = [
  "ahash",
  "anyhow",

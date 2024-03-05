@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, Context};
 use slog::crit;
 use slog::info;
 
@@ -19,7 +19,7 @@ use bio_types::strand::Strand;
 use bstr::io::BufReadExt;
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types::{self, RadType, TagValue};
+use libradicl::rad_types::{self, RadType};
 use libradicl::BarcodeLookupMap;
 use libradicl::{
     chunk,
@@ -287,13 +287,7 @@ fn process_unfiltered(
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
-    let barcode_len = match barcode_tag {
-        &TagValue::U8(x) => x as u16,
-        &TagValue::U16(x) => x,
-        &TagValue::U32(x) => x as u16,
-        &TagValue::U64(x) => x as u16,
-        _ => bail!("unexpected tag type"),
-    };
+    let barcode_len: u16 = barcode_tag.try_into()?;
 
     // now, we create a second barcode map with just the barcodes
     // for cells we will keep / rescue.
@@ -479,13 +473,7 @@ fn process_filtered(
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
-    let barcode_len = match barcode_tag {
-        &TagValue::U8(x) => x as u16,
-        &TagValue::U16(x) => x,
-        &TagValue::U32(x) => x as u16,
-        &TagValue::U64(x) => x as u16,
-        _ => bail!("unexpected tag type"),
-    };
+    let barcode_len: u16 = barcode_tag.try_into()?;
 
     // select from among supported filter methods
     match filter_meth {

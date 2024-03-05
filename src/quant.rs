@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
@@ -44,7 +44,6 @@ use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
 
-use libradicl::rad_types::TagValue;
 use libradicl::{
     chunk,
     header::RadPrelude,
@@ -485,13 +484,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
-    let barcode_len = match barcode_tag {
-        &TagValue::U8(x) => x as u16,
-        &TagValue::U16(x) => x,
-        &TagValue::U32(x) => x as u16,
-        &TagValue::U64(x) => x as u16,
-        _ => bail!("unexpected tag type"),
-    };
+    let barcode_len: u16 = barcode_tag.try_into()?;
 
     let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
 

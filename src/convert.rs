@@ -7,7 +7,6 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::bail;
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 //use num_format::{Locale};
@@ -18,7 +17,7 @@ use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 //
 use rust_htslib::{bam, bam::record::Aux, bam::Read};
 
-use libradicl::rad_types::{self, RadType, TagValue};
+use libradicl::rad_types::{self, RadType};
 use libradicl::utils::MASK_LOWER_31_U32;
 use libradicl::{
     chunk,
@@ -48,7 +47,7 @@ use std::str;
 
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
-    let nucl = vec!["A", "T", "G", "C"];
+    let nucl = ["A", "T", "G", "C"];
     let mut rng = rand::thread_rng();
     let idx = rng.gen_range(0..4);
     nucl[idx]
@@ -549,22 +548,10 @@ where
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
-    let barcode_len = match barcode_tag {
-        &TagValue::U8(x) => x as u16,
-        &TagValue::U16(x) => x,
-        &TagValue::U32(x) => x as u16,
-        &TagValue::U64(x) => x as u16,
-        _ => bail!("unexpected tag type"),
-    };
+    let barcode_len: u16 = barcode_tag.try_into()?;
 
     let umi_tag = file_tag_map.get("ulen").expect("tag map must contain ulen");
-    let umi_len = match umi_tag {
-        &TagValue::U8(x) => x as u16,
-        &TagValue::U16(x) => x,
-        &TagValue::U32(x) => x as u16,
-        &TagValue::U64(x) => x as u16,
-        _ => bail!("unexpected tag type"),
-    };
+    let umi_len: u16 = umi_tag.try_into()?;
 
     let mut num_reads: u64 = 0;
     let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;

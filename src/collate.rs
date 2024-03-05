@@ -123,7 +123,7 @@ where
     let freq_hm: HashMap<u64, u64> =
         bincode::deserialize_from(rdr).context("couldn't deserialize barcode to frequency map.")?;
     let total_to_collate = freq_hm.values().sum();
-    let mut tsv_map = Vec::from_iter(freq_hm.into_iter());
+    let mut tsv_map = Vec::from_iter(freq_hm);
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.

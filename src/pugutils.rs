@@ -295,7 +295,7 @@ where
 
     let mut components = get_map();
     for (i, v) in labels.iter().enumerate() {
-        let ve = components.entry(*v as u32).or_insert_with(Vec::new);
+        let ve = components.entry(*v as u32).or_default();
         ve.push(i as u32);
     }
     components
@@ -816,7 +816,7 @@ fn get_num_molecules_large_component(
         let vert = g.from_index(*vertex_id as usize);
         // add the corresponding (UMI, frequency) pair to the map
         // for this eq_id
-        let umis = tmp_map.entry(vert.0).or_insert_with(Vec::new);
+        let umis = tmp_map.entry(vert.0).or_default();
         umis.push(eq_map.eqc_info[vert.0 as usize].umis[vert.1 as usize]);
     }
 

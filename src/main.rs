@@ -344,7 +344,7 @@ fn main() -> anyhow::Result<()> {
             .build();
 
         match generate_permit_list(gpl_opts) {
-            Ok(nc) if nc == 0 => {
+            Ok(0) => {
                 warn!(log, "found 0 corrected barcodes; please check the input.");
             }
             Err(e) => return Err(e),
