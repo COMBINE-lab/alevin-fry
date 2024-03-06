@@ -17,11 +17,9 @@ use std::fs::File;
 use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
 //
-use rust_htslib::{bam, bam::record::Aux, bam::Read};
 
 use noodles::bam as nbam;
 use noodles::{bgzf, sam};
-use noodles_util::alignment;
 use sam::alignment::record::data::field::{tag::Tag as SamTag, value::Value as SamTagValue};
 
 use libradicl::rad_types::{self, RadType};
@@ -112,7 +110,6 @@ where
     }
     let ofile = File::create(rad_file.as_ref()).unwrap();
 
-    let mut bam = bam::Reader::from_path(&input_file).unwrap();
     let bam_bytes = fs::metadata(&input_file).unwrap().len();
     info! {
     log,
@@ -123,6 +120,7 @@ where
     // noodles reading
     let file = File::open(&input_file)?;
 
+    // example from https://github.com/zaeleus/noodles/issues/227
     let mut reader: Box<dyn sam::alignment::io::Read<_>> =
         match input_file.as_ref().extension().and_then(|ext| ext.to_str()) {
             Some("bam") | Some("BAM") => {
@@ -152,18 +150,10 @@ where
     for result in reader.records(&header) {
         let record = result?;
     }
+    let hdrv = bam.header().to_owned();
     */
 
-    if num_threads > 1 {
-        bam.set_threads((num_threads as usize) - 1).unwrap();
-    } else {
-        bam.set_threads(1).unwrap();
-    }
-
-    //let hdrv = bam.header().to_owned();
-
     let hdrv = reader.read_alignment_header()?;
-
     let mut data = Cursor::new(vec![]);
     // initialize the header (do we need this ?)
     // let mut hdr = libradicl::RadHeader::from_bam_header(&hdrv);
@@ -177,8 +167,8 @@ where
 
     // file writer
     // let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
-    let mut owriter = BufWriter::with_capacity(1048576, ofile);
     // intermediate buffer
+    let mut owriter = BufWriter::with_capacity(1048576, ofile);
 
     // write the header
     {
@@ -191,7 +181,7 @@ where
         data.write_all(&ref_count.to_le_bytes())
             .expect("couldn't write to output file");
         // create longest buffer
-        for (k, v) in hdrv.reference_sequences().iter() {
+        for (k, _v) in hdrv.reference_sequences().iter() {
             let name_size = k.len() as u16;
             data.write_all(&name_size.to_le_bytes())
                 .expect("coudn't write to output file");
@@ -256,7 +246,7 @@ where
         let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
             match bcs {
                 SamTagValue::String(bstr) => {
-                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                 }
                 _ => {
                     bail!("cannot convert non-string (Z) tag into barcode string.");
@@ -269,7 +259,7 @@ where
         let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
             match umis {
                 SamTagValue::String(bstr) => {
-                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                 }
                 _ => {
                     bail!("cannot convert non-string (Z) tag into umi string.");
@@ -378,14 +368,12 @@ where
     let mut bc = 0u64;
     let mut umi = 0u64;
     let mut tid_list = Vec::<u32>::new();
-    let mut first_pass = true;
     //for r in bam.records(){
     loop {
         let rec_res = record_it.next();
         if rec_res.is_none() {
             break;
         }
-        first_pass = false;
         // the iterator returns a result, so
         // make sure it's an Ok variant here.
         let rec = match rec_res.unwrap() {
@@ -461,7 +449,7 @@ where
             let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
                 match bcs {
                     SamTagValue::String(bstr) => {
-                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                     }
                     _ => {
                         bail!("cannot convert non-string (Z) tag into umi string.");
@@ -474,7 +462,7 @@ where
             let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
                 match umis {
                     SamTagValue::String(bstr) => {
-                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                     }
                     _ => {
                         bail!("cannot convert non-string (Z) tag into umi string.");
