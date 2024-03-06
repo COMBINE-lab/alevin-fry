@@ -358,7 +358,7 @@ fn main() -> anyhow::Result<()> {
         let input_file: &PathBuf = t.get_one("bam").unwrap();
         let rad_file: &PathBuf = t.get_one("output").unwrap();
         let num_threads: u32 = *t.get_one("threads").unwrap();
-        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
+        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)?
     }
 
     // convert a rad file to a textual representation and write to stdout

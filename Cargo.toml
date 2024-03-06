@@ -79,6 +79,8 @@ sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "de
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
 clap = { version = "=4.5.1", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
+noodles = { version = "0.65.0", features = ["bam", "bgzf", "sam"] }
+noodles-util = { version = "0.37.0", features = ["alignment"] }
 
 [profile.release]
 #debug = true

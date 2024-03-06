@@ -7,8 +7,10 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use anyhow::bail;
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
+
 //use num_format::{Locale};
 use std::fs;
 use std::fs::File;
@@ -16,6 +18,11 @@ use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
 // use std::sync::{Arc, Mutex};
 //
 use rust_htslib::{bam, bam::record::Aux, bam::Read};
+
+use noodles::bam as nbam;
+use noodles::{bgzf, sam};
+use noodles_util::alignment;
+use sam::alignment::record::data::field::{tag::Tag as SamTag, value::Value as SamTagValue};
 
 use libradicl::rad_types::{self, RadType};
 use libradicl::utils::MASK_LOWER_31_U32;
@@ -83,11 +90,19 @@ pub fn cb_string_to_u64(cb_str: &[u8]) -> Result<u64, Box<dyn Error>> {
     Ok(cb_id)
 }
 
-pub fn bam2rad<P1, P2>(input_file: P1, rad_file: P2, num_threads: u32, log: &slog::Logger)
+pub fn bam2rad<P1, P2>(
+    input_file: P1,
+    rad_file: P2,
+    num_threads: u32,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
 {
+    const CR: SamTag = SamTag::new(b'C', b'R');
+    const UR: SamTag = SamTag::new(b'U', b'R');
+
     let oname = Path::new(rad_file.as_ref());
     let parent = oname.parent().unwrap();
     std::fs::create_dir_all(parent).unwrap();
@@ -105,13 +120,50 @@ where
     bam_bytes
     };
 
+    // noodles reading
+    let file = File::open(&input_file)?;
+
+    let mut reader: Box<dyn sam::alignment::io::Read<_>> =
+        match input_file.as_ref().extension().and_then(|ext| ext.to_str()) {
+            Some("bam") | Some("BAM") => {
+                let decomp_threads = std::num::NonZeroUsize::new(if num_threads > 1 {
+                    (num_threads - 1) as usize
+                } else {
+                    1_usize
+                })
+                .expect("invalid nonzero usize");
+                let decoder: Box<dyn std::io::BufRead> = Box::new(
+                    bgzf::MultithreadedReader::with_worker_count(decomp_threads, file),
+                );
+                Box::new(nbam::io::Reader::from(decoder))
+            }
+            Some("sam") | Some("SAM") => {
+                let inner: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
+                Box::new(sam::io::Reader::from(inner))
+            }
+            _ => {
+                bail!("unsupported input file format, must end with bam/BAM or sam/SAM");
+            }
+        };
+
+    /*
+    let header = reader.read_header()?;
+
+    for result in reader.records(&header) {
+        let record = result?;
+    }
+    */
+
     if num_threads > 1 {
         bam.set_threads((num_threads as usize) - 1).unwrap();
     } else {
         bam.set_threads(1).unwrap();
     }
 
-    let hdrv = bam.header().to_owned();
+    //let hdrv = bam.header().to_owned();
+
+    let hdrv = reader.read_alignment_header()?;
+
     let mut data = Cursor::new(vec![]);
     // initialize the header (do we need this ?)
     // let mut hdr = libradicl::RadHeader::from_bam_header(&hdrv);
@@ -135,15 +187,15 @@ where
         let is_paired = 0u8;
         data.write_all(&is_paired.to_le_bytes())
             .expect("couldn't write to output file");
-        let ref_count = hdrv.target_count() as u64;
+        let ref_count = hdrv.reference_sequences().len() as u64;
         data.write_all(&ref_count.to_le_bytes())
             .expect("couldn't write to output file");
         // create longest buffer
-        for t in hdrv.target_names().iter() {
-            let name_size = t.len() as u16;
+        for (k, v) in hdrv.reference_sequences().iter() {
+            let name_size = k.len() as u16;
             data.write_all(&name_size.to_le_bytes())
                 .expect("coudn't write to output file");
-            data.write_all(t).expect("coudn't write to output file");
+            data.write_all(k).expect("coudn't write to output file");
         }
         let initial_num_chunks = 0u64;
         data.write_all(&initial_num_chunks.to_le_bytes())
@@ -152,7 +204,7 @@ where
 
     // test the header
     {
-        info!(log, "ref count: {:?} ", hdrv.target_count(),);
+        info!(log, "ref count: {:?} ", hdrv.reference_sequences().len(),);
     }
 
     // keep a pointer to header pos
@@ -161,15 +213,22 @@ where
     // check header position
     info!(log, "end header pos: {:?}", end_header_pos,);
 
+    let mut record_it = reader.alignment_records(&hdrv).peekable();
+
     // ### start of tags
     // get the first record for creating flags
-    let mut rec = bam::Record::new();
-    let first_record_exists = bam.read(&mut rec).is_some();
+    let rec_res = record_it.peek();
+    let first_record_exists = rec_res.is_some();
     if !first_record_exists {
         crit!(log, "bam file had no records!");
         std::process::exit(1);
     }
+    let rec = match rec_res.unwrap() {
+        Ok(x) => x.as_ref(),
+        Err(e) => bail!("{}", e),
+    };
 
+    use bstr::BStr;
     // Tags we will have
     // write the tag meta-information section
     {
@@ -193,14 +252,29 @@ where
             .expect("coudn't write to output file");
 
         // read-level
-        let bc_string_in: &str = if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
-            bcs
+        let flag_data = rec.data();
+        let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
+            match bcs {
+                SamTagValue::String(bstr) => {
+                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                }
+                _ => {
+                    bail!("cannot convert non-string (Z) tag into barcode string.");
+                }
+            }
         } else {
             panic!("Input record missing CR tag!")
         };
 
-        let umi_string_in: &str = if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
-            umis
+        let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
+            match umis {
+                SamTagValue::String(bstr) => {
+                    str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                }
+                _ => {
+                    bail!("cannot convert non-string (Z) tag into umi string.");
+                }
+            }
         } else {
             panic!("Input record missing UR tag!")
         };
@@ -307,19 +381,26 @@ where
     let mut first_pass = true;
     //for r in bam.records(){
     loop {
-        if !first_pass {
-            let next_record_exists = bam.read(&mut rec).is_some();
-            if !next_record_exists {
-                break;
-            }
+        let rec_res = record_it.next();
+        if rec_res.is_none() {
+            break;
         }
         first_pass = false;
+        // the iterator returns a result, so
+        // make sure it's an Ok variant here.
+        let rec = match rec_res.unwrap() {
+            Ok(x) => x,
+            Err(e) => bail!("{}", e),
+        };
 
-        // let rec = r.unwrap();
-        let is_reverse = rec.is_reverse();
-        let qname_str = str::from_utf8(rec.qname()).unwrap().to_owned();
+        let flags = rec.flags()?;
+
+        let is_reverse = flags.is_reverse_complemented();
+        let qname_str = str::from_utf8(rec.name().expect("valid name").as_bytes())
+            .unwrap()
+            .to_owned();
         let qname = qname_str;
-        let mut tid = rec.tid() as u32;
+        let mut tid = rec.reference_sequence_id(&hdrv).unwrap().unwrap() as u32;
         if qname == old_qname {
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
@@ -376,14 +457,29 @@ where
 
         // if this is a new read update the old variables
         {
-            let bc_string_in: &str = if let Ok(Aux::String(bcs)) = rec.aux(b"CR") {
-                bcs
+            let flag_data = rec.data();
+            let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
+                match bcs {
+                    SamTagValue::String(bstr) => {
+                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                    }
+                    _ => {
+                        bail!("cannot convert non-string (Z) tag into umi string.");
+                    }
+                }
             } else {
                 panic!("Input record missing CR tag!")
             };
 
-            let umi_string_in: &str = if let Ok(Aux::String(umis)) = rec.aux(b"UR") {
-                umis
+            let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
+                match umis {
+                    SamTagValue::String(bstr) => {
+                        str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr).as_ref())?
+                    }
+                    _ => {
+                        bail!("cannot convert non-string (Z) tag into umi string.");
+                    }
+                }
             } else {
                 panic!("Input record missing UR tag!")
             };
@@ -479,6 +575,7 @@ where
         .expect("couldn't write to output file.");
 
     info!(log, "finished writing to {:?}.", rad_file.as_ref());
+    Ok(())
 }
 
 pub fn view<P>(rad_file: P, print_header: bool, log: &slog::Logger)
