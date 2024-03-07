@@ -892,12 +892,13 @@ dependencies = [
 
 [[package]]
 name = "libradicl"
-version = "0.8.1"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#a9df1fa6815cb84d8a350bc72b4212bae47e3d5e"
+version = "0.8.2"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#ae81af9e0a695fbb56b568197a1110ba687d4e1c"
 dependencies = [
  "ahash",
  "anyhow",
  "bio-types",
+ "byteorder",
  "dashmap",
  "noodles-bam",
  "noodles-sam",
