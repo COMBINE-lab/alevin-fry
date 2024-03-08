@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2024 COMBINE-lab.
  *
  * This file is part of alevin-fry
- * (see https://github.com/COMBINE-lab/alevin-fry).
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
@@ -20,7 +20,8 @@ use petgraph::prelude::*;
 use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
-use libradicl::rad_types;
+use libradicl::chunk;
+use libradicl::record::AlevinFryReadRecord;
 
 use slog::{crit, info, warn};
 
@@ -294,7 +295,7 @@ where
 
     let mut components = get_map();
     for (i, v) in labels.iter().enumerate() {
-        let ve = components.entry(*v as u32).or_insert_with(Vec::new);
+        let ve = components.entry(*v as u32).or_default();
         ve.push(i as u32);
     }
     components
@@ -626,7 +627,7 @@ fn resolve_num_molecules_crlike_from_vec(
 }
 
 pub fn get_num_molecules_cell_ranger_like_small(
-    cell_chunk: &mut rad_types::Chunk,
+    cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -815,7 +816,7 @@ fn get_num_molecules_large_component(
         let vert = g.from_index(*vertex_id as usize);
         // add the corresponding (UMI, frequency) pair to the map
         // for this eq_id
-        let umis = tmp_map.entry(vert.0).or_insert_with(Vec::new);
+        let umis = tmp_map.entry(vert.0).or_default();
         umis.push(eq_map.eqc_info[vert.0 as usize].umis[vert.1 as usize]);
     }
 

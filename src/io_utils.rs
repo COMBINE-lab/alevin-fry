@@ -1,10 +1,21 @@
+/*
+ * Copyright (c) 2020-2024 COMBINE-lab.
+ *
+ * This file is part of alevin-fry
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
+
 /// some (hopefully) generally useful I/O related utilities
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use indicatif::ProgressBar;
 use scroll::Pwrite;
 
-use libradicl::rad_types;
+use libradicl::chunk;
+use libradicl::record::{AlevinFryReadRecord, AlevinFryRecordContext};
+
 use std::collections::HashSet;
 use std::io::Read;
 use std::sync::Arc;
@@ -69,7 +80,7 @@ pub(crate) fn fill_work_queue<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
+            let (nc, nr) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }
@@ -109,18 +120,13 @@ pub(crate) fn fill_work_queue<T: Read>(
 /// any cell whose barcode is not in `keep_set`.
 pub(crate) fn fill_work_queue_filtered<T: Read>(
     keep_set: HashSet<u64, ahash::RandomState>,
-    rl_tags: &rad_types::TagSection,
+    record_context: &AlevinFryRecordContext,
     q: Arc<ArrayQueue<MetaChunk>>,
     mut br: T,
     num_chunks: usize,
     pbar: &ProgressBar,
 ) -> anyhow::Result<()> {
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
-    let bc_type = rad_types::decode_int_type_tag(bct).context("unsupported barcode type id.")?;
-    let umi_type = rad_types::decode_int_type_tag(umit).context("unsupported umi type id.")?;
-
-    const BUFSIZE: usize = 524208;
+    const BUFSIZE: usize = 524_208;
     // the buffer that will hold our records
     let mut buf = vec![0u8; BUFSIZE];
     // the number of bytes currently packed into the chunk
@@ -164,8 +170,10 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
             br.read_exact(&mut buf[(boffset + 8)..(boffset + nbytes_chunk as usize)])
                 .context("failed to read from queue.")?;
             // get the barcode for this chunk
-            let (bc, _umi) =
-                rad_types::Chunk::peek_record(&buf[boffset + 8..], &bc_type, &umi_type);
+            let (bc, _umi) = chunk::Chunk::<AlevinFryReadRecord>::peek_record(
+                &buf[boffset + 8..],
+                record_context,
+            );
             if keep_set.contains(&bc) {
                 cells_in_chunk += 1;
                 cbytes += nbytes_chunk;
@@ -181,7 +189,7 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
         // and we are just filling up the buffer with the last cell, and there will be no more
         // headers left to read, so skip this
         if chunk_num < num_chunks {
-            let (nc, nr) = rad_types::Chunk::read_header(&mut br);
+            let (nc, nr) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
             nbytes_chunk = nc;
             nrec_chunk = nr;
         }

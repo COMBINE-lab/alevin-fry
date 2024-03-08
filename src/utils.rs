@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) 2020-2024 COMBINE-lab.
+ *
+ * This file is part of alevin-fry
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
 use anyhow::{anyhow, Context};
@@ -561,8 +569,7 @@ pub fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
         "barcode length greater than 32 not supported"
     );
 
-    let mut snps: Vec<u64> = Vec::new();
-    snps.reserve(3 * bc_length);
+    let mut snps: Vec<u64> = Vec::with_capacity(3 * bc_length);
 
     for nt_index in 1..=bc_length {
         // clearing the two relevant bits based on nucleotide position
@@ -590,8 +597,7 @@ pub fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
         "barcode length greater than 32 not supported"
     );
 
-    let mut indels: Vec<u64> = Vec::new();
-    indels.reserve(8 * (bc_length - 1));
+    let mut indels: Vec<u64> = Vec::with_capacity(8 * (bc_length - 1));
 
     for nt_index in 1..bc_length {
         let mut bit_mask = 1 << (2 * nt_index);

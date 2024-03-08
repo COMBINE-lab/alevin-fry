@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2024 COMBINE-lab.
  *
  * This file is part of alevin-fry
- * (see https://github.com/COMBINE-lab/alevin-fry).
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
@@ -344,7 +344,7 @@ fn main() -> anyhow::Result<()> {
             .build();
 
         match generate_permit_list(gpl_opts) {
-            Ok(nc) if nc == 0 => {
+            Ok(0) => {
                 warn!(log, "found 0 corrected barcodes; please check the input.");
             }
             Err(e) => return Err(e),
@@ -358,7 +358,7 @@ fn main() -> anyhow::Result<()> {
         let input_file: &PathBuf = t.get_one("bam").unwrap();
         let rad_file: &PathBuf = t.get_one("output").unwrap();
         let num_threads: u32 = *t.get_one("threads").unwrap();
-        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)
+        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, &log)?
     }
 
     // convert a rad file to a textual representation and write to stdout

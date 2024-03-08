@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2024 COMBINE-lab.
  *
  * This file is part of alevin-fry
- * (see https://github.com/COMBINE-lab/alevin-fry).
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
@@ -43,7 +43,12 @@ use crate::io_utils;
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
-use libradicl::rad_types;
+
+use libradicl::{
+    chunk,
+    header::RadPrelude,
+    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+};
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -344,7 +349,10 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
 // with these options
 pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(quant_opts.input_dir);
-    let hdr = rad_types::RadHeader::from_bytes(&mut br);
+
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    let hdr = &prelude.hdr;
+    //let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
@@ -461,25 +469,29 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let fl_tags = &prelude.file_tags;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br);
+    let rl_tags = &prelude.read_tags;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br);
+    let al_tags = &prelude.aln_tags;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let ft_vals = rad_types::FileTags::from_bytes(&mut br);
-    info!(log, "File-level tag values {:?}", ft_vals);
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    info!(log, "File-level tag values {:?}", file_tag_map);
 
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
+    let barcode_tag = file_tag_map
+        .get("cblen")
+        .expect("tag map must contain cblen");
+    let barcode_len: u16 = barcode_tag.try_into()?;
+
+    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
-        match afutils::read_filter_list(fname, ft_vals.bclen) {
+        match afutils::read_filter_list(fname, barcode_len) {
             Ok(fset) => {
                 // the number of cells we expect to
                 // actually process
@@ -534,9 +546,12 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
+
+    // TODO -- maybe delete March 5, 2024
     // the types for the barcodes and umis
-    let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
+    // let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
+    // let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
+
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
 
@@ -636,15 +651,19 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         let tid_to_gid = tid_to_gid_shared.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
+
+        let record_context = record_context.clone();
+        // TODO -- maybe delete March 5, 2024
         // they will need to know the bc and umi type
-        let bc_type = bc_type;
-        let umi_type = umi_type;
+        // let bc_type = bc_type;
+        // let umi_type = umi_type;
+
         // and the file writer
         let bcout = bc_writer.clone();
         // global gene-level eqc map
         let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
-        let bclen = ft_vals.bclen;
+        let bclen = barcode_len;
         let alt_res_cells = alt_res_cells.clone();
         let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
@@ -738,7 +757,10 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
                             BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
                         byte_offset += nbytes as usize;
 
-                        let mut c = rad_types::Chunk::from_bytes(&mut nbr, &bc_type, &umi_type);
+                        let mut c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(
+                            &mut nbr,
+                            &record_context,
+                        );
                         if c.reads.is_empty() {
                             warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
@@ -1198,7 +1220,7 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         // we have a retained set
         io_utils::fill_work_queue_filtered(
             ret_bc,
-            &rl_tags,
+            &record_context,
             q,
             br,
             hdr.num_chunks as usize,

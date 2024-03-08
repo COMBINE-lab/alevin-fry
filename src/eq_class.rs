@@ -1,8 +1,17 @@
+/*
+ * Copyright (c) 2020-2024 COMBINE-lab.
+ *
+ * This file is part of alevin-fry
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
+ *
+ * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
+ */
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 use std::io::BufRead;
 
-use libradicl::rad_types;
+use libradicl::chunk;
+use libradicl::record::AlevinFryReadRecord;
 
 /**
 * Single-cell equivalence class
@@ -276,7 +285,7 @@ impl EqMap {
     }
 
     #[allow(dead_code)]
-    fn init_from_small_chunk(&mut self, cell_chunk: &mut rad_types::Chunk) {
+    fn init_from_small_chunk(&mut self, cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>) {
         //let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         let mut hasher = self.eqid_map.hasher().build_hasher();
         //let mut hasher = rand_state.build_hasher();
@@ -345,7 +354,7 @@ impl EqMap {
 
     pub fn init_from_chunk_gene_level(
         &mut self,
-        cell_chunk: &mut rad_types::Chunk,
+        cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>,
         tid_to_gid: &[u32],
     ) {
         self.eqid_map.clear();
@@ -435,7 +444,7 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk(&mut self, cell_chunk: &mut rad_types::Chunk) {
+    pub fn init_from_chunk(&mut self, cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>) {
         /*
         if cell_chunk.reads.len() < 10 {
         self.init_from_small_chunk(cell_chunk);
