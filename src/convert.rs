@@ -1,8 +1,8 @@
 /*
- * Copyright (c) 2020-2022 Rob Patro, Avi Srivastava, Hirak Sarkar, Dongze He, Mohsen Zakeri.
+ * Copyright (c) 2020-2024 COMBINE-lab.
  *
  * This file is part of alevin-fry
- * (see https://github.com/COMBINE-lab/alevin-fry).
+ * (see https://www.github.com/COMBINE-lab/alevin-fry).
  *
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
@@ -542,19 +542,7 @@ where
     let mut br = BufReader::new(i_file);
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let hdr = &prelude.hdr;
-    // info!(
-    //     log,
-    //     "paired : {:?}, ref_count : {}, num_chunks : {}",
-    //     hdr.is_paired != 0,
-    //     hdr.ref_count.to_formatted_string(&Locale::en),
-    //     hdr.num_chunks.to_formatted_string(&Locale::en)
-    // );
-    // file-level
-    //let _fl_tags = rad_types::TagSection::from_bytes(&mut br);
-    // info!(log, "read {:?} file-level tags", fl_tags.tags.len());
-    // read-level
     let rl_tags = &prelude.read_tags;
-    // info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     // right now, we only handle BC and UMI types of U8—U64, so validate that
     const BNAME: &str = "b";
@@ -584,10 +572,6 @@ where
     }
     assert!(bct.is_some(), "barcode type tag was missing!");
     assert!(umit.is_some(), "umi type tag was missing!");
-
-    // alignment-level
-    // let _al_tags = rad_types::TagSection::from_bytes(&mut br);
-    // info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag map {:?}", file_tag_map);
@@ -633,7 +617,7 @@ where
                     handle,
                     "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}",
                     id,
-                    i,
+                    i + 1,
                     num_entries,
                     unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
                     unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
@@ -649,10 +633,6 @@ where
                         return Ok(num_reads);
                     }
                 };
-
-                // writeln!(handle,"{:?}\t{:?}\t{:?}\t{:?}",
-                // bc,umi,read.dirs[i],
-                // str::from_utf8(&tid_),);
             }
             id += 1;
         }
