@@ -2,6 +2,18 @@
 
 Changelog for alevin-fry
 
+## [0.9.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.8.2...v0.9.0) (2024-03-08)
+
+
+### Features
+
+* working with libradicl-0.8.2-pre ([12d088c](https://github.com/COMBINE-lab/alevin-fry/commit/12d088c836b4a75ac50b72aeb915888f900768d5))
+
+
+### Bug Fixes
+
+* MD to RST link formatting in overview ([672c987](https://github.com/COMBINE-lab/alevin-fry/commit/672c9879fc18fd9be9b2b6d08362bedeed6dd344))
+
 ## [0.8.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.8.1...v0.8.2) (2023-06-29)
 
 
