@@ -352,6 +352,10 @@ where
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
     data.write_all(&local_nrec.to_le_bytes()).unwrap();
 
+    // empiricaly derived factor of size of bam vs rad
+    // encoding for records.
+    let approx_bam_to_rad_factor = 6.258_f64;
+
     // calculate number of records
     // let mut total_number_of_records = 0u64;
     // for r in bam.records(){
@@ -366,8 +370,8 @@ where
         .expect("ProgressStyle template was invalid.")
         .progress_chars("╢▌▌░╟");
 
-    let expected_bar_length = bam_bytes / ((buf_limit as u64) * 24);
-    // let expected_bar_length = 50u64 ;// bam_bytes / ((buf_limit as u64) * 24);
+    let expected_bar_length =
+        bam_bytes / (((buf_limit as f64) * 24_f64) * approx_bam_to_rad_factor).round() as u64;
 
     let pbar_inner = ProgressBar::new(expected_bar_length);
     pbar_inner.set_style(sty);
