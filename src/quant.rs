@@ -8,7 +8,6 @@
  */
 
 use anyhow::Context;
-use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 #[allow(unused_imports)]
@@ -16,15 +15,13 @@ use slog::{crit, info, warn};
 
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
-use scroll::Pread;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
-use std::io::Read;
 use std::io::Write;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,7 +36,6 @@ use flate2::Compression;
 
 use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
-use crate::io_utils;
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
@@ -323,7 +319,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     if compressed_input {
         let i_file =
             File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
-        let br = snap::read::FrameDecoder::new(BufReader::new(&i_file));
+        let br = BufReader::new(snap::read::FrameDecoder::new(BufReader::new(&i_file)));
 
         info!(
             log,
@@ -347,7 +343,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
 
 // TODO: see if we'd rather pass an structure
 // with these options
-pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
+pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(quant_opts.input_dir);
 
     let prelude = RadPrelude::from_bytes(&mut br)?;
@@ -486,8 +482,6 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
-
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
@@ -538,7 +532,10 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     } else {
         1
     };
-    let q = Arc::new(ArrayQueue::<io_utils::MetaChunk>::new(4 * n_workers));
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<AlevinFryReadRecord>::new(
+        &prelude,
+        std::num::NonZeroUsize::new(n_workers).unwrap(),
+    );
 
     // the number of cells left to process
     let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
@@ -644,19 +641,15 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
-        let in_q = q.clone();
+        //let in_q = q.clone();
+        let in_q = chunk_reader.get_queue();
+        let is_done = chunk_reader.is_done();
         // and the logger
         let log = log.clone();
         // the shared tid_to_gid map
         let tid_to_gid = tid_to_gid_shared.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
-
-        let record_context = record_context.clone();
-        // TODO -- maybe delete March 5, 2024
-        // they will need to know the bc and umi type
-        // let bc_type = bc_type;
-        // let umi_type = umi_type;
 
         // and the file writer
         let bcout = bc_writer.clone();
@@ -735,32 +728,17 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
             let mut local_nrec = 0usize;
             // pop MetaChunks from the work queue until everything is
             // processed
-            while cells_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some((
-                    first_cell_in_chunk,
-                    cells_in_chunk,
-                    _nbytes_total,
-                    _nrec_total,
-                    buf,
-                )) = in_q.pop()
-                {
-                    // for every cell (chunk) within this meta-chunk
-                    let mut byte_offset = 0usize;
-                    for cn in 0..cells_in_chunk {
+            while !is_done.load(Ordering::SeqCst) {
+                while let Some(meta_chunk) = in_q.pop() {
+                    let first_cell_in_chunk = meta_chunk.first_chunk_index;
+                    for (cn, mut c) in meta_chunk.iter().enumerate() {
                         cells_remaining.fetch_sub(1, Ordering::SeqCst);
                         let cell_num = first_cell_in_chunk + cn;
-                        // nbytes for the current cell
-                        let nbytes = buf[byte_offset..].pread::<u32>(0).unwrap();
-                        let nrec = buf[byte_offset..].pread::<u32>(4).unwrap();
-                        local_nrec += nrec as usize;
-                        let mut nbr =
-                            BufReader::new(&buf[byte_offset..(byte_offset + nbytes as usize)]);
-                        byte_offset += nbytes as usize;
 
-                        let mut c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(
-                            &mut nbr,
-                            &record_context,
-                        );
+                        let nbytes = c.nbytes;
+                        let nrec = c.nrec;
+                        local_nrec += nrec as usize;
+
                         if c.reads.is_empty() {
                             warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
                         }
@@ -1214,22 +1192,22 @@ pub fn do_quantify<T: Read>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<
         thread_handles.push(handle);
     }
 
+    let cb = |_new_bytes: u64, new_rec: u64| {
+        pbar.inc(new_rec);
+    };
+
     // push the work onto the queue for the worker threads
     // we spawned above.
-    if let Some(ret_bc) = retained_bc {
-        // we have a retained set
-        io_utils::fill_work_queue_filtered(
-            ret_bc,
-            &record_context,
-            q,
-            br,
-            hdr.num_chunks as usize,
-            &pbar,
-        )?;
+    let _ = if let Some(ret_bc) = retained_bc {
+        let filter_fn = |buf: &[u8], record_context: &AlevinFryRecordContext| -> bool {
+            let (bc, _umi) =
+                chunk::Chunk::<AlevinFryReadRecord>::peek_record(&buf[8..], record_context);
+            ret_bc.contains(&bc)
+        };
+        chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
-        // we're quantifying everything
-        io_utils::fill_work_queue(q, br, hdr.num_chunks as usize, &pbar)?;
-    }
+        chunk_reader.start(&mut br, Some(cb))
+    };
 
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
     let gn_file = File::create(gn_path).expect("couldn't create gene name file.");

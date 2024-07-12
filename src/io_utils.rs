@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-/// some (hopefully) generally useful I/O related utilities
+/*
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use indicatif::ProgressBar;
@@ -87,10 +87,10 @@ pub(crate) fn fill_work_queue<T: Read>(
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-	    || // or if adding the next cell to this chunk would exceed the buffer size
-	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-	    || // of if this was the last chunk
-	    chunk_num == num_chunks
+        || // or if adding the next cell to this chunk would exceed the buffer size
+        ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+        || // of if this was the last chunk
+        chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -196,10 +196,10 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
 
         // determine if we should dump the current buffer to the work queue
         if force_push  // if we were told to push this chunk
-	    || // or if adding the next cell to this chunk would exceed the buffer size
-	    ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
-	    || // of if this was the last chunk
-	    chunk_num == num_chunks
+        || // or if adding the next cell to this chunk would exceed the buffer size
+        ((cbytes + nbytes_chunk) as usize > buf.len() && cells_in_chunk > 0)
+        || // of if this was the last chunk
+        chunk_num == num_chunks
         {
             // launch off these cells on the queue
             let mut bclone = (first_cell, cells_in_chunk, cbytes, crec, buf.clone());
@@ -223,3 +223,4 @@ pub(crate) fn fill_work_queue_filtered<T: Read>(
     }
     Ok(())
 }
+*/
