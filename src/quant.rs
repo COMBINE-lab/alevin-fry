@@ -319,7 +319,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     if compressed_input {
         let i_file =
             File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
-        let br = BufReader::new(snap::read::FrameDecoder::new(BufReader::new(&i_file)));
+        let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
 
         info!(
             log,
@@ -543,11 +543,6 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
-
-    // TODO -- maybe delete March 5, 2024
-    // the types for the barcodes and umis
-    // let bc_type = rad_types::decode_int_type_tag(bct).expect("unsupported barcode type id.");
-    // let umi_type = rad_types::decode_int_type_tag(umit).expect("unsupported umi type id.");
 
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
