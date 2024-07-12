@@ -2,10 +2,10 @@ name: Sanitize Cargo
 on: 
   push:
     branches:
-      - main
+      - master
 
 permissions:
-  contents: master
+  "contents": "write"
 
 jobs:
   sanitize_cargo_file:
