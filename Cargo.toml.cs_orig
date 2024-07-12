@@ -35,7 +35,7 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-libradicl = { version = "0.9.0" }
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.0" }
 anyhow = "1.0.86"
 arrayvec = "0.7.4"
 ahash = "0.8.11"
@@ -67,7 +67,7 @@ bio-types = { version = "1.0.2", default-features = true, features = ["serde"] }
 itertools = "0.13.0"
 thiserror = "1.0.62"
 statrs = "0.17.1"
-sce = { version = "0.2.0" }
+sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
