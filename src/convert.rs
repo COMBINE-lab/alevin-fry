@@ -108,6 +108,9 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
                 let v = barcode;
                 w.write_all(&v.to_le_bytes())?;
             }
+            RadIntId::U128 => {
+                todo!("support for u128-encoded barcodes is not yet available");
+            }
         },
         _ => bail!("invalid type!"),
     }
@@ -484,7 +487,7 @@ where
             // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
             bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
             umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
-            old_qname = qname.clone();
+            old_qname.clone_from(&qname);
             tid_list.clear();
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;

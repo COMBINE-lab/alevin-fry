@@ -466,7 +466,7 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    let cc = chunk::ChunkConfig {
+    let cc = chunk::AlevinFryChunkContext {
         num_chunks: hdr.num_chunks,
         bc_type: libradicl::rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
         umi_type: libradicl::rad_types::encode_type_tag(umit).expect("valid umi tag type"),
