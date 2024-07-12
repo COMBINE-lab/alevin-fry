@@ -487,7 +487,7 @@ where
             // https://github.com/k3yavi/flash/blob/master/src-rs/src/fragments.rs#L162-L176
             bc = cb_string_to_u64(bc_string.as_bytes()).unwrap();
             umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
-            old_qname = qname.clone();
+            old_qname.clone_from(&qname);
             tid_list.clear();
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
