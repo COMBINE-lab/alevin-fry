@@ -1,41 +1,24 @@
 [package]
-name = "alevin-fry"
-version = "0.9.0"
+name = "piscem_atac"
+version = "0.1.0"
+edition = "2021"
 authors = [
   "Avi Srivastava <avi.srivastava@nyu.edu>",
   "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
   "Dongze He <dhe17@umd.edu>",
   "Mohsen Zakeri <mzakeri@cs.umd.edu>",
+  "Noor Pratap Singh" <npsingh@umd.edu>",
   "Rob Patro <rob@cs.umd.edu>",
 ]
-edition = "2021"
-description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
-license-file = "LICENSE"
-readme = "README.md"
-repository = "https://github.com/COMBINE-lab/alevin-fry"
-homepage = "https://github.com/COMBINE-lab/alevin-fry"
-documentation = "https://alevin-fry.readthedocs.io/en/latest/"
 include = [
   "/src/*.rs",
-  "/Cargo.toml",
-  "/README.md",
-  "/LICENSE",
-  "/CONTRIBUTING.md",
-  "/CODE_OF_CONDUCT.md",
+  "/Cargo.toml"
 ]
-keywords = [
-  "single-cell",
-  "preprocessing",
-  "RNA-seq",
-  "single-nucleus",
-  "RNA-velocity",
-]
-categories = ["command-line-utilities", "science"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# for local development, look in the libradicl git repository
-# but when published, pull the specified version
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.8.2" }
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.1"}
 anyhow = "1.0.80"
 arrayvec = "0.7.4"
 ahash = "0.8.11"
@@ -75,30 +58,3 @@ clap = { version = "=4.5.2", features = ["derive", "wrap_help", "cargo", "help",
 
 noodles = { version = "0.65.0", features = ["bam", "bgzf", "sam"] }
 noodles-util = { version = "0.37.0", features = ["alignment"] }
-
-[profile.release]
-#debug = true
-lto = "thin"
-#codegen-units=1
-opt-level = 3
-
-# The profile that 'cargo dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
-
-# Config for 'cargo dist'
-[workspace.metadata.dist]
-# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.11.1"
-# CI backends to support
-ci = ["github"]
-# The installers to generate for each app
-installers = ["shell"]
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
-# Publish jobs to run in CI
-pr-run-mode = "plan"
-
-[workspace.metadata.dist.github-custom-runners]
-aarch64-apple-darwin = "macos-14"
