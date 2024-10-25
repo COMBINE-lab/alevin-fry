@@ -31,6 +31,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "alevin_fry_atac"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "arrayvec",
+ "bincode",
+ "bio-types",
+ "bstr",
+ "chrono",
+ "clap",
+ "crossbeam-channel",
+ "crossbeam-queue",
+ "csv",
+ "flate2",
+ "indicatif",
+ "itertools 0.12.1",
+ "libradicl",
+ "mimalloc",
+ "needletail",
+ "noodles",
+ "noodles-util",
+ "num-format",
+ "num_cpus",
+ "petgraph",
+ "rand",
+ "sce",
+ "scroll",
+ "serde",
+ "serde_json",
+ "slog",
+ "slog-async",
+ "slog-term",
+ "smallvec",
+ "snap",
+ "sprs",
+ "statrs",
+ "thiserror",
+ "typed-builder",
+]
+
+[[package]]
 name = "alga"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1321,48 +1363,6 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
  "indexmap",
-]
-
-[[package]]
-name = "piscem_atac"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "arrayvec",
- "bincode",
- "bio-types",
- "bstr",
- "chrono",
- "clap",
- "crossbeam-channel",
- "crossbeam-queue",
- "csv",
- "flate2",
- "indicatif",
- "itertools 0.12.1",
- "libradicl",
- "mimalloc",
- "needletail",
- "noodles",
- "noodles-util",
- "num-format",
- "num_cpus",
- "petgraph",
- "rand",
- "sce",
- "scroll",
- "serde",
- "serde_json",
- "slog",
- "slog-async",
- "slog-term",
- "smallvec",
- "snap",
- "sprs",
- "statrs",
- "thiserror",
- "typed-builder",
 ]
 
 [[package]]

@@ -4,13 +4,13 @@ use itertools::Itertools;
 use slog::{crit, o, warn, Drain};
 use std::path::PathBuf;
 
-use piscem_atac::cellfilter::{generate_permit_list, CellFilterMethod};
-use piscem_atac::cmd_parse_utils::{
+use alevin_fry_atac::cellfilter::{generate_permit_list, CellFilterMethod};
+use alevin_fry_atac::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
-use piscem_atac::collate::collate;
-use piscem_atac::deduplicate::deduplicate;
-use piscem_atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
+use alevin_fry_atac::collate::collate;
+use alevin_fry_atac::deduplicate::deduplicate;
+use alevin_fry_atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
              .default_value("30000000"));
 
     let deduplicate_app = Command::new("deduplicate")
-             .about("Collate a RAD file by corrected cell barcode")
+             .about("Deduplicate the RAD file and output a BED file")
              .version(version)
              .author(crate_authors)
              .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")

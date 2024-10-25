@@ -1,5 +1,5 @@
 [package]
-name = "piscem_atac"
+name = "alevin_fry_atac"
 version = "0.1.0"
 edition = "2021"
 authors = [
@@ -7,7 +7,7 @@ authors = [
   "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
   "Dongze He <dhe17@umd.edu>",
   "Mohsen Zakeri <mzakeri@cs.umd.edu>",
-  "Noor Pratap Singh" <npsingh@umd.edu>",
+  "Noor Pratap Singh <npsingh@umd.edu>",
   "Rob Patro <rob@cs.umd.edu>",
 ]
 include = [
