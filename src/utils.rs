@@ -786,6 +786,21 @@ impl FromStr for InternalVersionInfo {
     }
 }
 
+pub fn get_bc_string(
+    kmerseq: &needletail::bitkmer::BitKmerSeq,
+    reverse_barcode: bool,
+    bc_len: u8,
+) -> String {
+    let kmseq = *kmerseq;
+    let mut km: needletail::bitkmer::BitKmer = (kmseq, bc_len);
+    if reverse_barcode {
+        km = needletail::bitkmer::reverse_complement(km);
+    }
+    let bytes = needletail::bitkmer::bitmer_to_bytes(km);
+    let seq: String = String::from_utf8(bytes).expect("Invalid barcode");
+    seq
+}
+
 #[cfg(test)]
 mod tests {
     use crate::utils::generate_whitelist_set;

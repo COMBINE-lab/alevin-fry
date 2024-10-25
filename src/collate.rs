@@ -13,14 +13,13 @@ use slog::{crit, info};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
-use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
-use libradicl::record::AlevinFryReadRecord;
+use libradicl::record::AtacSeqReadRecord;
 use libradicl::schema::TempCellInfo;
 
 use num_format::{Locale, ToFormattedString};
@@ -106,9 +105,9 @@ where
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
         crit!(log,
-              "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
-              freq_file_version, afconst::PERMIT_FILE_VER
-        );
+               "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+               freq_file_version, afconst::PERMIT_FILE_VER
+         );
         return Err(anyhow!("execution terminated unexpectedly"));
     }
 
@@ -166,19 +165,6 @@ where
     }*/
 }
 
-fn get_orientation(mdata: &serde_json::Value) -> Result<Strand, StrandError> {
-    // next line is ugly — should be a better way.  We need a char to
-    // get the strand, so we get the correct field as a `str` then
-    // use the chars iterator and get the first char.
-    let ori_str: char = mdata["expected_ori"]
-        .as_str()
-        .unwrap()
-        .chars()
-        .next()
-        .unwrap();
-    Strand::from_char(&ori_str)
-}
-
 #[derive(Debug)]
 enum FilterType {
     Filtered,
@@ -210,10 +196,22 @@ fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> u
         }
     } else {
         info!(
-	     log,
-	     "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
-	 );
+          log,
+          "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
+      );
         2500_usize
+    }
+}
+
+fn get_num_chunks(mdata: &serde_json::Value, log: &slog::Logger) -> anyhow::Result<u64> {
+    if let Some(mar) = mdata.get("num-chunks") {
+        match mar.as_u64() {
+            Some(mv) => Ok(mv),
+            _ => Err(anyhow!("Error parsing num-chunks")),
+        }
+    } else {
+        info!(log, "num-chunks key not present in JSON file;");
+        Err(anyhow!("num-chunks key not present"))
     }
 }
 
@@ -289,25 +287,9 @@ where
         .context("could not open the generate_permit_list.json file.")?;
     let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
 
-    // velo_mode
-    let velo_mode = mdata["velo_mode"]
-        .as_bool()
-        .context("couldn't read velo_mode from meta data")?;
-    let expected_ori: Strand = match get_orientation(&mdata) {
-        Ok(o) => o,
-        Err(e) => {
-            crit!(
-                log,
-                "Error reading strand info from {:#?} :: {}",
-                &meta_data_file,
-                e
-            );
-            return Err(anyhow!(e));
-        }
-    };
-
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);
+    let num_chunks = get_num_chunks(&mdata, log)?;
 
     // log the filter type
     info!(log, "filter_type = {:?}", filter_type);
@@ -318,9 +300,7 @@ where
     );
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if velo_mode {
-        "velo.map.collated.rad"
-    } else if compress_out {
+    let cfname = if compress_out {
         "map.collated.rad.sz"
     } else {
         "map.collated.rad"
@@ -333,8 +313,8 @@ where
             "version_str" : version,
             "compressed_output" : compress_out,
         });
-
         let cm_path = parent.join("collate.json");
+
         let mut cm_file =
             std::fs::File::create(cm_path).context("could not create metadata file.")?;
 
@@ -378,11 +358,10 @@ where
 
     info!(
         log,
-        "paired : {:?}, ref_count : {}, num_chunks : {}, expected_ori : {:?}",
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
         hdr.is_paired != 0,
         hdr.ref_count.to_formatted_string(&Locale::en),
-        hdr.num_chunks.to_formatted_string(&Locale::en),
-        expected_ori
+        num_chunks.to_formatted_string(&Locale::en)
     );
 
     // file-level
@@ -393,18 +372,16 @@ where
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
     let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
-    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+    info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
-    let hdr = &prelude.hdr;
     let rl_tags = &prelude.read_tags;
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", file_tag_map);
 
     let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
 
     // the exact position at the end of the header + file tags
     let pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
@@ -466,10 +443,9 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    let cc = chunk::ChunkConfig {
-        num_chunks: hdr.num_chunks,
+    let cc = chunk::ChunkConfigAtac {
+        num_chunks,
         bc_type: libradicl::rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
-        umi_type: libradicl::rad_types::encode_type_tag(umit).expect("valid umi tag type"),
     };
 
     // TODO: see if we can do this without the Arc
@@ -561,8 +537,7 @@ where
         let chunks_remaining = chunks_to_process.clone();
         // and knowledge of the UMI and BC types
         let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
-        let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+
         let nbuckets = temp_buckets.len();
         let loc_temp_buckets = temp_buckets.clone();
         //let owrite = owriter.clone();
@@ -601,12 +576,10 @@ where
                 if let Some((_chunk_num, buf)) = in_q.pop() {
                     chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
-                    libradicl::dump_corrected_cb_chunk_to_temp_file(
+                    libradicl::dump_corrected_cb_chunk_to_temp_file_atac(
                         &mut nbr,
                         &bc_type,
-                        &umi_type,
                         &correct_map,
-                        &expected_ori,
                         &oc,
                         &mut local_buffers,
                         loc_buffer_size,
@@ -641,7 +614,7 @@ where
     // worker threads.
     let mut buf = vec![0u8; 65536];
     for cell_num in 0..(cc.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
+        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<AtacSeqReadRecord>::read_header(&mut br);
         buf.resize(nbytes_chunk as usize, 0);
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
@@ -726,11 +699,10 @@ where
 
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
-        // and knowledge of the UMI and BC types
+        // and knowledge of the BC types
         let bc_type =
             rad_types::decode_int_type_tag(cc.bc_type).context("unknown barcode type id.")?;
-        let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).context("unknown umi type id.")?;
+
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file
@@ -754,10 +726,9 @@ where
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass(
+                    local_chunks += libradicl::collate_temporary_bucket_twopass_atac(
                         &mut treader,
                         &bc_type,
-                        &umi_type,
                         temp_bucket.1,
                         &owriter,
                         compress_out,

@@ -1,200 +1,71 @@
-/*
- * Copyright (c) 2020-2024 COMBINE-lab.
- *
- * This file is part of alevin-fry
- * (see https://www.github.com/COMBINE-lab/alevin-fry).
- *
- * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
- */
-
-use anyhow::{anyhow, Context};
-use slog::crit;
-use slog::info;
-
 use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
-#[allow(unused_imports)]
-use ahash::{AHasher, RandomState};
-use bio_types::strand::Strand;
+use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
+// use indexmap::map::IndexMap;
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types::{self, RadType};
+use libradicl::rad_types;
+use libradicl::utils::has_data_left;
 use libradicl::BarcodeLookupMap;
 use libradicl::{
     chunk,
     header::RadPrelude,
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+    record::{AtacSeqReadRecord, AtacSeqRecordContext},
 };
-use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
-use std::cmp;
+use slog::crit;
+use slog::info;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::io::{BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
+
 
 #[derive(Clone, Debug, Serialize)]
 pub enum CellFilterMethod {
-    // cut off at this cell in
-    // the frequency sorted list
-    ForceCells(usize),
-    // use this cell as a hint in
-    // the frequency sorted list
-    ExpectCells(usize),
-    // correct all cells in an
-    // edit distance of 1 of these
-    // barcodes
-    ExplicitList(PathBuf),
-    // barcodes will be provided in the
-    // form of an *unfiltered* external
-    // permit list
-    UnfilteredExternalList(PathBuf, usize),
     // use the distance method to
     // automatically find the knee
     // in the curve
     KneeFinding,
+    // barcodes will be provided in the
+    // form of an *unfiltered* external
+    // permit list
+    UnfilteredExternalList(PathBuf, usize),
 }
 
-struct Point {
-    x: f64,
-    y: f64,
-}
-
-/// compute the distance between the query point `Q`
-/// and the line defined by points `P1` and `P2`.  The
-/// formula used here is taken from :
-/// https://en.wikipedia.org/wiki/Distance_from_a_point_to_a_line
-fn distance_to_line(p1: &Point, p2: &Point, q: &Point) -> f64 {
-    let x_0 = q.x;
-    let y_0 = q.y;
-
-    let x_1 = p1.x;
-    let y_1 = p1.y;
-
-    let x_2 = p2.x;
-    let y_2 = p2.y;
-
-    let numer = ((y_2 - y_1) * x_0 - (x_2 - x_1) * y_0 + x_2 * y_1 - y_2 * x_1).abs();
-    let denom = ((y_2 - y_1).powi(2) + (x_2 - x_1).powi(2)).sqrt();
-    assert!(denom > 0.0f64);
-    numer / denom
-}
-
-/// This method is a implementation of the distance method
-/// used in umi_tools :
-///     Smith, Tom, Andreas Heger, and Ian Sudbery.
-///     "UMI-tools: modeling sequencing errors in Unique Molecular Identifiers to improve quantification accuracy."
-///     Genome research 27.3 (2017): 491-499.
-///
-/// though this is a re-implementation and uses the same basic algorithm
-/// the result may not be identical.
-///
-/// Given a list of cumulative frequencies, where the index of a
-/// point is interpreted as its x-coordinate and its frequency
-/// is interpreted as its y-coordinate, define the line L based on
-/// `sorted_frequences.first()` and `sorted_frequencies.last()`.  Compute
-/// the distance of each point from L, and return the index of the point
-/// having the maximum distance.
-fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> usize {
-    assert!(sorted_frequencies.len() >= 2,
-        "ERROR: when attempting to find a knee-distance threshold, the list of putative cells is only of length {}. Cannot proceed. Please check the mapping rate.",
-        sorted_frequencies.len());
-    let first = sorted_frequencies
-        .first()
-        .expect("cannot process empty frequency list.");
-    let last = sorted_frequencies
-        .last()
-        .expect("cannot process empty frequency list.");
-
-    // length as a float
-    let max_x = sorted_frequencies.len() as f64;
-
-    // if the distribution is cumulative, then the smallest y coordinate is
-    // f, otherewise it is l
-    let max_y = if is_cumulative {
-        *last as f64
-    } else {
-        *first as f64
-    };
-
-    let p1 = Point {
-        x: 0.0f64,
-        y: (*first as f64) / max_y,
-    };
-    let p2 = Point {
-        x: 1.0f64,
-        y: (*last as f64) / max_y,
-    };
-
-    let mut max_d: f64 = -1.0;
-    let mut max_ind: usize = 0;
-
-    for (ind, freq) in sorted_frequencies.iter().enumerate() {
-        let x = ind as f64 / max_x;
-        let y = *freq as f64 / max_y;
-        let q = Point { x, y };
-        let d = distance_to_line(&p1, &p2, &q);
-        if d >= max_d {
-            max_d = d;
-            max_ind = ind;
+pub fn update_barcode_hist_unfiltered(
+    hist: &mut HashMap<u64, u64, ahash::RandomState>,
+    unmatched_bc: &mut Vec<u64>,
+    max_ambiguity_read: &mut usize,
+    chunk: &chunk::Chunk<AtacSeqReadRecord>,
+) -> usize {
+    let mut num_strand_compat_reads = 0usize;
+    for r in &chunk.reads {
+        num_strand_compat_reads += 1;
+        *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+        // lookup the barcode in the map of unfiltered known
+        // barcodes
+        match hist.get_mut(&r.bc) {
+            // if we find a match, increment the count
+            Some(c) => *c += 1,
+            // otherwise, push this into the unmatched list
+            None => {
+                unmatched_bc.push(r.bc);
+            }
         }
     }
-    max_ind
-}
-
-/// Get the knee of the cure using the `distance` method as described
-/// in the [UMI-tools documentation](https://github.com/CGATOxford/UMI-tools).
-/// This method takes a reverse-sorted (sorted in descending order) llist of
-/// frequencies, and a maximum number of iterations to run the algorithm.  It
-/// returns the point on the CDF of the reverse-sorted frequency vector that is
-/// farthest from the line defined by the end-points.  The algorithm is taken from
-/// [here](https://github.com/CGATOxford/UMI-tools/blob/master/umi_tools/whitelist_methods.py#L248).
-fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
-    // get the cumulative frequency from the frequency
-    let cfreq: Vec<u64> = freq
-        .iter()
-        .scan(0u64, |acc, &num| {
-            *acc += num;
-            Some(*acc)
-        })
-        .collect();
-    // get the guess about the max distance point
-    let mut prev_max = 0;
-    let mut max_idx = get_max_distance_index(&cfreq[..], true);
-
-    // if we think we should include no cells, something is probably wrong.
-    assert_ne!(max_idx, 0,
-	       "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
-
-    let mut iterations = 0;
-    let iter_slack = 5;
-    // while our algorithm hasn't converged
-    while max_idx - prev_max != 0 {
-        info!(log, "max_idx = {}", max_idx);
-        prev_max = max_idx;
-        iterations += 1;
-        if iterations % 10 == 0 {
-            info!(log, "knee-finding iter = {}", iterations);
-        }
-        if iterations > max_iterations {
-            break;
-        }
-        let last_idx = std::cmp::min(cfreq.len() - 1, max_idx * iter_slack);
-        max_idx = get_max_distance_index(&cfreq[0..last_idx], true);
-        assert_ne!(max_idx, 0,
-	       "get_knee determined a knee index of 0. This probably should not happen with valid input data.");
-    }
-    max_idx
+    num_strand_compat_reads
 }
 
 fn populate_unfiltered_barcode_map<T: Read>(
     br: BufReader<T>,
     first_bclen: &mut usize,
+    rev_bc: bool,
 ) -> HashMap<u64, u64, ahash::RandomState> {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut hm = HashMap::with_hasher(s);
@@ -217,7 +88,12 @@ fn populate_unfiltered_barcode_map<T: Read>(
         if let Some((_, km, _)) =
             needletail::bitkmer::BitNuclKmer::new(&l[..], l.len() as u8, false).next()
         {
-            hm.insert(km.0, 0);
+            if rev_bc {
+                let km_rev = needletail::bitkmer::reverse_complement(km);
+                hm.insert(km_rev.0, 0);
+            } else {
+                hm.insert(km.0, 0);
+            }
         }
     }
     hm
@@ -229,11 +105,10 @@ fn process_unfiltered(
     mut unmatched_bc: Vec<u64>,
     file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
-    expected_ori: Strand,
     output_dir: &PathBuf,
     version: &str,
     max_ambiguity_read: usize,
-    velo_mode: bool,
+    num_chunks: u32,
     cmdline: &str,
     log: &slog::Logger,
     gpl_opts: &GenPermitListOpts,
@@ -283,12 +158,10 @@ fn process_unfiltered(
         "num_passing = {}",
         num_passing.to_formatted_string(&Locale::en)
     );
-
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
-
     // now, we create a second barcode map with just the barcodes
     // for cells we will keep / rescue.
     let bcmap2 = BarcodeLookupMap::new(kept_bc, barcode_len as u32);
@@ -424,10 +297,9 @@ fn process_unfiltered(
         .context("couldn't serialize permit list mapping.")?;
 
     let meta_info = json!({
-    "velo_mode" : velo_mode,
-    "expected_ori" : *expected_ori.strand_symbol(),
     "version_str" : version,
     "max-ambig-record" : max_ambiguity_read,
+    "num-chunks" : num_chunks,
     "cmd" : cmdline,
     "permit-list-type" : "unfiltered",
     "gpl_options" : &gpl_opts
@@ -451,166 +323,16 @@ fn process_unfiltered(
     Ok(num_corrected)
 }
 
-#[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
-fn process_filtered(
-    hm: &HashMap<u64, u64, ahash::RandomState>,
-    file_tag_map: &rad_types::TagMap,
-    filter_meth: &CellFilterMethod,
-    expected_ori: Strand,
-    output_dir: &PathBuf,
-    version: &str,
-    max_ambiguity_read: usize,
-    velo_mode: bool,
-    cmdline: &str,
-    log: &slog::Logger,
-    gpl_opts: &GenPermitListOpts,
-) -> anyhow::Result<u64> {
-    let valid_bc: Vec<u64>;
-    let mut freq: Vec<u64> = hm.values().cloned().collect();
-    freq.sort_unstable();
-    freq.reverse();
 
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .expect("tag map must contain cblen");
-    let barcode_len: u16 = barcode_tag.try_into()?;
-
-    // select from among supported filter methods
-    match filter_meth {
-        CellFilterMethod::KneeFinding => {
-            let num_bc = get_knee(&freq[..], 100, log);
-            let min_freq = freq[num_bc];
-
-            // collect all of the barcodes that have a frequency
-            // >= to min_thresh.
-            valid_bc = permit_list_from_threshold(hm, min_freq);
-            info!(
-                log,
-                "knee distance method resulted in the selection of {} permitted barcodes.",
-                valid_bc.len()
-            );
-        }
-        CellFilterMethod::ForceCells(top_k) => {
-            let num_bc = if freq.len() < *top_k {
-                freq.len() - 1
-            } else {
-                top_k - 1
-            };
-
-            let min_freq = freq[num_bc];
-
-            // collect all of the barcodes that have a frequency
-            // >= to min_thresh.
-            valid_bc = permit_list_from_threshold(hm, min_freq);
-        }
-        CellFilterMethod::ExplicitList(valid_bc_file) => {
-            valid_bc = permit_list_from_file(valid_bc_file, barcode_len);
-        }
-        CellFilterMethod::ExpectCells(expected_num_cells) => {
-            let robust_quantile = 0.99f64;
-            let robust_div = 10.0f64;
-            let robust_ind = (*expected_num_cells as f64 * robust_quantile).round() as u64;
-            // the robust ind must be valid
-            let ind = cmp::min(freq.len() - 1, robust_ind as usize);
-            let robust_freq = freq[ind];
-            let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-            valid_bc = permit_list_from_threshold(hm, min_freq);
-        }
-        CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-            unimplemented!();
-        }
-    }
-
-    // generate the map from each permitted barcode to all barcodes within
-    // edit distance 1 of it.
-    let full_permit_list =
-        afutils::generate_permitlist_map(&valid_bc, barcode_len as usize).unwrap();
-
-    let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
-
-    let mut num_corrected = 0;
-    for (k, v) in hm.iter() {
-        if let Some(&valid_key) = full_permit_list.get(k) {
-            *permitted_map.entry(valid_key).or_insert(0u64) += *v;
-            num_corrected += 1;
-            //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
-        }
-    }
-
-    let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create path to output location {}",
-            parent.display()
-        )
-    })?;
-    let o_path = parent.join("permit_freq.bin");
-
-    match afutils::write_permit_list_freq(&o_path, barcode_len, &permitted_map) {
-        Ok(_) => {}
-        Err(error) => {
-            panic!("Error: {}", error);
-        }
-    };
-
-    let o_path = parent.join("all_freq.bin");
-
-    match afutils::write_permit_list_freq(&o_path, barcode_len, hm) {
-        Ok(_) => {}
-        Err(error) => {
-            panic!("Error: {}", error);
-        }
-    };
-
-    let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(s_path).context("could not create serialization file.")?;
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &full_permit_list)
-        .context("couldn't serialize permit list.")?;
-
-    let meta_info = json!({
-    "velo_mode" : velo_mode,
-    "expected_ori" : *expected_ori.strand_symbol(),
-    "version_str" : version,
-    "max-ambig-record" : max_ambiguity_read,
-    "cmd" : cmdline,
-    "permit-list-type" : "filtered",
-    "gpl_options" : &gpl_opts
-    });
-
-    let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(m_path).context("could not create metadata file.")?;
-
-    let meta_info_string =
-        serde_json::to_string_pretty(&meta_info).context("could not format json.")?;
-    m_file
-        .write_all(meta_info_string.as_bytes())
-        .context("cannot write to generate_permit_list.json file")?;
-
-    info!(
-        log,
-        "total number of distinct corrected barcodes : {}",
-        num_corrected.to_formatted_string(&Locale::en)
-    );
-
-    Ok(num_corrected)
-}
-
-/// Given the input RAD file `input_file`, compute
-/// and output (in `output_dir`) the list of valid
-/// (i.e. "permitted") barcode values, as well as
-/// a map from each correctable barcode to the
-/// permitted barcode to which it maps.
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
     let filter_meth = gpl_opts.fmeth.clone();
-    let expected_ori = gpl_opts.expected_ori;
     let version = gpl_opts.version;
-    let velo_mode = gpl_opts.velo_mode;
     let cmdline = gpl_opts.cmdline;
     let log = gpl_opts.log;
+    let rc = gpl_opts.rc;
+    let mut num_chunks = 0;
 
     let i_dir = std::path::Path::new(&rad_dir);
 
@@ -619,7 +341,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     if !i_dir.exists() {
         crit!(
             log,
-            "the input RAD path {} does not exist",
+            "the input rad path {} does not exist",
             rad_dir.display()
         );
         // std::process::exit(1);
@@ -628,10 +350,12 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
+
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
+        println!("{} Fname", fname.display());
         let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
-        unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
+        unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen, rc));
         info!(
             log,
             "number of unfiltered bcs read = {}",
@@ -643,9 +367,8 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         );
     }
 
-    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
+    let i_file = File::open(i_dir.join("map.rad")).context("could not open input bed file")?;
     let mut br = BufReader::new(i_file);
-
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let hdr = &prelude.hdr;
     info!(
@@ -663,70 +386,56 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let rl_tags = &prelude.read_tags;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
-    // right now, we only handle BC and UMI types of U8—U64, so validate that
-    const BNAME: &str = "b";
-    const UNAME: &str = "u";
+    const BNAME: &str = "barcode";
+    // let mut bct: Option<RadType> = None;
 
-    let mut bct: Option<RadType> = None;
-    let mut umit: Option<RadType> = None;
-
-    for rt in &rl_tags.tags {
+    for rt in &rl_tags.tags  {
         // if this is one of our tags
-        if rt.name == BNAME || rt.name == UNAME {
-            if !rt.typeid.is_int_type() {
-                crit!(
-                    log,
-                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
-                );
-                std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
-            }
-
-            if rt.name == BNAME {
-                bct = Some(rt.typeid);
-            }
-            if rt.name == UNAME {
-                umit = Some(rt.typeid);
-            }
+        if rt.name == BNAME  && !rt.typeid.is_int_type() {   
+            crit!(
+                log,
+                "currently only RAD types 1--4 are supported for 'b' tags."
+            );
+            std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
+            // if rt.name == BNAME {
+            //     bct = Some(rt.typeid);
+            // }
         }
     }
-    assert!(bct.is_some(), "barcode type tag must be present.");
-    assert!(umit.is_some(), "umi type tag must be present.");
 
     // alignment-level
     let al_tags = &prelude.aln_tags;
-    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+    info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+    let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
     let mut num_reads: usize = 0;
-
-    // if dealing with filtered type
-    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut hm = HashMap::with_hasher(s);
 
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
     let mut unmatched_bc: Vec<u64>;
-    let mut num_orientation_compat_reads = 0usize;
+    // let mut num_orientation_compat_reads = 0usize;
     let mut max_ambiguity_read = 0usize;
+    let mut num_orientation_compat_reads = 0usize;
+    // Tracking if a unique or a multihit
 
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unmatched_bc = Vec::with_capacity(10000000);
             // the unfiltered_bc_count map must be valid in this branch
+
             if let Some(mut hmu) = unfiltered_bc_counts {
-                for _ in 0..(hdr.num_chunks as usize) {
-                    let c =
-                        chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
+                while has_data_left(&mut br).expect("encountered error reading input file") {
+                    let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
                     num_orientation_compat_reads += update_barcode_hist_unfiltered(
                         &mut hmu,
                         &mut unmatched_bc,
                         &mut max_ambiguity_read,
                         &c,
-                        &expected_ori,
                     );
+                    num_chunks += 1;
                     num_reads += c.reads.len();
                 }
                 info!(
@@ -734,7 +443,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
                     num_reads.to_formatted_string(&Locale::en),
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
-                    hdr.num_chunks.to_formatted_string(&Locale::en),
+                    num_chunks.to_formatted_string(&Locale::en),
                     max_ambiguity_read.to_formatted_string(&Locale::en)
                 );
                 process_unfiltered(
@@ -742,11 +451,10 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     unmatched_bc,
                     &file_tag_map,
                     &filter_meth,
-                    expected_ori,
                     output_dir,
                     version,
                     max_ambiguity_read,
-                    velo_mode,
+                    num_chunks,
                     cmdline,
                     log,
                     &gpl_opts,
@@ -755,285 +463,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 Ok(0)
             }
         }
-        _ => {
-            for _ in 0..(hdr.num_chunks as usize) {
-                let c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
-                update_barcode_hist(&mut hm, &mut max_ambiguity_read, &c, &expected_ori);
-                num_reads += c.reads.len();
-            }
-            info!(
-                log,
-                "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
-                num_reads.to_formatted_string(&Locale::en),
-                hdr.num_chunks.to_formatted_string(&Locale::en),
-                max_ambiguity_read.to_formatted_string(&Locale::en)
-            );
-            process_filtered(
-                &hm,
-                &file_tag_map,
-                &filter_meth,
-                expected_ori,
-                output_dir,
-                version,
-                max_ambiguity_read,
-                velo_mode,
-                cmdline,
-                log,
-                &gpl_opts,
-            )
-        }
+        _ => Ok(0),
     }
-
-    /*
-    let valid_bc: Vec<u64>;
-    let mut freq: Vec<u64> = hm.values().cloned().collect();
-    freq.sort_unstable();
-    freq.reverse();
-
-    // select from among supported filter methods
-    match filter_meth {
-    CellFilterMethod::KneeFinding => {
-        let num_bc = get_knee(&freq[..], 100, &log);
-        let min_freq = freq[num_bc];
-
-        // collect all of the barcodes that have a frequency
-        // >= to min_thresh.
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-        info!(
-        log,
-        "knee distance method resulted in the selection of {} permitted barcodes.",
-        valid_bc.len()
-        );
-    }
-    CellFilterMethod::ForceCells(top_k) => {
-        let num_bc = if freq.len() < top_k {
-        freq.len() - 1
-        } else {
-        top_k - 1
-        };
-
-        let min_freq = freq[num_bc];
-
-        // collect all of the barcodes that have a frequency
-        // >= to min_thresh.
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-    }
-    CellFilterMethod::ExplicitList(valid_bc_file) => {
-        valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
-    }
-    CellFilterMethod::ExpectCells(expected_num_cells) => {
-        let robust_quantile = 0.99f64;
-        let robust_div = 10.0f64;
-        let robust_ind = (expected_num_cells as f64 * robust_quantile).round() as u64;
-        // the robust ind must be valid
-        let ind = cmp::min(freq.len() - 1, robust_ind as usize);
-        let robust_freq = freq[ind];
-        let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-    }
-    CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
-        unimplemented!();
-    }
-    }
-
-    // generate the map from each permitted barcode to all barcodes within
-    // edit distance 1 of it.
-    let full_permit_list =
-    libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
-
-    let s2 = RandomState::<Hash64>::new();
-    let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
-
-    let mut num_corrected = 0;
-    for (k, v) in hm.iter() {
-    if let Some(&valid_key) = full_permit_list.get(k) {
-        *permitted_map.entry(valid_key).or_insert(0u64) += *v;
-        num_corrected += 1;
-        //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
-    }
-    }
-
-    let parent = std::path::Path::new(&output_dir);
-    std::fs::create_dir_all(&parent).unwrap();
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
-
-    for (k, v) in permitted_map {
-    //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-    writeln!(
-        &mut writer,
-        "{}\t{}",
-        k,
-        //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-        v
-    )
-    .expect("couldn't write to output file.");
-    }
-
-    let o_path = parent.join("all_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
-    for (k, v) in hm {
-    let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-    writeln!(
-        &mut writer,
-        "{}\t{}",
-        from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-        v
-    )
-    .expect("couldn't write to output file.");
-    }
-
-    let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &full_permit_list)
-    .expect("couldn't serialize permit list.");
-
-    let meta_info = json!({
-    "expected_ori" : expected_ori.strand_symbol()
-    });
-
-    let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
-
-    let meta_info_string =
-    serde_json::to_string_pretty(&meta_info).expect("could not format json.");
-    m_file
-    .write_all(meta_info_string.as_bytes())
-    .expect("cannot write to generate_permit_list.json file");
-
-    info!(
-    log,
-    "total number of corrected barcodes : {}",
-    num_corrected.to_formatted_string(&Locale::en)
-    );
-    Ok(num_corrected)
-    */
-}
-
-pub fn update_barcode_hist_unfiltered(
-    hist: &mut HashMap<u64, u64, ahash::RandomState>,
-    unmatched_bc: &mut Vec<u64>,
-    max_ambiguity_read: &mut usize,
-    chunk: &chunk::Chunk<AlevinFryReadRecord>,
-    expected_ori: &Strand,
-) -> usize {
-    let mut num_strand_compat_reads = 0usize;
-    match expected_ori {
-        Strand::Unknown => {
-            for r in &chunk.reads {
-                num_strand_compat_reads += 1;
-                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                // lookup the barcode in the map of unfiltered known
-                // barcodes
-                match hist.get_mut(&r.bc) {
-                    // if we find a match, increment the count
-                    Some(c) => *c += 1,
-                    // otherwise, push this into the unmatched list
-                    None => {
-                        unmatched_bc.push(r.bc);
-                    }
-                }
-            }
-        }
-        Strand::Forward => {
-            for r in &chunk.reads {
-                if r.dirs.iter().any(|&x| x) {
-                    num_strand_compat_reads += 1;
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    // lookup the barcode in the map of unfiltered known
-                    // barcodes
-                    match hist.get_mut(&r.bc) {
-                        // if we find a match, increment the count
-                        Some(c) => *c += 1,
-                        // otherwise, push this into the unmatched list
-                        None => {
-                            unmatched_bc.push(r.bc);
-                        }
-                    }
-                }
-            }
-        }
-        Strand::Reverse => {
-            for r in &chunk.reads {
-                if r.dirs.iter().any(|&x| !x) {
-                    num_strand_compat_reads += 1;
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    // lookup the barcode in the map of unfiltered known
-                    // barcodes
-                    match hist.get_mut(&r.bc) {
-                        // if we find a match, increment the count
-                        Some(c) => *c += 1,
-                        // otherwise, push this into the unmatched list
-                        None => {
-                            unmatched_bc.push(r.bc);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    num_strand_compat_reads
-}
-
-pub fn update_barcode_hist(
-    hist: &mut HashMap<u64, u64, ahash::RandomState>,
-    max_ambiguity_read: &mut usize,
-    chunk: &chunk::Chunk<AlevinFryReadRecord>,
-    expected_ori: &Strand,
-) {
-    match expected_ori {
-        Strand::Unknown => {
-            for r in &chunk.reads {
-                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                *hist.entry(r.bc).or_insert(0) += 1;
-            }
-        }
-        Strand::Forward => {
-            for r in &chunk.reads {
-                if r.dirs.iter().any(|&x| x) {
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    *hist.entry(r.bc).or_insert(0) += 1;
-                }
-            }
-        }
-        Strand::Reverse => {
-            for r in &chunk.reads {
-                if r.dirs.iter().any(|&x| !x) {
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    *hist.entry(r.bc).or_insert(0) += 1;
-                }
-            }
-        }
-    }
-}
-
-pub fn permit_list_from_threshold(
-    hist: &HashMap<u64, u64, ahash::RandomState>,
-    min_freq: u64,
-) -> Vec<u64> {
-    let valid_bc: Vec<u64> = hist
-        .iter()
-        .filter_map(|(k, v)| if v >= &min_freq { Some(*k) } else { None })
-        .collect();
-    valid_bc
-}
-
-pub fn permit_list_from_file<P>(ifile: P, bclen: u16) -> Vec<u64>
-where
-    P: AsRef<Path>,
-{
-    let f = File::open(ifile).expect("couldn't open input barcode file.");
-    let br = BufReader::new(f);
-    let mut bc = Vec::<u64>::with_capacity(10_000);
-
-    for l in br.lines() {
-        let line = l.expect("couldn't read line from barcode file.");
-        let mut bnk = BitNuclKmer::new(line.as_bytes(), bclen as u8, false);
-        let (_, k, _) = bnk.next().expect("can't extract kmer");
-        bc.push(k.0);
-    }
-    bc
 }
