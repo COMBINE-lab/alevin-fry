@@ -5,4 +5,5 @@ pub mod constants;
 pub mod deduplicate;
 pub mod eq_class;
 pub mod prog_opts;
+pub mod sort;
 pub mod utils;

@@ -11,6 +11,7 @@ use alevin_fry_atac::cmd_parse_utils::{
 use alevin_fry_atac::collate::collate;
 use alevin_fry_atac::deduplicate::deduplicate;
 use alevin_fry_atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
+use alevin_fry_atac::sort::sort;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -18,6 +19,7 @@ fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
+    let max_num_sort_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
     let crate_authors = crate_authors!("\n");
     let version = crate_version!();
@@ -62,11 +64,27 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
         .arg(arg!(-c --compress "compress the output collated RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
              .value_parser(value_parser!(u32))
              .default_value("30000000"));
+
+    let sort_app = Command::new("sort")
+        .about("Produce bed file coordinate sorted")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_sort_threads))
+        .arg(arg!(-c --compress "compress the output collated RAD file"))
+        .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+            .value_parser(value_parser!(u32))
+            .default_value("30000000"));
 
     let deduplicate_app = Command::new("deduplicate")
              .about("Deduplicate the RAD file and output a BED file")
@@ -82,7 +100,6 @@ fn main() -> anyhow::Result<()> {
                 .default_value("true")
             );
 
-
     let opts = Command::new("piscem-atac")
         .subcommand_required(true)
         .arg_required_else_help(true)
@@ -91,6 +108,7 @@ fn main() -> anyhow::Result<()> {
         .about("Process RAD files from the command line")
         .subcommand(gen_app)
         .subcommand(collate_app)
+        .subcommand(sort_app)
         .subcommand(deduplicate_app)
         .get_matches();
 
@@ -164,6 +182,26 @@ fn main() -> anyhow::Result<()> {
             &log,
         )
         .expect("could not collate.");
+    }
+
+    if let Some(t) = opts.subcommand_matches("sort") {
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
+        let num_threads: u32 = *t.get_one("threads").unwrap();
+        let compress_out = t.get_flag("compress");
+        let max_records: u32 = *t.get_one("max-records").unwrap();
+
+        sort(
+            input_dir,
+            rad_dir,
+            num_threads,
+            max_records,
+            compress_out,
+            &cmdline,
+            VERSION,
+            &log,
+        )
+        .expect("could not sort.");
     }
 
     if let Some(t) = opts.subcommand_matches("deduplicate") {

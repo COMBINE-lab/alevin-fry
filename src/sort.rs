@@ -1,43 +1,163 @@
-/*
- * Copyright (c) 2020-2024 COMBINE-lab.
- *
- * This file is part of alevin-fry
- * (see https://www.github.com/COMBINE-lab/alevin-fry).
- *
- * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
- */
-
-use anyhow::{anyhow, Context};
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use slog::{crit, info};
-//use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
+use anyhow::{anyhow, Context};
 use crossbeam_queue::ArrayQueue;
-// use dashmap::DashMap;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use slog::{crit, info};
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
 use libradicl::record::AtacSeqReadRecord;
-use libradicl::schema::{CollateKey, TempCellInfo};
+use libradicl::schema::CollateKey;
 
+use crate::collate::{
+    correct_unmapped_counts, get_filter_type, get_most_ambiguous_record, get_num_chunks,
+};
+use crate::utils as afutils;
+use crate::utils::get_bin_id;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
+use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, Write};
+use std::io;
+use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct HitInfo {
+    pub chr: u32,
+    pub start: u32,
+    pub frag_len: u16,
+    pub barcode: u64,
+    pub count: u16,
+    // rec_id: u64,
+}
+
+impl Ord for HitInfo {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        if self.chr != other.chr {
+            self.chr.cmp(&other.chr)
+        } else if self.start != other.start {
+            self.start.cmp(&other.start)
+        } else if self.frag_len != other.frag_len {
+            self.frag_len.cmp(&other.frag_len)
+        } else {
+            self.barcode.cmp(&other.barcode)
+        }
+    }
+}
+impl PartialOrd for HitInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+pub fn get_bed_string(
+    hit_info_vec: &[HitInfo],
+    ref_names: &[String],
+    bc_len: u16,
+    rev: bool,
+) -> String {
+    let bc_len: u8 = bc_len.try_into().unwrap();
+    let mut s = "".to_string();
+    let mut count = 1;
+    let mut i = 0;
+
+    while i < (hit_info_vec.len() - 1) {
+        if hit_info_vec[i].frag_len < 2000 {
+            if hit_info_vec[i] == hit_info_vec[i + 1] {
+                count += 1;
+            } else {
+                let s2 = [
+                    ref_names[hit_info_vec[i].chr as usize].clone(),
+                    hit_info_vec[i].start.to_string(),
+                    (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
+                    afutils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
+                    count.to_string(),
+                ]
+                .join("\t");
+                s.push_str(&s2);
+                s.push('\n');
+                count = 1;
+            }
+        } else {
+            count = 1;
+        }
+        i += 1;
+    }
+    if hit_info_vec[i].frag_len < 2000 {
+        let s2 = [
+            ref_names[hit_info_vec[i].chr as usize].clone(),
+            hit_info_vec[i].start.to_string(),
+            (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
+            afutils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
+            count.to_string(),
+        ]
+        .join("\t");
+        s.push_str(&s2);
+        s.push('\n');
+    }
+    s
+}
+
+pub fn sort_temp_bucket<T: Read + Seek>(
+    reader: &mut BufReader<T>,
+    bct: &rad_types::RadIntId,
+    barcode_len: u16,
+    rc: bool,
+    ref_names: &[String],
+    nrec: u32,
+    parent: &Path,
+    buck_id: u32,
+    compress: bool,
+)  -> anyhow::Result<()> {
+    let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(nrec as usize);
+    for _ in 0..(nrec as usize) {
+        // read the header of the record
+        // we don't bother reading the whole thing here
+        // because we will just copy later as need be
+        let tup = AtacSeqReadRecord::from_bytes_record_header(reader, bct);
+        // read the alignment records from the input file
+        if tup.1 > 1 {
+            continue;
+        }
+        let rr = AtacSeqReadRecord::from_bytes_with_header(reader, tup.0, tup.1);
+        hit_info_vec.push(HitInfo {
+            chr: rr.refs[0],
+            start: rr.start_pos[0],
+            frag_len: rr.frag_lengths[0],
+            barcode: rr.bc,
+            count: 0,
+        })
+    }
+    hit_info_vec.sort_unstable();
+
+    let bed_string: String = get_bed_string(&hit_info_vec, &ref_names, barcode_len, rc);
+    if compress {
+        let bd = File::create(parent.join(format!("{}.bed.gz", buck_id))).unwrap();
+        let mut encoder = GzEncoder::new(bd, Compression::default());
+        encoder.write_all(bed_string.as_bytes()).unwrap();
+        encoder.finish()?;
+    } else {
+        let mut bd = File::create(parent.join(format!("{}.bed", buck_id))).unwrap();
+        bd.write_all(bed_string.as_bytes())?;
+    }
+    Ok(())
+    // write_bed(&mut bd, &h_updated, &ref_names, barcode_len, rc);
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn collate<P1, P2>(
+pub fn sort<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
     num_threads: u32,
@@ -54,8 +174,9 @@ where
 {
     let input_dir = input_dir.into();
     let parent = std::path::Path::new(input_dir.as_path());
+    // let r_dir = std::path::Path::new(rad_dir.as_ref());
+    // let ref_lens = read_ref_lengths(parent)?;
 
-    // open the metadata file and read the json
     let gpl_path = parent.join("generate_permit_list.json");
     let meta_data_file = File::open(&gpl_path)
         .with_context(|| format!("Could not open the file {:?}.", gpl_path.display()))?;
@@ -77,25 +198,34 @@ where
         }
     };
 
+    let rc: bool = mdata["gpl_options"]["rc"].as_bool().unwrap();
+
     if let Err(es) = calling_version.is_compatible_with(&vd) {
         return Err(anyhow!(es));
     }
 
-    // if only an *old* version of the permit_freq is present, then complain and exit
-    if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
-        crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
+    if !parent.join("bin_recs.bin").exists() || !parent.join("bin_lens.bin").exists() {
+        crit!(log, "bin file containing records does not exist");
         // std::process::exit(1);
         return Err(anyhow!("execution terminated unexpectedly"));
     }
 
-    // open file
+    let bin_count_file =
+        std::fs::File::open(parent.join("bin_recs.bin")).context("couldn't open file")?;
+    let mut bin_rec_counts: Vec<u64> =
+        bincode::deserialize_from(bin_count_file).context("couldn't open bin counts file.")?;
+
+    let bin_len_file =
+        std::fs::File::open(parent.join("bin_lens.bin")).context("couldn't open file")?;
+    let bin_lens: Vec<u64> =
+        bincode::deserialize_from(bin_len_file).context("couldn't open bin length file.")?;
+
     let freq_file =
         std::fs::File::open(parent.join("permit_freq.bin")).context("couldn't open file")?;
 
     // header buffer
     let mut rbuf = [0u8; 8];
 
-    // read header
     let mut rdr = BufReader::new(&freq_file);
     rdr.read_exact(&mut rbuf)
         .context("couldn't read freq file header")?;
@@ -105,9 +235,9 @@ where
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
         crit!(log,
-               "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
-               freq_file_version, afconst::PERMIT_FILE_VER
-         );
+                "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+                freq_file_version, afconst::PERMIT_FILE_VER
+            );
         return Err(anyhow!("execution terminated unexpectedly"));
     }
 
@@ -121,149 +251,40 @@ where
     // read the barcode -> frequency hashmap
     let freq_hm: HashMap<u64, u64> =
         bincode::deserialize_from(rdr).context("couldn't deserialize barcode to frequency map.")?;
-    let total_to_collate = freq_hm.values().sum();
-    let mut tsv_map = Vec::from_iter(freq_hm);
-
-    // sort this so that we deal with largest cells (by # of reads) first
-    // sort in _descending_ order by count.
-    tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
-
-    /*
-    let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
-    info!(
-    log,
-    "estimated that collation would require {} passes over input.", est_num_rounds
-    );
-    // if est_num_rounds > 2 {
-    info!(log, "executing temporary file scatter-gather strategy.");
-    */
-
-    collate_with_temp(
+    let total_to_collate: u64 = freq_hm.values().sum();
+    let tsv_map = Vec::from_iter(freq_hm);
+    sort_with_temp(
         input_dir,
         rad_dir,
         num_threads,
         max_records,
+        bin_rec_counts,
+        bin_lens,
         tsv_map,
         total_to_collate,
         compress_out,
         cmdline,
         version_str,
+        rc,
         log,
-    )
-
-    /*} else {
-    info!(log, "executing multi-pass strategy.");
-    collate_in_memory_multipass(
-        input_dir,
-        rad_dir,
-        num_threads,
-        max_records,
-        tsv_map,
-        total_to_collate,
-        log,
-    )
-    }*/
-}
-
-#[derive(Debug)]
-pub enum FilterType {
-    Filtered,
-    Unfiltered,
-}
-
-pub fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType {
-    if let Some(fts) = mdata.get("permit-list-type") {
-        let ft = match fts.as_str() {
-            Some("unfiltered") => FilterType::Unfiltered,
-            Some("filtered") => FilterType::Filtered,
-            _ => FilterType::Filtered,
-        };
-        ft
-    } else {
-        info!(
-            log,
-            "permit-list-type key not present in JSON file; assuming list is filtered."
-        );
-        FilterType::Filtered
-    }
-}
-
-pub fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> usize {
-    if let Some(mar) = mdata.get("max-ambig-record") {
-        match mar.as_u64() {
-            Some(mv) => mv as usize,
-            _ => 2500_usize,
-        }
-    } else {
-        info!(
-          log,
-          "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
-      );
-        2500_usize
-    }
-}
-
-pub fn get_num_chunks(mdata: &serde_json::Value, log: &slog::Logger) -> anyhow::Result<u64> {
-    if let Some(mar) = mdata.get("num-chunks") {
-        match mar.as_u64() {
-            Some(mv) => Ok(mv),
-            _ => Err(anyhow!("Error parsing num-chunks")),
-        }
-    } else {
-        info!(log, "num-chunks key not present in JSON file;");
-        Err(anyhow!("num-chunks key not present"))
-    }
-}
-
-pub fn correct_unmapped_counts(
-    correct_map: &Arc<HashMap<u64, u64>>,
-    unmapped_file: &std::path::Path,
-    parent: &std::path::Path,
-) {
-    let i_file = File::open(unmapped_file).unwrap();
-    let mut br = BufReader::new(i_file);
-
-    // enough to hold a key value pair (a u64 key and u32 value)
-    let mut rbuf = [0u8; std::mem::size_of::<u64>() + std::mem::size_of::<u32>()];
-
-    let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
-
-    // pre-populate the output map with all valid keys
-    // keys (corrected barcodes) with no unmapped reads
-    // will simply have a value of 0.
-    //for (&_ubc, &cbc) in correct_map.iter() {
-    //    unmapped_count.entry(cbc).or_insert(0);
-    //}
-
-    // collect all of the information from the existing
-    // serialized map (that may contain repeats)
-    while br.read_exact(&mut rbuf[..]).is_ok() {
-        let k = rbuf.pread::<u64>(0).unwrap();
-        let v = rbuf.pread::<u32>(std::mem::size_of::<u64>()).unwrap();
-        // get the corrected key for the raw key
-        if let Some((&_rk, &ck)) = correct_map.get_key_value(&k) {
-            *unmapped_count.entry(ck).or_insert(0) += v;
-        }
-    }
-
-    let s_path = parent.join("unmapped_bc_count_collated.bin");
-    let s_file = std::fs::File::create(s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &unmapped_count)
-        .expect("couldn't serialize corrected unmapped bc count.");
+    )?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
-pub fn collate_with_temp<P1, P2>(
+pub fn sort_with_temp<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
     num_threads: u32,
     max_records: u32,
+    bin_recs: Vec<u64>,
+    bin_lens: Vec<u64>,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
     compress_out: bool,
     cmdline: &str,
     version: &str,
+    rc: bool,
     log: &slog::Logger,
 ) -> anyhow::Result<()>
 where
@@ -295,16 +316,11 @@ where
     info!(log, "filter_type = {:?}", filter_type);
     info!(
         log,
-        "collated rad file {} be compressed",
+        "sorted bed file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
     // because :
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if compress_out {
-        "map.collated.rad.sz"
-    } else {
-        "map.collated.rad"
-    };
 
     // writing the collate metadata
     {
@@ -313,7 +329,7 @@ where
             "version_str" : version,
             "compressed_output" : compress_out,
         });
-        let cm_path = parent.join("collate.json");
+        let cm_path = parent.join("sort.json");
 
         let mut cm_file =
             std::fs::File::create(cm_path).context("could not create metadata file.")?;
@@ -322,18 +338,8 @@ where
             serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
         cm_file
             .write_all(cm_info_string.as_bytes())
-            .context("cannot write to collate.json file")?;
+            .context("cannot write to sort.json file")?;
     }
-
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)
-            .with_context(|| format!("could not remove {}", oname.display()))?;
-    }
-
-    let ofile = File::create(parent.join(cfname))
-        .with_context(|| format!("couldn't create directory {}", cfname))?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
     let i_dir = std::path::Path::new(rad_dir.as_ref());
 
@@ -355,7 +361,7 @@ where
     // the exact position at the end of the header,
     // precisely sizeof(u64) bytes beyond the num_chunks field.
     let end_header_pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
-
+    let ref_names = hdr.ref_names.clone();
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -380,6 +386,10 @@ where
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", file_tag_map);
+
+    let binding = file_tag_map?;
+    let barcode_tag = binding.get("cblen").expect("tag map must contain cblen");
+    let barcode_len: u16 = barcode_tag.try_into()?;
 
     let bct = rl_tags.tags[0].typeid;
 
@@ -419,11 +429,6 @@ where
                 .into_inner()
                 .context("couldn't unwrap the FrameEncoder.")?;
             hdr_buf.set_position(0);
-        }
-
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref())
-                .context("could not write the output header.")?;
         }
     }
 
@@ -467,11 +472,11 @@ where
     let mut num_bucket_chunks = 0u32;
     {
         let moutput_cache = Arc::make_mut(&mut output_cache);
-        for rec in tsv_map.iter() {
+        for (i, nrec) in bin_recs.iter().enumerate() {
             // corrected barcode points to the bucket
             // file.
-            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
-            allocated_records += rec.1;
+            moutput_cache.insert(i as u64, temp_buckets.last().unwrap().2.clone());
+            allocated_records += nrec;
             num_bucket_chunks += 1;
             if allocated_records >= (max_records_per_thread as u64) {
                 temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
@@ -513,7 +518,7 @@ where
     // create a thread-safe queue based on the number of worker threads
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
-    // the number of cells left to process
+    // // the number of cells left to process
     let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
 
     let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
@@ -526,7 +531,7 @@ where
         (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(262_144_usize),
     ); //131072_usize);
 
-    // for each worker, spawn off a thread
+    // // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = q.clone();
@@ -540,11 +545,13 @@ where
 
         let nbuckets = temp_buckets.len();
         let loc_temp_buckets = temp_buckets.clone();
+        let loc_bin_lens = bin_lens.clone();
+
         //let owrite = owriter.clone();
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             // old code
-            //let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
+            let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
 
             // new approach (how much does this extra complexity matter?)
             // to avoid having a vector of cursors, where each cursor points to
@@ -570,6 +577,11 @@ where
                 tslice = rest;
             }
 
+            let size_range = 100000;
+            let closure_get_bin_id = |pos: u32, ref_id: usize| {
+                get_bin_id(pos, ref_id, size_range, &loc_bin_lens.clone())
+            };
+
             // pop from the work queue until everything is
             // processed
             while chunks_remaining.load(Ordering::SeqCst) > 0 {
@@ -583,7 +595,7 @@ where
                         &oc,
                         &mut local_buffers,
                         loc_buffer_size,
-                        CollateKey::Barcode,
+                        CollateKey::Pos(Box::new(closure_get_bin_id)),
                     );
                 }
             }
@@ -605,11 +617,11 @@ where
 
     // read each chunk
     pbar_inner.reset();
-    let pb_msg = format!(
-        "processing {} / {} total records",
-        total_allocated_records, total_to_collate
-    );
-    pbar_inner.set_message(pb_msg);
+    // let pb_msg = format!(
+    //     "processing {} / {} total records",
+    //     total_allocated_records, total_to_collate
+    // );
+    // pbar_inner.set_message(pb_msg);
 
     // read chunks from the input file and pass them to the
     // worker threads.
@@ -661,14 +673,14 @@ where
             .context("could not flush temporary output file!")?;
         // a sanity check that we have the correct number of records
         // and the expected number of bytes in each file
-        let expected = temp_bucket.1;
-        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert_eq!(expected, observed);
+        // let expected = temp_bucket.1;
+        // let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        // assert_eq!(expected, observed);
 
         let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
         let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
         let observed_bytes = md.len();
-        assert_eq!(expected_bytes, observed_bytes);
+        // assert_eq!(expected_bytes, observed_bytes);
     }
 
     //std::process::exit(1);
@@ -688,13 +700,14 @@ where
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
-    // for each worker, spawn off a thread
+    // // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
+        let barcode_len = barcode_len.clone();
         // the output cache and correction map
         let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
         // alternative strategy
         // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
 
@@ -707,7 +720,8 @@ where
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file
-        let owriter = owriter.clone();
+        let rc = rc.clone();
+        let r_names = ref_names.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
 
@@ -720,21 +734,24 @@ where
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
+                    // cmap.clear();
 
                     let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_atac(
+                    let _ = sort_temp_bucket(
                         &mut treader,
                         &bc_type,
-                        temp_bucket.1,
-                        &owriter,
+                        barcode_len,
+                        rc,
+                        &r_names,
+                        temp_bucket.2.num_records_written.load(Ordering::SeqCst),
+                        parent,
+                        temp_bucket.2.bucket_id,
                         compress_out,
-                        &mut cmap,
-                    ) as u64;
+                    );
 
                     // we don't need the file or reader anymore
                     drop(treader);
@@ -750,7 +767,7 @@ where
 
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
-    for temp_bucket in temp_buckets {
+    for temp_bucket in &temp_buckets {
         let mut bclone = temp_bucket.clone();
         // keep trying until we can push this payload
         while let Err(t) = fq.push(bclone) {
@@ -758,9 +775,6 @@ where
             // no point trying to push if the queue is full
             while fq.is_full() {}
         }
-        let expected = temp_bucket.1;
-        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert_eq!(expected, observed);
     }
 
     // wait for all of the workers to finish
@@ -779,7 +793,7 @@ where
 
     // make sure we wrote the same number of records that our
     // file suggested we should.
-    assert_eq!(total_allocated_records, total_to_collate);
+    // assert_eq!(total_allocated_records, total_to_collate);
 
     info!(
         log,
@@ -792,20 +806,33 @@ where
         "expected number of output chunks {}",
         expected_output_chunks.to_formatted_string(&Locale::en)
     );
+    if compress_out {
+        let out_bed_file = File::create(parent.join("map.bed.gz")).unwrap();
+        let mut encoder = GzEncoder::new(out_bed_file, Compression::default());
+        for i in 0..temp_buckets.len() {
+            let temp_bed_name = parent.join(format!("{}.bed.gz", i));
+            let mut input = File::open(&temp_bed_name)?;
+            io::copy(&mut input, &mut encoder)?;
+            std::fs::remove_file(&temp_bed_name)?;
+        }
+        encoder.finish()?;
+    } else {
+        let mut out_bed_file = File::create(parent.join("map.bed")).unwrap();
+        for i in 0..temp_buckets.len() {
+            let temp_bed_name = parent.join(format!("{}.bed", i));
+            let mut input = File::open(&temp_bed_name)?;
+            io::copy(&mut input, &mut out_bed_file)?;
+            std::fs::remove_file(&temp_bed_name)?;
+        }
+    }
+    // assert_eq!(
+    //     expected_output_chunks,
+    //     num_output_chunks,
+    //     "expected to write {} chunks but wrote {}",
+    //     expected_output_chunks.to_formatted_string(&Locale::en),
+    //     num_output_chunks.to_formatted_string(&Locale::en),
+    // );
 
-    assert_eq!(
-        expected_output_chunks,
-        num_output_chunks,
-        "expected to write {} chunks but wrote {}",
-        expected_output_chunks.to_formatted_string(&Locale::en),
-        num_output_chunks.to_formatted_string(&Locale::en),
-    );
-
-    owriter.lock().unwrap().flush()?;
-    info!(
-        log,
-        "finished collating input rad file {:?}.",
-        i_dir.join("map.rad")
-    );
+    info!(log, "merging temp files");
     Ok(())
 }

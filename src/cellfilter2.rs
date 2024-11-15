@@ -582,6 +582,7 @@ fn process_filtered(
     Ok(num_corrected)
 }
 
+
 /// Given the input RAD file `input_file`, compute
 /// and output (in `output_dir`) the list of valid
 /// (i.e. "permitted") barcode values, as well as
@@ -633,11 +634,13 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let hdr = rad_types::RadHeader::from_bytes(&mut br);
     info!(
         log,
-        "paired : {:?}, ref_count : {}, num_chunks : {}",
+        "paired : {:?}, ref_count : {}, num_chunks : {}, {:?}",
         hdr.is_paired != 0,
         hdr.ref_count.to_formatted_string(&Locale::en),
-        hdr.num_chunks.to_formatted_string(&Locale::en)
+        hdr.num_chunks.to_formatted_string(&Locale::en),
+        hdr.ref_names
     );
+    println!("ref names {:?}", hdr.ref_names);
     // file-level
     let fl_tags = rad_types::TagSection::from_bytes(&mut br);
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());

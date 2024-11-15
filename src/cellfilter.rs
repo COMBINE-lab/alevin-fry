@@ -1,5 +1,6 @@
 use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
+use afutils::read_ref_lengths;
 use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
 // use indexmap::map::IndexMap;
@@ -25,6 +26,26 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
+/// Initialize the index map with key being references and position
+/// Take the largest reference length (from chromosome)
+/// For each chromosome divide into ranges of size_range uptil max_size
+/// If we had ref length corresponding to each chromosome, we would divide the reference based on its length only
+pub fn initialize_rec_list(
+    b_lens: &mut Vec<u64>,
+    ref_lens: &Vec<u64>,
+    size_range: u64,
+) -> anyhow::Result<u64> {
+    let mut tot_zeros = 0;
+    let num_refs = ref_lens.len();
+
+    for r in 0..num_refs {
+        let nrange = (ref_lens[r] as f32 / size_range as f32).ceil() as u64;
+        let cum = b_lens[r] + nrange;
+        b_lens[r + 1] = cum;
+        tot_zeros += nrange;
+    }
+    Ok(tot_zeros)
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub enum CellFilterMethod {
@@ -43,6 +64,9 @@ pub fn update_barcode_hist_unfiltered(
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<AtacSeqReadRecord>,
+    bins: &mut Vec<u64>,
+    blens: &Vec<u64>,
+    size_range: u64,
 ) -> usize {
     let mut num_strand_compat_reads = 0usize;
     for r in &chunk.reads {
@@ -57,6 +81,16 @@ pub fn update_barcode_hist_unfiltered(
             None => {
                 unmatched_bc.push(r.bc);
             }
+        }
+
+        // for (i,_j) in r.start_pos.iter().enumerate() {
+        if r.start_pos.len() == 1 {
+            let i = 0;
+            let ref_id = r.refs[i];
+            let sp = r.start_pos[i];
+            let bid = sp as u64 / size_range as u64;
+            let ind: usize = (blens[ref_id as usize] + bid) as usize;
+            bins[ind] += 1;
         }
     }
     num_strand_compat_reads
@@ -111,6 +145,7 @@ fn process_unfiltered(
     num_chunks: u32,
     cmdline: &str,
     log: &slog::Logger,
+    bmax: u64,
     gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let parent = std::path::Path::new(output_dir);
@@ -302,7 +337,8 @@ fn process_unfiltered(
     "num-chunks" : num_chunks,
     "cmd" : cmdline,
     "permit-list-type" : "unfiltered",
-    "gpl_options" : &gpl_opts
+    "gpl_options" : &gpl_opts,
+    "max-rec-in-bin": bmax
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -323,19 +359,20 @@ fn process_unfiltered(
     Ok(num_corrected)
 }
 
-
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
+
     let filter_meth = gpl_opts.fmeth.clone();
     let version = gpl_opts.version;
     let cmdline = gpl_opts.cmdline;
     let log = gpl_opts.log;
     let rc = gpl_opts.rc;
     let mut num_chunks = 0;
-
+    let size_range: u64 = 100000;
     let i_dir = std::path::Path::new(&rad_dir);
 
+    let ref_lens = read_ref_lengths(i_dir)?;
     // should we assume this condition was already checked
     // during parsing?
     if !i_dir.exists() {
@@ -352,7 +389,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut unfiltered_bc_counts = None;
 
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
-        println!("{} Fname", fname.display());
         let i_file = File::open(fname).context("could not open input file")?;
         let br = BufReader::new(i_file);
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen, rc));
@@ -367,7 +403,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         );
     }
 
-    let i_file = File::open(i_dir.join("map.rad")).context("could not open input bed file")?;
+    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let mut br = BufReader::new(i_file);
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let hdr = &prelude.hdr;
@@ -376,8 +412,12 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         "paired : {:?}, ref_count : {}, num_chunks : {}",
         hdr.is_paired != 0,
         hdr.ref_count.to_formatted_string(&Locale::en),
-        hdr.num_chunks.to_formatted_string(&Locale::en)
+        hdr.num_chunks.to_formatted_string(&Locale::en),
     );
+
+    let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
+    let tot_bins = initialize_rec_list(&mut blens, &ref_lens, size_range);
+    let mut bins: Vec<u64> = vec![0; tot_bins.unwrap() as usize];
 
     // file-level
     let fl_tags = &prelude.file_tags;
@@ -389,9 +429,9 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     const BNAME: &str = "barcode";
     // let mut bct: Option<RadType> = None;
 
-    for rt in &rl_tags.tags  {
+    for rt in &rl_tags.tags {
         // if this is one of our tags
-        if rt.name == BNAME  && !rt.typeid.is_int_type() {   
+        if rt.name == BNAME && !rt.typeid.is_int_type() {
             crit!(
                 log,
                 "currently only RAD types 1--4 are supported for 'b' tags."
@@ -434,10 +474,28 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         &mut unmatched_bc,
                         &mut max_ambiguity_read,
                         &c,
+                        &mut bins,
+                        &blens,
+                        size_range,
                     );
                     num_chunks += 1;
                     num_reads += c.reads.len();
                 }
+
+                let bin_recs_path = output_dir.join("bin_recs.bin");
+                let br_file = std::fs::File::create(&bin_recs_path)
+                    .expect("could not create serialization file.");
+                let mut br_writer = BufWriter::new(&br_file);
+                bincode::serialize_into(&mut br_writer, &bins)
+                    .expect("couldn't serialize bins recs.");
+
+                let bin_lens_path = output_dir.join("bin_lens.bin");
+                let bl_file = std::fs::File::create(&bin_lens_path)
+                    .expect("could not create serialization file.");
+                let mut bl_writer = BufWriter::new(&bl_file);
+                bincode::serialize_into(&mut bl_writer, &blens)
+                    .expect("couldn't serialize bins lengths.");
+
                 info!(
                     log,
                     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
@@ -457,6 +515,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     num_chunks,
                     cmdline,
                     log,
+                    *bins.iter().max().unwrap(),
                     &gpl_opts,
                 )
             } else {

@@ -1,55 +1,20 @@
 use crate::prog_opts::DeduplicateOpts;
 use anyhow::Context;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use libradicl::{
-    readers::ParallelRadReader,
-    record::AtacSeqReadRecord,
-};
+use libradicl::{record::AtacSeqReadRecord};
+use libradicl::header::RadPrelude;
 use num_format::ToFormattedString;
 use slog::info;
-use std::cmp;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
-use std::io::Write;
-use std::num::NonZeroUsize;
-use std::sync::{
-    atomic:: Ordering,
-    Arc, Mutex,
-    atomic::AtomicU32
-};
+use std::io::{BufRead, BufReader, Write};
+use std::sync::{atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
 use std::thread;
 pub type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
+use crate::sort::HitInfo;
 use crate::utils as af_utils;
 use itertools::Itertools;
 use num_format::Locale;
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct HitInfo {
-    chr: u32,
-    start: u32,
-    frag_len: u16,
-    barcode: u64,
-    count: u16,
-    // rec_id: u64,
-}
-
-impl Ord for HitInfo {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        if self.chr != other.chr {
-            self.chr.cmp(&other.chr)
-        } else if self.start != other.start {
-            self.start.cmp(&other.start)
-        } else {
-            self.frag_len.cmp(&other.frag_len)
-        }
-    }
-}
-impl PartialOrd for HitInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 pub fn write_bed(
     bd_writer_lock: &Arc<Mutex<File>>,
@@ -57,7 +22,7 @@ pub fn write_bed(
     ref_names: &[String],
     rev: bool,
     bc_len: u8,
-    count_frag: &Arc<AtomicU32>
+    count_frag: &Arc<AtomicU32>,
 ) {
     let mut s = "".to_string();
     for i in 0..hit_info_vec.len() {
@@ -72,8 +37,7 @@ pub fn write_bed(
             .join("\t");
             s.push_str(&s2);
             s.push('\n');
-        }
-        else {
+        } else {
             count_frag.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -98,14 +62,15 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     if compressed_input {
         let i_file =
             File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
-        let br = snap::read::FrameDecoder::new(BufReader::new(&i_file));
-
+        let metadata = i_file.metadata()?;
+        let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
+        let file_len = metadata.len();
         info!(
             log,
             "quantifying from compressed, collated RAD file {:?}", i_file
         );
-        Ok(())
-        // do_deduplicate(br, dedup_opts)
+        // Ok(())
+        do_deduplicate(br, dedup_opts)
     } else {
         let i_file =
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
@@ -119,14 +84,13 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
             parent.join("map.collated.rad")
         );
 
-        do_deduplicate(br, dedup_opts, file_len)
+        do_deduplicate(br, dedup_opts)
     }
 }
 
-pub fn do_deduplicate(
-    br: BufReader<File>,
-    dedup_opts: DeduplicateOpts,
-    file_len: u64,
+pub fn do_deduplicate<T: BufRead>(
+    mut br: T,
+    dedup_opts: DeduplicateOpts
 ) -> anyhow::Result<()> {
     let num_threads = dedup_opts.num_threads;
 
@@ -136,15 +100,15 @@ pub fn do_deduplicate(
         1
     };
     
-    let mut rad_reader = ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
-        br,
-        NonZeroUsize::new(n_workers).unwrap(),
-    );
-    let refs = &rad_reader.prelude.hdr.ref_names;
-    let log = dedup_opts.log;
-    let prelude = &rad_reader.prelude;
+    let prelude = RadPrelude::from_bytes(&mut br).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .unwrap();
+    let log = &dedup_opts.log;
+    
     let hdr = &prelude.hdr;
-
+    let refs = &hdr.ref_names;
     let num_multimappings = Arc::new(AtomicU32::new(0 as u32));
     let num_dedup = Arc::new(AtomicU32::new(0 as u32));
     let num_frag_counts = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
@@ -178,7 +142,6 @@ pub fn do_deduplicate(
     let al_tags = &prelude.aln_tags;
     info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
-    let file_tag_map = &rad_reader.file_tag_map;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
     let barcode_tag = file_tag_map
@@ -202,17 +165,20 @@ pub fn do_deduplicate(
     let bed_writer = Arc::new(Mutex::new(File::create(bed_path).unwrap()));
     let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
 
+    let chunk_reader = libradicl::readers::ParallelChunkReader::<AtacSeqReadRecord>::new(
+        &prelude,
+        std::num::NonZeroUsize::new(n_workers).unwrap(),
+    );
+
     for _worker in 0..n_workers {
-        let rd = rad_reader.is_done();
-        let q = rad_reader.get_queue();
+        let rd = chunk_reader.is_done();
+        let q = chunk_reader.get_queue();
         let bd = bed_writer.clone();
         let refs = refs.clone();
         let num_multimappings = num_multimappings.clone();
         let num_dedup = num_dedup.clone();
         let num_frag_counts = num_frag_counts.clone();
         let num_non_mapped_pair = num_non_mapped_pair.clone();
-
-        let unmapped_count = bc_unmapped_map.clone();
 
         let handle = std::thread::spawn(move || {
             let mut nrec_processed = 0_usize;
@@ -261,20 +227,20 @@ pub fn do_deduplicate(
         });
         thread_handles.push(handle);
     }
-    let header_offset = rad_reader.get_byte_offset();
-    let pbar = ProgressBar::new(file_len - header_offset);
-    pbar.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-        )
-        .unwrap()
-        .progress_chars("##-"),
-    );
+    // let header_offset = rad_reader.get_byte_offset();
+    // let pbar = ProgressBar::new(file_len - header_offset);
+    // pbar.set_style(
+    //     ProgressStyle::with_template(
+    //         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+    //     )
+    //     .unwrap()
+    //     .progress_chars("##-"),
+    // );
     pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
-    let cb = |new_bytes: u64, _new_rec: u64| {
-        pbar.inc(new_bytes);
-    };
-    let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
+    // let cb = |new_bytes: u64, _new_rec: u64| {
+    //     pbar.inc(new_bytes);
+    // };
+    // let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
     let mut total_processed = 0;
     for handle in thread_handles {
         total_processed += handle.join().expect("The parsing thread panicked");

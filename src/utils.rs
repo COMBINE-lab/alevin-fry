@@ -16,6 +16,7 @@ use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
+use std::io::BufRead;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -786,6 +787,21 @@ impl FromStr for InternalVersionInfo {
     }
 }
 
+pub fn read_ref_lengths(i_dir: &std::path::Path) -> anyhow::Result<Vec<u64>> {
+    // Reading reference lengths
+    let ref_len_file = i_dir.join("ref.tsv");
+    let i_file = File::open(ref_len_file).context("could not open input ref file")?;
+    let mut reader_ref = BufReader::new(i_file);
+    let mut ref_lens: Vec<u64> = Vec::new();
+    let mut line = String::new();
+    while reader_ref.read_line(&mut line)? > 0 {
+        let fields: Vec<&str> = line.split('\t').map(|x| x.trim()).collect();
+        ref_lens.push(fields[1].parse::<u64>().unwrap());
+        line.clear();
+    }
+    Ok(ref_lens)
+}
+
 pub fn get_bc_string(
     kmerseq: &needletail::bitkmer::BitKmerSeq,
     reverse_barcode: bool,
@@ -799,6 +815,12 @@ pub fn get_bc_string(
     let bytes = needletail::bitkmer::bitmer_to_bytes(km);
     let seq: String = String::from_utf8(bytes).expect("Invalid barcode");
     seq
+}
+
+pub fn get_bin_id(pos: u32, ref_id: usize, size_range: u32, blens: &[u64]) -> usize {
+    let bid = pos / size_range;
+    let ind: usize = (blens[ref_id as usize] + bid as u64) as usize;
+    ind
 }
 
 #[cfg(test)]

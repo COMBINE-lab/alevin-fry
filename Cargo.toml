@@ -18,7 +18,8 @@ include = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.1"}
+# libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.1"}
+libradicl = { path = "../libradicl" }
 anyhow = "1.0.80"
 arrayvec = "0.7.4"
 ahash = "0.8.11"
@@ -51,7 +52,7 @@ itertools = "0.12.1"
 thiserror = "1.0.57"
 statrs = "0.16.0"
 sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
-
+indexmap = "2.6.0"
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
 clap = { version = "=4.5.2", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
