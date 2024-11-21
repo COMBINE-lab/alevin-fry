@@ -110,6 +110,7 @@ pub fn get_bed_string(
     s
 }
 
+#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
 pub fn sort_temp_bucket<T: Read + Seek>(
     reader: &mut BufReader<T>,
     bct: &rad_types::RadIntId,
@@ -279,7 +280,7 @@ pub fn sort_with_temp<P1, P2>(
     bin_recs: Vec<u64>,
     bin_lens: Vec<u64>,
     tsv_map: Vec<(u64, u64)>,
-    total_to_collate: u64,
+    _total_to_collate: u64,
     compress_out: bool,
     cmdline: &str,
     version: &str,
@@ -456,7 +457,7 @@ where
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
     // max_records is the max size of each intermediate file
-    let mut total_allocated_records = 0;
+    // let mut total_allocated_records = 0;
     let mut allocated_records = 0;
     let mut temp_buckets = vec![(
         0,
@@ -486,7 +487,7 @@ where
                     0,
                     Arc::new(libradicl::TempBucket::from_id_and_parent(tn, parent)),
                 ));
-                total_allocated_records += allocated_records;
+                // total_allocated_records += allocated_records;
                 allocated_records = 0;
                 num_bucket_chunks = 0;
             }
@@ -644,7 +645,7 @@ where
     pbar_inner.finish();
 
     // wait for the worker threads to finish
-    let mut num_output_chunks = 0u64;
+    // let mut num_output_chunks = 0u64;
     for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(_) => {}
@@ -720,7 +721,7 @@ where
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file
-        let rc = rc.clone();
+        
         let r_names = ref_names.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
@@ -781,8 +782,8 @@ where
     // let mut num_output_chunks = 0u64;
     for h in thread_handles.drain(0..) {
         match h.join() {
-            Ok(c) => {
-                num_output_chunks += c;
+            Ok(_c) => {
+                // num_output_chunks += c;
             }
             Err(_e) => {
                 info!(log, "thread panicked");
