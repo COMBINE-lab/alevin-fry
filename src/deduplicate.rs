@@ -1,11 +1,10 @@
 use crate::prog_opts::DeduplicateOpts;
 use anyhow::Context;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use libradicl::{record::AtacSeqReadRecord};
 use libradicl::header::RadPrelude;
+use libradicl::record::AtacSeqReadRecord;
 use num_format::ToFormattedString;
 use slog::info;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
@@ -62,9 +61,9 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     if compressed_input {
         let i_file =
             File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
-        let metadata = i_file.metadata()?;
+        // let metadata = i_file.metadata()?;
         let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
-        let file_len = metadata.len();
+        // let file_len = metadata.len();
         info!(
             log,
             "quantifying from compressed, collated RAD file {:?}", i_file
@@ -74,8 +73,8 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     } else {
         let i_file =
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
-        let metadata = i_file.metadata()?;
-        let file_len = metadata.len();
+        // let metadata = i_file.metadata()?;
+        // let file_len = metadata.len();
         let br = BufReader::new(i_file);
 
         info!(
@@ -88,10 +87,7 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     }
 }
 
-pub fn do_deduplicate<T: BufRead>(
-    mut br: T,
-    dedup_opts: DeduplicateOpts
-) -> anyhow::Result<()> {
+pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     let num_threads = dedup_opts.num_threads;
 
     let n_workers = if num_threads > 1 {
@@ -99,20 +95,17 @@ pub fn do_deduplicate<T: BufRead>(
     } else {
         1
     };
-    
+
     let prelude = RadPrelude::from_bytes(&mut br).unwrap();
-    let file_tag_map = prelude
-        .file_tags
-        .parse_tags_from_bytes(&mut br)
-        .unwrap();
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
     let log = &dedup_opts.log;
-    
+
     let hdr = &prelude.hdr;
     let refs = &hdr.ref_names;
-    let num_multimappings = Arc::new(AtomicU32::new(0 as u32));
-    let num_dedup = Arc::new(AtomicU32::new(0 as u32));
-    let num_frag_counts = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
-    let num_non_mapped_pair = Arc::new(AtomicU32::new(0 as u32)); // fragments larger than 2000
+    let num_multimappings = Arc::new(AtomicU32::new(0_u32));
+    let num_dedup = Arc::new(AtomicU32::new(0_u32));
+    let num_frag_counts = Arc::new(AtomicU32::new(0_u32)); // fragments larger than 2000
+    let num_non_mapped_pair = Arc::new(AtomicU32::new(0_u32)); // fragments larger than 2000
 
     if let Ok(summary) = prelude.summary(None) {
         println!("{}", summary);
@@ -129,9 +122,9 @@ pub fn do_deduplicate<T: BufRead>(
     let bed_path = parent.join("map.bed");
     let num_chunks = hdr.num_chunks;
 
-    let bc_unmapped_file = File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
-    let bc_unmapped_map: Arc<HashMap<u64, u32>> =
-        Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
+    // let bc_unmapped_file = File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
+    // let bc_unmapped_map: Arc<HashMap<u64, u32>> =
+    //     Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
 
     let fl_tags = &prelude.file_tags;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
@@ -200,12 +193,10 @@ pub fn do_deduplicate<T: BufRead>(
                                     barcode: r.bc,
                                     count: 0,
                                 })
-                            }
-                            else if na > 1 {
+                            } else if na > 1 {
                                 num_multimappings.fetch_add(1, Ordering::SeqCst);
                                 continue;
-                            }
-                            else {
+                            } else {
                                 num_non_mapped_pair.fetch_add(1, Ordering::SeqCst);
                             }
                         }
@@ -219,7 +210,14 @@ pub fn do_deduplicate<T: BufRead>(
                             }
                         }
                         drop(hit_info_vec);
-                        write_bed(&bd, &h_updated, &refs, dedup_opts.rev, barcode_len as u8, &num_frag_counts);
+                        write_bed(
+                            &bd,
+                            &h_updated,
+                            &refs,
+                            dedup_opts.rev,
+                            barcode_len as u8,
+                            &num_frag_counts,
+                        );
                     }
                 }
             }
@@ -251,19 +249,23 @@ pub fn do_deduplicate<T: BufRead>(
     ));
     info!(
         log,
-        "Number of records with greater than 1 mapping {}", num_multimappings.load(Ordering::SeqCst)
-        );
+        "Number of records with greater than 1 mapping {}",
+        num_multimappings.load(Ordering::SeqCst)
+    );
     info!(
         log,
-        "Number of records that are deduplicated {}", num_dedup.load(Ordering::SeqCst)
-        );
+        "Number of records that are deduplicated {}",
+        num_dedup.load(Ordering::SeqCst)
+    );
     info!(
         log,
-        "Number of records that are not mapped pairs {}", num_non_mapped_pair.load(Ordering::SeqCst)
-        );
+        "Number of records that are not mapped pairs {}",
+        num_non_mapped_pair.load(Ordering::SeqCst)
+    );
     info!(
         log,
-        "Number of records that have frag length > 2000 {}", num_frag_counts.load(Ordering::SeqCst)
-        );
+        "Number of records that have frag length > 2000 {}",
+        num_frag_counts.load(Ordering::SeqCst)
+    );
     Ok(())
 }

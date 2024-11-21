@@ -1,12 +1,12 @@
 use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
-use afutils::read_ref_lengths;
 use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
 // use indexmap::map::IndexMap;
 use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types;
+use libradicl::rad_types::TagValue;
 use libradicl::utils::has_data_left;
 use libradicl::BarcodeLookupMap;
 use libradicl::{
@@ -31,8 +31,8 @@ use std::time::Instant;
 /// For each chromosome divide into ranges of size_range uptil max_size
 /// If we had ref length corresponding to each chromosome, we would divide the reference based on its length only
 pub fn initialize_rec_list(
-    b_lens: &mut Vec<u64>,
-    ref_lens: &Vec<u64>,
+    b_lens: &mut [u64],
+    ref_lens: &[u64],
     size_range: u64,
 ) -> anyhow::Result<u64> {
     let mut tot_zeros = 0;
@@ -64,8 +64,8 @@ pub fn update_barcode_hist_unfiltered(
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<AtacSeqReadRecord>,
-    bins: &mut Vec<u64>,
-    blens: &Vec<u64>,
+    bins: &mut [u64],
+    blens: &[u64],
     size_range: u64,
 ) -> usize {
     let mut num_strand_compat_reads = 0usize;
@@ -88,7 +88,7 @@ pub fn update_barcode_hist_unfiltered(
             let i = 0;
             let ref_id = r.refs[i];
             let sp = r.start_pos[i];
-            let bid = sp as u64 / size_range as u64;
+            let bid = sp as u64 / size_range;
             let ind: usize = (blens[ref_id as usize] + bid) as usize;
             bins[ind] += 1;
         }
@@ -148,10 +148,6 @@ fn process_unfiltered(
     bmax: u64,
     gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
-    let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("couldn't create directory path {}", parent.display()))?;
-
     // the smallest number of reads we'll allow per barcode
     let min_freq = match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
@@ -197,6 +193,10 @@ fn process_unfiltered(
         .get("cblen")
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
+
+    // let ref_lens = file_tag_map
+    //     .get("ref_lengths")
+    //     .expect("tag map must contain ref_lengths");
     // now, we create a second barcode map with just the barcodes
     // for cells we will keep / rescue.
     let bcmap2 = BarcodeLookupMap::new(kept_bc, barcode_len as u32);
@@ -292,12 +292,6 @@ fn process_unfiltered(
     );
 
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "couldn't create path to output directory {}",
-            parent.display()
-        )
-    })?;
     let o_path = parent.join("permit_freq.bin");
 
     match afutils::write_permit_list_freq(&o_path, barcode_len, &hm) {
@@ -371,8 +365,9 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut num_chunks = 0;
     let size_range: u64 = 100000;
     let i_dir = std::path::Path::new(&rad_dir);
+    let o_dir_path = std::path::Path::new(&output_dir);
+    // let ref_lens = read_ref_lengths(i_dir)?;
 
-    let ref_lens = read_ref_lengths(i_dir)?;
     // should we assume this condition was already checked
     // during parsing?
     if !i_dir.exists() {
@@ -387,6 +382,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
+
+    let p_exi = o_dir_path
+        .try_exists()
+        .expect("Can't check existence of path");
+    if !p_exi {
+        std::fs::create_dir_all(o_dir_path).with_context(|| {
+            format!(
+                "couldn't create path to output directory {}",
+                o_dir_path.display()
+            )
+        })?;
+    }
 
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
         let i_file = File::open(fname).context("could not open input file")?;
@@ -407,6 +414,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut br = BufReader::new(i_file);
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let hdr = &prelude.hdr;
+
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -414,10 +422,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         hdr.ref_count.to_formatted_string(&Locale::en),
         hdr.num_chunks.to_formatted_string(&Locale::en),
     );
-
-    let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
-    let tot_bins = initialize_rec_list(&mut blens, &ref_lens, size_range);
-    let mut bins: Vec<u64> = vec![0; tot_bins.unwrap() as usize];
 
     // file-level
     let fl_tags = &prelude.file_tags;
@@ -450,8 +454,19 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
+    let ref_tag = file_tag_map
+        .get("ref_lengths")
+        .expect("tag must contain ref lengths");
+    let TagValue::ArrayU64(ref_lens) = ref_tag else {
+        todo!()
+    };
+
     let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
     let mut num_reads: usize = 0;
+
+    let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
+    let tot_bins = initialize_rec_list(&mut blens, ref_lens, size_range);
+    let mut bins: Vec<u64> = vec![0; tot_bins.unwrap() as usize];
 
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
@@ -483,14 +498,14 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 }
 
                 let bin_recs_path = output_dir.join("bin_recs.bin");
-                let br_file = std::fs::File::create(&bin_recs_path)
+                let br_file = std::fs::File::create(bin_recs_path)
                     .expect("could not create serialization file.");
                 let mut br_writer = BufWriter::new(&br_file);
                 bincode::serialize_into(&mut br_writer, &bins)
                     .expect("couldn't serialize bins recs.");
 
                 let bin_lens_path = output_dir.join("bin_lens.bin");
-                let bl_file = std::fs::File::create(&bin_lens_path)
+                let bl_file = std::fs::File::create(bin_lens_path)
                     .expect("could not create serialization file.");
                 let mut bl_writer = BufWriter::new(&bl_file);
                 bincode::serialize_into(&mut bl_writer, &blens)

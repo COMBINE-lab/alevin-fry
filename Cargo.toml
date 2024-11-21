@@ -3,10 +3,6 @@ name = "alevin_fry_atac"
 version = "0.1.0"
 edition = "2021"
 authors = [
-  "Avi Srivastava <avi.srivastava@nyu.edu>",
-  "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
-  "Dongze He <dhe17@umd.edu>",
-  "Mohsen Zakeri <mzakeri@cs.umd.edu>",
   "Noor Pratap Singh <npsingh@umd.edu>",
   "Rob Patro <rob@cs.umd.edu>",
 ]
@@ -18,8 +14,8 @@ include = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.1"}
-libradicl = { path = "../libradicl" }
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.9.1"}
+#libradicl = { path = "../libradicl" }
 anyhow = "1.0.80"
 arrayvec = "0.7.4"
 ahash = "0.8.11"

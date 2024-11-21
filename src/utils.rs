@@ -42,6 +42,7 @@ struct QuantArguments {
 
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
+#[allow(dead_code)]
 pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
     let bit_diffs = a ^ b;
     let two_bit_diffs = (bit_diffs | bit_diffs >> 1) & 0x5555555555555555;
@@ -819,7 +820,7 @@ pub fn get_bc_string(
 
 pub fn get_bin_id(pos: u32, ref_id: usize, size_range: u32, blens: &[u64]) -> usize {
     let bid = pos / size_range;
-    let ind: usize = (blens[ref_id as usize] + bid as u64) as usize;
+    let ind: usize = (blens[ref_id] + bid as u64) as usize;
     ind
 }
 

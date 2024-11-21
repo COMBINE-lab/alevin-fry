@@ -120,7 +120,7 @@ pub fn sort_temp_bucket<T: Read + Seek>(
     parent: &Path,
     buck_id: u32,
     compress: bool,
-)  -> anyhow::Result<()> {
+) -> anyhow::Result<()> {
     let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(nrec as usize);
     for _ in 0..(nrec as usize) {
         // read the header of the record
@@ -142,7 +142,7 @@ pub fn sort_temp_bucket<T: Read + Seek>(
     }
     hit_info_vec.sort_unstable();
 
-    let bed_string: String = get_bed_string(&hit_info_vec, &ref_names, barcode_len, rc);
+    let bed_string: String = get_bed_string(&hit_info_vec, ref_names, barcode_len, rc);
     if compress {
         let bd = File::create(parent.join(format!("{}.bed.gz", buck_id))).unwrap();
         let mut encoder = GzEncoder::new(bd, Compression::default());
@@ -172,10 +172,9 @@ where
     P1: Into<PathBuf>,
     P2: AsRef<Path>,
 {
+    println!("compress {}", compress_out);
     let input_dir = input_dir.into();
     let parent = std::path::Path::new(input_dir.as_path());
-    // let r_dir = std::path::Path::new(rad_dir.as_ref());
-    // let ref_lens = read_ref_lengths(parent)?;
 
     let gpl_path = parent.join("generate_permit_list.json");
     let meta_data_file = File::open(&gpl_path)
@@ -212,7 +211,7 @@ where
 
     let bin_count_file =
         std::fs::File::open(parent.join("bin_recs.bin")).context("couldn't open file")?;
-    let mut bin_rec_counts: Vec<u64> =
+    let bin_rec_counts: Vec<u64> =
         bincode::deserialize_from(bin_count_file).context("couldn't open bin counts file.")?;
 
     let bin_len_file =
@@ -497,7 +496,7 @@ where
         temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
         temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
     }
-    total_allocated_records += allocated_records;
+    // total_allocated_records += allocated_records;
     info!(log, "Generated {} temporary buckets.", temp_buckets.len());
 
     let sty = ProgressStyle::default_bar()
@@ -551,7 +550,7 @@ where
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
             // old code
-            let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
+            // let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
 
             // new approach (how much does this extra complexity matter?)
             // to avoid having a vector of cursors, where each cursor points to
@@ -645,6 +644,7 @@ where
     pbar_inner.finish();
 
     // wait for the worker threads to finish
+    let mut num_output_chunks = 0u64;
     for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(_) => {}
@@ -662,7 +662,7 @@ where
     // phase of collating the temporary files and merging
     // them into the final output file.
 
-    for (i, temp_bucket) in temp_buckets.iter().enumerate() {
+    for temp_bucket in temp_buckets.iter() {
         // make sure we flush each temp bucket
         temp_bucket
             .2
@@ -677,9 +677,9 @@ where
         // let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         // assert_eq!(expected, observed);
 
-        let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
-        let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
-        let observed_bytes = md.len();
+        // let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
+        // let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
+        // let observed_bytes = md.len();
         // assert_eq!(expected_bytes, observed_bytes);
     }
 
@@ -704,9 +704,9 @@ where
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
-        let barcode_len = barcode_len.clone();
+        // let barcode_len = barcode_len.clone();
         // the output cache and correction map
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        // let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         // let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
         // alternative strategy
         // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
@@ -727,7 +727,7 @@ where
 
         // now, make the worker threads
         let handle = std::thread::spawn(move || {
-            let mut local_chunks = 0u64;
+            let local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
             // processed
@@ -778,7 +778,7 @@ where
     }
 
     // wait for all of the workers to finish
-    let mut num_output_chunks = 0u64;
+    // let mut num_output_chunks = 0u64;
     for h in thread_handles.drain(0..) {
         match h.join() {
             Ok(c) => {
@@ -795,11 +795,11 @@ where
     // file suggested we should.
     // assert_eq!(total_allocated_records, total_to_collate);
 
-    info!(
-        log,
-        "writing num output chunks ({}) to header",
-        num_output_chunks.to_formatted_string(&Locale::en)
-    );
+    // info!(
+    //     log,
+    //     "writing num output chunks ({}) to header",
+    //     num_output_chunks.to_formatted_string(&Locale::en)
+    // );
 
     info!(
         log,
