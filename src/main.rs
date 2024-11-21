@@ -77,11 +77,11 @@ fn main() -> anyhow::Result<()> {
         .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
+        .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be sorted (typically produced as an output of the mapping)")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
         .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_sort_threads))
-        .arg(arg!(-c --compress "compress the output collated RAD file"))
+        .arg(arg!(-c --compress "compress the output of the sorted RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
             .value_parser(value_parser!(u32))
             .default_value("30000000"));
