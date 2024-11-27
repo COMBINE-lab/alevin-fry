@@ -173,7 +173,6 @@ where
     P1: Into<PathBuf>,
     P2: AsRef<Path>,
 {
-    println!("compress {}", compress_out);
     let input_dir = input_dir.into();
     let parent = std::path::Path::new(input_dir.as_path());
 
