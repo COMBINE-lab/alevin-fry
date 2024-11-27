@@ -55,7 +55,7 @@ fn main() -> anyhow::Result<()> {
         );
 
     let collate_app = Command::new("collate")
-        .about("Collate a RAD file by corrected cell barcode")
+        .about("Collate a RAD file with corrected cell barcode")
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
@@ -71,7 +71,7 @@ fn main() -> anyhow::Result<()> {
              .default_value("30000000"));
 
     let sort_app = Command::new("sort")
-        .about("Produce bed file coordinate sorted")
+        .about("Produce coordinate sorted bed file")
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
