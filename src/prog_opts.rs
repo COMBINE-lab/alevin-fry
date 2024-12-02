@@ -49,6 +49,7 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub fmeth: CellFilterMethod,
     pub expected_ori: Strand,
     pub velo_mode: bool,
+    pub threads: usize,
     pub cmdline: &'c str,
     pub version: &'d str,
     #[serde(skip_serializing)]

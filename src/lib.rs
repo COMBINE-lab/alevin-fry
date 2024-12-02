@@ -12,6 +12,7 @@ pub mod cmd_parse_utils;
 pub mod collate;
 pub mod constants;
 pub mod convert;
+pub mod diagnostics;
 pub mod em;
 pub mod eq_class;
 pub mod infer;

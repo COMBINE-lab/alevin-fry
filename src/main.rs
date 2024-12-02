@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
+    let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
     let crate_authors = crate_authors!("\n");
     let version = crate_version!();
@@ -104,6 +105,7 @@ fn main() -> anyhow::Result<()> {
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             )
         )
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
         .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff")
              .value_parser(value_parser!(usize)))
         .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)")
@@ -331,6 +333,9 @@ fn main() -> anyhow::Result<()> {
 
         // velo_mode --- currently, on this branch, it is always false
         let velo_mode = false; //t.get_flag("velocity-mode");
+        let gpl_threads: usize = *t
+            .get_one::<u32>("threads")
+            .expect("valid integer number of threads") as usize;
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
@@ -338,6 +343,7 @@ fn main() -> anyhow::Result<()> {
             .fmeth(fmeth)
             .expected_ori(expected_ori)
             .version(VERSION)
+            .threads(gpl_threads)
             .velo_mode(velo_mode)
             .cmdline(&cmdline)
             .log(&log)

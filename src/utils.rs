@@ -14,7 +14,6 @@ use core::fmt;
 use dashmap::DashMap;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
-use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
