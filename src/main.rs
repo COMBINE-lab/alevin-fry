@@ -15,7 +15,7 @@ use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::Rng;
-use slog::{crit, o, warn, Drain};
+use slog::{crit, info, o, warn, Drain};
 use std::path::PathBuf;
 
 use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
@@ -42,6 +42,101 @@ fn gen_random_kmer(k: usize) -> String {
         })
         .collect();
     s
+}
+
+fn atac_sub_commands() -> Command {
+    let num_hardware_threads = num_cpus::get() as u32;
+    let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
+    let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
+    let max_num_sort_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
+
+    let crate_authors = crate_authors!("\n");
+    let version = crate_version!();
+
+    let gen_app = Command::new("generate-permit-list")
+        .about("Generate a permit list of barcodes from a whitelist file")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --input <INPUT>  "input directory containing the map.rad file")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-o --"output-dir" <OUTPUTDIR>  "output directory")
+            .required(true)
+            .value_parser(value_parser!(PathBuf))
+        )
+        .arg(
+            arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
+                .value_parser(pathbuf_file_exists_validator)
+        )
+        .group(ArgGroup::new("filter-method")
+            .args(["unfiltered-pl"])
+            .required(true)
+        )
+        .arg(
+            arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
+                .value_parser(value_parser!(usize))
+                .default_value("10"))
+        .arg(
+            arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement the barcode")
+                .value_parser(clap::builder::BoolishValueParser::new())
+                .default_value("true")
+        );
+
+    let collate_app = Command::new("collate")
+        .about("Collate a RAD file with corrected cell barcode")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
+        .arg(arg!(-c --compress "compress the output collated RAD file"))
+        .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+            .value_parser(value_parser!(u32))
+            .default_value("30000000"));
+
+    let sort_app = Command::new("sort")
+        .about("Produce coordinate sorted bed file")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be sorted (typically produced as an output of the mapping)")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_sort_threads))
+        .arg(arg!(-c --compress "compress the output of the sorted RAD file"))
+        .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+            .value_parser(value_parser!(u32))
+            .default_value("30000000"));
+
+    let deduplicate_app = Command::new("deduplicate")
+        .about("Deduplicate the RAD file and output a BED file")
+        .version(version)
+        .author(crate_authors)
+        .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")
+            .required(true)
+            .value_parser(pathbuf_directory_exists_validator))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
+        .arg(
+            arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement")
+                .value_parser(clap::builder::BoolishValueParser::new())
+                .default_value("true")
+        );
+
+    Command::new("atac")
+        .about("Deduplicate the RAD file and output a BED file")
+        .version(version)
+        .author(crate_authors)
+        .subcommand(gen_app)
+        .subcommand(sort_app)
+        .subcommand(collate_app)
+        .subcommand(deduplicate_app)
 }
 
 #[allow(clippy::manual_clamp)]
@@ -213,6 +308,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
     .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"));
 
+    let atac_app = atac_sub_commands();
+
     let opts = Command::new("alevin-fry")
         .subcommand_required(true)
         .arg_required_else_help(true)
@@ -225,6 +322,7 @@ fn main() -> anyhow::Result<()> {
         .subcommand(infer_app)
         .subcommand(convert_app)
         .subcommand(view_app)
+        .subcommand(atac_app)
         .get_matches();
 
     let decorator = slog_term::TermDecorator::new().build();
@@ -236,8 +334,13 @@ fn main() -> anyhow::Result<()> {
         .build()
         .fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-
     let log = slog::Logger::root(drain, o!());
+
+    use alevin_fry::atac;
+    if let Some(t) = opts.subcommand_matches("atac") {
+        info!(&log, "scATAC-seq mode");
+        atac::run::run(t, VERSION, &cmdline, &log)?;
+    }
 
     // You can handle information about subcommands by requesting their matches by name
     // (as below), requesting just the name used, or both at the same time

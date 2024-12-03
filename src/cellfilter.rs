@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use slog::crit;
 use slog::{info, warn};
 
-use crate::diagnostics;
+//use crate::diagnostics;
 use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
 #[allow(unused_imports)]
@@ -816,7 +816,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         max_ambiguity_read.to_formatted_string(&Locale::en)
                     );
                 let valid_thresh = 0.3f64;
-                match diagnostics::likely_valid_permit_list(
+                /*match diagnostics::likely_valid_permit_list(
                     unmatched_bc.len(),
                     num_reads,
                     valid_thresh,
@@ -830,6 +830,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         warn!(log, "{:?}", e);
                     }
                 }
+                */
 
                 process_unfiltered(
                     hmu.unwrap(),
