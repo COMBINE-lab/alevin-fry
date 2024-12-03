@@ -815,7 +815,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         num_chunks.expect("nonzero").to_formatted_string(&Locale::en),
                         max_ambiguity_read.to_formatted_string(&Locale::en)
                     );
-                let valid_thresh = 0.3f64;
+                let _valid_thresh = 0.3f64;
                 /*match diagnostics::likely_valid_permit_list(
                     unmatched_bc.len(),
                     num_reads,

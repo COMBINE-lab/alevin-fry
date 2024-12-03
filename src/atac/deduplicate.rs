@@ -1,19 +1,18 @@
 use crate::atac::prog_opts::DeduplicateOpts;
+use crate::atac::sort::HitInfo;
+use crate::atac::utils as atac_utils;
 use anyhow::Context;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use itertools::Itertools;
 use libradicl::header::RadPrelude;
 use libradicl::record::AtacSeqReadRecord;
+use num_format::Locale;
 use num_format::ToFormattedString;
 use slog::info;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
 use std::thread;
-pub type MetaChunk = (usize, usize, u32, u32, Vec<u8>);
-use crate::atac::sort::HitInfo;
-use crate::atac::utils as atac_utils;
-use itertools::Itertools;
-use num_format::Locale;
 
 pub fn write_bed(
     bd_writer_lock: &Arc<Mutex<File>>,

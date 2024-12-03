@@ -6,7 +6,7 @@ use crate::atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 use crate::atac::sort::sort;
 use anyhow::bail;
 use clap::ArgMatches;
-use slog::{crit, info, o, warn, Logger};
+use slog::{crit, warn, Logger};
 use std::path::PathBuf;
 
 pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> anyhow::Result<()> {
