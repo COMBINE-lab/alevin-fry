@@ -789,7 +789,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         unmatched_bc.extend_from_slice(&ubc);
                         max_ambiguity_read = max_ambiguity_read.max(mar);
                     }
-                    pbar.finish_with_message(format!("finished parsing RAD file\n",));
+                    pbar.finish_with_message("finished parsing RAD file\n");
                     // return the hash map we no longer need
                     std::sync::Arc::<DashMap<u64, u64, ahash::RandomState>>::into_inner(hmu)
                 });
@@ -884,11 +884,11 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     num_orientation_compat_reads += nocr;
                     max_ambiguity_read = max_ambiguity_read.max(mar);
                 }
+                pbar.finish_with_message("finished parsing RAD file\n");
                 // return the hash map we no longer need
                 Arc::<DashMap<u64, u64, ahash::RandomState>>::into_inner(hm)
                     .expect("unique reference to DashMap")
             });
-            pbar.finish_with_message(format!("finished parsing RAD file\n",));
             info!(
                 log,
                 "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
