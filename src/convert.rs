@@ -402,9 +402,7 @@ where
         let flags = rec.flags()?;
 
         let is_reverse = flags.is_reverse_complemented();
-        let qname_str = str::from_utf8(rec.name().expect("valid name").as_bytes())
-            .unwrap()
-            .to_owned();
+        let qname_str = rec.name().expect("valid name").to_string().to_owned();
         let qname = qname_str;
         let mut tid = rec.reference_sequence_id(&hdrv).unwrap().unwrap() as u32;
         if qname == old_qname {

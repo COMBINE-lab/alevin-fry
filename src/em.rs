@@ -11,6 +11,7 @@
 use crate::eq_class::IndexedEqList;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
+use nalgebra::base::OVector;
 use rand::{thread_rng, Rng};
 #[allow(unused_imports)]
 use slog::info;
@@ -452,7 +453,7 @@ pub(crate) fn run_bootstrap_subset(
         .iter()
         .map(|x| (x.1 as f64) / (total_fragments as f64))
         .collect();
-    let dist = Multinomial::new(&eq_counts[..], total_fragments as u64).unwrap();
+    let dist = Multinomial::new(eq_counts, total_fragments as u64).unwrap();
 
     // store bootstraps
     let mut bootstrap_counts = Vec::with_capacity(cell_data.len());
@@ -469,7 +470,7 @@ pub(crate) fn run_bootstrap_subset(
     // let mut old_resampled_counts = Vec::new();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts = thread_rng().sample(dist.clone());
+        let resampled_counts: OVector<f64, _> = thread_rng().sample(dist.clone());
         for (idx, (eq_id, _orig_count)) in cell_data.iter().enumerate() {
             bootstrap_counts.push((*eq_id, resampled_counts[idx].round() as u32));
         }
@@ -611,7 +612,7 @@ pub fn run_bootstrap_old(
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
     // define a multinomial
-    let dist = Multinomial::new(&eq_counts, total_fragments).unwrap();
+    let dist = Multinomial::new(eq_counts, total_fragments).unwrap();
 
     // store bootstraps
     let mut bootstraps = Vec::new();
@@ -620,7 +621,7 @@ pub fn run_bootstrap_old(
     // let mut old_resampled_counts = Vec::new();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts = thread_rng().sample(dist.clone());
+        let resampled_counts: OVector<f64, _> = thread_rng().sample(dist.clone());
 
         for (eq_id, labels) in &eqclasses_serialize {
             eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id].round() as u32);
