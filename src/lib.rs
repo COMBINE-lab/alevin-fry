@@ -7,13 +7,13 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+pub mod atac;
 pub mod cellfilter;
 pub mod cmd_parse_utils;
 pub mod collate;
 pub mod constants;
 pub mod convert;
-//pub mod diagnostics;
-pub mod atac;
+pub mod diagnostics;
 pub mod em;
 pub mod eq_class;
 pub mod infer;
