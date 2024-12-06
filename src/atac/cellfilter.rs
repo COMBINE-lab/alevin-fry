@@ -1,12 +1,12 @@
 use crate::atac::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
-use anyhow::{anyhow, Context};
+use anyhow::{bail, Context};
 use bstr::io::BufReadExt;
 use dashmap::DashMap;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget};
 use std::num::NonZeroUsize;
 use std::sync::{
-    atomic::{AtomicU64, Ordering as AtomicOrdering},
+    atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     Arc,
 };
 // use indexmap::map::IndexMap;
@@ -27,6 +27,9 @@ use std::io::{BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::Instant;
+
+type ParBCMap = DashMap<u64, u64, ahash::RandomState>;
+type BCMap = HashMap<u64, u64, ahash::RandomState>;
 
 /// Initialize the index map with key being references and position
 /// Take the largest reference length (from chromosome)
@@ -62,7 +65,7 @@ pub enum CellFilterMethod {
 }
 
 pub fn update_barcode_hist_unfiltered(
-    hist: &DashMap<u64, u64, ahash::RandomState>,
+    hist: &ParBCMap,
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<AtacSeqReadRecord>,
@@ -102,9 +105,9 @@ fn populate_unfiltered_barcode_map<T: Read>(
     br: BufReader<T>,
     first_bclen: &mut usize,
     rev_bc: bool,
-) -> DashMap<u64, u64, ahash::RandomState> {
+) -> ParBCMap {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let hm = DashMap::with_hasher(s);
+    let hm = ParBCMap::with_hasher(s);
 
     // read through the external unfiltered barcode list
     // and generate a vector of encoded barcodes
@@ -137,7 +140,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_unfiltered(
-    hm: DashMap<u64, u64, ahash::RandomState>,
+    hm: ParBCMap,
     mut unmatched_bc: Vec<u64>,
     file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
@@ -196,11 +199,6 @@ fn process_unfiltered(
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
-    // let ref_lens = file_tag_map
-    //     .get("ref_lengths")
-    //     .expect("tag map must contain ref_lengths");
-    // now, we create a second barcode map with just the barcodes
-    // for cells we will keep / rescue.
     let bcmap2 = BarcodeLookupMap::new(kept_bc, barcode_len as u32);
     info!(
         log,
@@ -297,7 +295,7 @@ fn process_unfiltered(
     let o_path = parent.join("permit_freq.bin");
 
     // convert the DashMap to a HashMap
-    let mut hm: HashMap<u64, u64, ahash::RandomState> = hm.into_iter().collect();
+    let mut hm: BCMap = hm.into_iter().collect();
     match afutils::write_permit_list_freq(&o_path, barcode_len, &hm) {
         Ok(_) => {}
         Err(error) => {
@@ -380,7 +378,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             rad_dir.display()
         );
         // std::process::exit(1);
-        return Err(anyhow!("execution terminated unexpectedly"));
+        bail!("execution terminated unexpectedly");
     }
 
     let mut first_bclen = 0usize;
@@ -413,10 +411,13 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         );
     }
 
-    let nworkers: usize = gpl_opts.threads;
+    let nworkers: usize = gpl_opts.threads.saturating_sub(1).max(1);
+    // open the input rad file and get the total file length from metadata to support
+    // a progress bar
     let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let metadata = i_file.metadata()?;
     let file_len = metadata.len();
+
     let ifile = BufReader::new(i_file);
     let mut rad_reader =
         libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
@@ -430,7 +431,10 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         "paired : {:?}, ref_count : {}, num_chunks : {}",
         hdr.is_paired != 0,
         hdr.ref_count.to_formatted_string(&Locale::en),
-        hdr.num_chunks.to_formatted_string(&Locale::en),
+        match hdr.num_chunks() {
+            None => String::from("unknown"),
+            Some(v) => v.to_formatted_string(&Locale::en),
+        }
     );
 
     // file-level
@@ -441,19 +445,14 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     const BNAME: &str = "barcode";
-    // let mut bct: Option<RadType> = None;
-
     for rt in &rl_tags.tags {
         // if this is one of our tags
         if rt.name == BNAME && !rt.typeid.is_int_type() {
             crit!(
                 log,
-                "currently only RAD types 1--4 are supported for 'b' tags."
+                "currently only RAD types 1--4 are supported for 'b' tags. exiting."
             );
             std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
-            // if rt.name == BNAME {
-            //     bct = Some(rt.typeid);
-            // }
         }
     }
 
@@ -463,34 +462,33 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let ref_lens;
     {
+        info!(log, "reading reference lengths from file-level tag map");
         let file_tag_map = &rad_reader.file_tag_map;
-        info!(log, "File-level tag values {:?}", file_tag_map);
         ref_lens = match file_tag_map.get("ref_lengths") {
             Some(TagValue::ArrayU64(v)) => v.clone(),
-            _ => panic!("expected \"ref_lengths\" to be an ArrayU64, but didn't find that"),
+            _ => bail!(
+                "expected the \"ref_lengths\" tag value to exist and to be an ArrayU64, but didn't find that; cannot proceed."
+            ),
         };
     }
 
-    //let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
-    let mut num_reads: usize = 0;
-
+    let num_reads = Arc::new(AtomicUsize::new(0));
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
     let mut unmatched_bc: Vec<u64>;
     // let mut num_orientation_compat_reads = 0usize;
     let mut max_ambiguity_read = 0usize;
     let mut num_orientation_compat_reads = 0usize;
-    // Tracking if a unique or a multihit
 
     // for progress bar
     let header_offset = rad_reader.get_byte_offset();
     let pbar = ProgressBar::new(file_len - header_offset);
     pbar.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        indicatif::ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.green/blue} {human_pos:>12}/{human_len:12} {msg}",
         )
         .unwrap()
-        .progress_chars("##-"),
+        .progress_chars("⠁⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈⠈"),
     );
     pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
     let cb = |new_bytes: u64, _new_chunks: u64| {
@@ -499,8 +497,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-            unmatched_bc = Vec::with_capacity(10000000);
-            // the unfiltered_bc_count map must be valid in this branch
+            unmatched_bc = Vec::with_capacity(10_000_000);
 
             // the unfiltered_bc_count map must be valid in this branch
             if unfiltered_bc_counts.is_some() {
@@ -508,29 +505,25 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
                     let tot_bins = initialize_rec_list(&mut blens, &ref_lens, size_range);
                     let blens = blens;
-                    let bins: Arc<Vec<AtomicU64>> = Arc::new(
-                        vec![0; tot_bins.unwrap() as usize]
-                            .iter()
-                            .map(|x| AtomicU64::new(*x))
-                            .collect(),
-                    );
+                    let mut bin_vec = vec![];
+                    bin_vec.resize_with(tot_bins.unwrap() as usize, || AtomicU64::new(0));
+                    let bins: Arc<Vec<AtomicU64>> = Arc::new(bin_vec);
 
                     let hmu = std::sync::Arc::new(unfiltered_bc_counts.unwrap());
-                    let mut num_chunks = 0usize;
-                    let mut handles = Vec::<
-                        std::thread::ScopedJoinHandle<(usize, usize, Vec<u64>, usize, usize)>,
-                    >::new();
+                    let num_chunks = Arc::new(AtomicUsize::new(0));
+                    let mut handles =
+                        Vec::<std::thread::ScopedJoinHandle<(usize, Vec<u64>, usize)>>::new();
                     for _ in 0..nworkers {
                         let rd = rad_reader.is_done();
                         let q = rad_reader.get_queue();
                         let hmu = hmu.clone();
                         let blens = blens.clone();
                         let bins = bins.clone();
+                        let num_reads = num_reads.clone();
+                        let num_chunks = num_chunks.clone();
                         let handle = s.spawn(move || {
                             let mut unmatched_bc = Vec::<u64>::new();
                             let mut max_ambiguity_read = 0usize;
-                            let mut num_reads = 0;
-                            let mut num_chunks = 0;
                             let mut num_orientation_compat_reads = 0;
                             while !rd.load(AtomicOrdering::SeqCst) {
                                 while let Some(meta_chunk) = q.pop() {
@@ -545,58 +538,35 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                                                 &blens,
                                                 size_range,
                                             );
-                                        num_reads += c.reads.len();
-                                        num_chunks += 1;
+                                        num_reads.fetch_add(c.reads.len(), AtomicOrdering::AcqRel);
+                                        num_chunks.fetch_add(1, AtomicOrdering::AcqRel);
                                     }
                                 }
                             }
                             (
-                                num_reads,
                                 num_orientation_compat_reads,
                                 unmatched_bc,
                                 max_ambiguity_read,
-                                num_chunks,
                             )
                         });
                         handles.push(handle);
                     }
-                    let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
+                    let _ = rad_reader.start_chunk_parsing(Some(cb));
                     for handle in handles {
-                        let (nr, nocr, ubc, mar, nc) =
-                            handle.join().expect("The parsing thread panicked");
-                        num_reads += nr;
+                        let (nocr, ubc, mar) = handle.join().expect("The parsing thread panicked");
                         num_orientation_compat_reads += nocr;
                         unmatched_bc.extend_from_slice(&ubc);
                         max_ambiguity_read = max_ambiguity_read.max(mar);
-                        num_chunks += nc;
                     }
                     pbar.finish_with_message("finished parsing RAD file\n");
                     // return the hash map we no longer need
                     (
-                        Arc::<DashMap<u64, u64, ahash::RandomState>>::into_inner(hmu),
+                        Arc::<ParBCMap>::into_inner(hmu),
                         Arc::<Vec<AtomicU64>>::into_inner(bins),
                         blens,
-                        num_chunks,
+                        num_chunks.load(AtomicOrdering::Acquire),
                     )
                 });
-
-                /*
-                if let Some(mut hmu) = unfiltered_bc_counts {
-                    while has_data_left(&mut br).expect("encountered error reading input file") {
-                        let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
-                        num_orientation_compat_reads += update_barcode_hist_unfiltered(
-                            &mut hmu,
-                            &mut unmatched_bc,
-                            &mut max_ambiguity_read,
-                            &c,
-                            &mut bins,
-                            &blens,
-                            size_range,
-                        );
-                        num_chunks += 1;
-                        num_reads += c.reads.len();
-                    }
-                    */
 
                 let bin_recs_path = output_dir.join("bin_recs.bin");
                 let br_file = std::fs::File::create(bin_recs_path)
@@ -620,7 +590,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 info!(
                     log,
                     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
-                    num_reads.to_formatted_string(&Locale::en),
+                    num_reads.load(AtomicOrdering::Acquire).to_formatted_string(&Locale::en),
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
                     num_chunks.to_formatted_string(&Locale::en),
                     max_ambiguity_read.to_formatted_string(&Locale::en)

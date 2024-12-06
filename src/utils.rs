@@ -18,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
@@ -39,6 +40,14 @@ struct QuantArguments {
     filter_list: String
 }
 */
+
+pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
+    if fname.exists() {
+        std::fs::remove_file(fname)
+            .with_context(|| format!("could not remove {}", fname.display()))?;
+    }
+    Ok(())
+}
 
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s

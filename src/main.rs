@@ -701,7 +701,7 @@ fn atac_sub_commands() -> Command {
         );
 
     Command::new("atac")
-        .about("Deduplicate the RAD file and output a BED file")
+        .about("subcommand for processing scATAC-seq RAD files")
         .version(version)
         .author(crate_authors)
         .subcommand(gen_app)

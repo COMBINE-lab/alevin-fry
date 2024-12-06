@@ -1,5 +1,6 @@
 use crate::constants as afconst;
-use crate::utils::InternalVersionInfo;
+use crate::utils as afutils;
+use afutils::InternalVersionInfo;
 use anyhow::{anyhow, Context};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -144,12 +145,18 @@ pub fn sort_temp_bucket<T: Read + Seek>(
 
     let bed_string: String = get_bed_string(&hit_info_vec, ref_names, barcode_len, rc);
     if compress {
-        let bd = File::create(parent.join(format!("{}.bed.gz", buck_id))).unwrap();
+        let bname = parent.join(format!("{}.bed.gz", buck_id));
+        afutils::remove_file_if_exists(&bname)?;
+        let bd = File::create(&bname)
+            .with_context(|| format!("could not create temporary bed file {}", bname.display()))?;
         let mut encoder = GzEncoder::new(bd, Compression::default());
         encoder.write_all(bed_string.as_bytes()).unwrap();
         encoder.finish()?;
     } else {
-        let mut bd = File::create(parent.join(format!("{}.bed", buck_id))).unwrap();
+        let bname = parent.join(format!("{}.bed", buck_id));
+        afutils::remove_file_if_exists(&bname)?;
+        let mut bd = File::create(&bname)
+            .with_context(|| format!("could not create temporary bed file {}", bname.display()))?;
         bd.write_all(bed_string.as_bytes())?;
     }
     Ok(())
@@ -806,7 +813,14 @@ where
         expected_output_chunks.to_formatted_string(&Locale::en)
     );
     if compress_out {
-        let out_bed_file = File::create(parent.join("map.bed.gz")).unwrap();
+        let bedname = parent.join("map.bed.gz");
+        afutils::remove_file_if_exists(&bedname)?;
+        let out_bed_file = File::create(&bedname).with_context(|| {
+            format!(
+                "could not create target output bed file {}",
+                bedname.display()
+            )
+        })?;
         let mut encoder = GzEncoder::new(out_bed_file, Compression::default());
         for i in 0..temp_buckets.len() {
             let temp_bed_name = parent.join(format!("{}.bed.gz", i));
@@ -816,7 +830,14 @@ where
         }
         encoder.finish()?;
     } else {
-        let mut out_bed_file = File::create(parent.join("map.bed")).unwrap();
+        let bedname = parent.join("map.bed");
+        afutils::remove_file_if_exists(&bedname)?;
+        let mut out_bed_file = File::create(&bedname).with_context(|| {
+            format!(
+                "could not create target output bed file {}",
+                bedname.display()
+            )
+        })?;
         for i in 0..temp_buckets.len() {
             let temp_bed_name = parent.join(format!("{}.bed", i));
             let mut input = File::open(&temp_bed_name)?;
