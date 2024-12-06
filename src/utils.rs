@@ -11,12 +11,14 @@ use crate::eq_class::IndexedEqList;
 use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
 use core::fmt;
+use dashmap::DashMap;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
@@ -38,6 +40,14 @@ struct QuantArguments {
     filter_list: String
 }
 */
+
+pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
+    if fname.exists() {
+        std::fs::remove_file(fname)
+            .with_context(|| format!("could not remove {}", fname.display()))?;
+    }
+    Ok(())
+}
 
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
@@ -87,6 +97,30 @@ pub fn write_permit_list_freq(
     o_path: &std::path::Path,
     bclen: u16,
     permit_freq_map: &HashMap<u64, u64, ahash::RandomState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::fs::File::create(o_path)?;
+    let mut writer = BufWriter::new(&output);
+
+    {
+        // the first u64 represents file format version.
+        writer
+            .write_all(&afconst::PERMIT_FILE_VER.to_le_bytes())
+            .unwrap();
+
+        // the second u64 represents barcode length
+        writer.write_all(&(u64::from(bclen)).to_le_bytes()).unwrap();
+
+        // the rest records the permitted barcode:freq hashmap
+        bincode::serialize_into(&mut writer, &permit_freq_map)?;
+    }
+    Ok(())
+}
+
+/// Write the permit_freq.bin and all_freq.bin files
+pub fn write_permit_list_freq_dashmap(
+    o_path: &std::path::Path,
+    bclen: u16,
+    permit_freq_map: &DashMap<u64, u64, ahash::RandomState>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let output = std::fs::File::create(o_path)?;
     let mut writer = BufWriter::new(&output);

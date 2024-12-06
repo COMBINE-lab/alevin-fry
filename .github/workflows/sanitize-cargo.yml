@@ -36,4 +36,3 @@ jobs:
           git commit -m "create sanitized release"
           git tag --force -a v${VERSION_TAG} -m "version ${VERSION_TAG}"
           git push --force origin v${VERSION_TAG}
-
