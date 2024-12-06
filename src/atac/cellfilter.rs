@@ -14,13 +14,8 @@ use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types;
 use libradicl::rad_types::TagValue;
-use libradicl::utils::has_data_left;
 use libradicl::BarcodeLookupMap;
-use libradicl::{
-    chunk,
-    header::RadPrelude,
-    record::{AtacSeqReadRecord, AtacSeqRecordContext},
-};
+use libradicl::{chunk, record::AtacSeqReadRecord};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
@@ -109,7 +104,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
     rev_bc: bool,
 ) -> DashMap<u64, u64, ahash::RandomState> {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut hm = DashMap::with_hasher(s);
+    let hm = DashMap::with_hasher(s);
 
     // read through the external unfiltered barcode list
     // and generate a vector of encoded barcodes
@@ -371,7 +366,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let cmdline = gpl_opts.cmdline;
     let log = gpl_opts.log;
     let rc = gpl_opts.rc;
-    let mut num_chunks = 0;
     let size_range: u64 = 100000;
     let i_dir = std::path::Path::new(&rad_dir);
     let o_dir_path = std::path::Path::new(&output_dir);
@@ -467,7 +461,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let al_tags = &rad_reader.prelude.aln_tags;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let mut ref_lens;
+    let ref_lens;
     {
         let file_tag_map = &rad_reader.file_tag_map;
         info!(log, "File-level tag values {:?}", file_tag_map);
@@ -476,8 +470,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             _ => panic!("expected \"ref_lengths\" to be an ArrayU64, but didn't find that"),
         };
     }
-
-    let mut num_reads: usize = 0;
 
     //let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
     let mut num_reads: usize = 0;
@@ -516,7 +508,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
                     let tot_bins = initialize_rec_list(&mut blens, &ref_lens, size_range);
                     let blens = blens;
-                    let mut bins: Arc<Vec<AtomicU64>> = Arc::new(
+                    let bins: Arc<Vec<AtomicU64>> = Arc::new(
                         vec![0; tot_bins.unwrap() as usize]
                             .iter()
                             .map(|x| AtomicU64::new(*x))
@@ -532,8 +524,8 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         let rd = rad_reader.is_done();
                         let q = rad_reader.get_queue();
                         let hmu = hmu.clone();
-                        let mut blens = blens.clone();
-                        let mut bins = bins.clone();
+                        let blens = blens.clone();
+                        let bins = bins.clone();
                         let handle = s.spawn(move || {
                             let mut unmatched_bc = Vec::<u64>::new();
                             let mut max_ambiguity_read = 0usize;

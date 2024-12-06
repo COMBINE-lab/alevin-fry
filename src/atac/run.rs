@@ -104,9 +104,9 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             .input_dir(input_dir)
             .num_threads(num_threads)
             .rev(rc)
-            .cmdline(&cmdline)
+            .cmdline(cmdline)
             .version(version)
-            .log(&log)
+            .log(log)
             .build();
 
         let parent = std::path::Path::new(&input_dir);
