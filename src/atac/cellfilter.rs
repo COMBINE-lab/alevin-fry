@@ -610,6 +610,11 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 let br_file = std::fs::File::create(bin_recs_path)
                     .expect("could not create serialization file.");
                 let mut br_writer = BufWriter::new(&br_file);
+                let bins: Vec<u64> = bins
+                    .expect("bins Option should be Some")
+                    .into_iter()
+                    .map(|x| x.load(AtomicOrdering::SeqCst))
+                    .collect();
                 bincode::serialize_into(&mut br_writer, &bins)
                     .expect("couldn't serialize bins recs.");
 
@@ -639,11 +644,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     num_chunks as u32,
                     cmdline,
                     log,
-                    bins.expect("invalid bins")
-                        .into_iter()
-                        .map(|v| v.load(AtomicOrdering::SeqCst))
-                        .max()
-                        .unwrap(),
+                    *bins.iter().max().expect("bins should not be empty"),
                     &gpl_opts,
                 )
             } else {
