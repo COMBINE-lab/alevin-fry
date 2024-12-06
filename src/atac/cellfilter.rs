@@ -1,4 +1,5 @@
 use crate::atac::prog_opts::GenPermitListOpts;
+use crate::diagnostics;
 use crate::utils as afutils;
 use anyhow::{bail, Context};
 use bstr::io::BufReadExt;
@@ -19,8 +20,7 @@ use libradicl::{chunk, record::AtacSeqReadRecord};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
-use slog::crit;
-use slog::info;
+use slog::{crit, info, warn};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -587,10 +587,27 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 bincode::serialize_into(&mut bl_writer, &blens)
                     .expect("couldn't serialize bins lengths.");
 
+                let num_reads = num_reads.load(AtomicOrdering::Acquire);
+                let valid_thresh = 0.3f64;
+                match diagnostics::likely_valid_permit_list(
+                    unmatched_bc.len(),
+                    num_reads,
+                    valid_thresh,
+                ) {
+                    Ok(f) => {
+                        info!(log,
+                        "The percentage of mapped reads not matching a known barcode exactly is {:.3}%, which is < the warning threshold {:.3}%",
+                        f * 100f64, valid_thresh * 100f64);
+                    }
+                    Err(e) => {
+                        warn!(log, "{:?}", e);
+                    }
+                }
+
                 info!(
                     log,
                     "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
-                    num_reads.load(AtomicOrdering::Acquire).to_formatted_string(&Locale::en),
+                    num_reads.to_formatted_string(&Locale::en),
                     num_orientation_compat_reads.to_formatted_string(&Locale::en),
                     num_chunks.to_formatted_string(&Locale::en),
                     max_ambiguity_read.to_formatted_string(&Locale::en)
