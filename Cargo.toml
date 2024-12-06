@@ -1,13 +1,13 @@
 [package]
-name = "alevin-fry"
-version = "0.10.0"
 authors = [
-  "Avi Srivastava <avi.srivastava@nyu.edu>",
-  "Hirak Sarkar <hirak_sarkar@hms.harvard.edu>",
-  "Dongze He <dhe17@umd.edu>",
-  "Mohsen Zakeri <mzakeri@cs.umd.edu>",
+  "Avi Srivastava <asrivastava@wistar.org>",
+  "Hirak Sarkar <hiraksarkar.cs@gmail.com>",
+  "Dongze He <dhe17@umd.edu>.zakeri@gmail.com>",
+  "Noor Pratap Singh <npsingh@umd.edu>",
   "Rob Patro <rob@cs.umd.edu>",
 ]
+name = "alevin-fry"
+version = "0.11.0"
 edition = "2021"
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
 license-file = "LICENSE"
@@ -27,6 +27,7 @@ keywords = [
   "single-cell",
   "preprocessing",
   "RNA-seq",
+  "ATAC-seq",
   "single-nucleus",
   "RNA-velocity",
 ]
@@ -71,7 +72,15 @@ sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "de
 
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
-clap = { version = "4.5.9", features = ["derive", "wrap_help", "cargo", "help", "usage", "string", "error-context"] }
+clap = { version = "4.5.23", features = [
+  "derive",
+  "wrap_help",
+  "cargo",
+  "help",
+  "usage",
+  "string",
+  "error-context",
+] }
 
 noodles = { version = "0.85.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
@@ -88,18 +97,22 @@ opt-level = 3
 inherits = "release"
 lto = "thin"
 
-# Config for 'cargo dist'
+# Config for 'dist'
 [workspace.metadata.dist]
-# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.11.1"
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.25.1"
 # CI backends to support
-ci = ["github"]
+ci = "github"
 # The installers to generate for each app
 installers = ["shell"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
-# Publish jobs to run in CI
+# Which actions to run on pull requests
 pr-run-mode = "plan"
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = true
 
 [workspace.metadata.dist.github-custom-runners]
 aarch64-apple-darwin = "macos-14"
