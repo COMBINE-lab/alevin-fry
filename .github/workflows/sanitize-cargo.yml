@@ -1,0 +1,38 @@
+name: Sanitize Cargo
+on: 
+  push:
+    branches:
+      - main
+
+permissions:
+  "contents": "write"
+
+jobs:
+  sanitize_cargo_file:
+    if: "contains(github.event.head_commit.message, '[do_tag]')"
+    runs-on: ubuntu-latest
+    # This is optional; it exposes the plan to your job as an environment variable
+    #env:
+    #  PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOK }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-sanitize
+        run: |
+          cargo install cargo-sanitize
+      - name: Sanitize Cargo.toml file
+        run: |
+          cp Cargo.toml Cargo.toml.cs_orig
+          cargo-sanitize -i Cargo.toml.cs_orig -o Cargo.toml
+      - name: Tag and push new commit
+        run: |
+          export VERSION_TAG=`cargo read-manifest | jq ".version" | tr -d '"'`
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add Cargo.toml.cs_orig
+          git add Cargo.toml
+          git commit -m "create sanitized release"
+          git tag --force -a v${VERSION_TAG} -m "version ${VERSION_TAG}"
+          git push --force origin v${VERSION_TAG}
