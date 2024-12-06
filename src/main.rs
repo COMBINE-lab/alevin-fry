@@ -618,7 +618,7 @@ fn atac_sub_commands() -> Command {
     let num_hardware_threads = num_cpus::get() as u32;
     let max_num_threads: String = (num_cpus::get() as u32).to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
-    let _max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
+    let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_sort_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
     let crate_authors = crate_authors!("\n");
@@ -635,6 +635,7 @@ fn atac_sub_commands() -> Command {
             .required(true)
             .value_parser(value_parser!(PathBuf))
         )
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
                 .value_parser(pathbuf_file_exists_validator)

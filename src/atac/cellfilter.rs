@@ -2,6 +2,13 @@ use crate::atac::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
 use anyhow::{anyhow, Context};
 use bstr::io::BufReadExt;
+use dashmap::DashMap;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use std::num::NonZeroUsize;
+use std::sync::{
+    atomic::{AtomicU64, Ordering as AtomicOrdering},
+    Arc,
+};
 // use indexmap::map::IndexMap;
 use itertools::Itertools;
 use libradicl::exit_codes;
@@ -60,11 +67,11 @@ pub enum CellFilterMethod {
 }
 
 pub fn update_barcode_hist_unfiltered(
-    hist: &mut HashMap<u64, u64, ahash::RandomState>,
+    hist: &DashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<AtacSeqReadRecord>,
-    bins: &mut [u64],
+    bins: &[AtomicU64],
     blens: &[u64],
     size_range: u64,
 ) -> usize {
@@ -76,7 +83,7 @@ pub fn update_barcode_hist_unfiltered(
         // barcodes
         match hist.get_mut(&r.bc) {
             // if we find a match, increment the count
-            Some(c) => *c += 1,
+            Some(mut c) => *c += 1,
             // otherwise, push this into the unmatched list
             None => {
                 unmatched_bc.push(r.bc);
@@ -90,7 +97,7 @@ pub fn update_barcode_hist_unfiltered(
             let sp = r.start_pos[i];
             let bid = sp as u64 / size_range;
             let ind: usize = (blens[ref_id as usize] + bid) as usize;
-            bins[ind] += 1;
+            bins[ind].fetch_add(1, AtomicOrdering::AcqRel);
         }
     }
     num_strand_compat_reads
@@ -100,9 +107,9 @@ fn populate_unfiltered_barcode_map<T: Read>(
     br: BufReader<T>,
     first_bclen: &mut usize,
     rev_bc: bool,
-) -> HashMap<u64, u64, ahash::RandomState> {
+) -> DashMap<u64, u64, ahash::RandomState> {
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut hm = HashMap::with_hasher(s);
+    let mut hm = DashMap::with_hasher(s);
 
     // read through the external unfiltered barcode list
     // and generate a vector of encoded barcodes
@@ -135,7 +142,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_unfiltered(
-    mut hm: HashMap<u64, u64, ahash::RandomState>,
+    hm: DashMap<u64, u64, ahash::RandomState>,
     mut unmatched_bc: Vec<u64>,
     file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
@@ -163,19 +170,19 @@ fn process_unfiltered(
     let mut kept_bc = Vec::<u64>::new();
 
     // iterate over the count map
-    for (k, v) in hm.iter_mut() {
+    for mut kvp in hm.iter_mut() {
         // if this satisfies our requirement for the minimum count
         // then keep this barcode
-        if *v >= min_freq {
-            kept_bc.push(*k);
+        if *kvp.value() >= min_freq {
+            kept_bc.push(*kvp.key());
         } else {
             // otherwise, we have to add this barcode's
             // counts to our unmatched list
-            for _ in 0..*v {
-                unmatched_bc.push(*k);
+            for _ in 0..*kvp.value() {
+                unmatched_bc.push(*kvp.key());
             }
             // and then reset the counter for this barcode to 0
-            *v = 0u64;
+            *kvp.value_mut() = 0u64;
         }
     }
 
@@ -237,7 +244,7 @@ fn process_unfiltered(
                 if cbc != *ubc && n == 1 {
                     // then increment the count of this
                     // barcode by 1 (because we'll correct to it)
-                    if let Some(c) = hm.get_mut(&cbc) {
+                    if let Some(mut c) = hm.get_mut(&cbc) {
                         *c += count as u64;
                         corrected_list.push((*ubc, cbc));
                     }
@@ -294,6 +301,8 @@ fn process_unfiltered(
     let parent = std::path::Path::new(output_dir);
     let o_path = parent.join("permit_freq.bin");
 
+    // convert the DashMap to a HashMap
+    let mut hm: HashMap<u64, u64, ahash::RandomState> = hm.into_iter().collect();
     match afutils::write_permit_list_freq(&o_path, barcode_len, &hm) {
         Ok(_) => {}
         Err(error) => {
@@ -410,11 +419,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         );
     }
 
+    let nworkers: usize = gpl_opts.threads;
     let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
-    let mut br = BufReader::new(i_file);
-    let prelude = RadPrelude::from_bytes(&mut br)?;
-    let hdr = &prelude.hdr;
+    let metadata = i_file.metadata()?;
+    let file_len = metadata.len();
+    let ifile = BufReader::new(i_file);
+    let mut rad_reader =
+        libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
+            ifile,
+            NonZeroUsize::new(nworkers).unwrap(),
+        );
 
+    let hdr = &rad_reader.prelude.hdr;
     info!(
         log,
         "paired : {:?}, ref_count : {}, num_chunks : {}",
@@ -424,10 +440,10 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     );
 
     // file-level
-    let fl_tags = &prelude.file_tags;
+    let fl_tags = &rad_reader.prelude.file_tags;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = &prelude.read_tags;
+    let rl_tags = &rad_reader.prelude.read_tags;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
 
     const BNAME: &str = "barcode";
@@ -448,25 +464,23 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     }
 
     // alignment-level
-    let al_tags = &prelude.aln_tags;
-    info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
+    let al_tags = &rad_reader.prelude.aln_tags;
+    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
-    info!(log, "File-level tag values {:?}", file_tag_map);
+    let mut ref_lens;
+    {
+        let file_tag_map = &rad_reader.file_tag_map;
+        info!(log, "File-level tag values {:?}", file_tag_map);
+        ref_lens = match file_tag_map.get("ref_lengths") {
+            Some(TagValue::ArrayU64(v)) => v.clone(),
+            _ => panic!("expected \"ref_lengths\" to be an ArrayU64, but didn't find that"),
+        };
+    }
 
-    let ref_tag = file_tag_map
-        .get("ref_lengths")
-        .expect("tag must contain ref lengths");
-    let TagValue::ArrayU64(ref_lens) = ref_tag else {
-        todo!()
-    };
-
-    let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
     let mut num_reads: usize = 0;
 
-    let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
-    let tot_bins = initialize_rec_list(&mut blens, ref_lens, size_range);
-    let mut bins: Vec<u64> = vec![0; tot_bins.unwrap() as usize];
+    //let record_context = prelude.get_record_context::<AtacSeqRecordContext>()?;
+    let mut num_reads: usize = 0;
 
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
@@ -476,26 +490,121 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut num_orientation_compat_reads = 0usize;
     // Tracking if a unique or a multihit
 
+    // for progress bar
+    let header_offset = rad_reader.get_byte_offset();
+    let pbar = ProgressBar::new(file_len - header_offset);
+    pbar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
+    let cb = |new_bytes: u64, _new_chunks: u64| {
+        pbar.inc(new_bytes);
+    };
+
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
             unmatched_bc = Vec::with_capacity(10000000);
             // the unfiltered_bc_count map must be valid in this branch
 
-            if let Some(mut hmu) = unfiltered_bc_counts {
-                while has_data_left(&mut br).expect("encountered error reading input file") {
-                    let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
-                    num_orientation_compat_reads += update_barcode_hist_unfiltered(
-                        &mut hmu,
-                        &mut unmatched_bc,
-                        &mut max_ambiguity_read,
-                        &c,
-                        &mut bins,
-                        &blens,
-                        size_range,
+            // the unfiltered_bc_count map must be valid in this branch
+            if unfiltered_bc_counts.is_some() {
+                let (hmu, bins, blens, num_chunks) = std::thread::scope(|s| {
+                    let mut blens: Vec<u64> = vec![0; ref_lens.len() + 1];
+                    let tot_bins = initialize_rec_list(&mut blens, &ref_lens, size_range);
+                    let blens = blens;
+                    let mut bins: Arc<Vec<AtomicU64>> = Arc::new(
+                        vec![0; tot_bins.unwrap() as usize]
+                            .iter()
+                            .map(|x| AtomicU64::new(*x))
+                            .collect(),
                     );
-                    num_chunks += 1;
-                    num_reads += c.reads.len();
-                }
+
+                    let hmu = std::sync::Arc::new(unfiltered_bc_counts.unwrap());
+                    let mut num_chunks = 0usize;
+                    let mut handles = Vec::<
+                        std::thread::ScopedJoinHandle<(usize, usize, Vec<u64>, usize, usize)>,
+                    >::new();
+                    for _ in 0..nworkers {
+                        let rd = rad_reader.is_done();
+                        let q = rad_reader.get_queue();
+                        let hmu = hmu.clone();
+                        let mut blens = blens.clone();
+                        let mut bins = bins.clone();
+                        let handle = s.spawn(move || {
+                            let mut unmatched_bc = Vec::<u64>::new();
+                            let mut max_ambiguity_read = 0usize;
+                            let mut num_reads = 0;
+                            let mut num_chunks = 0;
+                            let mut num_orientation_compat_reads = 0;
+                            while !rd.load(AtomicOrdering::SeqCst) {
+                                while let Some(meta_chunk) = q.pop() {
+                                    for c in meta_chunk.iter() {
+                                        num_orientation_compat_reads +=
+                                            update_barcode_hist_unfiltered(
+                                                &hmu,
+                                                &mut unmatched_bc,
+                                                &mut max_ambiguity_read,
+                                                &c,
+                                                &bins,
+                                                &blens,
+                                                size_range,
+                                            );
+                                        num_reads += c.reads.len();
+                                        num_chunks += 1;
+                                    }
+                                }
+                            }
+                            (
+                                num_reads,
+                                num_orientation_compat_reads,
+                                unmatched_bc,
+                                max_ambiguity_read,
+                                num_chunks,
+                            )
+                        });
+                        handles.push(handle);
+                    }
+                    let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
+                    for handle in handles {
+                        let (nr, nocr, ubc, mar, nc) =
+                            handle.join().expect("The parsing thread panicked");
+                        num_reads += nr;
+                        num_orientation_compat_reads += nocr;
+                        unmatched_bc.extend_from_slice(&ubc);
+                        max_ambiguity_read = max_ambiguity_read.max(mar);
+                        num_chunks += nc;
+                    }
+                    pbar.finish_with_message("finished parsing RAD file\n");
+                    // return the hash map we no longer need
+                    (
+                        Arc::<DashMap<u64, u64, ahash::RandomState>>::into_inner(hmu),
+                        Arc::<Vec<AtomicU64>>::into_inner(bins),
+                        blens,
+                        num_chunks,
+                    )
+                });
+
+                /*
+                if let Some(mut hmu) = unfiltered_bc_counts {
+                    while has_data_left(&mut br).expect("encountered error reading input file") {
+                        let c = chunk::Chunk::<AtacSeqReadRecord>::from_bytes(&mut br, &record_context);
+                        num_orientation_compat_reads += update_barcode_hist_unfiltered(
+                            &mut hmu,
+                            &mut unmatched_bc,
+                            &mut max_ambiguity_read,
+                            &c,
+                            &mut bins,
+                            &blens,
+                            size_range,
+                        );
+                        num_chunks += 1;
+                        num_reads += c.reads.len();
+                    }
+                    */
 
                 let bin_recs_path = output_dir.join("bin_recs.bin");
                 let br_file = std::fs::File::create(bin_recs_path)
@@ -520,17 +629,21 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     max_ambiguity_read.to_formatted_string(&Locale::en)
                 );
                 process_unfiltered(
-                    hmu,
+                    hmu.expect("barcode map should be defined"),
                     unmatched_bc,
-                    &file_tag_map,
+                    &rad_reader.file_tag_map,
                     &filter_meth,
                     output_dir,
                     version,
                     max_ambiguity_read,
-                    num_chunks,
+                    num_chunks as u32,
                     cmdline,
                     log,
-                    *bins.iter().max().unwrap(),
+                    bins.expect("invalid bins")
+                        .into_iter()
+                        .map(|v| v.load(AtomicOrdering::SeqCst))
+                        .max()
+                        .unwrap(),
                     &gpl_opts,
                 )
             } else {

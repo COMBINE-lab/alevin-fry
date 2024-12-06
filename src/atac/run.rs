@@ -32,12 +32,16 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
         };
         let rc: bool = *t.get_one("rev-comp").expect("reverse comp must be boolean");
+        let threads = *t
+            .get_one::<u32>("threads")
+            .expect("number of threads should be given") as usize;
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
             .output_dir(output_dir)
             .fmeth(fmeth)
             .rc(rc)
+            .threads(threads)
             .version(version)
             .cmdline(cmdline)
             .log(log)

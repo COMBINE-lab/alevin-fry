@@ -9,6 +9,7 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub input_dir: &'a PathBuf,
     pub output_dir: &'b PathBuf,
     pub fmeth: CellFilterMethod,
+    pub threads: usize,
     pub rc: bool,
     pub cmdline: &'c str,
     pub version: &'d str,
