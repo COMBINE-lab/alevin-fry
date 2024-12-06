@@ -17,6 +17,7 @@ homepage = "https://github.com/COMBINE-lab/alevin-fry"
 documentation = "https://alevin-fry.readthedocs.io/en/latest/"
 include = [
   "/src/*.rs",
+  "/src/atac/*.rs",
   "/Cargo.toml",
   "/README.md",
   "/LICENSE",
