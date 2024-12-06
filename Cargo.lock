@@ -823,8 +823,8 @@ dependencies = [
 
 [[package]]
 name = "libradicl"
-version = "0.9.1"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#5dea2f8f2fc15bf79d3f873066c9bf29595c7820"
+version = "0.10.0"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#07d42bedf341f43d9388e27dab3eb370589389ab"
 dependencies = [
  "ahash",
  "anyhow",
