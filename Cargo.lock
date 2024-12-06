@@ -824,7 +824,8 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.10.0"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#07d42bedf341f43d9388e27dab3eb370589389ab"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e4007c1723234af12a1cc779b5d9fccdeda516f8904bc2bb86051b050fc4490"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1403,7 +1404,8 @@ dependencies = [
 [[package]]
 name = "sce"
 version = "0.2.0"
-source = "git+https://github.com/parazodiac/SingleCellExperiment?branch=dev#8fdc475bc28010a43d2d36f204711989ddd1a16e"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e86ac42a268d4f4644e38887b5dad29002dcbcdeddb40057195beeb61105df6"
 dependencies = [
  "byteorder",
  "csv",
