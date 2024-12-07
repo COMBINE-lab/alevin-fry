@@ -18,11 +18,11 @@
 # -- Project information -----------------------------------------------------
 
 project = 'alevin-fry'
-copyright = '2021-2022, Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneson, Avi Srivastava, Rob Patro'
-author = 'Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneson, Avi Srivastava, Rob Patro'
+copyright = '2021-2024, Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneson, Avi Srivastava, Noor Pratap Singh, Rob Patro'
+author = 'Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneson, Avi Srivastava, Noor Pratap Singh, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
-release = '0.7.0'
+release = '0.11.0'
 
 master_doc = 'index'
 
@@ -31,8 +31,7 @@ master_doc = 'index'
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = [ 'sphinx.ext.autosectionlabel'
-]
+extensions = []
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
