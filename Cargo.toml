@@ -87,6 +87,7 @@ clap = { version = "4.5.23", features = [
 noodles = { version = "0.85.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 nalgebra = "0.33.2"
+niffler = { version = "2.6.0", default-features = false, features = ["gz", "gz_cloudflare_zlib"] }
 
 [profile.release]
 #debug = true

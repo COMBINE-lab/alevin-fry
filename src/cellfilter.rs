@@ -26,6 +26,7 @@ use libradicl::rad_types::{self, RadType};
 use libradicl::BarcodeLookupMap;
 use libradicl::{chunk, record::AlevinFryReadRecord};
 use needletail::bitkmer::*;
+use niffler::{compression, Error};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
@@ -634,8 +635,17 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
     if let CellFilterMethod::UnfilteredExternalList(fname, _) = &filter_meth {
-        let i_file = File::open(fname).context("could not open input file")?;
-        let br = BufReader::new(i_file);
+        let (reader, compression) = niffler::from_path(fname)
+            .with_context(|| format!("coult not open input file {}", fname.display()))?;
+        let br = BufReader::new(reader);
+
+        info!(
+            log,
+            "reading permit list from {}; inferred format {:#?}",
+            fname.display(),
+            compression
+        );
+
         unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
         info!(
             log,

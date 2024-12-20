@@ -53,6 +53,7 @@ dependencies = [
  "mimalloc",
  "nalgebra",
  "needletail",
+ "niffler",
  "noodles",
  "num-format",
  "num_cpus",
@@ -363,6 +364,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
+name = "cloudflare-zlib-sys"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3185ff8c69c53ab346d5ac89f418e194b997d48393cae321cb611dd05f83c90"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -567,6 +577,7 @@ version = "1.0.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c936bfdafb507ebbf50b8074c54fa31c5be9a1e7e5f467dd659697041407d07c"
 dependencies = [
+ "cloudflare-zlib-sys",
  "crc32fast",
  "miniz_oxide",
 ]
@@ -966,6 +977,17 @@ dependencies = [
  "liblzma",
  "memchr",
  "zstd",
+]
+
+[[package]]
+name = "niffler"
+version = "2.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd625dd485c2d20bdb98d7ec364f798b256ac09997ef18b4274be2168f53a647"
+dependencies = [
+ "cfg-if",
+ "flate2",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -55,9 +55,9 @@ def compare_quants(args):
 		
 		odict = { "nobs_ref" : a.n_obs, "nobs_test" : b.n_obs }
 
-		odict['diff_U'] = float(abs(a.layers['unspliced'] - b[ a.obs_names, : ].layers['unspliced']).sum())
-		odict['diff_S'] = float(abs(a.layers['spliced'] - b[ a.obs_names, : ].layers['spliced']).sum())
-		odict['diff_A'] = float(abs(a.layers['ambiguous'] - b[ a.obs_names, : ].layers['ambiguous']).sum())
+		odict['diff_U'] = float(abs(a.layers['unspliced'] - b[ a.obs_names, a.var_names ].layers['unspliced']).sum())
+		odict['diff_S'] = float(abs(a.layers['spliced'] - b[ a.obs_names, a.var_names ].layers['spliced']).sum())
+		odict['diff_A'] = float(abs(a.layers['ambiguous'] - b[ a.obs_names, a.var_names ].layers['ambiguous']).sum())
 
 		odict['obs_ref-obs_test'] = list(a.obs_names.difference(b.obs_names))
 		odict['obs_test-obs_ref'] = list(b.obs_names.difference(a.obs_names))
@@ -67,7 +67,7 @@ def compare_quants(args):
 		
 		odict = { "nobs_ref" : a.n_obs, "nobs_test" : b.n_obs }
 
-		odict['diff_X'] = float(abs(a.X - b[ a.obs_names, : ].X).sum())
+		odict['diff_X'] = float(abs(a.X - b[ a.obs_names, a.var_names ].X).sum())
 
 		odict['obs_ref-obs_test'] = list(a.obs_names.difference(b.obs_names))
 		odict['obs_test-obs_ref'] = list(b.obs_names.difference(a.obs_names))
