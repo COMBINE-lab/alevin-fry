@@ -26,7 +26,6 @@ use libradicl::rad_types::{self, RadType};
 use libradicl::BarcodeLookupMap;
 use libradicl::{chunk, record::AlevinFryReadRecord};
 use needletail::bitkmer::*;
-use niffler::{compression, Error};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
