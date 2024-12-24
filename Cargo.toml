@@ -71,7 +71,6 @@ thiserror = "2.0.9"
 statrs = "0.18.0"
 #sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 sce = { version = "0.2.0" }
-
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
 clap = { version = "4.5.23", features = [
