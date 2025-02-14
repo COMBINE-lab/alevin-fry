@@ -31,7 +31,15 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             }
             fmeth = CellFilterMethod::UnfilteredExternalList(v.clone(), min_reads);
         };
-        let rc: bool = *t.get_one("rev-comp").expect("reverse comp must be boolean");
+        let rc: &String = t
+            .get_one("permit-bc-ori")
+            .expect("permit-bc-ori must be \"fw\" or \"rc\"");
+        let rc_bool = match rc.to_uppercase().as_str() {
+            "RC" => true,
+            "FW" => false,
+            s => bail!("invalid barcode orientation {}", s),
+        };
+
         let threads = *t
             .get_one::<u32>("threads")
             .expect("number of threads should be given") as usize;
@@ -40,7 +48,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             .input_dir(input_dir)
             .output_dir(output_dir)
             .fmeth(fmeth)
-            .rc(rc)
+            .rc(rc_bool)
             .threads(threads)
             .version(version)
             .cmdline(cmdline)
@@ -98,12 +106,19 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
     if let Some(t) = opts.subcommand_matches("deduplicate") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let num_threads = *t.get_one("threads").unwrap();
-        let rc: bool = *t.get_one("rev-comp").expect("reverse comp must be boolean");
+        let rc: &String = t
+            .get_one("permit-bc-ori")
+            .expect("permit-bc-ori must be \"fw\" or \"rc\"");
+        let rc_bool = match rc.to_uppercase().as_str() {
+            "RC" => true,
+            "FW" => false,
+            s => bail!("invalid barcode orientation {}", s),
+        };
 
         let dedup_opts = DeduplicateOpts::builder()
             .input_dir(input_dir)
             .num_threads(num_threads)
-            .rev(rc)
+            .rev(rc_bool)
             .cmdline(cmdline)
             .version(version)
             .log(log)

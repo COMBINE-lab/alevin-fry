@@ -648,11 +648,10 @@ fn atac_sub_commands() -> Command {
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .value_parser(value_parser!(usize))
                 .default_value("10"))
-        .arg(
-            arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement the barcode")
-                .value_parser(clap::builder::BoolishValueParser::new())
-                .default_value("true")
-        );
+        .arg(arg!(-d --"permit-bc-ori" <EXPECTEDORI> "the expected orientation of barcodes in the permit list")
+             .ignore_case(true)
+             .default_value("rc")
+             .value_parser(["fw", "rc"]));
 
     let collate_app = Command::new("collate")
         .about("Collate a RAD file with corrected cell barcode")
@@ -694,11 +693,10 @@ fn atac_sub_commands() -> Command {
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
         .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
-        .arg(
-            arg!(-r --"rev-comp" <REVERSECOMPLEMENT> "reverse complement")
-                .value_parser(clap::builder::BoolishValueParser::new())
-                .default_value("true")
-        );
+        .arg(arg!(-d --"permit-bc-ori" <EXPECTEDORI> "the expected orientation of barcodes in the permit list")
+             .ignore_case(true)
+             .default_value("rc")
+             .value_parser(["fw", "rc"]));
 
     Command::new("atac")
         .about("subcommand for processing scATAC-seq RAD files")
