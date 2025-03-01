@@ -534,7 +534,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                             let mut unmatched_bc = Vec::<u64>::new();
                             let mut max_ambiguity_read = 0usize;
                             let mut num_orientation_compat_reads = 0;
-                            while !rd.load(AtomicOrdering::SeqCst) {
+                            while !rd.load(AtomicOrdering::SeqCst) || !q.is_empty() {
                                 while let Some(meta_chunk) = q.pop() {
                                     for c in meta_chunk.iter() {
                                         num_orientation_compat_reads +=

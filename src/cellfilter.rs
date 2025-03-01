@@ -765,7 +765,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                             let mut max_ambiguity_read = 0usize;
                             let mut num_reads = 0;
                             let mut num_orientation_compat_reads = 0;
-                            while !rd.load(Ordering::SeqCst) {
+                            while !rd.load(Ordering::SeqCst) || !q.is_empty() {
                                 while let Some(meta_chunk) = q.pop() {
                                     for c in meta_chunk.iter() {
                                         num_orientation_compat_reads +=
@@ -869,7 +869,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     let handle = s.spawn(move || {
                         let mut max_ambiguity_read = 0usize;
                         let mut num_reads = 0;
-                        while !rd.load(Ordering::SeqCst) {
+                        while !rd.load(Ordering::SeqCst) || !q.is_empty() {
                             while let Some(meta_chunk) = q.pop() {
                                 for c in meta_chunk.iter() {
                                     update_barcode_hist(
