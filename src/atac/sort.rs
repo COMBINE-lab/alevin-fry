@@ -16,8 +16,7 @@ use crate::atac::collate::{
     correct_unmapped_counts, get_filter_type, get_most_ambiguous_record, get_num_chunks,
 };
 use crate::atac::utils as atac_utils;
-use flate2::write::GzEncoder;
-use flate2::Compression;
+use itertools::Itertools;
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
 use serde_json::json;
@@ -62,52 +61,40 @@ impl PartialOrd for HitInfo {
     }
 }
 
+pub fn write_bed_string<W: ?Sized + Write>(
+    writer: &mut W,
+    hit_info_vec: &[HitInfo],
+    ref_names: &[String],
+    bc_len: u16,
+    rev: bool,
+) -> anyhow::Result<()> {
+    let bc_len: u8 = bc_len.try_into().unwrap();
+    for (count, hinfo) in hit_info_vec.iter().dedup_by_with_count(|x, y| x == y) {
+        if hinfo.frag_len < afconst::MAX_ATAC_FRAG_LEN {
+            writeln!(
+                writer,
+                "{}\t{}\t{}\t{}\t{}",
+                &ref_names[hinfo.chr as usize],
+                hinfo.start,
+                (hinfo.start + hinfo.frag_len as u32),
+                atac_utils::get_bc_string(&hinfo.barcode, rev, bc_len),
+                count
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 pub fn get_bed_string(
     hit_info_vec: &[HitInfo],
     ref_names: &[String],
     bc_len: u16,
     rev: bool,
-) -> String {
-    let bc_len: u8 = bc_len.try_into().unwrap();
-    let mut s = "".to_string();
-    let mut count = 1;
-    let mut i = 0;
-
-    while i < (hit_info_vec.len() - 1) {
-        if hit_info_vec[i].frag_len < 2000 {
-            if hit_info_vec[i] == hit_info_vec[i + 1] {
-                count += 1;
-            } else {
-                let s2 = [
-                    ref_names[hit_info_vec[i].chr as usize].clone(),
-                    hit_info_vec[i].start.to_string(),
-                    (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
-                    atac_utils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
-                    count.to_string(),
-                ]
-                .join("\t");
-                s.push_str(&s2);
-                s.push('\n');
-                count = 1;
-            }
-        } else {
-            count = 1;
-        }
-        i += 1;
-    }
-    if hit_info_vec[i].frag_len < 2000 {
-        let s2 = [
-            ref_names[hit_info_vec[i].chr as usize].clone(),
-            hit_info_vec[i].start.to_string(),
-            (hit_info_vec[i].start + hit_info_vec[i].frag_len as u32).to_string(),
-            atac_utils::get_bc_string(&hit_info_vec[i].barcode, rev, bc_len),
-            count.to_string(),
-        ]
-        .join("\t");
-        s.push_str(&s2);
-        s.push('\n');
-    }
-    s
+) -> anyhow::Result<String> {
+    let mut s = Vec::<u8>::new();
+    write_bed_string(&mut s, hit_info_vec, ref_names, bc_len, rev)?;
+    Ok(String::from_utf8_lossy(&s).into_owned())
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
@@ -143,21 +130,36 @@ pub fn sort_temp_bucket<T: Read + Seek>(
     }
     hit_info_vec.sort_unstable();
 
-    let bed_string: String = get_bed_string(&hit_info_vec, ref_names, barcode_len, rc);
     if compress {
         let bname = parent.join(format!("{}.bed.gz", buck_id));
         afutils::remove_file_if_exists(&bname)?;
         let bd = File::create(&bname)
             .with_context(|| format!("could not create temporary bed file {}", bname.display()))?;
-        let mut encoder = GzEncoder::new(bd, Compression::default());
-        encoder.write_all(bed_string.as_bytes()).unwrap();
-        encoder.finish()?;
+        let mut bd = std::io::BufWriter::new(bd);
+        let mut compressor = libdeflater::Compressor::new(libdeflater::CompressionLvl::default());
+        let mut bed_vec = Vec::<u8>::new();
+        write_bed_string(&mut bed_vec, &hit_info_vec, ref_names, barcode_len, rc)?;
+        let buff_sz = compressor.gzip_compress_bound(bed_vec.len());
+        let mut compressed_vec = vec![0; buff_sz];
+        let compress_res = compressor.gzip_compress(&bed_vec, &mut compressed_vec);
+        match compress_res {
+            Ok(nbytes) => {
+                bd.write_all(&compressed_vec[0..nbytes])?;
+            }
+            Err(e) => {
+                anyhow::bail!(
+                    "failed to gzip compress temporary bucket with libdeflater : {:#}",
+                    e
+                );
+            }
+        }
     } else {
         let bname = parent.join(format!("{}.bed", buck_id));
         afutils::remove_file_if_exists(&bname)?;
-        let mut bd = File::create(&bname)
+        let bd = File::create(&bname)
             .with_context(|| format!("could not create temporary bed file {}", bname.display()))?;
-        bd.write_all(bed_string.as_bytes())?;
+        let mut bw = std::io::BufWriter::new(bd);
+        write_bed_string(&mut bw, &hit_info_vec, ref_names, barcode_len, rc)?;
     }
     Ok(())
     // write_bed(&mut bd, &h_updated, &ref_names, barcode_len, rc);
@@ -812,6 +814,11 @@ where
         "expected number of output chunks {}",
         expected_output_chunks.to_formatted_string(&Locale::en)
     );
+
+    let bed_sfx = if compress_out { ".bed.gz" } else { ".bed" };
+
+    let bedname = parent.join(format!("map{}", bed_sfx));
+    /*
     if compress_out {
         let bedname = parent.join("map.bed.gz");
         afutils::remove_file_if_exists(&bedname)?;
@@ -831,19 +838,20 @@ where
         encoder.finish()?;
     } else {
         let bedname = parent.join("map.bed");
-        afutils::remove_file_if_exists(&bedname)?;
-        let mut out_bed_file = File::create(&bedname).with_context(|| {
-            format!(
-                "could not create target output bed file {}",
-                bedname.display()
-            )
-        })?;
-        for i in 0..temp_buckets.len() {
-            let temp_bed_name = parent.join(format!("{}.bed", i));
-            let mut input = File::open(&temp_bed_name)?;
-            io::copy(&mut input, &mut out_bed_file)?;
-            std::fs::remove_file(&temp_bed_name)?;
-        }
+    */
+    afutils::remove_file_if_exists(&bedname)?;
+    let mut out_bed_file = File::create(&bedname).with_context(|| {
+        format!(
+            "could not create target output bed file {}",
+            bedname.display()
+        )
+    })?;
+    for i in 0..temp_buckets.len() {
+        let temp_bed_name = parent.join(format!("{}{}", i, bed_sfx));
+        let mut input = File::open(&temp_bed_name)?;
+        io::copy(&mut input, &mut out_bed_file)?;
+        std::fs::remove_file(&temp_bed_name)?;
+        // }
     }
     // assert_eq!(
     //     expected_output_chunks,

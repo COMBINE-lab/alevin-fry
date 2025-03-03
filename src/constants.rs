@@ -8,3 +8,4 @@
  */
 
 pub(crate) const PERMIT_FILE_VER: u64 = 1;
+pub(crate) const MAX_ATAC_FRAG_LEN: u16 = 2000;
