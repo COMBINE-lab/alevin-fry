@@ -723,7 +723,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
             let mut local_nrec = 0usize;
             // pop MetaChunks from the work queue until everything is
             // processed
-            while !is_done.load(Ordering::SeqCst) {
+            while !is_done.load(Ordering::SeqCst) || !in_q.is_empty() {
                 while let Some(meta_chunk) = in_q.pop() {
                     let first_cell_in_chunk = meta_chunk.first_chunk_index;
                     for (cn, mut c) in meta_chunk.iter().enumerate() {

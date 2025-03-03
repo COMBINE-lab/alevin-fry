@@ -174,7 +174,7 @@ pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> any
 
         let handle = std::thread::spawn(move || {
             let mut nrec_processed = 0_usize;
-            while !rd.load(Ordering::SeqCst) {
+            while !rd.load(Ordering::SeqCst) || !q.is_empty() {
                 while let Some(meta_chunk) = q.pop() {
                     for c in meta_chunk.iter() {
                         nrec_processed += c.nrec as usize;
