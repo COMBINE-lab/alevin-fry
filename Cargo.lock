@@ -863,8 +863,6 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e4007c1723234af12a1cc779b5d9fccdeda516f8904bc2bb86051b050fc4490"
 dependencies = [
  "ahash",
  "anyhow",

@@ -27,7 +27,7 @@ use libradicl::utils::MASK_LOWER_31_U32;
 use libradicl::{
     chunk,
     header::{RadHeader, RadPrelude},
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+    record::{ScLongReadRecord, ScLongReadRecordContext},
 };
 
 use needletail::bitkmer::*;
@@ -120,6 +120,10 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
 #[inline]
 fn write_list<W: Write>(
     tid_list: &[u32],
+    score_list: &[i32],
+    start_list: &[u32],
+    end_list: &[u32],
+    tlen_list: &[u32],
     bct: &RadType,
     bc: u64,
     umit: &RadType,
@@ -127,15 +131,37 @@ fn write_list<W: Write>(
     w: &mut W,
 ) -> anyhow::Result<()> {
     assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
-    let na = tid_list.len() as u32;
-    w.write_all(&na.to_le_bytes()).unwrap();
-    //bc
+    let na: usize = tid_list.len();
+    assert_eq!(na, score_list.len());
+    assert_eq!(na, start_list.len());
+    assert_eq!(na, end_list.len());
+    assert_eq!(na, tlen_list.len());
+
+    // write na as u32 to the file
+    let na_u32: u32 = na as u32;
+    w.write_all(&na_u32.to_le_bytes())?;
+    // bc
     write_barcode(bct, bc, w)?;
-    //umi
+    // umi
     write_barcode(umit, umi, w)?;
-    //write tid list
-    for t in tid_list.iter() {
-        w.write_all(&t.to_le_bytes()).unwrap();
+
+    fn encode_i32_as_u32(v: i32) -> u32 {
+        unsafe { std::mem::transmute::<i32, u32>(v) }
+    }
+
+    // write per-alignment fields
+    for i in 0..na {
+        let tid = tid_list[i];
+        let as_u32 = encode_i32_as_u32(score_list[i]);
+        let start = start_list[i];
+        let end = end_list[i];
+        let tlen = tlen_list[i];
+
+        w.write_all(&tid.to_le_bytes())?;
+        w.write_all(&as_u32.to_le_bytes())?;
+        w.write_all(&start.to_le_bytes())?;
+        w.write_all(&end.to_le_bytes())?;
+        w.write_all(&tlen.to_le_bytes())?;
     }
     Ok(())
 }
@@ -227,6 +253,14 @@ where
 
     let hdrv = reader.read_alignment_header()?;
     let mut data = Cursor::new(vec![]);
+    
+    let ref_seqs = hdrv.reference_sequences();
+    let mut txp_lengths: Vec<u32> = Vec::with_capacity(ref_seqs.len());
+
+    for (_name, ref_seq) in ref_seqs.iter() {
+        let len = ref_seq.length().get() as u32;
+        txp_lengths.push(len);
+    }
 
     // intermediate buffer
     let mut owriter = BufWriter::with_capacity(1_048_576, ofile);
@@ -354,6 +388,31 @@ where
             name: "compressed_ori_refid".to_owned(),
             typeid: RadType::Int(RadIntId::U32),
         });
+
+        // new AS tag (alignment score)
+        aln_tags.add_tag_desc(TagDesc {
+            name: "as".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
+        // new start position 
+        aln_tags.add_tag_desc(TagDesc {
+            name: "start".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
+        // new end position
+        aln_tags.add_tag_desc(TagDesc {
+            name: "end".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
+        // new transcript length (tlen)
+        aln_tags.add_tag_desc(TagDesc {
+            name: "tlen".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
         aln_tags.write(&mut data)?;
 
         // done with tag descriptions
@@ -411,6 +470,10 @@ where
     let mut score_list = Vec::<i32>::new();
     const AS: SamTag = SamTag::new(b'A', b'S');
 
+    let mut start_list = Vec::<u32>::new();
+    let mut end_list = Vec::<u32>::new();
+    let mut tlen_list = Vec::<u32>::new();
+
     //for r in bam.records(){
     loop {
         let rec_res = record_it.next();
@@ -434,6 +497,20 @@ where
         let qname_str = rec.name().expect("valid name").to_string().to_owned();
         let qname = qname_str;
         let mut tid = rec.reference_sequence_id(&hdrv).unwrap().unwrap() as u32;
+
+        //obtain the start of the alignment
+        let start_aln: u32 = rec.alignment_start()          
+            .map(|p| p.expect("REASON").get() as u32)                     
+            .unwrap_or(u32::MAX); 
+
+        //obtain the end of the alignment
+        let end_aln: u32 = rec.alignment_end()          
+            .map(|p| p.expect("REASON").get() as u32)                     
+            .unwrap_or(u32::MAX); 
+
+        //obtain the trascript length
+        let tlen: u32 = txp_lengths[tid as usize];
+
         if qname == old_qname {
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
@@ -446,6 +523,9 @@ where
             };
             tid_list.push(tid);
             score_list.push(score);
+            start_list.push(start_aln);
+            end_list.push(end_aln);
+            tlen_list.push(tlen);
             // local_nrec += 1;
             continue;
         }
@@ -454,14 +534,15 @@ where
         // for the last read, _unless_ this is the very
         // first read, in which case we shall continue
         if !tid_list.is_empty() {
-            let max_score = score_list.iter().max().expect("max should exist");
-            // filter only transcripts having a score at least equal to the best
-            let flist = tid_list
-                .iter()
-                .zip(score_list.iter())
-                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
-                .collect::<Vec<u32>>();
-            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            //let max_score = score_list.iter().max().expect("max should exist");
+            //// filter only transcripts having a score at least equal to the best
+            //let flist = tid_list
+            //    .iter()
+            //    .zip(score_list.iter())
+            //    .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
+            //    .collect::<Vec<u32>>();
+            //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            write_list(&tid_list, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
         }
 
         // dump if we reach the buf_limit
@@ -531,6 +612,9 @@ where
             old_qname.clone_from(&qname);
             tid_list.clear();
             score_list.clear();
+            start_list.clear();
+            end_list.clear();
+            tlen_list.clear();
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
             }
@@ -541,6 +625,9 @@ where
             };
             tid_list.push(tid);
             score_list.push(score);
+            start_list.push(start_aln);
+            end_list.push(end_aln);
+            tlen_list.push(tlen);
             local_nrec += 1;
         }
     }
@@ -549,14 +636,15 @@ where
         // println!("In the residual writing part");
         // first fill the buffer with the last remaining read
         if !tid_list.is_empty() {
-            let max_score = score_list.iter().max().expect("max should exist");
-            // filter only transcripts having a score at least equal to the best
-            let flist = tid_list
-                .iter()
-                .zip(score_list.iter())
-                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
-                .collect::<Vec<u32>>();
-            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            //let max_score = score_list.iter().max().expect("max should exist");
+            //// filter only transcripts having a score at least equal to the best
+            //let flist = tid_list
+            //    .iter()
+            //    .zip(score_list.iter())
+            //    .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
+            //    .collect::<Vec<u32>>();
+            //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            write_list(&tid_list, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
         }
 
         data.set_position(0);
@@ -643,7 +731,7 @@ where
     let umi_len: u16 = umi_tag.try_into()?;
 
     let mut num_reads: u64 = 0;
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+    let record_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();
@@ -662,7 +750,7 @@ where
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
-        let c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
+        let c = chunk::Chunk::<ScLongReadRecord>::from_bytes(&mut br, &record_context);
         for read in c.reads.iter() {
             let bc_mer: BitKmer = (read.bc, barcode_len as u8);
             let umi_mer: BitKmer = (read.umi, umi_len as u8);
@@ -671,9 +759,14 @@ where
             let num_entries = read.refs.len();
             for i in 0usize..num_entries {
                 let tid = &hdr.ref_names[read.refs[i] as usize];
+                let as_val = read.as_scores[i];
+                let start = read.starts[i];
+                let end = read.ends[i];
+                let tlen = read.tlens[i];
+                
                 match writeln!(
                     handle,
-                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}",
+                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}\tAS:{}\tSTART:{}\tEND:{}\tTLEN:{}",
                     id,
                     i + 1,
                     num_entries,
@@ -681,6 +774,10 @@ where
                     unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
                     read.dirs[i],
                     tid,
+                    as_val,
+                    start,
+                    end,
+                    tlen,
                 ) {
                     Ok(_) => {
                         num_reads += 1;
