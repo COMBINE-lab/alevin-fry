@@ -111,6 +111,9 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
             RadIntId::U128 => {
                 todo!("support for u128-encoded barcodes is not yet available");
             }
+            _ => {
+                todo!("signed values not supported as barcode types");
+            }
         },
         _ => bail!("invalid type!"),
     }

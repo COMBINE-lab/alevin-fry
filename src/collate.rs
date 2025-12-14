@@ -19,8 +19,11 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
-use libradicl::rad_types;
-use libradicl::record::AlevinFryReadRecord;
+use libradicl::rad_types::{self, RadIntId, TagSection};
+use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize,
+    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecord
+};
 use libradicl::schema::TempCellInfo;
 
 use num_format::{Locale, ToFormattedString};
@@ -256,6 +259,667 @@ fn correct_unmapped_counts(
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
+pub fn do_collate_with_temp<P1, P2, A: Read + std::io::Seek, B: ConvertiblePrimitiveInteger, R: MappedRecord + CollatableMappedRecord<B> + KnownSize>(
+    input_dir: P1,
+    rad_dir: P2,
+    rec_context: &<R as MappedRecord>::ParsingContext,
+    prelude: RadPrelude,
+    mut br: BufReader<A>,
+    end_header_pos: u64,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    compress_out: bool,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let i_dir = std::path::Path::new(rad_dir.as_ref());
+    let input_rad_path = i_dir.join("map.rad");
+
+    // the number of corrected cells we'll write
+    let expected_output_chunks = tsv_map.len() as u64;
+    // the parent input directory
+    let input_dir = input_dir.into();
+    let parent = std::path::Path::new(input_dir.as_path());
+
+    let n_workers = if num_threads > 1 {
+        (num_threads - 1) as usize
+    } else {
+        1
+    };
+
+    // open the metadata file and read the json
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
+        .context("could not open the generate_permit_list.json file.")?;
+    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+
+    // velo_mode
+    let velo_mode = mdata["velo_mode"]
+        .as_bool()
+        .context("couldn't read velo_mode from meta data")?;
+    let expected_ori: Strand = match get_orientation(&mdata) {
+        Ok(o) => o,
+        Err(e) => {
+            crit!(
+                log,
+                "Error reading strand info from {:#?} :: {}",
+                &meta_data_file,
+                e
+            );
+            return Err(anyhow!(e));
+        }
+    };
+
+    let hdr = &prelude.hdr;
+    info!(
+        log,
+        "paired : {:?}, ref_count : {}, num_chunks : {}, expected_ori : {:?}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en),
+        expected_ori
+    );
+
+    let filter_type = get_filter_type(&mdata, log);
+    let most_ambig_record = get_most_ambiguous_record(&mdata, log);
+
+    // log the filter type
+    info!(log, "filter_type = {:?}", filter_type);
+    info!(
+        log,
+        "collated rad file {} be compressed",
+        if compress_out { "will" } else { "will not" }
+    );
+    // because :
+    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
+    let cfname = if velo_mode {
+        "velo.map.collated.rad"
+    } else if compress_out {
+        "map.collated.rad.sz"
+    } else {
+        "map.collated.rad"
+    };
+
+    // writing the collate metadata
+    {
+        let collate_meta = json!({
+            "cmd" : cmdline,
+            "version_str" : version,
+            "compressed_output" : compress_out,
+        });
+
+        let cm_path = parent.join("collate.json");
+        let mut cm_file =
+            std::fs::File::create(cm_path).context("could not create metadata file.")?;
+
+        let cm_info_string =
+            serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
+        cm_file
+            .write_all(cm_info_string.as_bytes())
+            .context("cannot write to collate.json file")?;
+    }
+
+    let oname = parent.join(cfname);
+    if oname.exists() {
+        std::fs::remove_file(&oname)
+            .with_context(|| format!("could not remove {}", oname.display()))?;
+    }
+
+    let ofile = File::create(parent.join(cfname))
+        .with_context(|| format!("couldn't create directory {}", cfname))?;
+    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+
+    // get the correction map
+    let cmfile = std::fs::File::open(parent.join("permit_map.bin"))
+        .context("couldn't open output permit_map.bin file")?;
+    let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
+
+    // NOTE: the assumption of where the unmapped file will be
+    // should be robustified
+    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
+    correct_unmapped_counts(&correct_map, &unmapped_file, parent);
+
+    info!(
+        log,
+        "deserialized correction map of length : {}",
+        correct_map.len().to_formatted_string(&Locale::en)
+    );
+
+    // the exact position at the end of the header + file tags
+    let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+
+    // copy the header
+    {
+        // we want to copy up to the end of the header
+        // minus the num chunks (sizeof u64), and then
+        // write the actual number of chunks we expect.
+        let chunk_bytes = std::mem::size_of::<u64>() as u64;
+        let take_pos = end_header_pos - chunk_bytes;
+
+        // This temporary file pointer and buffer will be dropped
+        // at the end of this block (scope).
+        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
+        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
+
+        rfile
+            .read_exact(hdr_buf.get_mut())
+            .context("couldn't read input file header")?;
+        hdr_buf.set_position(take_pos);
+        hdr_buf
+            .write_all(&expected_output_chunks.to_le_bytes())
+            .context("couldn't write num_chunks")?;
+        hdr_buf.set_position(0);
+
+        // compress the header buffer to a compressed buffer
+        if compress_out {
+            let mut compressed_buf =
+                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
+            compressed_buf
+                .write_all(hdr_buf.get_ref())
+                .context("could not compress the output header.")?;
+            hdr_buf = compressed_buf
+                .into_inner()
+                .context("couldn't unwrap the FrameEncoder.")?;
+            hdr_buf.set_position(0);
+        }
+
+        if let Ok(mut oput) = owriter.lock() {
+            oput.write_all(hdr_buf.get_ref())
+                .context("could not write the output header.")?;
+        }
+    }
+
+
+
+
+
+
+    let fl_tags = &prelude.file_tags;
+    let rl_tags = &prelude.read_tags;
+
+    let bct = rl_tags.tags[0].typeid;
+    let umit = rl_tags.tags[1].typeid;
+
+    let cc = chunk::AlevinFryChunkContext {
+        num_chunks: hdr.num_chunks,
+        bc_type: rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
+        umi_type: rad_types::encode_type_tag(umit).expect("valid umi tag type"),
+    };
+
+    // TODO: see if we can do this without the Arc
+    let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
+
+    // max_records is the max size of each intermediate file
+    let mut total_allocated_records = 0;
+    let mut allocated_records = 0;
+    let mut temp_buckets = vec![(
+        0,
+        0,
+        Arc::new(libradicl::TempBucket::from_id_and_parent(0, parent)),
+    )];
+
+    let max_records_per_thread = (max_records / n_workers as u32) + 1;
+    // The tsv_map tells us, for each "true" barcode
+    // how many records belong to it.  We can scan this information
+    // to determine what true barcodes we will keep in memory.
+    let mut num_bucket_chunks = 0u32;
+    {
+        let moutput_cache = Arc::make_mut(&mut output_cache);
+        for rec in tsv_map.iter() {
+            // corrected barcode points to the bucket
+            // file.
+            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
+            allocated_records += rec.1;
+            num_bucket_chunks += 1;
+            if allocated_records >= (max_records_per_thread as u64) {
+                temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
+                temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
+                let tn = temp_buckets.len() as u32;
+                temp_buckets.push((
+                    0,
+                    0,
+                    Arc::new(libradicl::TempBucket::from_id_and_parent(tn, parent)),
+                ));
+                total_allocated_records += allocated_records;
+                allocated_records = 0;
+                num_bucket_chunks = 0;
+            }
+        }
+    }
+    if num_bucket_chunks > 0 {
+        temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
+        temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
+    }
+    total_allocated_records += allocated_records;
+    info!(log, "Generated {} temporary buckets.", temp_buckets.len());
+
+    let sty = ProgressStyle::default_bar()
+        .template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
+        )
+        .expect("ProgressStyle template was invalid")
+        .progress_chars("╢▌▌░╟");
+
+    let pbar_inner = ProgressBar::with_draw_target(
+        Some(cc.num_chunks),
+        ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
+    );
+
+    pbar_inner.set_style(sty.clone());
+    pbar_inner.tick();
+
+    // create a thread-safe queue based on the number of worker threads
+    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
+
+    // the number of cells left to process
+    let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
+
+    let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
+
+    let min_rec_len = 24usize; // smallest size an individual record can be loaded in memory
+    let max_rec = max_records as usize;
+    let num_buckets = temp_buckets.len();
+    let num_threads = n_workers;
+    let loc_buffer_size = (min_rec_len + (most_ambig_record * 4_usize) - 4_usize).max(
+        (1000_usize.max((min_rec_len * max_rec) / (num_buckets * num_threads))).min(262_144_usize),
+    ); //131072_usize);
+
+    // for each worker, spawn off a thread
+    for _worker in 0..n_workers {
+        // each thread will need to access the work queue
+        let in_q = q.clone();
+        // the output cache and correction map
+        let oc = output_cache.clone();
+        let correct_map = correct_map.clone();
+        // the number of chunks remaining to be processed
+        let chunks_remaining = chunks_to_process.clone();
+        // and knowledge of the UMI and BC types
+        let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
+        let umi_type =
+            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
+        let nbuckets = temp_buckets.len();
+        let loc_temp_buckets = temp_buckets.clone();
+        //let owrite = owriter.clone();
+        // now, make the worker thread
+        let handle = std::thread::spawn(move || {
+            // old code
+            //let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
+
+            // new approach (how much does this extra complexity matter?)
+            // to avoid having a vector of cursors, where each cursor points to
+            // a completely different vector (thus scattering memory of threads
+            // and incurring the extra overhead for the capacity of the inner
+            // vectors), we will have one backing chunk of memory.
+            // NOTE: once stabilized, maybe using as_chunks_mut here
+            // will be simpler (https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks_mut)
+
+            // the memory that will back our temporary buffers
+            let mut local_buffer_backing = vec![0u8; loc_buffer_size * nbuckets];
+            // the vector of cursors we will use to write into our temporary buffers
+            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::with_capacity(nbuckets);
+            // The below is a bit tricky in rust but we basically break off each mutable slice
+            // piece by piece.  Since `as_mut_slice(n)` returns the slices [0,n), [n,end) we
+            // expect to chop off a first part of size `loc_buffer_size` a total of `nbuckets`
+            // times.
+            let mut tslice = local_buffer_backing.as_mut_slice();
+            for _ in 0..nbuckets {
+                let (first, rest) = tslice.split_at_mut(loc_buffer_size);
+                //let brange = (bn*loc_buffer_size..(bn+1)*loc_buffer_size);
+                local_buffers.push(Cursor::new(first));
+                tslice = rest;
+            }
+
+            // pop from the work queue until everything is
+            // processed
+            while chunks_remaining.load(Ordering::SeqCst) > 0 {
+                if let Some((_chunk_num, buf)) = in_q.pop() {
+                    chunks_remaining.fetch_sub(1, Ordering::SeqCst);
+                    let mut nbr = BufReader::new(&buf[..]);
+                    libradicl::dump_corrected_cb_chunk_to_temp_file(
+                        &mut nbr,
+                        &bc_type,
+                        &umi_type,
+                        &correct_map,
+                        &expected_ori,
+                        &oc,
+                        &mut local_buffers,
+                        loc_buffer_size,
+                    );
+                }
+            }
+
+            // empty any remaining local buffers
+            for (bucket_id, lb) in local_buffers.iter().enumerate() {
+                let len = lb.position() as usize;
+                if len > 0 {
+                    let mut filebuf = loc_temp_buckets[bucket_id].2.bucket_writer.lock().unwrap();
+                    filebuf.write_all(&lb.get_ref()[0..len]).unwrap();
+                }
+            }
+            // return something more meaningful
+            0
+        });
+
+        thread_handles.push(handle);
+    } // for each worker
+
+    // read each chunk
+    pbar_inner.reset();
+    let pb_msg = format!(
+        "processing {} / {} total records",
+        total_allocated_records, total_to_collate
+    );
+    pbar_inner.set_message(pb_msg);
+
+    // read chunks from the input file and pass them to the
+    // worker threads.
+    let mut buf = vec![0u8; 65536];
+    for cell_num in 0..(cc.num_chunks as usize) {
+        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
+        buf.resize(nbytes_chunk as usize, 0);
+        buf.pwrite::<u32>(nbytes_chunk, 0)?;
+        buf.pwrite::<u32>(nrec_chunk, 4)?;
+        br.read_exact(&mut buf[8..]).unwrap();
+
+        let mut bclone = (cell_num, buf.clone());
+        // keep trying until we can push this payload
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while q.is_full() {}
+        }
+        pbar_inner.inc(1);
+    }
+    pbar_inner.finish();
+
+    // wait for the worker threads to finish
+    for h in thread_handles.drain(0..) {
+        match h.join() {
+            Ok(_) => {}
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
+    }
+    pbar_inner.finish_with_message("partitioned records into temporary files.");
+    drop(q);
+
+    // At this point, we are done with the "scatter"
+    // phase of writing the records to the corresponding
+    // intermediate files.  Now, we'll begin the gather
+    // phase of collating the temporary files and merging
+    // them into the final output file.
+
+    for (i, temp_bucket) in temp_buckets.iter().enumerate() {
+        // make sure we flush each temp bucket
+        temp_bucket
+            .2
+            .bucket_writer
+            .lock()
+            .unwrap()
+            .flush()
+            .context("could not flush temporary output file!")?;
+        // a sanity check that we have the correct number of records
+        // and the expected number of bytes in each file
+        let expected = temp_bucket.1;
+        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        assert_eq!(expected, observed);
+
+        let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
+        let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
+        let observed_bytes = md.len();
+        assert_eq!(expected_bytes, observed_bytes);
+    }
+
+    //std::process::exit(1);
+
+    // to hold the temp buckets threads will process
+    let slack = (n_workers / 2).max(1_usize);
+    let temp_bucket_queue_size = slack + n_workers;
+    let fq = Arc::new(ArrayQueue::<(
+        u32,
+        u32,
+        std::sync::Arc<libradicl::TempBucket>,
+    )>::new(temp_bucket_queue_size));
+    // the number of cells left to process
+    let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
+
+    let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
+    pbar_gather.set_style(sty);
+    pbar_gather.tick();
+
+    // for each worker, spawn off a thread
+    for _worker in 0..n_workers {
+        // each thread will need to access the work queue
+        let in_q = fq.clone();
+        // the output cache and correction map
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // alternative strategy
+        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
+
+        // the number of chunks remaining to be processed
+        let buckets_remaining = buckets_to_process.clone();
+        // and knowledge of the UMI and BC types
+        let bc_type =
+            rad_types::decode_int_type_tag(cc.bc_type).context("unknown barcode type id.")?;
+        let umi_type =
+            rad_types::decode_int_type_tag(cc.umi_type).context("unknown umi type id.")?;
+        // have access to the input directory
+        let input_dir: PathBuf = input_dir.clone();
+        // the output file
+        let owriter = owriter.clone();
+        // and the progress bar
+        let pbar_gather = pbar_gather.clone();
+
+        // now, make the worker threads
+        let handle = std::thread::spawn(move || {
+            let mut local_chunks = 0u64;
+            let parent = std::path::Path::new(&input_dir);
+            // pop from the work queue until everything is
+            // processed
+            while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                if let Some(temp_bucket) = in_q.pop() {
+                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+                    cmap.clear();
+
+                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                    // create a new handle for reading
+                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+                    let mut treader = BufReader::new(tfile);
+
+                    local_chunks += libradicl::collate_temporary_bucket_twopass(
+                        &mut treader,
+                        &bc_type,
+                        &umi_type,
+                        temp_bucket.1,
+                        &owriter,
+                        compress_out,
+                        &mut cmap,
+                    ) as u64;
+
+                    // we don't need the file or reader anymore
+                    drop(treader);
+                    std::fs::remove_file(fname).expect("could not delete temporary file.");
+
+                    pbar_gather.inc(1);
+                }
+            }
+            local_chunks
+        });
+        thread_handles.push(handle);
+    } // for each worker
+
+    // push the temporary buckets onto the work queue to be dispatched
+    // by the worker threads.
+    for temp_bucket in temp_buckets {
+        let mut bclone = temp_bucket.clone();
+        // keep trying until we can push this payload
+        while let Err(t) = fq.push(bclone) {
+            bclone = t;
+            // no point trying to push if the queue is full
+            while fq.is_full() {}
+        }
+        let expected = temp_bucket.1;
+        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        assert_eq!(expected, observed);
+    }
+
+    // wait for all of the workers to finish
+    let mut num_output_chunks = 0u64;
+    for h in thread_handles.drain(0..) {
+        match h.join() {
+            Ok(c) => {
+                num_output_chunks += c;
+            }
+            Err(_e) => {
+                info!(log, "thread panicked");
+            }
+        }
+    }
+    pbar_gather.finish_with_message("gathered all temp files.");
+
+    // make sure we wrote the same number of records that our
+    // file suggested we should.
+    assert_eq!(total_allocated_records, total_to_collate);
+
+    info!(
+        log,
+        "writing num output chunks ({}) to header",
+        num_output_chunks.to_formatted_string(&Locale::en)
+    );
+
+    info!(
+        log,
+        "expected number of output chunks {}",
+        expected_output_chunks.to_formatted_string(&Locale::en)
+    );
+
+    assert_eq!(
+        expected_output_chunks,
+        num_output_chunks,
+        "expected to write {} chunks but wrote {}",
+        expected_output_chunks.to_formatted_string(&Locale::en),
+        num_output_chunks.to_formatted_string(&Locale::en),
+    );
+
+    owriter.lock().unwrap().flush()?;
+    info!(
+        log,
+        "finished collating input rad file {:?}.",
+        i_dir.join("map.rad")
+    );
+    Ok(())
+}
+
+
+#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
+pub fn collate_with_temp2<P1, P2>(
+    input_dir: P1,
+    rad_dir: P2,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    compress_out: bool,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let i_dir = std::path::Path::new(rad_dir.as_ref());
+
+    if !i_dir.exists() {
+        crit!(
+            log,
+            "the input RAD path {:?} does not exist",
+            rad_dir.as_ref()
+        );
+        return Err(anyhow!("invalid input"));
+    }
+
+    let input_rad_path = i_dir.join("map.rad");
+    let i_file = File::open(&input_rad_path).context("couldn't open input RAD file")?;
+    let mut br = BufReader::new(i_file);
+
+    let hdr = RadHeader::from_bytes(&mut br)?;
+
+    // the exact position at the end of the header,
+    // precisely sizeof(u64) bytes beyond the num_chunks field.
+    let end_header_pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
+
+    info!(
+        log,
+        "paired : {:?}, ref_count : {}, num_chunks : {}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en),
+    );
+
+    // file-level
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    // read-level
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+    // alignment-level
+    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
+
+    // create the prelude and rebind the variables we need
+    let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
+    let hdr = &prelude.hdr;
+    let rl_tags = &prelude.read_tags;
+
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
+    info!(log, "File-level tag values {:?}", file_tag_map);
+
+    // try to infer the type 
+    // TODO: improve this by having a file level tag giving the name explicitly
+    let aln_tags = &prelude.aln_tags;
+    if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
+    // long-read single cell
+        info!(log, "long read single-cell");    
+        let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
+        do_collate_with_temp::<_, _, _, u64, ScLongReadRecord>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+            tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+    } else if aln_tags.has_tag("pos") {
+    // alevin-fry with positions
+        info!(log, "short read single-cell with position");    
+        let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+        match parsing_context.bct {
+            RadIntId::U64 => {
+            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+                tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+            },
+            RadIntId::U128 => { unimplemented!() }
+            _ => { unimplemented!() }
+        }
+    } else {
+    // classic alevin-fry 
+        info!(log, "short read single-cell without poisition");    
+        let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+        match parsing_context.bct {
+            RadIntId::U64 => {
+            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+                tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+            },
+            RadIntId::U128 => { unimplemented!() }
+            _ => { unimplemented!() }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
 pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
@@ -403,9 +1067,6 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
-
     // the exact position at the end of the header + file tags
     let pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
 
@@ -466,10 +1127,13 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
+    let bct = rl_tags.tags[0].typeid;
+    let umit = rl_tags.tags[1].typeid;
+
     let cc = chunk::AlevinFryChunkContext {
         num_chunks: hdr.num_chunks,
-        bc_type: libradicl::rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
-        umi_type: libradicl::rad_types::encode_type_tag(umit).expect("valid umi tag type"),
+        bc_type: rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
+        umi_type: rad_types::encode_type_tag(umit).expect("valid umi tag type"),
     };
 
     // TODO: see if we can do this without the Arc
