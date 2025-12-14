@@ -259,10 +259,10 @@ fn correct_unmapped_counts(
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
-pub fn do_collate_with_temp<P1, P2, A: Read + std::io::Seek, B: ConvertiblePrimitiveInteger, R: MappedRecord + CollatableMappedRecord<B> + KnownSize>(
+pub fn do_collate_with_temp<P1, P2, A: Read + std::io::Seek, B: ConvertiblePrimitiveInteger + std::convert::From<u64>, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
     input_dir: P1,
     rad_dir: P2,
-    rec_context: &<R as MappedRecord>::ParsingContext,
+    rec_context: <R as MappedRecord>::ParsingContext,
     prelude: RadPrelude,
     mut br: BufReader<A>,
     end_header_pos: u64,
@@ -278,6 +278,10 @@ pub fn do_collate_with_temp<P1, P2, A: Read + std::io::Seek, B: ConvertiblePrimi
 where
     P1: Into<PathBuf>,
     P2: AsRef<Path>,
+    u64: From<B>,
+    // note; the 'static below simply means that the parsing context doesn't borrow anything so it
+    // can be used in the closure.
+    <R as MappedRecord>::ParsingContext: std::marker::Sync + Send + std::clone::Clone + 'static
 {
     let i_dir = std::path::Path::new(rad_dir.as_ref());
     let input_rad_path = i_dir.join("map.rad");
@@ -435,22 +439,8 @@ where
         }
     }
 
-
-
-
-
-
     let fl_tags = &prelude.file_tags;
     let rl_tags = &prelude.read_tags;
-
-    let bct = rl_tags.tags[0].typeid;
-    let umit = rl_tags.tags[1].typeid;
-
-    let cc = chunk::AlevinFryChunkContext {
-        num_chunks: hdr.num_chunks,
-        bc_type: rad_types::encode_type_tag(bct).expect("valid barcode tag type"),
-        umi_type: rad_types::encode_type_tag(umit).expect("valid umi tag type"),
-    };
 
     // TODO: see if we can do this without the Arc
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
@@ -507,7 +497,7 @@ where
         .progress_chars("╢▌▌░╟");
 
     let pbar_inner = ProgressBar::with_draw_target(
-        Some(cc.num_chunks),
+        Some(hdr.num_chunks),
         ProgressDrawTarget::stderr_with_hz(5u8), // update at most 5 times/sec.
     );
 
@@ -518,7 +508,7 @@ where
     let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
 
     // the number of cells left to process
-    let chunks_to_process = Arc::new(AtomicUsize::new(cc.num_chunks as usize));
+    let chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
 
     let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
 
@@ -540,13 +530,11 @@ where
         // the number of chunks remaining to be processed
         let chunks_remaining = chunks_to_process.clone();
         // and knowledge of the UMI and BC types
-        let bc_type = rad_types::decode_int_type_tag(cc.bc_type).expect("unknown barcode type id.");
-        let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).expect("unknown barcode type id.");
         let nbuckets = temp_buckets.len();
         let loc_temp_buckets = temp_buckets.clone();
         //let owrite = owriter.clone();
         // now, make the worker thread
+        let rec_context = rec_context.clone();
         let handle = std::thread::spawn(move || {
             // old code
             //let mut local_buffers = vec![Cursor::new(vec![0u8; loc_buffer_size]); nbuckets];
@@ -581,10 +569,22 @@ where
                 if let Some((_chunk_num, buf)) = in_q.pop() {
                     chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
-                    libradicl::dump_corrected_cb_chunk_to_temp_file(
+
+                    /*
+pub fn dump_corrected_cb_chunk_to_temp_file_generic<B: ConvertiblePrimitiveInteger + std::convert::From<u64>, T: Read, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
+    reader: &mut BufReader<T>,
+    rec_context: &<R as MappedRecord>::ParsingContext,
+    correct_map: &HashMap<u64, u64>,
+    expected_ori: &Strand,
+    output_cache: &HashMap<u64, Arc<TempBucket>>,
+    local_buffers: &mut [Cursor<&mut [u8]>],
+    flush_limit: usize,
+)
+*/
+
+                    libradicl::dump_corrected_cb_chunk_to_temp_file_generic::<B, _, R>(
                         &mut nbr,
-                        &bc_type,
-                        &umi_type,
+                        &rec_context,
                         &correct_map,
                         &expected_ori,
                         &oc,
@@ -620,8 +620,8 @@ where
     // read chunks from the input file and pass them to the
     // worker threads.
     let mut buf = vec![0u8; 65536];
-    for cell_num in 0..(cc.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<AlevinFryReadRecord>::read_header(&mut br);
+    for cell_num in 0..(hdr.num_chunks as usize) {
+        let (nbytes_chunk, nrec_chunk) = chunk::Chunk::<R>::read_header(&mut br);
         buf.resize(nbytes_chunk as usize, 0);
         buf.pwrite::<u32>(nbytes_chunk, 0)?;
         buf.pwrite::<u32>(nrec_chunk, 4)?;
@@ -706,20 +706,16 @@ where
 
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
-        // and knowledge of the UMI and BC types
-        let bc_type =
-            rad_types::decode_int_type_tag(cc.bc_type).context("unknown barcode type id.")?;
-        let umi_type =
-            rad_types::decode_int_type_tag(cc.umi_type).context("unknown umi type id.")?;
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file
         let owriter = owriter.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
-
+        let rec_context = rec_context.clone();
         // now, make the worker threads
         let handle = std::thread::spawn(move || {
+            let ctx = rec_context;
             let mut local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
@@ -733,11 +729,19 @@ where
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
-
-                    local_chunks += libradicl::collate_temporary_bucket_twopass(
+                    /*
+pub fn collate_temporary_bucket_twopass_new<B: ConvertiblePrimitiveInteger, T: Read + Seek, U: Write, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
+    reader: &mut BufReader<T>,
+    rec_context: &<R as MappedRecord>::ParsingContext,
+    nrec: u32,
+    owriter: &Mutex<U>,
+    compress: bool,
+    cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
+)
+*/
+                    local_chunks += libradicl::collate_temporary_bucket_twopass_new::<B, _, _, R>(
                         &mut treader,
-                        &bc_type,
-                        &umi_type,
+                        &ctx,
                         temp_bucket.1,
                         &owriter,
                         compress_out,
@@ -890,7 +894,7 @@ where
     // long-read single cell
         info!(log, "long read single-cell");    
         let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
-        do_collate_with_temp::<_, _, _, u64, ScLongReadRecord>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+        do_collate_with_temp::<_, _, _, u64, ScLongReadRecord>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
             tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
     } else if aln_tags.has_tag("pos") {
     // alevin-fry with positions
@@ -898,7 +902,7 @@ where
         let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
         match parsing_context.bct {
             RadIntId::U64 => {
-            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
             },
             RadIntId::U128 => { unimplemented!() }
@@ -910,7 +914,7 @@ where
         let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
         match parsing_context.bct {
             RadIntId::U64 => {
-            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, &parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
             },
             RadIntId::U128 => { unimplemented!() }
