@@ -26,7 +26,7 @@ use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType, TagMap};
 use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize,
-    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecordT 
+    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT 
 };
 use libradicl::header::{RadPrelude};
 use libradicl::BarcodeLookupMap;
@@ -655,11 +655,13 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         }
         KnownRecordType::ScRnaShort(_bc_len) => {
             info!(log, "record type is standard short read single-cell RNA-seq");
-            do_generate_permit_list::<u64, AlevinFryReadRecordT<u64>>(gpl_opts, ifile, prelude, file_tag_map)
+            do_generate_permit_list::<u64, AlevinFryReadRecord>(gpl_opts, ifile, prelude, file_tag_map)
         }
     }
 }
 
+/// Dispatched by `generate_permit_list` with the appropriate generic type for the 
+/// read record.
 pub fn do_generate_permit_list<B, R>(
     gpl_opts: GenPermitListOpts, 
     ifile: BufReader<File>, 
@@ -667,7 +669,9 @@ pub fn do_generate_permit_list<B, R>(
     file_tag_map: TagMap) -> anyhow::Result<u64>
 where
     B: ConvertiblePrimitiveInteger,
-    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize, 
+       <R as MappedRecord>::ParsingContext: RecordContext, 
+       <R as MappedRecord>::ParsingContext: Clone
 {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
@@ -709,17 +713,6 @@ where
     let nworkers: usize = gpl_opts.threads;
 
     let mut rad_reader = libradicl::readers::ParallelRadReader::<R, _,>::from_prelude_and_file_tag_map(ifile, prelude, file_tag_map, NonZeroUsize::new(nworkers).unwrap());
-
-
-    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
-    let ifile = BufReader::new(i_file);
-
-
-
-    let mut rad_reader = libradicl::readers::ParallelRadReader::<
-        AlevinFryReadRecord,
-        BufReader<File>,
-    >::new(ifile, NonZeroUsize::new(nworkers).unwrap());
 
     let hdr = &rad_reader.prelude.hdr;
     info!(
@@ -980,22 +973,27 @@ where
     }
 }
 
-pub fn update_barcode_hist_unfiltered(
+pub fn update_barcode_hist_unfiltered<B, R>(
     hist: &DashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: &mut Vec<u64>,
     max_ambiguity_read: &mut usize,
-    chunk: &chunk::Chunk<AlevinFryReadRecord>,
+    chunk: &chunk::Chunk<R>,
     expected_ori: &Strand,
-) -> usize {
+) -> usize 
+where 
+    B: ConvertiblePrimitiveInteger, 
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B>
+{
     let mut num_strand_compat_reads = 0usize;
     match expected_ori {
         Strand::Unknown => {
             for r in &chunk.reads {
                 num_strand_compat_reads += 1;
-                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+                *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
                 // lookup the barcode in the map of unfiltered known
                 // barcodes
-                match hist.get_mut(&r.bc) {
+                match hist.get_mut(&(r.collate_key().into())) {
                     // if we find a match, increment the count
                     Some(mut c) => *c += 1,
                     // otherwise, push this into the unmatched list
@@ -1009,15 +1007,15 @@ pub fn update_barcode_hist_unfiltered(
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| x) {
                     num_strand_compat_reads += 1;
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+                    *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
                     // lookup the barcode in the map of unfiltered known
                     // barcodes
-                    match hist.get_mut(&r.bc) {
+                    match hist.get_mut(&(r.collate_key().into())) {
                         // if we find a match, increment the count
                         Some(mut c) => *c += 1,
                         // otherwise, push this into the unmatched list
                         None => {
-                            unmatched_bc.push(r.bc);
+                            unmatched_bc.push(r.collate_key().into());
                         }
                     }
                 }
@@ -1027,15 +1025,15 @@ pub fn update_barcode_hist_unfiltered(
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| !x) {
                     num_strand_compat_reads += 1;
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+                    *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
                     // lookup the barcode in the map of unfiltered known
                     // barcodes
-                    match hist.get_mut(&r.bc) {
+                    match hist.get_mut(&(r.collate_key().into())) {
                         // if we find a match, increment the count
                         Some(mut c) => *c += 1,
                         // otherwise, push this into the unmatched list
                         None => {
-                            unmatched_bc.push(r.bc);
+                            unmatched_bc.push(r.collate_key().into());
                         }
                     }
                 }
@@ -1045,32 +1043,37 @@ pub fn update_barcode_hist_unfiltered(
     num_strand_compat_reads
 }
 
-pub fn update_barcode_hist(
+pub fn update_barcode_hist<B, R>(
     hist: &DashMap<u64, u64, ahash::RandomState>,
     max_ambiguity_read: &mut usize,
-    chunk: &chunk::Chunk<AlevinFryReadRecord>,
+    chunk: &chunk::Chunk<R>,
     expected_ori: &Strand,
-) {
+) 
+where 
+    B: ConvertiblePrimitiveInteger, 
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B>
+{
     match expected_ori {
         Strand::Unknown => {
             for r in &chunk.reads {
-                *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
+                *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
                 *hist.entry(r.bc).or_insert(0) += 1;
             }
         }
         Strand::Forward => {
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| x) {
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    *hist.entry(r.bc).or_insert(0) += 1;
+                    *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
+                    *hist.entry(r.collate_key().into()).or_insert(0) += 1;
                 }
             }
         }
         Strand::Reverse => {
             for r in &chunk.reads {
                 if r.dirs.iter().any(|&x| !x) {
-                    *max_ambiguity_read = r.refs.len().max(*max_ambiguity_read);
-                    *hist.entry(r.bc).or_insert(0) += 1;
+                    *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
+                    *hist.entry(r.collate_key().into()).or_insert(0) += 1;
                 }
             }
         }
