@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 COMBINE-lab.
+ * Copyright (c) 2020-2026 COMBINE-lab.
  *
  * This file is part of alevin-fry
  * (see https://www.github.com/COMBINE-lab/alevin-fry).
@@ -19,10 +19,10 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
-use libradicl::rad_types::{self, RadIntId, TagSection};
-use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+use libradicl::rad_types::{self, RadIntId};
+use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize,
-    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecord
+    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecordT
 };
 use libradicl::schema::TempCellInfo;
 
@@ -132,16 +132,6 @@ where
     // sort in _descending_ order by count.
     tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
-    /*
-    let est_num_rounds = (total_to_collate as f64 / max_records as f64).ceil() as u64;
-    info!(
-    log,
-    "estimated that collation would require {} passes over input.", est_num_rounds
-    );
-    // if est_num_rounds > 2 {
-    info!(log, "executing temporary file scatter-gather strategy.");
-    */
-
     collate_with_temp(
         input_dir,
         rad_dir,
@@ -154,19 +144,6 @@ where
         version_str,
         log,
     )
-
-    /*} else {
-    info!(log, "executing multi-pass strategy.");
-    collate_in_memory_multipass(
-        input_dir,
-        rad_dir,
-        num_threads,
-        max_records,
-        tsv_map,
-        total_to_collate,
-        log,
-    )
-    }*/
 }
 
 fn get_orientation(mdata: &serde_json::Value) -> Result<Strand, StrandError> {
@@ -281,7 +258,7 @@ where
     u64: From<B>,
     // note; the 'static below simply means that the parsing context doesn't borrow anything so it
     // can be used in the closure.
-    <R as MappedRecord>::ParsingContext: std::marker::Sync + Send + std::clone::Clone + 'static
+    <R as MappedRecord>::ParsingContext: std::marker::Sync + Send + std::clone::Clone + 'static + std::fmt::Debug
 {
     let i_dir = std::path::Path::new(rad_dir.as_ref());
     let input_rad_path = i_dir.join("map.rad");
@@ -439,9 +416,6 @@ where
         }
     }
 
-    let fl_tags = &prelude.file_tags;
-    let rl_tags = &prelude.read_tags;
-
     // TODO: see if we can do this without the Arc
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
@@ -569,19 +543,6 @@ where
                 if let Some((_chunk_num, buf)) = in_q.pop() {
                     chunks_remaining.fetch_sub(1, Ordering::SeqCst);
                     let mut nbr = BufReader::new(&buf[..]);
-
-                    /*
-pub fn dump_corrected_cb_chunk_to_temp_file_generic<B: ConvertiblePrimitiveInteger + std::convert::From<u64>, T: Read, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
-    reader: &mut BufReader<T>,
-    rec_context: &<R as MappedRecord>::ParsingContext,
-    correct_map: &HashMap<u64, u64>,
-    expected_ori: &Strand,
-    output_cache: &HashMap<u64, Arc<TempBucket>>,
-    local_buffers: &mut [Cursor<&mut [u8]>],
-    flush_limit: usize,
-)
-*/
-
                     libradicl::dump_corrected_cb_chunk_to_temp_file_generic::<B, _, R>(
                         &mut nbr,
                         &rec_context,
@@ -729,17 +690,8 @@ pub fn dump_corrected_cb_chunk_to_temp_file_generic<B: ConvertiblePrimitiveInteg
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
-                    /*
-pub fn collate_temporary_bucket_twopass_new<B: ConvertiblePrimitiveInteger, T: Read + Seek, U: Write, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
-    reader: &mut BufReader<T>,
-    rec_context: &<R as MappedRecord>::ParsingContext,
-    nrec: u32,
-    owriter: &Mutex<U>,
-    compress: bool,
-    cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
-)
-*/
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_new::<B, _, _, R>(
+
+                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<B, _, _, R>(
                         &mut treader,
                         &ctx,
                         temp_bucket.1,
@@ -824,7 +776,7 @@ pub fn collate_temporary_bucket_twopass_new<B: ConvertiblePrimitiveInteger, T: R
 
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
-pub fn collate_with_temp2<P1, P2>(
+pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
     num_threads: u32,
@@ -881,8 +833,6 @@ where
 
     // create the prelude and rebind the variables we need
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
-    let hdr = &prelude.hdr;
-    let rl_tags = &prelude.read_tags;
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", file_tag_map);
@@ -894,14 +844,14 @@ where
     // long-read single cell
         info!(log, "long read single-cell");    
         let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
-        do_collate_with_temp::<_, _, _, u64, ScLongReadRecord>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+        do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
             tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
     } else if aln_tags.has_tag("pos") {
     // alevin-fry with positions
         info!(log, "short read single-cell with position");    
         let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
         match parsing_context.bct {
-            RadIntId::U64 => {
+            RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
             do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
             },
@@ -913,7 +863,7 @@ where
         info!(log, "short read single-cell without poisition");    
         let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
         match parsing_context.bct {
-            RadIntId::U64 => {
+            RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
             do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
             },
@@ -923,6 +873,10 @@ where
     }
 }
 
+
+
+
+/*
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
 pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
@@ -1505,3 +1459,4 @@ where
     );
     Ok(())
 }
+*/

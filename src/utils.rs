@@ -21,6 +21,8 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use libradicl::header::{RadPrelude, RadHeader};
+use libradicl::rad_types::{TagDesc, TagMap};
 use thiserror::Error;
 
 /*
@@ -40,6 +42,45 @@ struct QuantArguments {
     filter_list: String
 }
 */
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum KnownRecordType {
+    ScRnaLong(u16),
+    ScAtacSeq(u16),
+    ScRnaShortPos(u16),
+    ScRnaShort(u16),
+}
+
+
+pub(crate) fn get_record_type_from_prelude(prelude: &RadPrelude, file_tag_map: &TagMap) -> KnownRecordType {
+    let aln_tags = &prelude.aln_tags;
+    if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
+    // long-read single cell
+        let bc_len: u16 = file_tag_map.get("cblen")
+            .expect("lr-scRNA seq RAD file should have a \"cblen\" file-level tag")
+            .try_into().expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::ScRnaLong(bc_len)
+    } else if aln_tags.has_tag("pos") {
+    // alevin-fry with positions
+        // TODO: Switch this out with position aware type when we have it
+        let bc_len: u16 = file_tag_map.get("cblen")
+            .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
+            .try_into().expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::ScRnaShort(bc_len)
+    } else if aln_tags.has_tag("type") && aln_tags.has_tag("start_pos") && aln_tags.has_tag("frag_len") {
+    // ATAC seq 
+        let bc_len: u16 = file_tag_map.get("cblen")
+            .expect("scATAC seq RAD file should have a \"cblen\" file-level tag")
+            .try_into().expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::ScAtacSeq(bc_len)
+    } else {
+    // classic alevin-fry 
+        let bc_len: u16 = file_tag_map.get("cblen")
+            .expect("scRNA seq RAD file should have a \"cblen\" file-level tag")
+            .try_into().expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::ScRnaShort(bc_len)
+    }
+}
 
 pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
     if fname.exists() {

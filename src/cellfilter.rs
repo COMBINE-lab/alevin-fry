@@ -15,6 +15,7 @@ use slog::{info, warn};
 use crate::diagnostics;
 use crate::prog_opts::GenPermitListOpts;
 use crate::utils as afutils;
+use crate::utils::KnownRecordType;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use bio_types::strand::Strand;
@@ -22,7 +23,12 @@ use bstr::io::BufReadExt;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types::{self, RadType};
+use libradicl::rad_types::{self, RadType, TagMap};
+use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize,
+    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecordT 
+};
+use libradicl::header::{RadPrelude};
 use libradicl::BarcodeLookupMap;
 use libradicl::{chunk, record::AlevinFryReadRecord};
 use needletail::bitkmer::*;
@@ -608,16 +614,12 @@ fn process_filtered(
 /// a map from each correctable barcode to the
 /// permitted barcode to which it maps.
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
-    let rad_dir = gpl_opts.input_dir;
-    let output_dir = gpl_opts.output_dir;
-    let filter_meth = gpl_opts.fmeth.clone();
-    let expected_ori = gpl_opts.expected_ori;
-    let version = gpl_opts.version;
-    let velo_mode = gpl_opts.velo_mode;
-    let cmdline = gpl_opts.cmdline;
+    let rad_dir = gpl_opts.input_dir.clone();
     let log = gpl_opts.log;
 
     let i_dir = std::path::Path::new(&rad_dir);
+    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
+    let mut ifile = BufReader::new(i_file);
 
     // should we assume this condition was already checked
     // during parsing?
@@ -630,6 +632,53 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         // std::process::exit(1);
         anyhow::bail!("execution terminated because input RAD path does not exist.");
     }
+
+    let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut ifile)
+        .unwrap();
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+
+    match rec_type {
+        KnownRecordType::ScRnaLong(_bc_len) => {
+            info!(log, "record type is long read single-cell RNA-seq");
+            unimplemented!();
+        }
+        KnownRecordType::ScAtacSeq(_bc_len) => {
+            info!(log, "record type is short read single-cell ATAC-seq");
+            anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
+        }
+        KnownRecordType::ScRnaShortPos(_bc_len) => {
+            info!(log, "record type is short read single-cell RNA-seq with positions");
+            unimplemented!();
+        }
+        KnownRecordType::ScRnaShort(_bc_len) => {
+            info!(log, "record type is standard short read single-cell RNA-seq");
+            do_generate_permit_list::<u64, AlevinFryReadRecordT<u64>>(gpl_opts, ifile, prelude, file_tag_map)
+        }
+    }
+}
+
+pub fn do_generate_permit_list<B, R>(
+    gpl_opts: GenPermitListOpts, 
+    ifile: BufReader<File>, 
+    prelude: RadPrelude, 
+    file_tag_map: TagMap) -> anyhow::Result<u64>
+where
+    B: ConvertiblePrimitiveInteger,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+{
+    let rad_dir = gpl_opts.input_dir;
+    let output_dir = gpl_opts.output_dir;
+    let filter_meth = gpl_opts.fmeth.clone();
+    let expected_ori = gpl_opts.expected_ori;
+    let version = gpl_opts.version;
+    let velo_mode = gpl_opts.velo_mode;
+    let cmdline = gpl_opts.cmdline;
+    let log = gpl_opts.log;
+
+    let i_dir = std::path::Path::new(&rad_dir);
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;
@@ -658,8 +707,15 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     }
 
     let nworkers: usize = gpl_opts.threads;
+
+    let mut rad_reader = libradicl::readers::ParallelRadReader::<R, _,>::from_prelude_and_file_tag_map(ifile, prelude, file_tag_map, NonZeroUsize::new(nworkers).unwrap());
+
+
     let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
     let ifile = BufReader::new(i_file);
+
+
+
     let mut rad_reader = libradicl::readers::ParallelRadReader::<
         AlevinFryReadRecord,
         BufReader<File>,
@@ -922,134 +978,6 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
             )
         }
     }
-
-    /*
-    let valid_bc: Vec<u64>;
-    let mut freq: Vec<u64> = hm.values().cloned().collect();
-    freq.sort_unstable();
-    freq.reverse();
-
-    // select from among supported filter methods
-    match filter_meth {
-    CellFilterMethod::KneeFinding => {
-        let num_bc = get_knee(&freq[..], 100, &log);
-        let min_freq = freq[num_bc];
-
-        // collect all of the barcodes that have a frequency
-        // >= to min_thresh.
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-        info!(
-        log,
-        "knee distance method resulted in the selection of {} permitted barcodes.",
-        valid_bc.len()
-        );
-    }
-    CellFilterMethod::ForceCells(top_k) => {
-        let num_bc = if freq.len() < top_k {
-        freq.len() - 1
-        } else {
-        top_k - 1
-        };
-
-        let min_freq = freq[num_bc];
-
-        // collect all of the barcodes that have a frequency
-        // >= to min_thresh.
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-    }
-    CellFilterMethod::ExplicitList(valid_bc_file) => {
-        valid_bc = libradicl::permit_list_from_file(valid_bc_file, ft_vals.bclen);
-    }
-    CellFilterMethod::ExpectCells(expected_num_cells) => {
-        let robust_quantile = 0.99f64;
-        let robust_div = 10.0f64;
-        let robust_ind = (expected_num_cells as f64 * robust_quantile).round() as u64;
-        // the robust ind must be valid
-        let ind = cmp::min(freq.len() - 1, robust_ind as usize);
-        let robust_freq = freq[ind];
-        let min_freq = std::cmp::max(1u64, (robust_freq as f64 / robust_div).round() as u64);
-        valid_bc = libradicl::permit_list_from_threshold(&hm, min_freq);
-    }
-    CellFilterMethod::UnfilteredExternalList(_, min_reads) => {
-        unimplemented!();
-    }
-    }
-
-    // generate the map from each permitted barcode to all barcodes within
-    // edit distance 1 of it.
-    let full_permit_list =
-    libradicl::utils::generate_permitlist_map(&valid_bc, ft_vals.bclen as usize).unwrap();
-
-    let s2 = RandomState::<Hash64>::new();
-    let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
-
-    let mut num_corrected = 0;
-    for (k, v) in hm.iter() {
-    if let Some(&valid_key) = full_permit_list.get(k) {
-        *permitted_map.entry(valid_key).or_insert(0u64) += *v;
-        num_corrected += 1;
-        //println!("{} was a neighbor of {}, with count {}", k, valid_key, v);
-    }
-    }
-
-    let parent = std::path::Path::new(&output_dir);
-    std::fs::create_dir_all(&parent).unwrap();
-    let o_path = parent.join("permit_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
-
-    for (k, v) in permitted_map {
-    //let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-    writeln!(
-        &mut writer,
-        "{}\t{}",
-        k,
-        //from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-        v
-    )
-    .expect("couldn't write to output file.");
-    }
-
-    let o_path = parent.join("all_freq.tsv");
-    let output = std::fs::File::create(&o_path).expect("could not create output.");
-    let mut writer = BufWriter::new(&output);
-    for (k, v) in hm {
-    let bc_mer: BitKmer = (k, ft_vals.bclen as u8);
-    writeln!(
-        &mut writer,
-        "{}\t{}",
-        from_utf8(&bitmer_to_bytes(bc_mer)[..]).unwrap(),
-        v
-    )
-    .expect("couldn't write to output file.");
-    }
-
-    let s_path = parent.join("permit_map.bin");
-    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &full_permit_list)
-    .expect("couldn't serialize permit list.");
-
-    let meta_info = json!({
-    "expected_ori" : expected_ori.strand_symbol()
-    });
-
-    let m_path = parent.join("generate_permit_list.json");
-    let mut m_file = std::fs::File::create(&m_path).expect("could not create metadata file.");
-
-    let meta_info_string =
-    serde_json::to_string_pretty(&meta_info).expect("could not format json.");
-    m_file
-    .write_all(meta_info_string.as_bytes())
-    .expect("cannot write to generate_permit_list.json file");
-
-    info!(
-    log,
-    "total number of corrected barcodes : {}",
-    num_corrected.to_formatted_string(&Locale::en)
-    );
-    Ok(num_corrected)
-    */
 }
 
 pub fn update_barcode_hist_unfiltered(
