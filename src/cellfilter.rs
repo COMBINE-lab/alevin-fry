@@ -669,9 +669,11 @@ pub fn do_generate_permit_list<B, R>(
     file_tag_map: TagMap) -> anyhow::Result<u64>
 where
     B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
     R: MappedRecord + CollatableMappedRecord<B> + KnownSize, 
        <R as MappedRecord>::ParsingContext: RecordContext, 
-       <R as MappedRecord>::ParsingContext: Clone
+       <R as MappedRecord>::ParsingContext: Clone,
+       <R as MappedRecord>::ParsingContext: Send
 {
     let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
@@ -986,6 +988,24 @@ where
     R: MappedRecord + CollatableMappedRecord<B>
 {
     let mut num_strand_compat_reads = 0usize;
+    for r in &chunk.reads {
+        if r.has_alignment_on_strand(*expected_ori) {
+            num_strand_compat_reads += 1;
+            *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
+            // lookup the barcode in the map of unfiltered known
+            // barcodes
+            match hist.get_mut(&(r.collate_key().into())) {
+                // if we find a match, increment the count
+                Some(mut c) => *c += 1,
+                // otherwise, push this into the unmatched list
+                None => {
+                    unmatched_bc.push(r.collate_key().into());
+                }
+            }
+        }
+    }
+
+    /*
     match expected_ori {
         Strand::Unknown => {
             for r in &chunk.reads {
@@ -998,7 +1018,7 @@ where
                     Some(mut c) => *c += 1,
                     // otherwise, push this into the unmatched list
                     None => {
-                        unmatched_bc.push(r.bc);
+                        unmatched_bc.push(r.collate_key().into());
                     }
                 }
             }
@@ -1040,6 +1060,7 @@ where
             }
         }
     }
+    */
     num_strand_compat_reads
 }
 
@@ -1054,11 +1075,18 @@ where
     u64: From<B>,
     R: MappedRecord + CollatableMappedRecord<B>
 {
+    for r in &chunk.reads {
+        if r.has_alignment_on_strand(*expected_ori) {
+            *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
+            *hist.entry(r.collate_key().into()).or_insert(0) += 1;
+        }
+    }
+    /* 
     match expected_ori {
         Strand::Unknown => {
             for r in &chunk.reads {
                 *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
-                *hist.entry(r.bc).or_insert(0) += 1;
+                *hist.entry(r.collate_key().into()).or_insert(0) += 1;
             }
         }
         Strand::Forward => {
@@ -1078,6 +1106,7 @@ where
             }
         }
     }
+    */
 }
 
 pub fn permit_list_from_threshold(
