@@ -26,7 +26,7 @@ use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType, TagMap};
 use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize,
-    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT 
+    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord 
 };
 use libradicl::header::{RadPrelude};
 use libradicl::BarcodeLookupMap;
@@ -643,7 +643,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     match rec_type {
         KnownRecordType::ScRnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
-            unimplemented!();
+            do_generate_permit_list::<u64, ScLongReadRecord>(gpl_opts, ifile, prelude, file_tag_map)
         }
         KnownRecordType::ScAtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
