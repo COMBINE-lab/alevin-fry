@@ -24,7 +24,7 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType, TagMap};
-use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+use libradicl::record::{AlevinFryReadRecordT, AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize,
     AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord 
 };
@@ -651,7 +651,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         }
         KnownRecordType::ScRnaShortPos(_bc_len) => {
             info!(log, "record type is short read single-cell RNA-seq with positions");
-            unimplemented!();
+            do_generate_permit_list::<u64, AlevinFryReadRecordWithPosition>(gpl_opts, ifile, prelude, file_tag_map)
         }
         KnownRecordType::ScRnaShort(_bc_len) => {
             info!(log, "record type is standard short read single-cell RNA-seq");

@@ -66,7 +66,7 @@ pub(crate) fn get_record_type_from_prelude(prelude: &RadPrelude, file_tag_map: &
         let bc_len: u16 = file_tag_map.get("cblen")
             .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
             .try_into().expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::ScRnaShort(bc_len)
+        KnownRecordType::ScRnaShortPos(bc_len)
     } else if aln_tags.has_tag("type") && aln_tags.has_tag("start_pos") && aln_tags.has_tag("frag_len") {
     // ATAC seq 
         let bc_len: u16 = file_tag_map.get("cblen")

@@ -20,7 +20,7 @@ use crossbeam_queue::ArrayQueue;
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{self, RadIntId};
-use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+use libradicl::record::{AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize,
     AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecordT
 };
@@ -39,6 +39,9 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use crate::utils::KnownRecordType;
+use crate::utils as afutils;
 
 #[allow(clippy::too_many_arguments)]
 pub fn collate<P1, P2>(
@@ -834,41 +837,48 @@ where
     // create the prelude and rebind the variables we need
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
 
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    // try to infer the type 
-    // TODO: improve this by having a file level tag giving the name explicitly
-    let aln_tags = &prelude.aln_tags;
-    if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
-    // long-read single cell
-        info!(log, "long read single-cell");    
-        let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
-        do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
-            tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
-    } else if aln_tags.has_tag("pos") {
-    // alevin-fry with positions
-        info!(log, "short read single-cell with position");    
-        let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
-        match parsing_context.bct {
-            RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
-            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+
+    match rec_type {
+        KnownRecordType::ScRnaLong(_bc_len) => {
+            info!(log, "record type is long read single-cell RNA-seq");
+            // long-read single cell
+            info!(log, "long read single-cell");    
+            let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
+            do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
-            },
-            RadIntId::U128 => { unimplemented!() }
-            _ => { unimplemented!() }
         }
-    } else {
-    // classic alevin-fry 
-        info!(log, "short read single-cell without poisition");    
-        let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
-        match parsing_context.bct {
-            RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
-            do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
-                tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
-            },
-            RadIntId::U128 => { unimplemented!() }
-            _ => { unimplemented!() }
+        KnownRecordType::ScAtacSeq(_bc_len) => {
+            info!(log, "record type is short read single-cell ATAC-seq");
+            anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
+        }
+        KnownRecordType::ScRnaShortPos(_bc_len) => {
+            // alevin-fry with positions
+            info!(log, "short read single-cell with position");    
+            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+            match parsing_context.bct {
+                RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
+                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordWithPositionT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+                        tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+                },
+                RadIntId::U128 => { unimplemented!() }
+                _ => { unimplemented!() }
+            }
+        }
+        KnownRecordType::ScRnaShort(_bc_len) => {
+            info!(log, "short read single-cell without poisition");    
+            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+            match parsing_context.bct {
+                RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
+                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
+                        tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+                },
+                RadIntId::U128 => { unimplemented!() }
+                _ => { unimplemented!() }
+            }
         }
     }
 }

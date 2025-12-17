@@ -30,7 +30,7 @@ use std::thread;
 
 use libradicl::chunk;
 use libradicl::rad_types::{self, RadType, TagMap};
-use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordWithPosition, AlevinFryReadRecordWithPositionT, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord,
     AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord,
     CollatableRecordHeader
@@ -1347,7 +1347,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
         }
         KnownRecordType::ScRnaShortPos(_bc_len) => {
             info!(log, "record type is short read single-cell RNA-seq with positions");
-            unimplemented!();
+            do_quantify::<_, u64, AlevinFryReadRecordWithPosition>(br, quant_opts, prelude, file_tag_map)
         }
         KnownRecordType::ScRnaShort(_bc_len) => {
             info!(log, "record type is standard short read single-cell RNA-seq");
