@@ -36,46 +36,46 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-#libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.10.0" }
-libradicl = { version = "0.11.0", path = "../libradicl" }
-anyhow = "1.0.96"
+libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "long-read", version = "0.11.0" }
+#libradicl = { version = "0.11.0" }
+anyhow = "1.0.100"
 arrayvec = "0.7.6"
-ahash = "0.8.11"
+ahash = "0.8.12"
 bincode = "1.3.3"
-bstr = "1.11.3"
-crossbeam-channel = "0.5.14"
+bstr = "1.12.1"
+crossbeam-channel = "0.5.15"
 crossbeam-queue = "0.3.12"
-typed-builder = "0.20.0"
-indicatif = "0.17.11"
+typed-builder = "0.23.2"
+indicatif = "0.18.3"
 needletail = "0.6.3"
 petgraph = "0.6.5"
-libdeflater = "1.23.0"
+libdeflater = "1.25.0"
 niffler = { version = "3.0.0", default-features = false, features = ["gz"] }
-flate2 = { version = "1.1.0", default-features = false, features = ["zlib-ng"] }
-scroll = "0.12.0"
-serde = { version = "1.0.218", features = ["derive"] }
-serde_json = "1.0.139"
-sprs = "0.11.3"
-slog = "2.7.0"
-slog-term = "2.9.1"
+flate2 = { version = "1.1.5", default-features = false, features = ["zlib-ng"] }
+scroll = "0.13.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sprs = "0.11.4"
+slog = "2.8.2"
+slog-term = "2.9.2"
 slog-async = "2.8.0"
-smallvec = "1.14.0"
+smallvec = "1.15.1"
 snap = "1.1.1"
 rand = "0.8.5"
-chrono = "0.4.40"
-csv = "1.3.1"
-mimalloc = { version = "0.1.43", default-features = false }
+chrono = "0.4.42"
+csv = "1.4.0"
+mimalloc = { version = "0.1.48", default-features = false }
 num-format = "0.4.4"
-num_cpus = "1.16.0"
+num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
 itertools = "0.14.0"
-thiserror = "2.0.11"
+thiserror = "2.0.17"
 statrs = "0.18.0"
 #sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 sce = { version = "0.2.0" }
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
-clap = { version = "4.5.31", features = [
+clap = { version = "4.5.53", features = [
   "derive",
   "wrap_help",
   "cargo",
