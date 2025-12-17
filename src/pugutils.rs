@@ -21,7 +21,10 @@ use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
 use libradicl::chunk;
-use libradicl::record::AlevinFryReadRecord;
+use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord,
+    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord 
+};
 
 use slog::{crit, info, warn};
 
@@ -626,24 +629,31 @@ fn resolve_num_molecules_crlike_from_vec(
     }
 }
 
-pub fn get_num_molecules_cell_ranger_like_small(
-    cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>,
+pub fn get_num_molecules_cell_ranger_like_small<B, R>(
+    cell_chunk: &mut chunk::Chunk<R>,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
-) {
+) where
+B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord, 
+       <R as MappedRecord>::ParsingContext: RecordContext, 
+       <R as MappedRecord>::ParsingContext: Clone,
+       <R as MappedRecord>::ParsingContext: Send
+{
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
 
     // for each record
     for rec in &cell_chunk.reads {
         // get the umi
-        let umi = rec.umi;
+        let umi = rec.umi();
 
         // project the transcript ids to gene ids
         let mut gset: Vec<u32> = rec
-            .refs
+            .refs()
             .iter()
             .map(|tid| tid_to_gid[*tid as usize])
             .collect();

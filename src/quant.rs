@@ -28,6 +28,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use libradicl::chunk;
+use libradicl::rad_types::{self, RadType, TagMap};
+use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord,
+    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord,
+    CollatableRecordHeader
+};
+use libradicl::header::{RadPrelude};
+
+
 use std::fmt;
 //use std::ptr;
 
@@ -38,13 +48,8 @@ use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
+use crate::utils::KnownRecordType;
 use crate::utils as afutils;
-
-use libradicl::{
-    chunk,
-    header::RadPrelude,
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
-};
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -326,7 +331,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
             "quantifying from compressed, collated RAD file {:?}", i_file
         );
 
-        do_quantify(br, quant_opts)
+        do_quantify_dispatch(br, quant_opts)
     } else {
         let i_file =
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
@@ -337,17 +342,23 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
             "quantifying from uncompressed, collated RAD file {:?}", i_file
         );
 
-        do_quantify(br, quant_opts)
+        do_quantify_dispatch(br, quant_opts)
     }
 }
 
-// TODO: see if we'd rather pass an structure
-// with these options
-pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
-    let parent = std::path::Path::new(quant_opts.input_dir);
 
-    let prelude = RadPrelude::from_bytes(&mut br)?;
-    let hdr = &prelude.hdr;
+pub fn do_quantify<T: BufRead, B, R>(
+mut br: T, quant_opts: QuantOpts, prelude: RadPrelude, file_tag_map: TagMap
+) -> anyhow::Result<()> 
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static, 
+       <R as MappedRecord>::ParsingContext: RecordContext, 
+       <R as MappedRecord>::ParsingContext: Clone,
+       <R as MappedRecord>::ParsingContext: Send
+{
+    let parent = std::path::Path::new(quant_opts.input_dir);
     //let hdr = rad_types::RadHeader::from_bytes(&mut br);
 
     let init_uniform = quant_opts.init_uniform;
@@ -364,6 +375,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
 
+    let hdr = &prelude.hdr;
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
     // filter list, the number of cells will be dictated by
@@ -474,7 +486,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     let al_tags = &prelude.aln_tags;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    //let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
     let barcode_tag = file_tag_map
@@ -532,7 +544,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     } else {
         1
     };
-    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<AlevinFryReadRecord>::new(
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<R>::new(
         &prelude,
         std::num::NonZeroUsize::new(n_workers).unwrap(),
     );
@@ -741,7 +753,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                         // TODO: Clean up the expect() and merge with the check above
                         // the expect shouldn't happen, but the message is redundant with
                         // the above.  Plus, this would panic if it actually occurred.
-                        let bc = c.reads.first().expect("chunk with no reads").bc;
+                        let bc = c.reads.first().expect("chunk with no reads").collate_key();
 
                         // The structures we'll need to hold our output for this
                         // cell.
@@ -763,7 +775,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                                 ResolutionStrategy::CellRangerLike
                                 | ResolutionStrategy::CellRangerLikeEm => {
                                     if small_cell {
-                                        pugutils::get_num_molecules_cell_ranger_like_small(
+                                        pugutils::get_num_molecules_cell_ranger_like_small::<B, R>(
                                             &mut c,
                                             &tid_to_gid,
                                             num_genes,
@@ -772,7 +784,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                                             &log,
                                         );
                                     } else {
-                                        eq_map.init_from_chunk(&mut c);
+                                        eq_map.init_from_chunk::<R>(&mut c);
                                         pugutils::get_num_molecules_cell_ranger_like(
                                             &eq_map,
                                             &tid_to_gid,
@@ -854,7 +866,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                                     let g = pugutils::extract_graph(&eq_map, pug_exact_umi, &log);
                                     // for the PUG resolution algorithm, set the hasher
                                     // that will be used based on the cell barcode.
-                                    let s = ahash::RandomState::with_seeds(bc, 7u64, 1u64, 8u64);
+                                    let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
                                     let pug_stats = pugutils::get_num_molecules(
                                         &g,
                                         &eq_map,
@@ -1040,7 +1052,8 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                         let num_mapped = nrec;
                         let dedup_rate = sum_umi / num_mapped as f32;
 
-                        let num_unmapped = match unmapped_count.get(&bc) {
+                        let bcint = bc.into();
+                        let num_unmapped = match unmapped_count.get(&bcint) {
                             Some(nu) => *nu,
                             None => 0u32,
                         };
@@ -1063,7 +1076,7 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
                         let row_index: usize; // the index for this row (cell)
                         {
                             // writing the files
-                            let bc_mer: BitKmer = (bc, bclen as u8);
+                            let bc_mer: BitKmer = (bc.into(), bclen as u8);
 
                             if !use_mtx {
                                 eds_bytes = sce::eds::as_bytes(&counts, num_rows)
@@ -1194,10 +1207,11 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     // push the work onto the queue for the worker threads
     // we spawned above.
     let _ = if let Some(ret_bc) = retained_bc {
-        let filter_fn = |buf: &[u8], record_context: &AlevinFryRecordContext| -> bool {
-            let (bc, _umi) =
-                chunk::Chunk::<AlevinFryReadRecord>::peek_record(&buf[8..], record_context);
-            ret_bc.contains(&bc)
+        let filter_fn = |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
+            let ch =
+                R::peek_collatable_header(&buf[8..], record_context).expect("at least one record");
+            let ck: u64= ch.collate_key().into();
+            ret_bc.contains(&ck)
         };
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
@@ -1304,6 +1318,43 @@ pub fn do_quantify<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Resu
     .expect("cannot write to quant_cmd_info.json file");
     */
     Ok(())
+
+}
+
+// TODO: see if we'd rather pass an structure
+// with these options
+pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
+    let log = quant_opts.log;
+    let parent = std::path::Path::new(quant_opts.input_dir);
+
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    let hdr = &prelude.hdr;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .unwrap();
+
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+
+    match rec_type {
+        KnownRecordType::ScRnaLong(_bc_len) => {
+            info!(log, "record type is long read single-cell RNA-seq");
+            do_quantify::<_, u64, ScLongReadRecord>(br, quant_opts, prelude, file_tag_map)
+        }
+        KnownRecordType::ScAtacSeq(_bc_len) => {
+            info!(log, "record type is short read single-cell ATAC-seq");
+            anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
+        }
+        KnownRecordType::ScRnaShortPos(_bc_len) => {
+            info!(log, "record type is short read single-cell RNA-seq with positions");
+            unimplemented!();
+        }
+        KnownRecordType::ScRnaShort(_bc_len) => {
+            info!(log, "record type is standard short read single-cell RNA-seq");
+            do_quantify::<_, u64, AlevinFryReadRecord>(br, quant_opts, prelude, file_tag_map)
+        }
+    }
+
 }
 
 // TODO: see if we'd rather pass an structure

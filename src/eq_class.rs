@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::BufRead;
 
 use libradicl::chunk;
-use libradicl::record::AlevinFryReadRecord;
+use libradicl::record::{MappedRecord, UmiTaggedRecord};
 
 /**
 * Single-cell equivalence class
@@ -285,7 +285,10 @@ impl EqMap {
     }
 
     #[allow(dead_code)]
-    fn init_from_small_chunk(&mut self, cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>) {
+    fn init_from_small_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>) 
+        where
+    R: MappedRecord + UmiTaggedRecord
+    {
         //let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         let mut hasher = self.eqid_map.hasher().build_hasher();
         //let mut hasher = rand_state.build_hasher();
@@ -295,8 +298,8 @@ impl EqMap {
             .iter()
             .enumerate()
             .map(|(idx, r)| -> (u64, u64, usize) {
-                hasher.write(libradicl::as_u8_slice(&r.refs[..]));
-                (hasher.finish(), r.umi, idx)
+                hasher.write(libradicl::as_u8_slice(&r.refs()[..]));
+                (hasher.finish(), r.umi(), idx)
             })
             .collect();
 
@@ -319,14 +322,14 @@ impl EqMap {
                     }
                 } else {
                     // new class
-                    self.label_list_size += r.refs.len();
-                    for r in r.refs.iter() {
+                    self.label_list_size += r.refs().len();
+                    for r in r.refs().iter() {
                         let ridx = *r as usize;
                         self.label_counts[ridx] += 1;
                     }
                     eq_num = self.eq_label_starts.len();
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
-                    self.eq_labels.extend(&r.refs);
+                    self.eq_labels.extend(r.refs());
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(cumi, 1)],
                         eq_num: eq_num as u32,
@@ -352,18 +355,20 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk_gene_level(
+    pub fn init_from_chunk_gene_level<R>(
         &mut self,
-        cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>,
+        cell_chunk: &mut chunk::Chunk<R>,
         tid_to_gid: &[u32],
-    ) {
+    ) where
+        R: MappedRecord + UmiTaggedRecord
+    {
         self.eqid_map.clear();
 
         let mut gvec: Vec<u32> = vec![];
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
             // project from txp-level to gene-level
-            gvec.extend(r.refs.iter().map(|x| tid_to_gid[*x as usize]));
+            gvec.extend(r.refs().iter().map(|x| tid_to_gid[*x as usize]));
             gvec.sort_unstable();
             gvec.dedup();
 
@@ -371,7 +376,7 @@ impl EqMap {
                 // if we've seen this equivalence class before, just add the new
                 // umi.
                 Some(v) => {
-                    self.eqc_info[*v as usize].umis.push((r.umi, 1));
+                    self.eqc_info[*v as usize].umis.push((r.umi(), 1));
                 }
                 // otherwise, add the new umi, but we also have some extra bookkeeping
                 None => {
@@ -387,7 +392,7 @@ impl EqMap {
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
                     self.eq_labels.extend(&gvec);
                     self.eqc_info.push(EqMapEntry {
-                        umis: vec![(r.umi, 1)],
+                        umis: vec![(r.umi(), 1)],
                         eq_num,
                     });
                     self.eqid_map.insert(gvec.clone(), eq_num);
@@ -444,7 +449,10 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk(&mut self, cell_chunk: &mut chunk::Chunk<AlevinFryReadRecord>) {
+    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>) 
+        where
+    R: MappedRecord + UmiTaggedRecord
+    {
         /*
         if cell_chunk.reads.len() < 10 {
         self.init_from_small_chunk(cell_chunk);
@@ -465,30 +473,30 @@ impl EqMap {
             // NOTE: should be done if collate was run.
             // r.refs.sort();
 
-            match self.eqid_map.get_mut(&r.refs) {
+            match self.eqid_map.get_mut(r.refs()) {
                 // if we've seen this equivalence class before, just add the new
                 // umi.
                 Some(v) => {
-                    self.eqc_info[*v as usize].umis.push((r.umi, 1));
+                    self.eqc_info[*v as usize].umis.push((r.umi(), 1));
                 }
                 // otherwise, add the new umi, but we also have some extra bookkeeping
                 None => {
                     // each reference in this equivalence class label
                     // will have to point to this equivalence class id
                     let eq_num = self.eqc_info.len() as u32;
-                    self.label_list_size += r.refs.len();
-                    for r in r.refs.iter() {
+                    self.label_list_size += r.refs().len();
+                    for r in r.refs().iter() {
                         let ridx = *r as usize;
                         self.label_counts[ridx] += 1;
                         //ref_to_eqid[*r as usize].push(eq_num);
                     }
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
-                    self.eq_labels.extend(&r.refs);
+                    self.eq_labels.extend(r.refs());
                     self.eqc_info.push(EqMapEntry {
-                        umis: vec![(r.umi, 1)],
+                        umis: vec![(r.umi(), 1)],
                         eq_num,
                     });
-                    self.eqid_map.insert(r.refs.clone(), eq_num);
+                    self.eqid_map.insert(r.refs().to_vec(), eq_num);
                     //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
                 }
             }
