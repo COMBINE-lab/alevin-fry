@@ -21,9 +21,9 @@ use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
 use libradicl::chunk;
-use libradicl::record::{AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord,
-    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord 
+use libradicl::record::{ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize, 
+    UmiTaggedRecord, RecordContext, 
 };
 
 use slog::{crit, info, warn};

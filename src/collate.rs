@@ -843,7 +843,7 @@ where
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
     match rec_type {
-        KnownRecordType::ScRnaLong(_bc_len) => {
+        KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
             info!(log, "long read single-cell");    
@@ -851,11 +851,11 @@ where
             do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
                 tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
         }
-        KnownRecordType::ScAtacSeq(_bc_len) => {
+        KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
             anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
         }
-        KnownRecordType::ScRnaShortPos(_bc_len) => {
+        KnownRecordType::RnaShortPos(_bc_len) => {
             // alevin-fry with positions
             info!(log, "short read single-cell with position");    
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
@@ -868,7 +868,7 @@ where
                 _ => { unimplemented!() }
             }
         }
-        KnownRecordType::ScRnaShort(_bc_len) => {
+        KnownRecordType::RnaShort(_bc_len) => {
             info!(log, "short read single-cell without poisition");    
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
             match parsing_context.bct {

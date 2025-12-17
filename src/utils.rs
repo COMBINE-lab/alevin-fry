@@ -21,8 +21,8 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use libradicl::header::{RadPrelude, RadHeader};
-use libradicl::rad_types::{TagDesc, TagMap};
+use libradicl::header::RadPrelude; 
+use libradicl::rad_types::TagMap;
 use thiserror::Error;
 
 /*
@@ -45,10 +45,10 @@ struct QuantArguments {
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {
-    ScRnaLong(u16),
-    ScAtacSeq(u16),
-    ScRnaShortPos(u16),
-    ScRnaShort(u16),
+    RnaLong(u16),
+    AtacSeq(u16),
+    RnaShortPos(u16),
+    RnaShort(u16),
 }
 
 
@@ -59,26 +59,26 @@ pub(crate) fn get_record_type_from_prelude(prelude: &RadPrelude, file_tag_map: &
         let bc_len: u16 = file_tag_map.get("cblen")
             .expect("lr-scRNA seq RAD file should have a \"cblen\" file-level tag")
             .try_into().expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::ScRnaLong(bc_len)
+        KnownRecordType::RnaLong(bc_len)
     } else if aln_tags.has_tag("pos") {
     // alevin-fry with positions
         // TODO: Switch this out with position aware type when we have it
         let bc_len: u16 = file_tag_map.get("cblen")
             .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
             .try_into().expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::ScRnaShortPos(bc_len)
+        KnownRecordType::RnaShortPos(bc_len)
     } else if aln_tags.has_tag("type") && aln_tags.has_tag("start_pos") && aln_tags.has_tag("frag_len") {
     // ATAC seq 
         let bc_len: u16 = file_tag_map.get("cblen")
             .expect("scATAC seq RAD file should have a \"cblen\" file-level tag")
             .try_into().expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::ScAtacSeq(bc_len)
+        KnownRecordType::AtacSeq(bc_len)
     } else {
     // classic alevin-fry 
         let bc_len: u16 = file_tag_map.get("cblen")
             .expect("scRNA seq RAD file should have a \"cblen\" file-level tag")
             .try_into().expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::ScRnaShort(bc_len)
+        KnownRecordType::RnaShort(bc_len)
     }
 }
 

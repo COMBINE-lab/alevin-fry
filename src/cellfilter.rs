@@ -24,9 +24,8 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use libradicl::exit_codes;
 use libradicl::rad_types::{self, RadType, TagMap};
-use libradicl::record::{AlevinFryReadRecordT, AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize,
-    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord 
+use libradicl::record::{AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize, RecordContext, ScLongReadRecord 
 };
 use libradicl::header::{RadPrelude};
 use libradicl::BarcodeLookupMap;
@@ -641,19 +640,19 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
     match rec_type {
-        KnownRecordType::ScRnaLong(_bc_len) => {
+        KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             do_generate_permit_list::<u64, ScLongReadRecord>(gpl_opts, ifile, prelude, file_tag_map)
         }
-        KnownRecordType::ScAtacSeq(_bc_len) => {
+        KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
             anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
         }
-        KnownRecordType::ScRnaShortPos(_bc_len) => {
+        KnownRecordType::RnaShortPos(_bc_len) => {
             info!(log, "record type is short read single-cell RNA-seq with positions");
             do_generate_permit_list::<u64, AlevinFryReadRecordWithPosition>(gpl_opts, ifile, prelude, file_tag_map)
         }
-        KnownRecordType::ScRnaShort(_bc_len) => {
+        KnownRecordType::RnaShort(_bc_len) => {
             info!(log, "record type is standard short read single-cell RNA-seq");
             do_generate_permit_list::<u64, AlevinFryReadRecord>(gpl_opts, ifile, prelude, file_tag_map)
         }
@@ -675,7 +674,6 @@ where
        <R as MappedRecord>::ParsingContext: Clone,
        <R as MappedRecord>::ParsingContext: Send
 {
-    let rad_dir = gpl_opts.input_dir;
     let output_dir = gpl_opts.output_dir;
     let filter_meth = gpl_opts.fmeth.clone();
     let expected_ori = gpl_opts.expected_ori;
@@ -683,8 +681,6 @@ where
     let velo_mode = gpl_opts.velo_mode;
     let cmdline = gpl_opts.cmdline;
     let log = gpl_opts.log;
-
-    let i_dir = std::path::Path::new(&rad_dir);
 
     let mut first_bclen = 0usize;
     let mut unfiltered_bc_counts = None;

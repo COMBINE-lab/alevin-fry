@@ -298,7 +298,7 @@ impl EqMap {
             .iter()
             .enumerate()
             .map(|(idx, r)| -> (u64, u64, usize) {
-                hasher.write(libradicl::as_u8_slice(&r.refs()[..]));
+                hasher.write(libradicl::as_u8_slice(r.refs()));
                 (hasher.finish(), r.umi(), idx)
             })
             .collect();

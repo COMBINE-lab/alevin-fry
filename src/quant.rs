@@ -28,11 +28,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use libradicl::chunk;
-use libradicl::rad_types::{self, RadType, TagMap};
-use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordWithPosition, AlevinFryReadRecordWithPositionT, AlevinFryReadRecordT, ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord,
-    AlevinFryRecordContext, RecordContext, ScLongReadRecordContext, ScLongReadRecordT, ScLongReadRecord,
+use libradicl::rad_types::TagMap;
+use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
+    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord, RecordContext, ScLongReadRecord,
     CollatableRecordHeader
 };
 use libradicl::header::{RadPrelude};
@@ -1325,10 +1323,7 @@ where
 // with these options
 pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let log = quant_opts.log;
-    let parent = std::path::Path::new(quant_opts.input_dir);
-
     let prelude = RadPrelude::from_bytes(&mut br)?;
-    let hdr = &prelude.hdr;
     let file_tag_map = prelude
         .file_tags
         .parse_tags_from_bytes(&mut br)
@@ -1337,19 +1332,19 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
     match rec_type {
-        KnownRecordType::ScRnaLong(_bc_len) => {
+        KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             do_quantify::<_, u64, ScLongReadRecord>(br, quant_opts, prelude, file_tag_map)
         }
-        KnownRecordType::ScAtacSeq(_bc_len) => {
+        KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
             anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
         }
-        KnownRecordType::ScRnaShortPos(_bc_len) => {
+        KnownRecordType::RnaShortPos(_bc_len) => {
             info!(log, "record type is short read single-cell RNA-seq with positions");
             do_quantify::<_, u64, AlevinFryReadRecordWithPosition>(br, quant_opts, prelude, file_tag_map)
         }
-        KnownRecordType::ScRnaShort(_bc_len) => {
+        KnownRecordType::RnaShort(_bc_len) => {
             info!(log, "record type is standard short read single-cell RNA-seq");
             do_quantify::<_, u64, AlevinFryReadRecord>(br, quant_opts, prelude, file_tag_map)
         }
