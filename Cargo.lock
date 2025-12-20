@@ -360,9 +360,9 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "cmake"
-version = "0.1.56"
+version = "0.1.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b042e5d8a74ae91bb0961acd039822472ec99f8ab0948cbf6d1369588f8be586"
+checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
 dependencies = [
  "cc",
 ]
@@ -852,7 +852,7 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.11.0"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=long-read#7ae612a78b21c0334ccf61fa73629738b1e3e329"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#ed1c4295927796f1d53bb6117312530b10a2b506"
 dependencies = [
  "ahash",
  "anyhow",
@@ -862,12 +862,23 @@ dependencies = [
  "dashmap",
  "derivative",
  "itertools 0.13.0",
+ "libradicl-macros",
  "noodles",
  "num",
  "scroll 0.12.0",
  "serde",
  "smallvec",
  "snap",
+]
+
+[[package]]
+name = "libradicl-macros"
+version = "0.11.0"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#ed1c4295927796f1d53bb6117312530b10a2b506"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]
