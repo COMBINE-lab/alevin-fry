@@ -1,18 +1,26 @@
 use anyhow;
-use rand_distr::weighted::{AliasableWeight, WeightedAliasIndex};
+use rand_distr::weighted::{Weight, WeightedIndex};
 use rand_distr::Distribution;
+use rand_distr::uniform::{SampleUniform, SampleBorrow};
 use rand::Rng;
 use nalgebra::base::OVector;
 use nalgebra::base::dimension::Dyn;
 
-pub struct Multinomial<W: AliasableWeight> {
-    alias_idx: WeightedAliasIndex<W>,
+// TODO: check how many samples are required before WeightedAliasIndex outperforms WeightedIndex
+
+pub struct Multinomial<X: SampleUniform + PartialOrd + std::fmt::Debug> {
+    alias_idx: WeightedIndex<X>,
     nsamp: usize
 }
 
-impl<W: AliasableWeight + std::fmt::Debug> Multinomial<W> {
-    pub fn new(w: Vec<W>, n: usize) -> anyhow::Result<Self> {
-        let idx = WeightedAliasIndex::new(w)?;
+impl<X: SampleUniform + PartialOrd + std::fmt::Debug> Multinomial<X> {
+    pub fn new<I>(w: I, n: usize) -> anyhow::Result<Self> 
+    where
+        I: IntoIterator,
+        <I as IntoIterator>::Item: SampleBorrow<X>,
+        X: Weight,
+    {
+        let idx = WeightedIndex::new(w)?;
         Ok(Self {
             alias_idx: idx,
             nsamp:n
