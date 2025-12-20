@@ -34,10 +34,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[allow(dead_code)]
 fn gen_random_kmer(k: usize) -> String {
     const CHARSET: &[u8] = b"ACGT";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let s: String = (0..k)
         .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect();

@@ -61,7 +61,7 @@ slog-term = "2.9.2"
 slog-async = "2.8.0"
 smallvec = "1.15.1"
 snap = "1.1.1"
-rand = { version = "0.8.5" }
+rand = { version = "0.9.2" }
 chrono = "0.4.42"
 csv = "1.4.0"
 mimalloc = { version = "0.1.48", default-features = false }
@@ -70,7 +70,6 @@ num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
 itertools = "0.14.0"
 thiserror = "2.0.17"
-statrs = { version = "0.18.0" }
 #sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 sce = { version = "0.2.0" }
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
@@ -87,7 +86,8 @@ clap = { version = "4.5.53", features = [
 
 noodles = { version = "0.85.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
-nalgebra = "0.33.2"
+nalgebra = "0.34.1"
+rand_distr = "0.5.1"
 
 [profile.release]
 #debug = true

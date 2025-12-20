@@ -53,8 +53,8 @@ use std::str;
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
     let nucl = ["A", "T", "G", "C"];
-    let mut rng = rand::thread_rng();
-    let idx = rng.gen_range(0..4);
+    let mut rng = rand::rng();
+    let idx = rng.random_range(0..4);
     nucl[idx]
     // match idx {
     //     0 => {return "A";},

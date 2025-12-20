@@ -12,10 +12,10 @@ use crate::eq_class::IndexedEqList;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use nalgebra::base::OVector;
-use rand::{thread_rng, Rng};
+use crate::multinomial::Multinomial;
+use rand::Rng;
 #[allow(unused_imports)]
 use slog::info;
-use statrs::distribution::Multinomial;
 use std::collections::HashMap;
 use std::f32;
 
@@ -212,7 +212,7 @@ pub fn em_optimize_subset(
     }
 
     // fill in the alphas based on the initialization strategy
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
     for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
@@ -223,7 +223,7 @@ pub fn em_optimize_subset(
                 *item = (*item + 0.5) * 1e-3;
             }
             EmInitType::Random => {
-                *item = rng.r#gen::<f32>() + 1e-5;
+                *item = rng.random::<f32>() + 1e-5;
             }
         }
     }
@@ -355,7 +355,7 @@ pub fn em_optimize(
     }
 
     // fill in the alphas based on the initialization strategy
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
     for item in alphas_in.iter_mut().take(num_alphas) {
         match init_type {
@@ -366,7 +366,7 @@ pub fn em_optimize(
                 *item = (*item + 0.5) * 1e-3;
             }
             EmInitType::Random => {
-                *item = rng.r#gen::<f32>() + 1e-5;
+                *item = rng.random::<f32>() + 1e-5;
             }
         }
     }
@@ -432,7 +432,7 @@ pub(crate) fn run_bootstrap_subset(
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
     // the population sample size
-    let total_fragments: u32 = cell_data.iter().map(|x| x.1).sum();
+    let total_fragments: usize = cell_data.iter().map(|x| x.1 as usize).sum();
     assert!(
         total_fragments > 0,
         "Cannot bootstrap from a sample with 0 counts."
@@ -447,13 +447,12 @@ pub(crate) fn run_bootstrap_subset(
     let mut sample_mean: Vec<f32> = vec![0.0; num_alphas_us];
     let mut sample_var: Vec<f32> = vec![0.0; num_alphas_us];
 
-    // define a multinomial with the probabilities given by the
-    // original equivalence class counts
-    let eq_counts: Vec<f64> = cell_data
+    // define the sampling weights for our multinomial
+    let eq_counts: Vec<u32> = cell_data
         .iter()
-        .map(|x| (x.1 as f64) / (total_fragments as f64))
+        .map(|x| x.1)
         .collect();
-    let dist = Multinomial::new(eq_counts, total_fragments as u64).unwrap();
+    let mut dist = Multinomial::new(eq_counts, total_fragments).unwrap();
 
     // store bootstraps
     let mut bootstrap_counts = Vec::with_capacity(cell_data.len());
@@ -468,11 +467,12 @@ pub(crate) fn run_bootstrap_subset(
 
     // bootstrap loop starts
     // let mut old_resampled_counts = Vec::new();
+    let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<f64, _> = thread_rng().sample(dist.clone());
+        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
         for (idx, (eq_id, _orig_count)) in cell_data.iter().enumerate() {
-            bootstrap_counts.push((*eq_id, resampled_counts[idx].round() as u32));
+            bootstrap_counts.push((*eq_id, resampled_counts[idx]));
         }
 
         let alphas = em_optimize_subset(
@@ -599,7 +599,7 @@ pub fn run_bootstrap_old(
     let mut eqclasses_serialize: HashMap<usize, Vec<u32>> = HashMap::new();
 
     for (idx, (labels, count)) in eqclasses.iter().enumerate() {
-        eq_counts.push(*count as f64);
+        eq_counts.push(*count);
         total_fragments += *count as u64;
         eqclasses_serialize
             .entry(idx)
@@ -612,19 +612,20 @@ pub fn run_bootstrap_old(
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut eqclass_bootstrap: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
     // define a multinomial
-    let dist = Multinomial::new(eq_counts, total_fragments).unwrap();
+    let mut dist = Multinomial::new(eq_counts, total_fragments as usize).unwrap();
 
     // store bootstraps
     let mut bootstraps = Vec::new();
 
     // bootstrap loop starts
     // let mut old_resampled_counts = Vec::new();
+    let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<f64, _> = thread_rng().sample(dist.clone());
+        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
 
         for (eq_id, labels) in &eqclasses_serialize {
-            eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id].round() as u32);
+            eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id]);
             // eqclass_bootstrap
             //     .entry(labels.to_vec())
             //     .or_insert(resampled_counts[*eq_id].round() as u32);
