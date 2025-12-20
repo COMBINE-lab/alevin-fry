@@ -345,6 +345,559 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
 }
 
 
+struct WorkerConfig {
+    resolution: ResolutionStrategy,
+    usa_mode: bool,
+    usa_offsets: Option<(usize, usize)>,
+    em_init_type: EmInitType,
+    small_thresh: usize,
+    large_graph_thresh: usize,
+    pug_exact_umi: bool,
+    sa_model: SplicedAmbiguityModel,
+    num_bootstraps: u32,
+    init_uniform: bool,
+    summary_stat: bool,
+    dump_eq: bool,
+    use_mtx: bool,
+    num_genes: usize,
+    num_rows: usize,
+    barcode_len: u16,
+}
+
+struct WorkerSharedState<R: MappedRecord> {
+    in_q: Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
+    is_done: Arc<std::sync::atomic::AtomicBool>,
+    tid_to_gid: Arc<Vec<u32>>,
+    cells_remaining: Arc<AtomicUsize>,
+    bcout: Arc<Mutex<QuantOutputInfo>>,
+    eqid_map_lock: Arc<Mutex<EqcMap>>,
+    alt_res_cells: Arc<Mutex<Vec<u64>>>,
+    empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
+    unmapped_count: Arc<HashMap<u64, u32>>,
+    mmrate: Arc<Mutex<Vec<f64>>>,
+}
+
+fn run_worker_thread<B, R>(
+    _worker_num: usize,
+    config: WorkerConfig,
+    shared: WorkerSharedState<R>,
+    log: slog::Logger,
+    num_eq_targets: u32,
+    eq_map_type: EqMapType,
+) -> usize
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static,
+    <R as MappedRecord>::ParsingContext: RecordContext,
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send,
+{
+    // these can be created once and cleared after processing
+    // each cell.
+    let mut unique_evidence = vec![false; config.num_rows];
+    let mut no_ambiguity = vec![false; config.num_rows];
+    let mut eq_map = EqMap::new(num_eq_targets, eq_map_type);
+    let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
+    let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
+    let mut eds_bytes = Vec::<u8>::new();
+    let mut bt_eds_bytes: Vec<u8> = Vec::new();
+    let mut eds_mean_bytes: Vec<u8> = Vec::new();
+    let mut eds_var_bytes: Vec<u8> = Vec::new();
+
+    // the variable we will use to bind the *cell-specific* gene-level
+    // equivalence class table.
+    // Make gene-level eqclasses.
+    // This is a map of gene ids to the count of
+    // _de-duplicated_ reads observed for that set of genes.
+    // For every gene set (label) of length 1, these are gene
+    // unique reads.  Standard scRNA-seq counting results
+    // can be obtained by simply discarding all equivalence
+    // classes of size greater than 1, and probabilistic results
+    // will attempt to resolve gene multi-mapping reads by
+    // running an EM algorithm.
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
+
+    // If we are operating in USA-mode with an EM capable resolution
+    // method, we'll use (re-use) these variables to hold the USA-mode
+    // equivalence class information.
+    let mut idx_eq_list = IndexedEqList::new();
+    let mut eq_id_count = Vec::<(u32, u32)>::new();
+
+    let mut local_nrec = 0usize;
+    // pop MetaChunks from the work queue until everything is
+    // processed
+    while !shared.is_done.load(Ordering::SeqCst) || !shared.in_q.is_empty() {
+        while let Some(meta_chunk) = shared.in_q.pop() {
+            let first_cell_in_chunk = meta_chunk.first_chunk_index;
+            for (cn, mut c) in meta_chunk.iter().enumerate() {
+                shared.cells_remaining.fetch_sub(1, Ordering::SeqCst);
+                let cell_num = first_cell_in_chunk + cn;
+
+                let nbytes = c.nbytes;
+                let nrec = c.nrec;
+                local_nrec += nrec as usize;
+
+                if c.reads.is_empty() {
+                    warn!(
+                        log,
+                        "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}",
+                        cell_num,
+                        nbytes,
+                        nrec
+                    );
+                }
+
+                // TODO: Clean up the expect() and merge with the check above
+                // the expect shouldn't happen, but the message is redundant with
+                // the above.  Plus, this would panic if it actually occurred.
+                let bc = c.reads.first().expect("chunk with no reads").collate_key();
+
+                // The structures we'll need to hold our output for this
+                // cell.
+                let mut counts: Vec<f32>;
+                let mut alt_resolution = false;
+
+                let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+
+                let non_trivial = c.reads.len() >= config.small_thresh;
+                if non_trivial {
+                    // TODO: some testing was done, but see if there
+                    // is a better way to set this value.
+                    let small_cell = c.reads.len() <= 250;
+
+                    // TODO: Is there an easy / clean way to have similar
+                    // optimized code paths for other resolution methods?
+
+                    match config.resolution {
+                        ResolutionStrategy::CellRangerLike
+                        | ResolutionStrategy::CellRangerLikeEm => {
+                            if small_cell {
+                                pugutils::get_num_molecules_cell_ranger_like_small::<B, R>(
+                                    &mut c,
+                                    &shared.tid_to_gid,
+                                    config.num_genes,
+                                    &mut gene_eqc,
+                                    config.sa_model,
+                                    &log,
+                                );
+                            } else {
+                                eq_map.init_from_chunk::<R>(&mut c);
+                                pugutils::get_num_molecules_cell_ranger_like(
+                                    &eq_map,
+                                    &shared.tid_to_gid,
+                                    config.num_genes,
+                                    &mut gene_eqc,
+                                    config.sa_model,
+                                    &log,
+                                );
+                                eq_map.clear();
+                            }
+                            let only_unique = config.resolution == ResolutionStrategy::CellRangerLike;
+
+                            // NOTE: This configuration seems overly complicated
+                            // see if we can simplify it.
+                            match (config.usa_mode, only_unique) {
+                                (true, true) => {
+                                    // USA mode, only gene-unqique reads
+                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                }
+                                (true, false) => {
+                                    // USA mode, use EM
+                                    afutils::extract_usa_eqmap(
+                                        &gene_eqc,
+                                        config.num_rows,
+                                        &mut idx_eq_list,
+                                        &mut eq_id_count,
+                                    );
+                                    counts = em_optimize_subset(
+                                        &idx_eq_list,
+                                        &eq_id_count,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        config.em_init_type,
+                                        config.num_rows,
+                                        only_unique,
+                                        config.usa_offsets,
+                                        &log,
+                                    );
+                                }
+                                (false, _) => {
+                                    // not USA-mode
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        config.em_init_type,
+                                        config.num_genes,
+                                        only_unique,
+                                        &log,
+                                    );
+                                }
+                            }
+                        }
+                        ResolutionStrategy::Trivial => {
+                            eq_map.init_from_chunk(&mut c);
+                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                                &eq_map,
+                                &shared.tid_to_gid,
+                                config.num_genes,
+                                &log,
+                            );
+                            counts = ct.0;
+                            shared.mmrate.lock().unwrap()[cell_num] = ct.1;
+                            eq_map.clear();
+                        }
+                        ResolutionStrategy::Parsimony
+                        | ResolutionStrategy::ParsimonyEm
+                        | ResolutionStrategy::ParsimonyGene
+                        | ResolutionStrategy::ParsimonyGeneEm => {
+                            if (config.resolution == ResolutionStrategy::ParsimonyGene)
+                                || (config.resolution == ResolutionStrategy::ParsimonyGeneEm)
+                            {
+                                eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
+                            } else {
+                                eq_map.init_from_chunk(&mut c);
+                            }
+
+                            let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
+                            // for the PUG resolution algorithm, set the hasher
+                            // that will be used based on the cell barcode.
+                            let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
+                            let pug_stats = pugutils::get_num_molecules(
+                                &g,
+                                &eq_map,
+                                &shared.tid_to_gid,
+                                &mut gene_eqc,
+                                &s,
+                                config.large_graph_thresh,
+                                &log,
+                            );
+                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+                            eq_map.clear();
+
+                            let only_unique = (config.resolution == ResolutionStrategy::Parsimony)
+                                || (config.resolution == ResolutionStrategy::ParsimonyGene);
+
+                            // NOTE: This configuration seems overly complicated
+                            // see if we can simplify it.
+                            match (config.usa_mode, only_unique) {
+                                (true, true) => {
+                                    // USA mode, only gene-unqique reads
+                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                }
+                                (true, false) => {
+                                    // USA mode, use EM
+                                    afutils::extract_usa_eqmap(
+                                        &gene_eqc,
+                                        config.num_rows,
+                                        &mut idx_eq_list,
+                                        &mut eq_id_count,
+                                    );
+                                    counts = em_optimize_subset(
+                                        &idx_eq_list,
+                                        &eq_id_count,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        config.em_init_type,
+                                        config.num_rows,
+                                        only_unique,
+                                        config.usa_offsets,
+                                        &log,
+                                    );
+                                }
+                                (false, _) => {
+                                    // not USA-mode
+                                    counts = em_optimize(
+                                        &gene_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        config.em_init_type,
+                                        config.num_genes,
+                                        only_unique,
+                                        &log,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if config.num_bootstraps > 0 {
+                        bootstraps = run_bootstrap(
+                            &gene_eqc,
+                            config.num_bootstraps,
+                            &counts,
+                            config.init_uniform,
+                            config.summary_stat,
+                            &log,
+                        );
+                    }
+
+                    // clear our local variables
+                    // eq_map.clear();
+
+                    // fill requires >= 1.50.0
+                    unique_evidence.fill(false);
+                    no_ambiguity.fill(false);
+
+                    // done clearing
+                } else {
+                    // very small number of reads, avoid data structure
+                    // overhead and resolve looking at the actual records
+                    pugutils::get_num_molecules_cell_ranger_like_small(
+                        &mut c,
+                        &shared.tid_to_gid,
+                        config.num_genes,
+                        &mut gene_eqc,
+                        config.sa_model,
+                        &log,
+                    );
+                    // USA-mode
+                    if config.usa_mode {
+                        // here, just like for non-USA mode,
+                        // we substitute EM with uniform allocation in
+                        // this special case
+                        match config.resolution {
+                            ResolutionStrategy::CellRangerLike
+                            | ResolutionStrategy::Parsimony
+                            | ResolutionStrategy::ParsimonyGene => {
+                                counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                            }
+                            ResolutionStrategy::CellRangerLikeEm
+                            | ResolutionStrategy::ParsimonyEm
+                            | ResolutionStrategy::ParsimonyGeneEm => {
+                                counts = afutils::extract_counts_mm_uniform(&gene_eqc, config.num_rows);
+                            }
+                            _ => {
+                                counts = vec![0f32; config.num_genes];
+                                warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode.");
+                            }
+                        }
+                    } else {
+                        // non USA-mode
+                        counts = vec![0f32; config.num_genes];
+                        for (k, v) in gene_eqc.iter() {
+                            if k.len() == 1 {
+                                counts[*k.first().unwrap() as usize] += *v as f32;
+                            } else {
+                                match config.resolution {
+                                    ResolutionStrategy::CellRangerLikeEm
+                                    | ResolutionStrategy::ParsimonyEm => {
+                                        let contrib = 1.0 / (k.len() as f32);
+                                        for g in k.iter() {
+                                            counts[*g as usize] += contrib;
+                                        }
+                                    }
+                                    _ => {
+                                        // otherwise discard gene multimappers
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // if the user requested bootstraps
+                    // NOTE: we check that the specified resolution method
+                    // is conceptually compatible with bootstrapping before
+                    // invoking `quant`, so we don't bother checking that
+                    // here.
+                    if config.num_bootstraps > 0 {
+                        // TODO: should issue a warning here,
+                        // bootstrapping doesn't make sense for
+                        // unfiltered data.
+                        if config.summary_stat {
+                            // sample mean = quant
+                            bootstraps.push(counts.clone());
+                            // sample var = 0
+                            bootstraps.push(vec![0f32; config.num_genes]);
+                        } else {
+                            // no variation
+                            for _ in 0..config.num_bootstraps {
+                                bootstraps.push(counts.clone());
+                            }
+                        }
+                    } // if the user requested bootstraps
+                } // end of else branch for trivial size cells
+
+                if alt_resolution {
+                    shared.alt_res_cells.lock().unwrap().push(cell_num as u64);
+                }
+
+                //
+                // featuresStream << "\t" << numRawReads
+                //   << "\t" << numMappedReads
+                let mut max_umi = 0.0f32;
+                let mut sum_umi = 0.0f32;
+                let mut num_expr: u32 = 0;
+                expressed_vec.clear();
+                expressed_ind.clear();
+
+                for (gn, c) in counts.iter().enumerate() {
+                    max_umi = if *c > max_umi { *c } else { max_umi };
+                    sum_umi += *c;
+                    if *c > 0.0 {
+                        num_expr += 1;
+                        expressed_vec.push(*c);
+                        expressed_ind.push(gn);
+                    }
+                }
+
+                if num_expr == 0 {
+                    shared
+                        .empty_resolved_cells
+                        .lock()
+                        .unwrap()
+                        .push(cell_num as u64);
+                }
+
+                let num_mapped = nrec;
+                let dedup_rate = sum_umi / num_mapped as f32;
+
+                let bcint = bc.into();
+                let num_unmapped = match shared.unmapped_count.get(&bcint) {
+                    Some(nu) => *nu,
+                    None => 0u32,
+                };
+
+                let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
+
+                // mean of the "expressed" genes
+                let mean_expr = sum_umi / num_expr as f32;
+                // number of genes with expression > expressed mean
+                let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
+                    if x > &mean_expr {
+                        acc + 1u32
+                    } else {
+                        acc
+                    }
+                });
+                // expressed mean / max expression
+                let mean_by_max = mean_expr / max_umi;
+
+                let row_index: usize; // the index for this row (cell)
+                {
+                    // writing the files
+                    let bc_mer: BitKmer = (bc.into(), config.barcode_len as u8);
+
+                    if !config.use_mtx {
+                        eds_bytes = sce::eds::as_bytes(&counts, config.num_rows)
+                            .expect("can't convert vector to eds");
+                    }
+
+                    // write bootstraps
+                    if config.num_bootstraps > 0 {
+                        // flatten the bootstraps
+                        if config.summary_stat {
+                            eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], config.num_rows)
+                                .expect("can't convert vector to eds");
+                            eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], config.num_rows)
+                                .expect("can't convert vector to eds");
+                        } else {
+                            for i in 0..config.num_bootstraps {
+                                let bt_eds_bytes_slice =
+                                    sce::eds::as_bytes(&bootstraps[i as usize], config.num_rows)
+                                        .expect("can't convert vector to eds");
+                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
+                            }
+                        }
+                    }
+
+                    let writer_deref = shared.bcout.lock();
+                    let writer = &mut *writer_deref.unwrap();
+
+                    // get the row index and then increment it
+                    row_index = writer.row_index;
+                    writer.row_index += 1;
+
+                    // write to barcode file
+                    let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
+                    writeln!(&mut writer.barcode_file, "{}", unsafe {
+                        std::str::from_utf8_unchecked(bc_bytes)
+                    })
+                    .expect("can't write to barcode file.");
+
+                    // write to matrix file
+                    if !config.use_mtx {
+                        // write in eds format
+                        writer
+                            .eds_file
+                            .write_all(&eds_bytes)
+                            .expect("can't write to matrix file.");
+                    } else {
+                        // fill out the triplet matrix in memory
+                        for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                            writer.trimat.add_triplet(row_index, *ind, *val);
+                        }
+                    }
+                    writeln!(
+                        &mut writer.feature_file,
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        unsafe { std::str::from_utf8_unchecked(bc_bytes) },
+                        (num_mapped + num_unmapped),
+                        num_mapped,
+                        sum_umi,
+                        mapping_rate,
+                        dedup_rate,
+                        mean_by_max,
+                        num_expr,
+                        num_genes_over_mean
+                    )
+                    .expect("can't write to feature file");
+
+                    if config.num_bootstraps > 0 {
+                        if config.summary_stat {
+                            if let Some((meanf, varf)) =
+                                &mut writer.bootstrap_helper.mean_var_files
+                            {
+                                meanf
+                                    .write_all(&eds_mean_bytes)
+                                    .expect("can't write to bootstrap mean file.");
+                                varf.write_all(&eds_var_bytes)
+                                    .expect("can't write to bootstrap var file.");
+                            }
+                        } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
+                            bsfile
+                                .write_all(&bt_eds_bytes)
+                                .expect("can't write to bootstrap file");
+                        }
+                    } // done bootstrap writing
+                }
+
+                // if we are dumping the equivalence class output, fill in
+                // the in-memory representation here.
+                if config.dump_eq {
+                    let eqmap_deref = shared.eqid_map_lock.lock();
+                    let geqmap = &mut *eqmap_deref.unwrap();
+                    // the next available global id for a gene-level
+                    // equivalence class
+                    let mut next_id = geqmap.global_eqc.len() as u64;
+                    for (labels, count) in gene_eqc.iter() {
+                        let mut found = true;
+                        match geqmap.global_eqc.get(labels) {
+                            Some(eqid) => {
+                                geqmap.cell_level_count.push((*eqid, *count));
+                            }
+                            None => {
+                                found = false;
+                                geqmap.cell_level_count.push((next_id, *count));
+                            }
+                        }
+                        if !found {
+                            geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
+                            next_id += 1;
+                        }
+                    }
+                    //let bc_mer: BitKmer = (bc, bclen as u8);
+                    geqmap.cell_offset.push((row_index, gene_eqc.len()));
+                }
+                // clear the gene eqc map
+                gene_eqc.clear();
+            } // for all cells in this meta chunk
+        } // while we can get work
+    } // while cells remain
+    local_nrec
+}
+
 pub fn do_quantify<T: BufRead, B, R>(
 mut br: T, quant_opts: QuantOpts, prelude: RadPrelude, file_tag_map: TagMap
 ) -> anyhow::Result<()> 
@@ -644,7 +1197,7 @@ where
     }));
 
     // for each worker, spawn off a thread
-    for _worker in 0..n_workers {
+    for worker in 0..n_workers {
         // each thread will need to access the work queue
         //let in_q = q.clone();
         let in_q = chunk_reader.get_queue();
@@ -661,7 +1214,6 @@ where
         // global gene-level eqc map
         let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
-        let bclen = barcode_len;
         let alt_res_cells = alt_res_cells.clone();
         let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
@@ -690,509 +1242,52 @@ where
             }
         };
 
-        // now, make the worker thread
-        let handle = std::thread::spawn(move || {
-            // these can be created once and cleared after processing
-            // each cell.
-            let mut unique_evidence = vec![false; num_rows];
-            let mut no_ambiguity = vec![false; num_rows];
-            let mut eq_map = EqMap::new(num_eq_targets, eq_map_type);
-            let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
-            let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
-            let mut eds_bytes = Vec::<u8>::new();
-            let mut bt_eds_bytes: Vec<u8> = Vec::new();
-            let mut eds_mean_bytes: Vec<u8> = Vec::new();
-            let mut eds_var_bytes: Vec<u8> = Vec::new();
-
-            // the variable we will use to bind the *cell-specific* gene-level
-            // equivalence class table.
-            // Make gene-level eqclasses.
-            // This is a map of gene ids to the count of
-            // _de-duplicated_ reads observed for that set of genes.
-            // For every gene set (label) of length 1, these are gene
-            // unique reads.  Standard scRNA-seq counting results
-            // can be obtained by simply discarding all equivalence
-            // classes of size greater than 1, and probabilistic results
-            // will attempt to resolve gene multi-mapping reads by
-            // running an EM algorithm.
-            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-            let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
-
-            let em_init_type = if init_uniform {
+        let config = WorkerConfig {
+            resolution,
+            usa_mode,
+            usa_offsets,
+            em_init_type: if init_uniform {
                 EmInitType::Uniform
             } else {
                 EmInitType::Informative
-            };
+            },
+            small_thresh,
+            large_graph_thresh,
+            pug_exact_umi,
+            sa_model,
+            num_bootstraps,
+            init_uniform,
+            summary_stat,
+            dump_eq,
+            use_mtx,
+            num_genes,
+            num_rows,
+            barcode_len,
+        };
 
-            // If we are operating in USA-mode with an EM capable resolution
-            // method, we'll use (re-use) these variables to hold the USA-mode
-            // equivalence class information.
-            let mut idx_eq_list = IndexedEqList::new();
-            let mut eq_id_count = Vec::<(u32, u32)>::new();
+        let shared = WorkerSharedState {
+            in_q,
+            is_done,
+            tid_to_gid,
+            cells_remaining,
+            bcout,
+            eqid_map_lock: eqid_map_lockc,
+            alt_res_cells,
+            empty_resolved_cells,
+            unmapped_count,
+            mmrate,
+        };
 
-            let mut local_nrec = 0usize;
-            // pop MetaChunks from the work queue until everything is
-            // processed
-            while !is_done.load(Ordering::SeqCst) || !in_q.is_empty() {
-                while let Some(meta_chunk) = in_q.pop() {
-                    let first_cell_in_chunk = meta_chunk.first_chunk_index;
-                    for (cn, mut c) in meta_chunk.iter().enumerate() {
-                        cells_remaining.fetch_sub(1, Ordering::SeqCst);
-                        let cell_num = first_cell_in_chunk + cn;
-
-                        let nbytes = c.nbytes;
-                        let nrec = c.nrec;
-                        local_nrec += nrec as usize;
-
-                        if c.reads.is_empty() {
-                            warn!(log, "Discovered empty chunk; should not happen! cell_num = {}, nbytes = {}, nrec = {}", cell_num, nbytes, nrec);
-                        }
-
-                        // TODO: Clean up the expect() and merge with the check above
-                        // the expect shouldn't happen, but the message is redundant with
-                        // the above.  Plus, this would panic if it actually occurred.
-                        let bc = c.reads.first().expect("chunk with no reads").collate_key();
-
-                        // The structures we'll need to hold our output for this
-                        // cell.
-                        let mut counts: Vec<f32>;
-                        let mut alt_resolution = false;
-
-                        let mut bootstraps: Vec<Vec<f32>> = Vec::new();
-
-                        let non_trivial = c.reads.len() >= small_thresh;
-                        if non_trivial {
-                            // TODO: some testing was done, but see if there
-                            // is a better way to set this value.
-                            let small_cell = c.reads.len() <= 250;
-
-                            // TODO: Is there an easy / clean way to have similar
-                            // optimized code paths for other resolution methods?
-
-                            match resolution {
-                                ResolutionStrategy::CellRangerLike
-                                | ResolutionStrategy::CellRangerLikeEm => {
-                                    if small_cell {
-                                        pugutils::get_num_molecules_cell_ranger_like_small::<B, R>(
-                                            &mut c,
-                                            &tid_to_gid,
-                                            num_genes,
-                                            &mut gene_eqc,
-                                            sa_model,
-                                            &log,
-                                        );
-                                    } else {
-                                        eq_map.init_from_chunk::<R>(&mut c);
-                                        pugutils::get_num_molecules_cell_ranger_like(
-                                            &eq_map,
-                                            &tid_to_gid,
-                                            num_genes,
-                                            &mut gene_eqc,
-                                            sa_model,
-                                            &log,
-                                        );
-                                        eq_map.clear();
-                                    }
-                                    let only_unique =
-                                        resolution == ResolutionStrategy::CellRangerLike;
-
-                                    // NOTE: This configuration seems overly complicated
-                                    // see if we can simplify it.
-                                    match (usa_mode, only_unique) {
-                                        (true, true) => {
-                                            // USA mode, only gene-unqique reads
-                                            counts = afutils::extract_counts(&gene_eqc, num_rows);
-                                        }
-                                        (true, false) => {
-                                            // USA mode, use EM
-                                            afutils::extract_usa_eqmap(
-                                                &gene_eqc,
-                                                num_rows,
-                                                &mut idx_eq_list,
-                                                &mut eq_id_count,
-                                            );
-                                            counts = em_optimize_subset(
-                                                &idx_eq_list,
-                                                &eq_id_count,
-                                                &mut unique_evidence,
-                                                &mut no_ambiguity,
-                                                em_init_type,
-                                                num_rows,
-                                                only_unique,
-                                                usa_offsets,
-                                                &log,
-                                            );
-                                        }
-                                        (false, _) => {
-                                            // not USA-mode
-                                            counts = em_optimize(
-                                                &gene_eqc,
-                                                &mut unique_evidence,
-                                                &mut no_ambiguity,
-                                                em_init_type,
-                                                num_genes,
-                                                only_unique,
-                                                &log,
-                                            );
-                                        }
-                                    }
-                                }
-                                ResolutionStrategy::Trivial => {
-                                    eq_map.init_from_chunk(&mut c);
-                                    let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
-                                        &eq_map,
-                                        &tid_to_gid,
-                                        num_genes,
-                                        &log,
-                                    );
-                                    counts = ct.0;
-                                    mmrate.lock().unwrap()[cell_num] = ct.1;
-                                    eq_map.clear();
-                                }
-                                ResolutionStrategy::Parsimony
-                                | ResolutionStrategy::ParsimonyEm
-                                | ResolutionStrategy::ParsimonyGene
-                                | ResolutionStrategy::ParsimonyGeneEm => {
-                                    if (resolution == ResolutionStrategy::ParsimonyGene)
-                                        || (resolution == ResolutionStrategy::ParsimonyGeneEm)
-                                    {
-                                        eq_map.init_from_chunk_gene_level(&mut c, &tid_to_gid);
-                                    } else {
-                                        eq_map.init_from_chunk(&mut c);
-                                    }
-
-                                    let g = pugutils::extract_graph(&eq_map, pug_exact_umi, &log);
-                                    // for the PUG resolution algorithm, set the hasher
-                                    // that will be used based on the cell barcode.
-                                    let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
-                                    let pug_stats = pugutils::get_num_molecules(
-                                        &g,
-                                        &eq_map,
-                                        &tid_to_gid,
-                                        &mut gene_eqc,
-                                        &s,
-                                        large_graph_thresh,
-                                        &log,
-                                    );
-                                    alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                                    eq_map.clear();
-
-                                    let only_unique = (resolution == ResolutionStrategy::Parsimony)
-                                        || (resolution == ResolutionStrategy::ParsimonyGene);
-
-                                    // NOTE: This configuration seems overly complicated
-                                    // see if we can simplify it.
-                                    match (usa_mode, only_unique) {
-                                        (true, true) => {
-                                            // USA mode, only gene-unqique reads
-                                            counts = afutils::extract_counts(&gene_eqc, num_rows);
-                                        }
-                                        (true, false) => {
-                                            // USA mode, use EM
-                                            afutils::extract_usa_eqmap(
-                                                &gene_eqc,
-                                                num_rows,
-                                                &mut idx_eq_list,
-                                                &mut eq_id_count,
-                                            );
-                                            counts = em_optimize_subset(
-                                                &idx_eq_list,
-                                                &eq_id_count,
-                                                &mut unique_evidence,
-                                                &mut no_ambiguity,
-                                                em_init_type,
-                                                num_rows,
-                                                only_unique,
-                                                usa_offsets,
-                                                &log,
-                                            );
-                                        }
-                                        (false, _) => {
-                                            // not USA-mode
-                                            counts = em_optimize(
-                                                &gene_eqc,
-                                                &mut unique_evidence,
-                                                &mut no_ambiguity,
-                                                em_init_type,
-                                                num_genes,
-                                                only_unique,
-                                                &log,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            if num_bootstraps > 0 {
-                                bootstraps = run_bootstrap(
-                                    &gene_eqc,
-                                    num_bootstraps,
-                                    &counts,
-                                    init_uniform,
-                                    summary_stat,
-                                    &log,
-                                );
-                            }
-
-                            // clear our local variables
-                            // eq_map.clear();
-
-                            // fill requires >= 1.50.0
-                            unique_evidence.fill(false);
-                            no_ambiguity.fill(false);
-
-                            // done clearing
-                        } else {
-                            // very small number of reads, avoid data structure
-                            // overhead and resolve looking at the actual records
-                            pugutils::get_num_molecules_cell_ranger_like_small(
-                                &mut c,
-                                &tid_to_gid,
-                                num_genes,
-                                &mut gene_eqc,
-                                sa_model,
-                                &log,
-                            );
-                            // USA-mode
-                            if usa_mode {
-                                // here, just like for non-USA mode,
-                                // we substitute EM with uniform allocation in
-                                // this special case
-                                match resolution {
-                                    ResolutionStrategy::CellRangerLike
-                                    | ResolutionStrategy::Parsimony
-                                    | ResolutionStrategy::ParsimonyGene => {
-                                        counts = afutils::extract_counts(&gene_eqc, num_rows);
-                                    }
-                                    ResolutionStrategy::CellRangerLikeEm
-                                    | ResolutionStrategy::ParsimonyEm
-                                    | ResolutionStrategy::ParsimonyGeneEm => {
-                                        counts =
-                                            afutils::extract_counts_mm_uniform(&gene_eqc, num_rows);
-                                    }
-                                    _ => {
-                                        counts = vec![0f32; num_genes];
-                                        warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode.");
-                                    }
-                                }
-                            } else {
-                                // non USA-mode
-                                counts = vec![0f32; num_genes];
-                                for (k, v) in gene_eqc.iter() {
-                                    if k.len() == 1 {
-                                        counts[*k.first().unwrap() as usize] += *v as f32;
-                                    } else {
-                                        match resolution {
-                                            ResolutionStrategy::CellRangerLikeEm
-                                            | ResolutionStrategy::ParsimonyEm => {
-                                                let contrib = 1.0 / (k.len() as f32);
-                                                for g in k.iter() {
-                                                    counts[*g as usize] += contrib;
-                                                }
-                                            }
-                                            _ => {
-                                                // otherwise discard gene multimappers
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // if the user requested bootstraps
-                            // NOTE: we check that the specified resolution method
-                            // is conceptually compatible with bootstrapping before
-                            // invoking `quant`, so we don't bother checking that
-                            // here.
-                            if num_bootstraps > 0 {
-                                // TODO: should issue a warning here,
-                                // bootstrapping doesn't make sense for
-                                // unfiltered data.
-                                if summary_stat {
-                                    // sample mean = quant
-                                    bootstraps.push(counts.clone());
-                                    // sample var = 0
-                                    bootstraps.push(vec![0f32; num_genes]);
-                                } else {
-                                    // no variation
-                                    for _ in 0..num_bootstraps {
-                                        bootstraps.push(counts.clone());
-                                    }
-                                }
-                            } // if the user requested bootstraps
-                        } // end of else branch for trivial size cells
-
-                        if alt_resolution {
-                            alt_res_cells.lock().unwrap().push(cell_num as u64);
-                        }
-
-                        //
-                        // featuresStream << "\t" << numRawReads
-                        //   << "\t" << numMappedReads
-                        let mut max_umi = 0.0f32;
-                        let mut sum_umi = 0.0f32;
-                        let mut num_expr: u32 = 0;
-                        expressed_vec.clear();
-                        expressed_ind.clear();
-
-                        for (gn, c) in counts.iter().enumerate() {
-                            max_umi = if *c > max_umi { *c } else { max_umi };
-                            sum_umi += *c;
-                            if *c > 0.0 {
-                                num_expr += 1;
-                                expressed_vec.push(*c);
-                                expressed_ind.push(gn);
-                            }
-                        }
-
-                        if num_expr == 0 {
-                            empty_resolved_cells.lock().unwrap().push(cell_num as u64);
-                        }
-
-                        let num_mapped = nrec;
-                        let dedup_rate = sum_umi / num_mapped as f32;
-
-                        let bcint = bc.into();
-                        let num_unmapped = match unmapped_count.get(&bcint) {
-                            Some(nu) => *nu,
-                            None => 0u32,
-                        };
-
-                        let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
-
-                        // mean of the "expressed" genes
-                        let mean_expr = sum_umi / num_expr as f32;
-                        // number of genes with expression > expressed mean
-                        let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
-                            if x > &mean_expr {
-                                acc + 1u32
-                            } else {
-                                acc
-                            }
-                        });
-                        // expressed mean / max expression
-                        let mean_by_max = mean_expr / max_umi;
-
-                        let row_index: usize; // the index for this row (cell)
-                        {
-                            // writing the files
-                            let bc_mer: BitKmer = (bc.into(), bclen as u8);
-
-                            if !use_mtx {
-                                eds_bytes = sce::eds::as_bytes(&counts, num_rows)
-                                    .expect("can't convert vector to eds");
-                            }
-
-                            // write bootstraps
-                            if num_bootstraps > 0 {
-                                // flatten the bootstraps
-                                if summary_stat {
-                                    eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], num_rows)
-                                        .expect("can't convert vector to eds");
-                                    eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], num_rows)
-                                        .expect("can't convert vector to eds");
-                                } else {
-                                    for i in 0..num_bootstraps {
-                                        let bt_eds_bytes_slice =
-                                            sce::eds::as_bytes(&bootstraps[i as usize], num_rows)
-                                                .expect("can't convert vector to eds");
-                                        bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
-                                    }
-                                }
-                            }
-
-                            let writer_deref = bcout.lock();
-                            let writer = &mut *writer_deref.unwrap();
-
-                            // get the row index and then increment it
-                            row_index = writer.row_index;
-                            writer.row_index += 1;
-
-                            // write to barcode file
-                            let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
-                            writeln!(&mut writer.barcode_file, "{}", unsafe {
-                                std::str::from_utf8_unchecked(bc_bytes)
-                            })
-                            .expect("can't write to barcode file.");
-
-                            // write to matrix file
-                            if !use_mtx {
-                                // write in eds format
-                                writer
-                                    .eds_file
-                                    .write_all(&eds_bytes)
-                                    .expect("can't write to matrix file.");
-                            } else {
-                                // fill out the triplet matrix in memory
-                                for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                    writer.trimat.add_triplet(row_index, *ind, *val);
-                                }
-                            }
-                            writeln!(
-                                &mut writer.feature_file,
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                unsafe { std::str::from_utf8_unchecked(bc_bytes) },
-                                (num_mapped + num_unmapped),
-                                num_mapped,
-                                sum_umi,
-                                mapping_rate,
-                                dedup_rate,
-                                mean_by_max,
-                                num_expr,
-                                num_genes_over_mean
-                            )
-                            .expect("can't write to feature file");
-
-                            if num_bootstraps > 0 {
-                                if summary_stat {
-                                    if let Some((meanf, varf)) =
-                                        &mut writer.bootstrap_helper.mean_var_files
-                                    {
-                                        meanf
-                                            .write_all(&eds_mean_bytes)
-                                            .expect("can't write to bootstrap mean file.");
-                                        varf.write_all(&eds_var_bytes)
-                                            .expect("can't write to bootstrap var file.");
-                                    }
-                                } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                                    bsfile
-                                        .write_all(&bt_eds_bytes)
-                                        .expect("can't write to bootstrap file");
-                                }
-                            } // done bootstrap writing
-                        }
-
-                        // if we are dumping the equivalence class output, fill in
-                        // the in-memory representation here.
-                        if dump_eq {
-                            let eqmap_deref = eqid_map_lockc.lock();
-                            let geqmap = &mut *eqmap_deref.unwrap();
-                            // the next available global id for a gene-level
-                            // equivalence class
-                            let mut next_id = geqmap.global_eqc.len() as u64;
-                            for (labels, count) in gene_eqc.iter() {
-                                let mut found = true;
-                                match geqmap.global_eqc.get(labels) {
-                                    Some(eqid) => {
-                                        geqmap.cell_level_count.push((*eqid, *count));
-                                    }
-                                    None => {
-                                        found = false;
-                                        geqmap.cell_level_count.push((next_id, *count));
-                                    }
-                                }
-                                if !found {
-                                    geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
-                                    next_id += 1;
-                                }
-                            }
-                            //let bc_mer: BitKmer = (bc, bclen as u8);
-                            geqmap.cell_offset.push((row_index, gene_eqc.len()));
-                        }
-                        // clear the gene eqc map
-                        gene_eqc.clear();
-                    } // for all cells in this meta chunk
-                } // while we can get work
-            } // while cells remain
-            local_nrec
+        // now, make the worker thread
+        let handle = std::thread::spawn(move || {
+            run_worker_thread(
+                worker,
+                config,
+                shared,
+                log,
+                num_eq_targets,
+                eq_map_type,
+            )
         });
 
         thread_handles.push(handle);
