@@ -23,11 +23,11 @@ use bstr::io::BufReadExt;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use itertools::Itertools;
 use libradicl::exit_codes;
-use libradicl::rad_types::{self, RadType, TagMap};
+use libradicl::rad_types::{self, RadType, TagMap, TagSection};
 use libradicl::record::{AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
     MappedRecord, CollatableMappedRecord, KnownSize, RecordContext, ScLongReadRecord 
 };
-use libradicl::header::{RadPrelude};
+use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::BarcodeLookupMap;
 use libradicl::{chunk, record::AlevinFryReadRecord};
 use needletail::bitkmer::*;
@@ -661,6 +661,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
 /// Dispatched by `generate_permit_list` with the appropriate generic type for the 
 /// read record.
+/*
 pub fn do_generate_permit_list<B, R>(
     gpl_opts: GenPermitListOpts, 
     ifile: BufReader<File>, 
@@ -970,6 +971,7 @@ where
         }
     }
 }
+*/
 
 pub fn update_barcode_hist_unfiltered<B, R>(
     hist: &DashMap<u64, u64, ahash::RandomState>,
@@ -1132,3 +1134,488 @@ where
     }
     bc
 }
+
+// Main entry point - now much cleaner
+pub fn do_generate_permit_list<B, R>(
+    gpl_opts: GenPermitListOpts, 
+    ifile: BufReader<File>, 
+    prelude: RadPrelude, 
+    file_tag_map: TagMap
+) -> anyhow::Result<u64>
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize, 
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    let (unfiltered_bc_counts, first_bclen) = load_unfiltered_barcodes(&gpl_opts, &gpl_opts.log)?;
+    
+    let mut rad_reader = setup_rad_reader::<R>(ifile, prelude, file_tag_map, gpl_opts.threads);
+    
+    log_rad_header_info(&rad_reader, &gpl_opts.log);
+    validate_tag_types(&rad_reader.prelude.read_tags, &gpl_opts.log)?;
+    
+    let num_chunks = validate_chunks(&rad_reader.prelude.hdr, &gpl_opts.log)?;
+    let pbar = create_progress_bar(num_chunks);
+    
+    match &gpl_opts.fmeth {
+        CellFilterMethod::UnfilteredExternalList(_, _) => {
+            process_unfiltered_workflow(
+                rad_reader,
+                unfiltered_bc_counts,
+                gpl_opts,
+                pbar,
+            )
+        }
+        _ => {
+            process_filtered_workflow(
+                rad_reader,
+                gpl_opts,
+                pbar,
+            )
+        }
+    }
+}
+
+// Load and validate unfiltered barcode list if provided
+fn load_unfiltered_barcodes(
+    gpl_opts: &GenPermitListOpts,
+    log: &slog::Logger,
+) -> anyhow::Result<(Option<DashMap<u64, u64, ahash::RandomState>>, usize)> {
+    let mut first_bclen = 0usize;
+    let mut unfiltered_bc_counts = None;
+    
+    if let CellFilterMethod::UnfilteredExternalList(fname, _) = &gpl_opts.fmeth {
+        let (reader, compression) = niffler::from_path(fname)
+            .with_context(|| format!("could not open input file {}", fname.display()))?;
+        let br = BufReader::new(reader);
+
+        info!(
+            log,
+            "reading permit list from {}; inferred format {:#?}",
+            fname.display(),
+            compression
+        );
+
+        unfiltered_bc_counts = Some(populate_unfiltered_barcode_map(br, &mut first_bclen));
+        info!(
+            log,
+            "number of unfiltered bcs read = {}",
+            unfiltered_bc_counts.as_ref().unwrap().len().to_formatted_string(&Locale::en)
+        );
+    }
+    
+    Ok((unfiltered_bc_counts, first_bclen))
+}
+
+// Initialize the RAD reader with parallel processing
+fn setup_rad_reader<R>(
+    ifile: BufReader<File>,
+    prelude: RadPrelude,
+    file_tag_map: TagMap,
+    nworkers: usize,
+) -> libradicl::readers::ParallelRadReader<R, BufReader<File>>
+where
+    R: MappedRecord
+{
+    libradicl::readers::ParallelRadReader::<R, _>::from_prelude_and_file_tag_map(
+        ifile,
+        prelude,
+        file_tag_map,
+        NonZeroUsize::new(nworkers).unwrap()
+    )
+}
+
+// Log information about the RAD file header
+fn log_rad_header_info<R: MappedRecord, F: std::io::BufRead + std::io::Seek>(
+    rad_reader: &libradicl::readers::ParallelRadReader<R, F>,
+    log: &slog::Logger,
+) {
+    let hdr = &rad_reader.prelude.hdr;
+    info!(
+        log,
+        "paired: {:?}, ref_count: {}, num_chunks: {}",
+        hdr.is_paired != 0,
+        hdr.ref_count.to_formatted_string(&Locale::en),
+        hdr.num_chunks.to_formatted_string(&Locale::en)
+    );
+    
+    let fl_tags = &rad_reader.prelude.file_tags;
+    info!(log, "read {:?} file-level tags", fl_tags.tags.len());
+    
+    let rl_tags = &rad_reader.prelude.read_tags;
+    info!(log, "read {:?} read-level tags", rl_tags.tags.len());
+    
+    let al_tags = &rad_reader.prelude.aln_tags;
+    info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
+    
+    info!(log, "File-level tag values {:?}", &rad_reader.file_tag_map);
+}
+
+// Validate that barcode and UMI tags are present and of correct type
+fn validate_tag_types(
+    rl_tags: &TagSection,
+    log: &slog::Logger,
+) -> anyhow::Result<()> {
+    const BNAME: &str = "b";
+    const UNAME: &str = "u";
+
+    let mut bct: Option<RadType> = None;
+    let mut umit: Option<RadType> = None;
+
+    for rt in &rl_tags.tags {
+        if rt.name == BNAME || rt.name == UNAME {
+            if !rt.typeid.is_int_type() {
+                crit!(
+                    log,
+                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
+                );
+                std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
+            }
+
+            if rt.name == BNAME {
+                bct = Some(rt.typeid);
+            }
+            if rt.name == UNAME {
+                umit = Some(rt.typeid);
+            }
+        }
+    }
+    
+    anyhow::ensure!(bct.is_some(), "barcode type tag must be present");
+    anyhow::ensure!(umit.is_some(), "umi type tag must be present");
+    
+    Ok(())
+}
+
+// Validate that chunks are present in the RAD file
+fn validate_chunks(
+    hdr: &RadHeader,
+    log: &slog::Logger,
+) -> anyhow::Result<u64> {
+    hdr.num_chunks()
+        .ok_or_else(|| anyhow!(
+            "The RAD file appears to have no chunks; this most commonly occurs when no reads are mapped due to an incorrect chemistry being set. Please ensure that you have set the correct chemistry"
+        ))
+        .map(|nc| nc.get() as u64)
+}
+
+// Create progress bar for chunk processing
+fn create_progress_bar(num_chunks: u64) -> ProgressBar {
+    let pbar = ProgressBar::new(num_chunks);
+    pbar.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
+    pbar
+}
+
+
+// Process unfiltered barcode workflow
+fn process_unfiltered_workflow<R, B>(
+    mut rad_reader: libradicl::readers::ParallelRadReader<R, BufReader<File>>,
+    unfiltered_bc_counts: Option<DashMap<u64, u64, ahash::RandomState>>,
+    gpl_opts: GenPermitListOpts,
+    pbar: ProgressBar,
+) -> anyhow::Result<u64>
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    let nworkers = gpl_opts.threads;
+    let expected_ori = gpl_opts.expected_ori;
+    
+    let cb = create_progress_callback(pbar.clone());
+    
+    let Some(hmu) = unfiltered_bc_counts else {
+        return Ok(0);
+    };
+
+    let hmu_arc = Arc::new(hmu);
+
+    let (num_reads, num_orientation_compat_reads, unmatched_bc, max_ambiguity_read) = 
+        parse_chunks_unfiltered(
+            &mut rad_reader,
+            hmu_arc.clone(),
+            nworkers,
+            &expected_ori,
+            cb,
+        );
+    
+    pbar.finish_with_message("finished parsing RAD file\n");
+    
+    log_parsing_stats(
+        &gpl_opts.log,
+        num_reads,
+        num_orientation_compat_reads,
+        rad_reader.prelude.hdr.num_chunks().unwrap(),
+        max_ambiguity_read,
+    );
+    
+    check_permit_list_validity(&gpl_opts.log, unmatched_bc.len(), num_reads)?;
+
+    let hmu = Arc::try_unwrap(hmu_arc)
+        .map_err(|_| anyhow!("Failed to unwrap Arc"))?;
+
+    process_unfiltered(
+        hmu,
+        unmatched_bc,
+        &rad_reader.file_tag_map,
+        &gpl_opts.fmeth,
+        expected_ori,
+        gpl_opts.output_dir,
+        gpl_opts.version,
+        max_ambiguity_read,
+        gpl_opts.velo_mode,
+        gpl_opts.cmdline,
+        gpl_opts.log,
+        &gpl_opts,
+    )
+}
+
+// Process filtered barcode workflow
+fn process_filtered_workflow<R, B>(
+    mut rad_reader: libradicl::readers::ParallelRadReader<R, BufReader<File>>,
+    gpl_opts: GenPermitListOpts,
+    pbar: ProgressBar,
+) -> anyhow::Result<u64>
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    let nworkers = gpl_opts.threads;
+    let expected_ori = gpl_opts.expected_ori;
+    
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let hm = Arc::new(DashMap::with_hasher(s));
+    
+    let cb = create_progress_callback(pbar.clone());
+    
+    let (num_reads, _num_orientation_compat_reads, max_ambiguity_read) = 
+        parse_chunks_filtered(
+            &mut rad_reader,
+            hm.clone(),
+            nworkers,
+            &expected_ori,
+            cb,
+        );
+    
+    pbar.finish_with_message("finished parsing RAD file\n");
+    
+    info!(
+        gpl_opts.log,
+        "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
+        num_reads.to_formatted_string(&Locale::en),
+        rad_reader.prelude.hdr.num_chunks().unwrap().to_formatted_string(&Locale::en),
+        max_ambiguity_read.to_formatted_string(&Locale::en)
+    );
+    
+    let hm = Arc::into_inner(hm)
+        .ok_or_else(|| anyhow!("Failed to extract hash map"))?;
+    
+    process_filtered(
+        hm,
+        &rad_reader.file_tag_map,
+        &gpl_opts.fmeth,
+        expected_ori,
+        gpl_opts.output_dir,
+        gpl_opts.version,
+        max_ambiguity_read,
+        gpl_opts.velo_mode,
+        gpl_opts.cmdline,
+        gpl_opts.log,
+        &gpl_opts,
+    )
+}
+
+// Parse chunks with unfiltered barcode tracking
+fn parse_chunks_unfiltered<R, B>(
+    rad_reader: &mut libradicl::readers::ParallelRadReader<R, BufReader<File>>,
+    hmu: Arc<DashMap<u64, u64, ahash::RandomState>>,
+    nworkers: usize,
+    expected_ori: &Strand,
+    cb: impl Fn(u64, u64) + Send + Sync,
+) -> (usize, usize, Vec<u64>, usize)
+where
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        
+        for _ in 0..nworkers {
+            let rd = rad_reader.is_done();
+            let q = rad_reader.get_queue();
+            let hmu = hmu.clone();
+            let expected_ori = expected_ori.clone();
+            
+            let handle = s.spawn(move || {
+                let mut unmatched_bc = Vec::<u64>::new();
+                let mut max_ambiguity_read = 0usize;
+                let mut num_reads = 0;
+                let mut num_orientation_compat_reads = 0;
+                
+                while !rd.load(Ordering::SeqCst) || !q.is_empty() {
+                    while let Some(meta_chunk) = q.pop() {
+                        for c in meta_chunk.iter() {
+                            num_orientation_compat_reads += update_barcode_hist_unfiltered(
+                                &hmu,
+                                &mut unmatched_bc,
+                                &mut max_ambiguity_read,
+                                &c,
+                                &expected_ori,
+                            );
+                            num_reads += c.reads.len();
+                        }
+                    }
+                }
+                (num_reads, num_orientation_compat_reads, unmatched_bc, max_ambiguity_read)
+            });
+            handles.push(handle);
+        }
+        
+        let _ = rad_reader.start_chunk_parsing(Some(cb));
+        
+        let mut total_reads = 0;
+        let mut total_compat = 0;
+        let mut all_unmatched = Vec::new();
+        let mut max_ambig = 0;
+        
+        for handle in handles {
+            let (nr, nocr, ubc, mar) = handle.join().expect("The parsing thread panicked");
+            total_reads += nr;
+            total_compat += nocr;
+            all_unmatched.extend_from_slice(&ubc);
+            max_ambig = max_ambig.max(mar);
+        }
+        
+        (total_reads, total_compat, all_unmatched, max_ambig)
+    })
+}
+
+// Parse chunks with filtered barcode tracking
+fn parse_chunks_filtered<R, B>(
+    rad_reader: &mut libradicl::readers::ParallelRadReader<R, BufReader<File>>,
+    hm: Arc<DashMap<u64, u64, ahash::RandomState>>,
+    nworkers: usize,
+    expected_ori: &Strand,
+    cb: impl Fn(u64, u64) + Send + Sync,
+) -> (usize, usize, usize)
+where
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize,
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        
+        for _ in 0..nworkers {
+            let rd = rad_reader.is_done();
+            let q = rad_reader.get_queue();
+            let hm = hm.clone();
+            let expected_ori = expected_ori.clone();
+            
+            let handle = s.spawn(move || {
+                let mut max_ambiguity_read = 0usize;
+                let mut num_reads = 0;
+                let _num_orientation_compat_reads = 0;
+                
+                while !rd.load(Ordering::SeqCst) || !q.is_empty() {
+                    while let Some(meta_chunk) = q.pop() {
+                        for c in meta_chunk.iter() {
+                            update_barcode_hist(
+                                &hm,
+                                &mut max_ambiguity_read,
+                                &c,
+                                &expected_ori,
+                            );
+                            num_reads += c.reads.len();
+                        }
+                    }
+                }
+                (num_reads, _num_orientation_compat_reads, max_ambiguity_read)
+            });
+            handles.push(handle);
+        }
+        
+        let _ = rad_reader.start_chunk_parsing(Some(cb));
+        
+        let mut total_reads = 0;
+        let mut total_compat = 0;
+        let mut max_ambig = 0;
+        
+        for handle in handles {
+            let (nr, nocr, mar) = handle.join().expect("The parsing thread panicked");
+            total_reads += nr;
+            total_compat += nocr;
+            max_ambig = max_ambig.max(mar);
+        }
+        
+        (total_reads, total_compat, max_ambig)
+    })
+}
+
+
+// Create callback for progress bar updates
+fn create_progress_callback(pbar: ProgressBar) -> impl Fn(u64, u64) + Send + Sync {
+    move |_new_bytes: u64, new_chunks: u64| {
+        pbar.inc(new_chunks);
+    }
+}
+
+// Log parsing statistics
+fn log_parsing_stats(
+    log: &slog::Logger,
+    num_reads: usize,
+    num_orientation_compat_reads: usize,
+    num_chunks: NonZeroUsize,
+    max_ambiguity_read: usize,
+) {
+    info!(
+        log,
+        "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
+        num_reads.to_formatted_string(&Locale::en),
+        num_orientation_compat_reads.to_formatted_string(&Locale::en),
+        num_chunks.to_formatted_string(&Locale::en),
+        max_ambiguity_read.to_formatted_string(&Locale::en)
+    );
+}
+
+// Check if permit list appears valid
+fn check_permit_list_validity(
+    log: &slog::Logger,
+    num_unmatched: usize,
+    num_reads: usize,
+) -> anyhow::Result<()> {
+    let valid_thresh = 0.3f64;
+    match diagnostics::likely_valid_permit_list(num_unmatched, num_reads, valid_thresh) {
+        Ok(f) => {
+            info!(
+                log,
+                "The percentage of mapped reads not matching a known barcode exactly is {:.3}%, which is < the warning threshold {:.3}%",
+                f * 100f64,
+                valid_thresh * 100f64
+            );
+            Ok(())
+        }
+        Err(e) => {
+            warn!(log, "{:?}", e);
+            Ok(())
+        }
+    }
+}
+
+
+
+
