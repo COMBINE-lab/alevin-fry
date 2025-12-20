@@ -797,7 +797,7 @@ where
 
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-            unmatched_bc = Vec::with_capacity(10000000);
+            unmatched_bc = Vec::with_capacity(10_000_000);
             // the unfiltered_bc_count map must be valid in this branch
             if unfiltered_bc_counts.is_some() {
                 let hmu = std::thread::scope(|s| {

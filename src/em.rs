@@ -223,7 +223,7 @@ pub fn em_optimize_subset(
                 *item = (*item + 0.5) * 1e-3;
             }
             EmInitType::Random => {
-                *item = rng.gen::<f32>() + 1e-5;
+                *item = rng.r#gen::<f32>() + 1e-5;
             }
         }
     }
@@ -366,7 +366,7 @@ pub fn em_optimize(
                 *item = (*item + 0.5) * 1e-3;
             }
             EmInitType::Random => {
-                *item = rng.gen::<f32>() + 1e-5;
+                *item = rng.r#gen::<f32>() + 1e-5;
             }
         }
     }

@@ -8,7 +8,7 @@ authors = [
 ]
 name = "alevin-fry"
 version = "0.11.2"
-edition = "2021"
+edition = "2024"
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
 license-file = "LICENSE"
 readme = "README.md"
@@ -61,7 +61,7 @@ slog-term = "2.9.2"
 slog-async = "2.8.0"
 smallvec = "1.15.1"
 snap = "1.1.1"
-rand = "0.8.5"
+rand = { version = "0.8.5" }
 chrono = "0.4.42"
 csv = "1.4.0"
 mimalloc = { version = "0.1.48", default-features = false }
@@ -70,7 +70,7 @@ num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
 itertools = "0.14.0"
 thiserror = "2.0.17"
-statrs = "0.18.0"
+statrs = { version = "0.18.0" }
 #sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
 sce = { version = "0.2.0" }
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
