@@ -1067,18 +1067,21 @@ pub fn update_barcode_hist<B, R>(
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<R>,
     expected_ori: &Strand,
-) 
+) -> usize 
 where 
     B: ConvertiblePrimitiveInteger, 
     u64: From<B>,
     R: MappedRecord + CollatableMappedRecord<B>
 {
+    let mut num_orientation_compat_reads = 0usize;
     for r in &chunk.reads {
         if r.has_alignment_on_strand(*expected_ori) {
+            num_orientation_compat_reads += 1;
             *max_ambiguity_read = r.num_aln().max(*max_ambiguity_read);
             *hist.entry(r.collate_key().into()).or_insert(0) += 1;
         }
     }
+    num_orientation_compat_reads
     /* 
     match expected_ori {
         Strand::Unknown => {
@@ -1150,11 +1153,20 @@ where
 {
     let (unfiltered_bc_counts, first_bclen) = load_unfiltered_barcodes(&gpl_opts, &gpl_opts.log)?;
     
-    let mut rad_reader = setup_rad_reader::<R>(ifile, prelude, file_tag_map, gpl_opts.threads);
+    if let Some(tag_val) = file_tag_map.get("cblen") {
+        let cb_len: u64 = tag_val.try_into().expect("should be able to fit");
+        if cb_len as usize != first_bclen {
+            warn!(&gpl_opts.log, "The provided permit list had barcodes of length {}, but the mapped reads have barcodes of length {}", first_bclen, cb_len);
+        }
+    } else {
+        warn!(&gpl_opts.log, "Expected \"cblen\" file-level tag, but it was not found.");
+    }
+
+    let rad_reader = setup_rad_reader::<R>(ifile, prelude, file_tag_map, gpl_opts.threads);
     
     log_rad_header_info(&rad_reader, &gpl_opts.log);
     validate_tag_types(&rad_reader.prelude.read_tags, &gpl_opts.log)?;
-    
+
     let num_chunks = validate_chunks(&rad_reader.prelude.hdr, &gpl_opts.log)?;
     let pbar = create_progress_bar(num_chunks);
     
@@ -1291,7 +1303,7 @@ fn validate_tag_types(
 // Validate that chunks are present in the RAD file
 fn validate_chunks(
     hdr: &RadHeader,
-    log: &slog::Logger,
+    _log: &slog::Logger,
 ) -> anyhow::Result<u64> {
     hdr.num_chunks()
         .ok_or_else(|| anyhow!(
@@ -1399,7 +1411,7 @@ where
     
     let cb = create_progress_callback(pbar.clone());
     
-    let (num_reads, _num_orientation_compat_reads, max_ambiguity_read) = 
+    let (num_reads, num_orientation_compat_reads, max_ambiguity_read) = 
         parse_chunks_filtered(
             &mut rad_reader,
             hm.clone(),
@@ -1412,8 +1424,9 @@ where
     
     info!(
         gpl_opts.log,
-        "observed {} reads in {} chunks --- max ambiguity read occurs in {} refs",
+        "observed {} reads ({} orientation consistent) in {} chunks --- max ambiguity read occurs in {} refs",
         num_reads.to_formatted_string(&Locale::en),
+        num_orientation_compat_reads.to_formatted_string(&Locale::en),
         rad_reader.prelude.hdr.num_chunks().unwrap().to_formatted_string(&Locale::en),
         max_ambiguity_read.to_formatted_string(&Locale::en)
     );
@@ -1529,12 +1542,12 @@ where
             let handle = s.spawn(move || {
                 let mut max_ambiguity_read = 0usize;
                 let mut num_reads = 0;
-                let _num_orientation_compat_reads = 0;
+                let mut num_orientation_compat_reads = 0;
                 
                 while !rd.load(Ordering::SeqCst) || !q.is_empty() {
                     while let Some(meta_chunk) = q.pop() {
                         for c in meta_chunk.iter() {
-                            update_barcode_hist(
+                            num_orientation_compat_reads += update_barcode_hist(
                                 &hm,
                                 &mut max_ambiguity_read,
                                 &c,
@@ -1544,7 +1557,7 @@ where
                         }
                     }
                 }
-                (num_reads, _num_orientation_compat_reads, max_ambiguity_read)
+                (num_reads, num_orientation_compat_reads, max_ambiguity_read)
             });
             handles.push(handle);
         }
