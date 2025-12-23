@@ -48,7 +48,7 @@ crossbeam-queue = "0.3.12"
 typed-builder = "0.23.2"
 indicatif = "0.18.3"
 needletail = "0.6.3"
-petgraph = "0.6.5"
+petgraph = "0.8.3"
 libdeflater = "1.25.0"
 niffler = { version = "3.0.0", default-features = false, features = ["gz"] }
 flate2 = { version = "1.1.5", default-features = false, features = ["zlib-ng"] }
