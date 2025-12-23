@@ -852,7 +852,6 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.11.0"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=long-read#7ae612a78b21c0334ccf61fa73629738b1e3e329"
 dependencies = [
  "ahash",
  "anyhow",
@@ -862,12 +861,22 @@ dependencies = [
  "dashmap",
  "derivative",
  "itertools 0.13.0",
+ "libradicl-macros",
  "noodles",
  "num",
  "scroll 0.12.0",
  "serde",
  "smallvec",
  "snap",
+]
+
+[[package]]
+name = "libradicl-macros"
+version = "0.11.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]

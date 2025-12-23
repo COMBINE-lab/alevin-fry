@@ -422,6 +422,140 @@ pub fn em_optimize(
     alphas_in
 }
 
+
+
+//em tailored for long read dataset
+pub fn em_update_long_read(
+    alphas_in: &[f32],
+    alphas_out: &mut [f32],
+    eqclasses_prob: &HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
+) {
+    // loop over all the eqclasses
+    for (labels, (count, prob_vec)) in eqclasses_prob {
+        if labels.len() > 1 {
+            let mut denominator: f32 = 0.0;
+            let mut avg_probs: Vec<f32> = Vec::with_capacity(labels.len());
+            for (tx_idx, label) in labels.iter().enumerate() {
+                let sum_prob: f64 = (0..*count as usize).map(|i| prob_vec[i][tx_idx]).sum();
+                let avg_prob: f32 = sum_prob as f32 / *count as f32;
+                avg_probs.push(avg_prob);
+                denominator += alphas_in[*label as usize] * avg_prob;
+            }
+
+            if denominator > 0.0 {
+                let inv_denominator = (*count as f32) / denominator;
+                for (tx_idx, label) in labels.iter().enumerate() {
+                    let index = *label as usize;
+                    let count = alphas_in[index] * avg_probs[tx_idx] * inv_denominator;
+                    alphas_out[index] += count;
+                }
+            }
+        } else {
+            let tidx = labels.first().expect("can't extract labels");
+            alphas_out[*tidx as usize] += *count as f32;
+        }
+    }
+}
+
+pub fn em_optimize_long_read(
+    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    eqclasses_prob: &HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
+    init_type: EmInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    _log: &slog::Logger,
+) -> Vec<f32> {
+    let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
+    let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
+
+    for (labels, count) in eqclasses {
+        if labels.len() == 1 {
+            let idx = labels.first().expect("can't extract labels");
+            alphas_in[*idx as usize] += *count as f32;
+            unique_evidence[*idx as usize] = true;
+        } else {
+            for idx in labels {
+                no_ambiguity[*idx as usize] = false;
+            }
+        }
+    }
+
+    if only_unique {
+        return alphas_in;
+    }
+
+    // fill in the alphas based on the initialization strategy
+    let mut rng = rand::thread_rng();
+    let uni_prior = 1.0 / (num_alphas as f32);
+    for item in alphas_in.iter_mut().take(num_alphas) {
+        match init_type {
+            EmInitType::Uniform => {
+                *item = uni_prior;
+            }
+            EmInitType::Informative => {
+                *item = (*item + 0.5) * 1e-3;
+            }
+            EmInitType::Random => {
+                *item = rng.gen::<f32>() + 1e-5;
+            }
+        }
+    }
+
+    // TODO: is it even necessary?
+    //alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+
+    let mut it_num: u32 = 0;
+    let mut converged: bool = true;
+    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+        // perform one round of em update
+        em_update_long_read(&alphas_in, &mut alphas_out, eqclasses_prob);
+
+        converged = true;
+        let mut max_rel_diff = -f64::INFINITY;
+
+        for index in 0..num_alphas {
+            if alphas_out[index] > ALPHA_CHECK_CUTOFF {
+                let diff = alphas_in[index] - alphas_out[index];
+                let rel_diff = diff.abs();
+
+                max_rel_diff = match rel_diff > max_rel_diff as f32 {
+                    true => rel_diff as f64,
+                    false => max_rel_diff,
+                };
+
+                if rel_diff > REL_DIFF_TOLERANCE {
+                    converged = false;
+                }
+            } // end- in>out if
+
+            alphas_in[index] = alphas_out[index];
+            alphas_out[index] = 0.0_f32;
+        } //end-for
+
+        it_num += 1;
+    }
+
+    // update too small alphas
+    alphas_in.iter_mut().for_each(|alpha| {
+        if *alpha < MIN_OUTPUT_ALPHA {
+            *alpha = 0.0_f32;
+        }
+    });
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    /*
+    info!(log,
+    "Total Molecules after EM {}",
+    alphas_sum
+    );
+    */
+    alphas_in
+}
+
+
+
 pub(crate) fn run_bootstrap_subset(
     eqclasses: &IndexedEqList,
     cell_data: &[(u32, u32)], // (eq_id, count) vec for classes relevant for this cell

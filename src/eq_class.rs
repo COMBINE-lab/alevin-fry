@@ -11,11 +11,46 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::BufRead;
 
 use libradicl::chunk;
-use libradicl::record::{MappedRecord, UmiTaggedRecord};
+use libradicl::record::{MappedRecord, UmiTaggedRecord, ScLongReadRecord};
+use std::any::Any;
 
 /**
 * Single-cell equivalence class
 **/
+fn scores_if_long(r: &dyn Any) -> Option<&[i32]> {
+    // IMPORTANT: ScLongReadRecord must match the concrete type in the Chunk,
+    r.downcast_ref::<ScLongReadRecord>().map(|lr| lr.as_scores.as_slice())
+}
+
+
+
+fn fill_as_score_probabilities(scores: &[i32]) -> Vec<f64>{
+    const DENOM: f64 = 10.0;
+    let max_score = *scores.iter().max().unwrap();
+    
+    let mut out: Vec<f64> = scores.iter().map(|&s| (((s - max_score) as f64) / DENOM).exp()).collect();
+
+    let sum: f64 = out.iter().sum();
+    if sum > 0.0 {
+        for p in out.iter_mut() {
+            *p /= sum;
+        }
+    }
+
+    return out
+}
+
+
+fn argsort_by<T, F>(xs: &[T], mut cmp: F) -> Vec<usize>
+where
+    F: FnMut(&T, &T) -> std::cmp::Ordering,
+{
+    let mut idx: Vec<usize> = (0..xs.len()).collect();
+    idx.sort_unstable_by(|&i, &j| cmp(&xs[i], &xs[j]));
+    idx
+}
+
+
 #[derive(Debug)]
 pub struct CellEqClass<'a> {
     // transcripts defining this eq. class
@@ -228,9 +263,51 @@ pub struct EqMap {
     pub ref_labels: Vec<u32>,
     eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState>,
     pub map_type: EqMapType,
+
+    // per-read, per-alignment AS scores grouped by eqc.
+    // For eqc i: scores[starts[i]..starts[i+1]] contains n_reads[i] rows,
+    // each row has label_len = eq.refs_for_eqc(i).len() scores.
+    pub scores: Vec<f64>,
+    pub score_starts: Vec<u32>, // len = num_eqc + 1
+    pub n_reads: Vec<u32>,      // len = num_eqc
 }
 
 impl EqMap {
+
+    /// Returns the probability row (length = label_len) for a specific graph node (eqid, umi_idx).
+    pub fn probs_for_node(&self, eqid: u32, umi_idx: u32, tx_index: usize) -> Vec<f64> {
+        let label_len = self.refs_for_eqc(eqid).len();
+        let eq_start = self.score_starts[eqid as usize] as usize;
+        let umi_count = self.eqc_info[eqid as usize].umis[umi_idx as usize].1 as usize;
+
+        // sanity checks (optional but very helpful)
+        debug_assert!(label_len > 0);
+        debug_assert!((umi_idx as usize) < (self.eqc_info[eqid as usize].umis.len() as usize));
+
+        let mut offset = 0usize;
+        for j in 0..(umi_idx as usize) {
+            offset += self.eqc_info[eqid as usize].umis[j].1 as usize;
+        }
+
+
+        let row_start = eq_start + (offset * label_len);
+        //let row_end = row_start + (label_len * umi_count);
+        let base = row_start + tx_index;
+        let mut out = Vec::with_capacity(umi_count);
+        for k in 0..umi_count {
+            out.push(self.scores[base + k * label_len]);
+        }
+        out
+    }
+
+    //obtain the boundries of the alignment scores for each equivalence class
+    pub fn scores_for_eqc(&self, idx: u32) -> &[f64] {
+        &self.scores[
+            self.score_starts[idx as usize] as usize ..
+            self.score_starts[(idx + 1) as usize] as usize
+        ]
+    }
+
     pub fn num_eq_classes(&self) -> usize {
         self.eqc_info.len()
     }
@@ -248,6 +325,10 @@ impl EqMap {
 
         self.ref_offsets.clear();
         self.ref_labels.clear();
+
+        self.scores.clear();
+        self.score_starts.clear();
+        self.n_reads.clear();
         // keep map_type
         //self.eqid_map.clear();
     }
@@ -265,6 +346,9 @@ impl EqMap {
             ref_labels: vec![],
             eqid_map: HashMap::with_hasher(rand_state),
             map_type,
+            scores: vec![],
+            score_starts: vec![],
+            n_reads: vec![],
         }
     }
 
@@ -449,86 +533,129 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>) 
-        where
-    R: MappedRecord + UmiTaggedRecord
-    {
-        /*
-        if cell_chunk.reads.len() < 10 {
-        self.init_from_small_chunk(cell_chunk);
-        return;
-        }
-        */
-        // temporary map of equivalence class label to assigned
-        // index.
-        // let mut eqid_map:
-        // let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        // let mut eqid_map  = HashMap::with_hasher(rand_state);
+    pub fn eq_classes_containing(&self, r: u32) -> &[u32] {
+        &self.ref_labels
+            [(self.ref_offsets[r as usize] as usize)..(self.ref_offsets[(r + 1) as usize] as usize)]
+    }
 
+    pub fn refs_for_eqc(&self, idx: u32) -> &[u32] {
+        &self.eq_labels[(self.eq_label_starts[idx as usize] as usize)
+            ..(self.eq_label_starts[(idx + 1) as usize] as usize)]
+    }
+
+
+    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    where
+        R: MappedRecord + UmiTaggedRecord + 'static,
+    {
+        // reset per-cell state
         self.eqid_map.clear();
+
+        // long-read optional bookkeeping
+        let mut score_buckets: Vec<Vec<f64>> = Vec::new(); // per eqc, concatenated rows
+        let mut n_reads: Vec<u32> = Vec::new();            // per eqc, number of reads w/ scores
+        let mut saw_long = false;
+
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
-            // TODO: ensure this is done upstream so we
-            // don't have to do it here.
-            // NOTE: should be done if collate was run.
-            // r.refs.sort();
+            // Take what we need from r up-front
+            let refs = r.refs();
+            let umi = r.umi();
 
+            // long read scores
+            let maybe_scores = scores_if_long(r as &dyn Any);
+            if let Some(scores) = maybe_scores {
+                saw_long = true;
+                debug_assert_eq!(scores.len(), refs.len());
+            }
+
+            // Which eqc index is this?
             match self.eqid_map.get_mut(r.refs()) {
                 // if we've seen this equivalence class before, just add the new
                 // umi.
                 Some(v) => {
-                    self.eqc_info[*v as usize].umis.push((r.umi(), 1));
-                }
-                // otherwise, add the new umi, but we also have some extra bookkeeping
-                None => {
-                    // each reference in this equivalence class label
-                    // will have to point to this equivalence class id
-                    let eq_num = self.eqc_info.len() as u32;
-                    self.label_list_size += r.refs().len();
-                    for r in r.refs().iter() {
-                        let ridx = *r as usize;
-                        self.label_counts[ridx] += 1;
-                        //ref_to_eqid[*r as usize].push(eq_num);
+                    // existing eqc
+                    self.eqc_info[*v as usize].umis.push((umi, 1));
+
+                    if let Some(scores) = maybe_scores {
+                        let score_prob = fill_as_score_probabilities(scores);
+                        score_buckets[*v as usize].extend_from_slice(&score_prob);
+                        n_reads[*v as usize] += 1;
                     }
+                }
+                None => {
+                    // new eqc
+                    let eq_num = self.eqc_info.len() as u32;
+
+                    self.label_list_size += refs.len();
+                    for &ref_id in refs.iter() {
+                        self.label_counts[ref_id as usize] += 1;
+                    }
+
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
-                    self.eq_labels.extend(r.refs());
+                    self.eq_labels.extend(refs);
+
                     self.eqc_info.push(EqMapEntry {
-                        umis: vec![(r.umi(), 1)],
+                        umis: vec![(umi, 1)],
                         eq_num,
                     });
-                    self.eqid_map.insert(r.refs().to_vec(), eq_num);
-                    //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
+
+                    self.eqid_map.insert(refs.to_vec(), eq_num);
+
+                    // Keep score vectors aligned with eqc indices if we ever see long reads
+                    if let Some(scores) = maybe_scores {
+                        score_buckets.push(Vec::new());
+                        let score_prob = fill_as_score_probabilities(scores);
+                        score_buckets[eq_num as usize].extend_from_slice(&score_prob);
+                        n_reads.push(1);
+                    }
                 }
             }
         }
+
         // final value to avoid special cases
         self.eq_label_starts.push(self.eq_labels.len() as u32);
 
+        // Build ref->eqc reverse mapping arrays
         self.fill_ref_offsets();
         self.fill_label_sizes();
 
         // initially we inserted duplicate UMIs
-        // here, collapse them and keep track of their count
+        // here, collapse them and keep track of their count 
+        // (and reorder score rows if present)
         for idx in 0..self.num_eq_classes() {
-            // for each reference in this
-            // label, put it in the next free spot
-            // TODO: @k3yavi, can we avoid this copy?
+            // populate ref->eqc mapping
             let label = self.refs_for_eqc(idx as u32).to_vec();
-            //println!("{:?}", label);
             for r in label {
                 self.ref_offsets[r as usize] -= 1;
                 self.ref_labels[self.ref_offsets[r as usize] as usize] = self.eqc_info[idx].eq_num;
             }
 
+            // If we have long-read scores, reorder rows to match UMI sort order
+            if saw_long {
+                let label_len = self.refs_for_eqc(idx as u32).len();
+                let v = &mut self.eqc_info[idx];
+                let scores = &mut score_buckets[idx];
+
+                // Before collapsing, v.umis has one entry per read (each count=1).
+                debug_assert_eq!(scores.len(), v.umis.len() * label_len);
+
+                // perm sorts by UMI value -- each entry corresponds to one read in this eqc
+                let perm = argsort_by(&v.umis, |a, b| a.0.cmp(&b.0));
+
+                let mut new_scores = Vec::with_capacity(scores.len());
+                for &old_read_i in perm.iter() {
+                    let start = old_read_i * label_len;
+                    let end = start + label_len;
+                    new_scores.extend_from_slice(&scores[start..end]);
+                }
+                *scores = new_scores;
+            }
+
+            // Now collapse UMIs (same as your original code)
             let v = &mut self.eqc_info[idx];
-            // sort so dups are adjacent
             v.umis.sort_unstable();
-            // we need a copy of the vector b/c we
-            // can't easily modify it in place
-            // at least I haven't seen how (@k3yavi, help here if you can).
             let cv = v.umis.clone();
-            // since we have a copy, clear the original to fill it
-            // with the new contents.
             v.umis.clear();
 
             let mut count = 1;
@@ -542,20 +669,35 @@ impl EqMap {
                     count = 1;
                 }
             }
-
-            // remember to push the last element, since we
-            // won't see a subsequent "different" element.
             v.umis.push((cur_elem, count));
         }
-    }
 
-    pub fn eq_classes_containing(&self, r: u32) -> &[u32] {
-        &self.ref_labels
-            [(self.ref_offsets[r as usize] as usize)..(self.ref_offsets[(r + 1) as usize] as usize)]
-    }
+        // If we never saw long reads, wipe score arrays and stop
+        if !saw_long {
+            self.scores.clear();
+            self.score_starts.clear();
+            self.n_reads.clear();
+            return;
+        }
 
-    pub fn refs_for_eqc(&self, idx: u32) -> &[u32] {
-        &self.eq_labels[(self.eq_label_starts[idx as usize] as usize)
-            ..(self.eq_label_starts[(idx + 1) as usize] as usize)]
+        // Flatten score buckets + boundaries
+        self.scores.clear();
+        self.score_starts.clear();
+        self.score_starts.push(0);
+
+        for b in score_buckets.iter() {
+            self.scores.extend_from_slice(b);
+            self.score_starts.push(self.scores.len() as u32);
+        }
+
+        self.n_reads = n_reads;
+
+        //each eqc’s score block length should be n_reads * label_len
+        debug_assert_eq!(self.n_reads.len(), self.num_eq_classes());
+        for i in 0..self.num_eq_classes() {
+            let label_len = self.refs_for_eqc(i as u32).len() as u32;
+            let block_len = (self.score_starts[i + 1] - self.score_starts[i]) as u32;
+            debug_assert_eq!(block_len, self.n_reads[i] * label_len);
+        }
     }
 }

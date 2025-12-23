@@ -42,7 +42,9 @@ use std::fmt;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
+use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType, em_optimize_long_read};
+//use crate::em::{em_optimize_weighted_molecules, WeightedMolecule}; 
+use std::any::TypeId; 
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
@@ -643,6 +645,9 @@ where
         cell_offset: Vec::new(),
     }));
 
+    //check if the record is the type of the long read single cell dataset
+    let is_long = TypeId::of::<R>() == TypeId::of::<ScLongReadRecord>();
+
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -716,7 +721,9 @@ where
             // will attempt to resolve gene multi-mapping reads by
             // running an EM algorithm.
             let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-            let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
+            let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s.clone());
+            let mut gene_prob_eqc: HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState> = HashMap::with_hasher(s);
+            //let mut weighted_mols: Vec<WeightedMolecule> = Vec::new();
 
             let em_init_type = if init_uniform {
                 EmInitType::Uniform
@@ -870,9 +877,11 @@ where
                                         &eq_map,
                                         &tid_to_gid,
                                         &mut gene_eqc,
+                                        &mut gene_prob_eqc,
                                         &s,
                                         large_graph_thresh,
                                         &log,
+                                        &is_long,
                                     );
                                     alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                                     eq_map.clear();
@@ -882,12 +891,12 @@ where
 
                                     // NOTE: This configuration seems overly complicated
                                     // see if we can simplify it.
-                                    match (usa_mode, only_unique) {
-                                        (true, true) => {
+                                    match (usa_mode, only_unique, is_long) {
+                                        (true, true, _) => {
                                             // USA mode, only gene-unqique reads
                                             counts = afutils::extract_counts(&gene_eqc, num_rows);
                                         }
-                                        (true, false) => {
+                                        (true, false, _) => {
                                             // USA mode, use EM
                                             afutils::extract_usa_eqmap(
                                                 &gene_eqc,
@@ -907,10 +916,23 @@ where
                                                 &log,
                                             );
                                         }
-                                        (false, _) => {
+                                        (false, _, false) => {
                                             // not USA-mode
                                             counts = em_optimize(
                                                 &gene_eqc,
+                                                &mut unique_evidence,
+                                                &mut no_ambiguity,
+                                                em_init_type,
+                                                num_genes,
+                                                only_unique,
+                                                &log,
+                                            );
+                                        }
+                                        (false, _, true) => {
+                                            // not USA-mode
+                                            counts = em_optimize_long_read(
+                                                &gene_eqc,
+                                                &gene_prob_eqc,
                                                 &mut unique_evidence,
                                                 &mut no_ambiguity,
                                                 em_init_type,
@@ -1189,6 +1211,7 @@ where
                         }
                         // clear the gene eqc map
                         gene_eqc.clear();
+                        //weighted_mols.clear();
                     } // for all cells in this meta chunk
                 } // while we can get work
             } // while cells remain
