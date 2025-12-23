@@ -48,7 +48,7 @@ dependencies = [
  "dashmap",
  "flate2",
  "indicatif",
- "itertools 0.14.0",
+ "itertools",
  "libdeflater",
  "libradicl",
  "mimalloc",
@@ -62,7 +62,7 @@ dependencies = [
  "rand",
  "rand_distr",
  "sce",
- "scroll 0.13.0",
+ "scroll",
  "serde",
  "serde_json",
  "slog",
@@ -568,6 +568,7 @@ checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
 dependencies = [
  "crc32fast",
  "libz-ng-sys",
+ "libz-rs-sys",
  "miniz_oxide",
 ]
 
@@ -784,15 +785,6 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -952,7 +944,7 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.11.0"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#9964faf817c1454e5f4fb4a9b3ab9cf4a3a6362e"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#7c65a1e6a6eaf458abe92b8e210487eb93df820e"
 dependencies = [
  "ahash",
  "anyhow",
@@ -961,11 +953,11 @@ dependencies = [
  "crossbeam-queue",
  "dashmap",
  "derivative",
- "itertools 0.13.0",
+ "itertools",
  "libradicl-macros",
  "noodles",
  "num",
- "scroll 0.12.0",
+ "scroll",
  "serde",
  "smallvec",
  "snap",
@@ -974,7 +966,7 @@ dependencies = [
 [[package]]
 name = "libradicl-macros"
 version = "0.11.0"
-source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#9964faf817c1454e5f4fb4a9b3ab9cf4a3a6362e"
+source = "git+https://github.com/COMBINE-lab/libradicl?branch=develop#7c65a1e6a6eaf458abe92b8e210487eb93df820e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -989,6 +981,15 @@ checksum = "7bf914b7dd154ca9193afec311d8e39345c1bd93b48b3faa77329f0db8f553c0"
 dependencies = [
  "cmake",
  "libc",
+]
+
+[[package]]
+name = "libz-rs-sys"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c10501e7805cee23da17c7790e59df2870c0d4043ec6d03f67d31e2b53e77415"
+dependencies = [
+ "zlib-rs",
 ]
 
 [[package]]
@@ -1133,9 +1134,9 @@ dependencies = [
 
 [[package]]
 name = "noodles"
-version = "0.85.0"
+version = "0.104.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ecd3b4ddb5792b0358e035fbd41543613e4234dc2d0f13c814e3d5e705d8c8"
+checksum = "e672be6c9bdafff24b6d176f5a79d8918d9733906abdf31be8a09aea5a57b75e"
 dependencies = [
  "noodles-bam",
  "noodles-bgzf",
@@ -1144,13 +1145,11 @@ dependencies = [
 
 [[package]]
 name = "noodles-bam"
-version = "0.70.0"
+version = "0.85.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57dbbc6b91efed384ceac16c1f4f764bc07d4941bacf7d5d7fdccfef48f52031"
+checksum = "c0fe3bc8e8002c60ed50b2c0ac9f05e5d2506c1b3eff32d8dc99501baa2de687"
 dependencies = [
  "bstr",
- "byteorder",
- "bytes",
  "indexmap",
  "memchr",
  "noodles-bgzf",
@@ -1161,11 +1160,10 @@ dependencies = [
 
 [[package]]
 name = "noodles-bgzf"
-version = "0.33.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b50aaa8f0a3c8a0b738b641a6d1a78d9fd30a899ab2d398779ee3c4eb80f1c1"
+checksum = "51c6a40480d211d9db28956b77443cac7c90b2d3d775f02e9c3fdf67ef8d611a"
 dependencies = [
- "byteorder",
  "bytes",
  "crossbeam-channel",
  "flate2",
@@ -1173,22 +1171,21 @@ dependencies = [
 
 [[package]]
 name = "noodles-core"
-version = "0.15.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a8c6b020d1205abef2b0fab4463a6c5ecc3c8f4d561ca8b0d1a42323376200"
+checksum = "8ebfc6396fb51059c98a35bb81b96422ac41ea1bc60b6c8e9c6b2550212e9493"
 dependencies = [
  "bstr",
 ]
 
 [[package]]
 name = "noodles-csi"
-version = "0.40.0"
+version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99fdf34a300b37bc15160afcbec76487750bf6e3d9a6ff69c8e4fd635bc66745"
+checksum = "0646c79753d5f5c2b366b74a01b8309c8b41fec49cd417972f0b5d8c2ff12c67"
 dependencies = [
  "bit-vec",
  "bstr",
- "byteorder",
  "indexmap",
  "noodles-bgzf",
  "noodles-core",
@@ -1196,9 +1193,9 @@ dependencies = [
 
 [[package]]
 name = "noodles-sam"
-version = "0.66.0"
+version = "0.81.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c26c31cfbb05b20fc8fb3cf1ac556efca0ff4b3455112705dd2ea81ae01e7d81"
+checksum = "fff8d583bf68623f2ebc6168a75576135bd18bc9d877e8275c0130230e146bea"
 dependencies = [
  "bitflags",
  "bstr",
@@ -1580,12 +1577,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "scroll"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ab8598aa408498679922eff7fa985c25d58a90771bd6be794434c5277eab1a6"
 
 [[package]]
 name = "scroll"
@@ -2180,6 +2171,12 @@ dependencies = [
  "quote",
  "syn 2.0.111",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40990edd51aae2c2b6907af74ffb635029d5788228222c4bb811e9351c0caad3"
 
 [[package]]
 name = "zstd"
