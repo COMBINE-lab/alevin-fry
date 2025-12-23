@@ -8,10 +8,12 @@
  */
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use bstr::io::BufReadExt;
 use core::fmt;
 use dashmap::DashMap;
+use libradicl::header::RadPrelude;
+use libradicl::rad_types::TagMap;
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
@@ -21,8 +23,6 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use libradicl::header::RadPrelude; 
-use libradicl::rad_types::TagMap;
 use thiserror::Error;
 
 /*
@@ -51,33 +51,46 @@ pub(crate) enum KnownRecordType {
     RnaShort(u16),
 }
 
-
-pub(crate) fn get_record_type_from_prelude(prelude: &RadPrelude, file_tag_map: &TagMap) -> KnownRecordType {
+pub(crate) fn get_record_type_from_prelude(
+    prelude: &RadPrelude,
+    file_tag_map: &TagMap,
+) -> KnownRecordType {
     let aln_tags = &prelude.aln_tags;
     if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
-    // long-read single cell
-        let bc_len: u16 = file_tag_map.get("cblen")
+        // long-read single cell
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
             .expect("lr-scRNA seq RAD file should have a \"cblen\" file-level tag")
-            .try_into().expect("should be able to parse \"cblen\" as a u16");
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
         KnownRecordType::RnaLong(bc_len)
     } else if aln_tags.has_tag("pos") {
-    // alevin-fry with positions
+        // alevin-fry with positions
         // TODO: Switch this out with position aware type when we have it
-        let bc_len: u16 = file_tag_map.get("cblen")
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
             .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
-            .try_into().expect("should be able to parse \"cblen\" as a u16");
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
         KnownRecordType::RnaShortPos(bc_len)
-    } else if aln_tags.has_tag("type") && aln_tags.has_tag("start_pos") && aln_tags.has_tag("frag_len") {
-    // ATAC seq 
-        let bc_len: u16 = file_tag_map.get("cblen")
+    } else if aln_tags.has_tag("type")
+        && aln_tags.has_tag("start_pos")
+        && aln_tags.has_tag("frag_len")
+    {
+        // ATAC seq
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
             .expect("scATAC seq RAD file should have a \"cblen\" file-level tag")
-            .try_into().expect("should be able to parse \"cblen\" as a u16");
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
         KnownRecordType::AtacSeq(bc_len)
     } else {
-    // classic alevin-fry 
-        let bc_len: u16 = file_tag_map.get("cblen")
+        // classic alevin-fry
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
             .expect("scRNA seq RAD file should have a \"cblen\" file-level tag")
-            .try_into().expect("should be able to parse \"cblen\" as a u16");
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
         KnownRecordType::RnaShort(bc_len)
     }
 }
@@ -442,12 +455,12 @@ pub fn extract_counts(
                         // unspliced variant or not.  If so, add it as ambiguous
                         // otherwise, add it as spliced
                         if let Some(sg) = labels.get(sidx) {
-                            if let Some(ng) = labels.get(sidx + 1) {
-                                if same_gene(*sg, *ng, true) {
-                                    let idx = ambig_offset + (*sg >> 1) as usize;
-                                    counts[idx] += *count as f32;
-                                    continue;
-                                }
+                            if let Some(ng) = labels.get(sidx + 1)
+                                && same_gene(*sg, *ng, true)
+                            {
+                                let idx = ambig_offset + (*sg >> 1) as usize;
+                                counts[idx] += *count as f32;
+                                continue;
                             }
                             counts[(*sg >> 1) as usize] += *count as f32;
                         }
@@ -863,12 +876,12 @@ impl FromStr for InternalVersionInfo {
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::InternalVersionInfo;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
     use crate::utils::get_all_snps;
     use crate::utils::get_bit_mask;
-    use crate::utils::InternalVersionInfo;
     use std::collections::HashSet;
     use std::str::FromStr;
 
@@ -924,7 +937,9 @@ mod tests {
 
         assert_eq!(
             output,
-            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+            vec![
+                1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
+            ]
         );
     }
 
@@ -938,7 +953,9 @@ mod tests {
 
         assert_eq!(
             output,
-            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+            vec![
+                1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
+            ]
         );
     }
 }

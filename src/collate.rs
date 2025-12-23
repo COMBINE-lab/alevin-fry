@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
@@ -20,9 +20,10 @@ use crossbeam_queue::ArrayQueue;
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{self, RadIntId};
-use libradicl::record::{AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize,
-    AlevinFryRecordContext, ScLongReadRecordContext, ScLongReadRecordT
+use libradicl::record::{
+    AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AlevinFryRecordContext,
+    CollatableMappedRecord, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
+    ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::schema::TempCellInfo;
 
@@ -40,8 +41,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::utils::KnownRecordType;
 use crate::utils as afutils;
+use crate::utils::KnownRecordType;
 
 #[allow(clippy::too_many_arguments)]
 pub fn collate<P1, P2>(
@@ -80,7 +81,9 @@ where
             }
         },
         None => {
-            return Err(anyhow!("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"));
+            return Err(anyhow!(
+                "The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"
+            ));
         }
     };
 
@@ -90,7 +93,10 @@ where
 
     // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
-        crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
+        crit!(
+            log,
+            "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command."
+        );
         // std::process::exit(1);
         return Err(anyhow!("execution terminated unexpectedly"));
     }
@@ -111,9 +117,11 @@ where
         .context("couldn't read freq file version")?;
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
-        crit!(log,
-              "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
-              freq_file_version, afconst::PERMIT_FILE_VER
+        crit!(
+            log,
+            "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+            freq_file_version,
+            afconst::PERMIT_FILE_VER
         );
         return Err(anyhow!("execution terminated unexpectedly"));
     }
@@ -170,12 +178,11 @@ enum FilterType {
 
 fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType {
     if let Some(fts) = mdata.get("permit-list-type") {
-        let ft = match fts.as_str() {
+        match fts.as_str() {
             Some("unfiltered") => FilterType::Unfiltered,
             Some("filtered") => FilterType::Filtered,
             _ => FilterType::Filtered,
-        };
-        ft
+        }
     } else {
         info!(
             log,
@@ -193,9 +200,9 @@ fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> u
         }
     } else {
         info!(
-	     log,
-	     "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
-	 );
+            log,
+            "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
+        );
         2500_usize
     }
 }
@@ -239,7 +246,13 @@ fn correct_unmapped_counts(
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
-pub fn do_collate_with_temp<P1, P2, A: Read + std::io::Seek, B: ConvertiblePrimitiveInteger + std::convert::From<u64>, R: MappedRecord + KnownSize + CollatableMappedRecord<B>>(
+pub fn do_collate_with_temp<
+    P1,
+    P2,
+    A: Read + std::io::Seek,
+    B: ConvertiblePrimitiveInteger + std::convert::From<u64>,
+    R: MappedRecord + KnownSize + CollatableMappedRecord<B>,
+>(
     input_dir: P1,
     rad_dir: P2,
     rec_context: <R as MappedRecord>::ParsingContext,
@@ -261,7 +274,8 @@ where
     u64: From<B>,
     // note; the 'static below simply means that the parsing context doesn't borrow anything so it
     // can be used in the closure.
-    <R as MappedRecord>::ParsingContext: std::marker::Sync + Send + std::clone::Clone + 'static + std::fmt::Debug
+    <R as MappedRecord>::ParsingContext:
+        std::marker::Sync + Send + std::clone::Clone + 'static + std::fmt::Debug,
 {
     let i_dir = std::path::Path::new(rad_dir.as_ref());
     let input_rad_path = i_dir.join("map.rad");
@@ -777,7 +791,6 @@ where
     Ok(())
 }
 
-
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
 pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
@@ -846,10 +859,24 @@ where
         KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
-            info!(log, "long read single-cell");    
-            let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?; 
-            do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
-                tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
+            info!(log, "long read single-cell");
+            let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
+            do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(
+                input_dir,
+                &rad_dir,
+                parsing_context,
+                prelude,
+                br,
+                end_header_pos,
+                num_threads,
+                max_records,
+                tsv_map.clone(),
+                total_to_collate,
+                compress_out,
+                cmdline,
+                version,
+                log,
+            )
         }
         KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
@@ -857,34 +884,67 @@ where
         }
         KnownRecordType::RnaShortPos(_bc_len) => {
             // alevin-fry with positions
-            info!(log, "short read single-cell with position");    
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+            info!(log, "short read single-cell with position");
+            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
-                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordWithPositionT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
-                        tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
-                },
-                RadIntId::U128 => { unimplemented!() }
-                _ => { unimplemented!() }
+                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordWithPositionT<u64>>(
+                        input_dir,
+                        &rad_dir,
+                        parsing_context,
+                        prelude,
+                        br,
+                        end_header_pos,
+                        num_threads,
+                        max_records,
+                        tsv_map.clone(),
+                        total_to_collate,
+                        compress_out,
+                        cmdline,
+                        version,
+                        log,
+                    )
+                }
+                RadIntId::U128 => {
+                    unimplemented!()
+                }
+                _ => {
+                    unimplemented!()
+                }
             }
         }
         KnownRecordType::RnaShort(_bc_len) => {
-            info!(log, "short read single-cell without poisition");    
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?; 
+            info!(log, "short read single-cell without poisition");
+            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
-                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(input_dir, &rad_dir, parsing_context, prelude, br, end_header_pos, num_threads, max_records,
-                        tsv_map.clone(), total_to_collate, compress_out, cmdline, version, log)
-                },
-                RadIntId::U128 => { unimplemented!() }
-                _ => { unimplemented!() }
+                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(
+                        input_dir,
+                        &rad_dir,
+                        parsing_context,
+                        prelude,
+                        br,
+                        end_header_pos,
+                        num_threads,
+                        max_records,
+                        tsv_map.clone(),
+                        total_to_collate,
+                        compress_out,
+                        cmdline,
+                        version,
+                        log,
+                    )
+                }
+                RadIntId::U128 => {
+                    unimplemented!()
+                }
+                _ => {
+                    unimplemented!()
+                }
             }
         }
     }
 }
-
-
-
 
 /*
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
