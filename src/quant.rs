@@ -47,7 +47,7 @@ use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
-use crate::utils::KnownRecordType;
+use crate::utils::{KnownRecordType, OptionalAlignmentScores};
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -387,7 +387,12 @@ fn run_worker_thread<B, R, const IS_LONG: bool>(
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
-    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static,
+    R: MappedRecord
+        + CollatableMappedRecord<B>
+        + KnownSize
+        + UmiTaggedRecord
+        + OptionalAlignmentScores
+        + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,
@@ -922,7 +927,12 @@ pub fn do_quantify<T: BufRead, B, R, const IS_LONG: bool>(
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
-    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static,
+    R: MappedRecord
+        + CollatableMappedRecord<B>
+        + KnownSize
+        + UmiTaggedRecord
+        + OptionalAlignmentScores
+        + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,

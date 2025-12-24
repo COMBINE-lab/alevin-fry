@@ -14,6 +14,10 @@ use core::fmt;
 use dashmap::DashMap;
 use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
+use libradicl::record::{
+    AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AtacSeqReadRecord,
+    ConvertiblePrimitiveInteger, ScLongReadRecordT,
+};
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
@@ -42,6 +46,33 @@ struct QuantArguments {
     filter_list: String
 }
 */
+
+pub(crate) trait OptionalAlignmentScores {
+    fn scores(&self) -> Option<&[i32]>;
+}
+
+macro_rules! impl_optional_alignment_scores {
+    (<$($gen:ident $(: $bound:path)?),+>, $($ty_path:ident)::+ ) => {
+        impl<$($gen $(: $bound)?),+> OptionalAlignmentScores for $($ty_path)::+<$($gen),+> {
+            fn scores(&self) -> Option<&[i32]> { None }
+        }
+    };
+    ($ty:ty) => {
+        impl OptionalAlignmentScores for $ty {
+            fn scores(&self) -> Option<&[i32]> { None }
+        }
+    };
+}
+
+impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT);
+impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT);
+impl_optional_alignment_scores!(AtacSeqReadRecord);
+
+impl<B: ConvertiblePrimitiveInteger> OptionalAlignmentScores for ScLongReadRecordT<B> {
+    fn scores(&self) -> Option<&[i32]> {
+        Some(&self.as_scores)
+    }
+}
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {
