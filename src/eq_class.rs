@@ -285,9 +285,9 @@ impl EqMap {
     }
 
     #[allow(dead_code)]
-    fn init_from_small_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>) 
-        where
-    R: MappedRecord + UmiTaggedRecord
+    fn init_from_small_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    where
+        R: MappedRecord + UmiTaggedRecord,
     {
         //let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         let mut hasher = self.eqid_map.hasher().build_hasher();
@@ -360,7 +360,7 @@ impl EqMap {
         cell_chunk: &mut chunk::Chunk<R>,
         tid_to_gid: &[u32],
     ) where
-        R: MappedRecord + UmiTaggedRecord
+        R: MappedRecord + UmiTaggedRecord,
     {
         self.eqid_map.clear();
 
@@ -449,9 +449,9 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>) 
-        where
-    R: MappedRecord + UmiTaggedRecord
+    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    where
+        R: MappedRecord + UmiTaggedRecord,
     {
         /*
         if cell_chunk.reads.len() < 10 {

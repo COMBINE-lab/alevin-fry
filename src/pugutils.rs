@@ -21,9 +21,9 @@ use petgraph::unionfind::*;
 use petgraph::visit::NodeIndexable;
 
 use libradicl::chunk;
-use libradicl::record::{ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize, 
-    UmiTaggedRecord, RecordContext, 
+use libradicl::record::{
+    CollatableMappedRecord, ConvertiblePrimitiveInteger, KnownSize, MappedRecord, RecordContext,
+    UmiTaggedRecord,
 };
 
 use slog::{crit, info, warn};
@@ -75,11 +75,7 @@ pub fn extract_graph(
     // between them, and if so, what type.
     let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
         let hdist = if pug_exact_umi {
-            if x.0 == y.0 {
-                0
-            } else {
-                usize::MAX
-            }
+            if x.0 == y.0 { 0 } else { usize::MAX }
         } else {
             afutils::count_diff_2_bit_packed(x.0, y.0)
         };
@@ -637,12 +633,12 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R>(
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) where
-B: ConvertiblePrimitiveInteger,
+    B: ConvertiblePrimitiveInteger,
     u64: From<B>,
-    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord, 
-       <R as MappedRecord>::ParsingContext: RecordContext, 
-       <R as MappedRecord>::ParsingContext: Clone,
-       <R as MappedRecord>::ParsingContext: Send
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord,
+    <R as MappedRecord>::ParsingContext: RecordContext,
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send,
 {
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
 
@@ -834,7 +830,7 @@ fn get_num_molecules_large_component(
         // get the (umi, count) pairs
         let umis = v; //&eqinfo.umis;
         let eqid = k; //&eqinfo.eq_num;
-                      // project the transcript ids to gene ids
+        // project the transcript ids to gene ids
         let mut gset: Vec<u32>;
 
         if gene_level_eq_map {
@@ -867,7 +863,7 @@ fn get_num_molecules_large_component(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
-pub fn get_num_molecules(
+pub fn get_num_molecules<const IS_LONG: bool>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],

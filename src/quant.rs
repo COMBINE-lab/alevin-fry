@@ -28,26 +28,26 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
-use libradicl::record::{AlevinFryReadRecord, AlevinFryReadRecordWithPosition, ConvertiblePrimitiveInteger, 
-    MappedRecord, CollatableMappedRecord, KnownSize, UmiTaggedRecord, RecordContext, ScLongReadRecord,
-    CollatableRecordHeader
+use libradicl::record::{
+    AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
+    CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord, RecordContext,
+    ScLongReadRecord, UmiTaggedRecord,
 };
-use libradicl::header::{RadPrelude};
-
 
 use std::fmt;
 //use std::ptr;
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 
-use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
+use crate::em::{EmInitType, em_optimize, em_optimize_subset, run_bootstrap};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
-use crate::utils::KnownRecordType;
 use crate::utils as afutils;
+use crate::utils::KnownRecordType;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -344,7 +344,6 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     }
 }
 
-
 struct WorkerConfig {
     resolution: ResolutionStrategy,
     usa_mode: bool,
@@ -377,7 +376,7 @@ struct WorkerSharedState<R: MappedRecord> {
     mmrate: Arc<Mutex<Vec<f64>>>,
 }
 
-fn run_worker_thread<B, R>(
+fn run_worker_thread<B, R, const IS_LONG: bool>(
     _worker_num: usize,
     config: WorkerConfig,
     shared: WorkerSharedState<R>,
@@ -494,7 +493,8 @@ where
                                 );
                                 eq_map.clear();
                             }
-                            let only_unique = config.resolution == ResolutionStrategy::CellRangerLike;
+                            let only_unique =
+                                config.resolution == ResolutionStrategy::CellRangerLike;
 
                             // NOTE: This configuration seems overly complicated
                             // see if we can simplify it.
@@ -565,7 +565,7 @@ where
                             // for the PUG resolution algorithm, set the hasher
                             // that will be used based on the cell barcode.
                             let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
-                            let pug_stats = pugutils::get_num_molecules(
+                            let pug_stats = pugutils::get_num_molecules::<IS_LONG>(
                                 &g,
                                 &eq_map,
                                 &shared.tid_to_gid,
@@ -582,12 +582,12 @@ where
 
                             // NOTE: This configuration seems overly complicated
                             // see if we can simplify it.
-                            match (config.usa_mode, only_unique) {
-                                (true, true) => {
+                            match (config.usa_mode, only_unique, IS_LONG) {
+                                (true, true, _) => {
                                     // USA mode, only gene-unqique reads
                                     counts = afutils::extract_counts(&gene_eqc, config.num_rows);
                                 }
-                                (true, false) => {
+                                (true, false, _) => {
                                     // USA mode, use EM
                                     afutils::extract_usa_eqmap(
                                         &gene_eqc,
@@ -607,7 +607,7 @@ where
                                         &log,
                                     );
                                 }
-                                (false, _) => {
+                                (false, _, false) => {
                                     // not USA-mode
                                     counts = em_optimize(
                                         &gene_eqc,
@@ -618,6 +618,22 @@ where
                                         only_unique,
                                         &log,
                                     );
+                                }
+                                (false, _, true) => {
+                                    // not USA-mode
+                                    unimplemented!()
+                                    /*
+                                    counts = em_optimize_long_read(
+                                        &gene_eqc,
+                                        &gene_prob_eqc,
+                                        &mut unique_evidence,
+                                        &mut no_ambiguity,
+                                        em_init_type,
+                                        num_genes,
+                                        only_unique,
+                                        &log,
+                                    );
+                                    */
                                 }
                             }
                         }
@@ -667,11 +683,15 @@ where
                             ResolutionStrategy::CellRangerLikeEm
                             | ResolutionStrategy::ParsimonyEm
                             | ResolutionStrategy::ParsimonyGeneEm => {
-                                counts = afutils::extract_counts_mm_uniform(&gene_eqc, config.num_rows);
+                                counts =
+                                    afutils::extract_counts_mm_uniform(&gene_eqc, config.num_rows);
                             }
                             _ => {
                                 counts = vec![0f32; config.num_genes];
-                                warn!(log, "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode.");
+                                warn!(
+                                    log,
+                                    "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode."
+                                );
                             }
                         }
                     } else {
@@ -764,13 +784,9 @@ where
                 // mean of the "expressed" genes
                 let mean_expr = sum_umi / num_expr as f32;
                 // number of genes with expression > expressed mean
-                let num_genes_over_mean = expressed_vec.iter().fold(0u32, |acc, x| {
-                    if x > &mean_expr {
-                        acc + 1u32
-                    } else {
-                        acc
-                    }
-                });
+                let num_genes_over_mean = expressed_vec
+                    .iter()
+                    .fold(0u32, |acc, x| if x > &mean_expr { acc + 1u32 } else { acc });
                 // expressed mean / max expression
                 let mean_by_max = mean_expr / max_umi;
 
@@ -846,8 +862,7 @@ where
 
                     if config.num_bootstraps > 0 {
                         if config.summary_stat {
-                            if let Some((meanf, varf)) =
-                                &mut writer.bootstrap_helper.mean_var_files
+                            if let Some((meanf, varf)) = &mut writer.bootstrap_helper.mean_var_files
                             {
                                 meanf
                                     .write_all(&eds_mean_bytes)
@@ -898,16 +913,19 @@ where
     local_nrec
 }
 
-pub fn do_quantify<T: BufRead, B, R>(
-mut br: T, quant_opts: QuantOpts, prelude: RadPrelude, file_tag_map: TagMap
-) -> anyhow::Result<()> 
+pub fn do_quantify<T: BufRead, B, R, const IS_LONG: bool>(
+    mut br: T,
+    quant_opts: QuantOpts,
+    prelude: RadPrelude,
+    file_tag_map: TagMap,
+) -> anyhow::Result<()>
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
-    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static, 
-       <R as MappedRecord>::ParsingContext: RecordContext, 
-       <R as MappedRecord>::ParsingContext: Clone,
-       <R as MappedRecord>::ParsingContext: Send
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static,
+    <R as MappedRecord>::ParsingContext: RecordContext,
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send,
 {
     let parent = std::path::Path::new(quant_opts.input_dir);
     //let hdr = rad_types::RadHeader::from_bytes(&mut br);
@@ -978,17 +996,18 @@ where
             usa_mode = us;
             if usa_mode {
                 assert_eq!(
-		           num_bootstraps, 0,
-		           "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-		        );
+                    num_bootstraps, 0,
+                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
+                );
 
                 match resolution {
                     ResolutionStrategy::Parsimony
                     | ResolutionStrategy::ParsimonyEm
                     | ResolutionStrategy::ParsimonyGene
                     | ResolutionStrategy::ParsimonyGeneEm => {
-                        info!(log,
-                        "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony(-gene) or parsimony(-gene)-em resolution is EXPERIMENTAL."
+                        info!(
+                            log,
+                            "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis using parsimony(-gene) or parsimony(-gene)-em resolution is EXPERIMENTAL."
                         );
                     }
                     _ => {}
@@ -1001,9 +1020,9 @@ where
                     SplicedAmbiguityModel::WinnerTakeAll => {}
                     _ => {
                         info!(
-			     log,
-			     "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
-			 );
+                            log,
+                            "When not operating in USA-mode (all-in-one unspliced/spliced/ambiguous), the SplicedAmbiguityModel will be ignored."
+                        );
                         sa_model = SplicedAmbiguityModel::WinnerTakeAll;
                     }
                 }
@@ -1129,9 +1148,9 @@ where
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
     writeln!(
-	 ff_file,
-	 "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
-     )?;
+        ff_file,
+        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+    )?;
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
@@ -1280,7 +1299,7 @@ where
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
-            run_worker_thread(
+            run_worker_thread::<_, _, IS_LONG>(
                 worker,
                 config,
                 shared,
@@ -1300,12 +1319,13 @@ where
     // push the work onto the queue for the worker threads
     // we spawned above.
     let _ = if let Some(ret_bc) = retained_bc {
-        let filter_fn = |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
-            let ch =
-                R::peek_collatable_header(&buf[8..], record_context).expect("at least one record");
-            let ck: u64= ch.collate_key().into();
-            ret_bc.contains(&ck)
-        };
+        let filter_fn =
+            |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
+                let ch = R::peek_collatable_header(&buf[8..], record_context)
+                    .expect("at least one record");
+                let ck: u64 = ch.collate_key().into();
+                ret_bc.contains(&ck)
+            };
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
         chunk_reader.start(&mut br, Some(cb))
@@ -1411,7 +1431,6 @@ where
     .expect("cannot write to quant_cmd_info.json file");
     */
     Ok(())
-
 }
 
 // TODO: see if we'd rather pass an structure
@@ -1419,32 +1438,39 @@ where
 pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let log = quant_opts.log;
     let prelude = RadPrelude::from_bytes(&mut br)?;
-    let file_tag_map = prelude
-        .file_tags
-        .parse_tags_from_bytes(&mut br)
-        .unwrap();
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
-            do_quantify::<_, u64, ScLongReadRecord>(br, quant_opts, prelude, file_tag_map)
+            do_quantify::<_, u64, ScLongReadRecord, true>(br, quant_opts, prelude, file_tag_map)
         }
         KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
             anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
         }
         KnownRecordType::RnaShortPos(_bc_len) => {
-            info!(log, "record type is short read single-cell RNA-seq with positions");
-            do_quantify::<_, u64, AlevinFryReadRecordWithPosition>(br, quant_opts, prelude, file_tag_map)
+            info!(
+                log,
+                "record type is short read single-cell RNA-seq with positions"
+            );
+            do_quantify::<_, u64, AlevinFryReadRecordWithPosition, false>(
+                br,
+                quant_opts,
+                prelude,
+                file_tag_map,
+            )
         }
         KnownRecordType::RnaShort(_bc_len) => {
-            info!(log, "record type is standard short read single-cell RNA-seq");
-            do_quantify::<_, u64, AlevinFryReadRecord>(br, quant_opts, prelude, file_tag_map)
+            info!(
+                log,
+                "record type is standard short read single-cell RNA-seq"
+            );
+            do_quantify::<_, u64, AlevinFryReadRecord, false>(br, quant_opts, prelude, file_tag_map)
         }
     }
-
 }
 
 // TODO: see if we'd rather pass an structure
