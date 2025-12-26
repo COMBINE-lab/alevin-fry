@@ -467,8 +467,7 @@ where
 
                 let non_trivial = c.reads.len() >= config.small_thresh;
                 if non_trivial {
-                    // TODO: some testing was done, but see if there
-                    // is a better way to set this value.
+                    // TODO: some testing was done, but see if there is a better way to set this value.
                     let small_cell = c.reads.len() <= 250;
 
                     // TODO: Is there an easy / clean way to have similar

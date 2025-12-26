@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::hash::{BuildHasher, Hasher};
 use std::io::BufRead;
 
@@ -293,16 +294,20 @@ pub struct EqMap {
     pub prob_map: Option<ProbMap>,
 }
 
+// the probability map is an attribute map over f64s
+type ProbMap = AttributeMap<f64>;
+type TempProbMap = TempAttributeMap<f64>;
+
 #[derive(Default, Debug)]
-pub struct TempProbMap {
+pub struct TempAttributeMap<T: Default + Debug + Clone> {
     pub eq_ids: Vec<u32>, // for each score chunk the equivalence class ID to which it belongs
-    pub probs: Vec<f64>,  // the concatenated list of probabilities
+    pub probs: Vec<T>,    // the concatenated list of probabilities
     pub lengths: Vec<usize>, // the lengths of each prob slice
 }
 
 #[derive(Debug)]
-pub struct ProbMap {
-    pub probs: Vec<f64>, // the concatenated list of probabilities
+pub struct AttributeMap<T: Default + Debug + Clone> {
+    pub probs: Vec<T>, // the concatenated list of probabilities
     /// access the probabilities for all reads (can be more than 1) corresponding
     /// to the i'th global UMI (which belongs to some equivalence class determined
     /// by the rank in eq_indices).
@@ -312,13 +317,13 @@ pub struct ProbMap {
     pub eq_indices: Vec<usize>,
 }
 
-impl Default for ProbMap {
+impl<T: Default + Debug + Clone> Default for AttributeMap<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProbMap {
+impl<T: Default + Debug + Clone> AttributeMap<T> {
     pub fn clear(&mut self) {
         self.probs.clear();
         self.umi_offsets.clear();
@@ -357,7 +362,7 @@ impl ProbMap {
         }
     }
 
-    pub fn probs_for_eq_id_umi_rank(&self, eq_id: usize, umi_rank: usize) -> &[f64] {
+    pub fn probs_for_eq_id_umi_rank(&self, eq_id: usize, umi_rank: usize) -> &[T] {
         let eq_offset = self.eq_indices[eq_id];
         let start_prob_offsets = self.umi_offsets[eq_offset + umi_rank];
         let end_prob_offsets = self.umi_offsets[eq_offset + umi_rank + 1];
@@ -365,13 +370,13 @@ impl ProbMap {
     }
 }
 
-pub struct EqClassAlnProbView<'a> {
+pub struct EqClassAlnProbView<'a, T: Default + Debug> {
     pub eq_id: u32,               // the id of this equivalence class
-    pub probs: &'a [f64],         // the probabilities
+    pub probs: &'a [T],           // the probabilities
     cumulative_offsets: Vec<u32>, // where the per-read offsets start
 }
 
-impl<'a> EqClassAlnProbView<'a> {
+impl<'a, T: Default + Debug> EqClassAlnProbView<'a, T> {
     // the number of reads in this eq class for which we have
     // information
     pub fn num_reads(&self) -> usize {
@@ -380,7 +385,7 @@ impl<'a> EqClassAlnProbView<'a> {
 
     // get the probabilities for the read of the associated rank within
     // this equivalence class
-    pub fn get_probs_for_read_rank(&self, r: usize) -> Option<&[f64]> {
+    pub fn get_probs_for_read_rank(&self, r: usize) -> Option<&[T]> {
         // if the rank
         if r + 1 > self.num_reads() {
             None
@@ -396,15 +401,15 @@ impl<'a> EqClassAlnProbView<'a> {
     }
 }
 
-pub struct ProbMapEqClassIter<'a> {
+pub struct AttributeMapEqClassIter<'a, T: Default + Debug + Clone> {
     pub current_eq_id: u32,
     pub current_idx: usize,
     pub current_probs_offset: usize,
-    prob_map: &'a TempProbMap,
+    prob_map: &'a TempAttributeMap<T>,
 }
 
-impl<'a> Iterator for ProbMapEqClassIter<'a> {
-    type Item = EqClassAlnProbView<'a>;
+impl<'a, T: Default + Debug + Clone> Iterator for AttributeMapEqClassIter<'a, T> {
+    type Item = EqClassAlnProbView<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // if we haven't yet exhausted the probability map
@@ -473,7 +478,7 @@ impl<'a> Iterator for ProbMapEqClassIter<'a> {
     }
 }
 
-impl TempProbMap {
+impl<T: Default + Debug + Clone> TempAttributeMap<T> {
     pub fn new() -> Self {
         Self {
             eq_ids: Vec::new(),
@@ -482,7 +487,7 @@ impl TempProbMap {
         }
     }
 
-    pub fn push(&mut self, eq_id: u32, probs: &[f64]) {
+    pub fn push(&mut self, eq_id: u32, probs: &[T]) {
         self.probs.extend_from_slice(probs);
         self.lengths.push(probs.len());
         self.eq_ids.push(eq_id);
@@ -525,8 +530,8 @@ impl TempProbMap {
     }
 
     /// Get an iterator over the alignments for each equivalence class
-    pub fn eq_class_aln_view_iter(&self) -> ProbMapEqClassIter<'_> {
-        ProbMapEqClassIter {
+    pub fn eq_class_aln_view_iter(&self) -> AttributeMapEqClassIter<'_, T> {
+        AttributeMapEqClassIter {
             current_eq_id: 0,
             current_idx: 0,
             current_probs_offset: 0,
