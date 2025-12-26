@@ -314,9 +314,34 @@ impl ProbMap {
     pub fn new() -> Self {
         Self {
             probs: Vec::new(),
-            umi_offsets: Vec::new(),
-            eq_indices: Vec::new(),
+            umi_offsets: vec![0],
+            eq_indices: vec![0],
         }
+    }
+
+    pub fn mark_umi_end(&mut self) {
+        self.umi_offsets.push(self.probs.len());
+    }
+
+    pub fn mark_eq_class_end(&mut self) {
+        self.eq_indices.push(self.umi_offsets.len());
+    }
+
+    pub fn num_umis_for_eq(&self, eq_id: usize) -> Option<usize> {
+        if eq_id + 1 < self.eq_indices.len() {
+            let end_offset = self.eq_indices[eq_id + 1];
+            let start_offset = self.eq_indices[eq_id];
+            Some(end_offset - start_offset)
+        } else {
+            None
+        }
+    }
+
+    pub fn probs_for_eq_id_umi_rank(&self, eq_id: usize, umi_rank: usize) -> &[f64] {
+        let eq_offset = self.eq_indices[eq_id];
+        let start_prob_offsets = self.umi_offsets[eq_offset + umi_rank];
+        let end_prob_offsets = self.umi_offsets[eq_offset + umi_rank + 1];
+        &self.probs[start_prob_offsets..end_prob_offsets]
     }
 }
 
@@ -793,8 +818,8 @@ impl EqMap {
         let have_probs = !temp_prob_map.is_empty();
         if have_probs {
             temp_prob_map.order_by_eq_id();
-            prob_map.umi_offsets.push(0);
-            prob_map.eq_indices.push(0);
+            //prob_map.umi_offsets.push(0);
+            //prob_map.eq_indices.push(0);
         }
         // get an iterartor to iterate over alignment probabilities to the
         // reads belonging to each equivalence class (in order)
@@ -834,7 +859,7 @@ impl EqMap {
                         // belonging to the previous umi.
                         if v.umis[*p].0 != curr_umi {
                             curr_umi = v.umis[*p].0;
-                            prob_map.umi_offsets.push(prob_map.probs.len());
+                            prob_map.mark_umi_end();
                         }
                         // get the probability vector for this read
                         let probs = aln_view
@@ -845,11 +870,11 @@ impl EqMap {
                         prob_map.probs.extend_from_slice(probs);
                     }
                     // make sure we mark the end offset for the last UMI
-                    prob_map.umi_offsets.push(prob_map.probs.len());
+                    prob_map.mark_umi_end();
 
                     // once we've visited all reads for this equivalence class
                     // mark the end position in the eq_indices vector
-                    prob_map.eq_indices.push(prob_map.umi_offsets.len());
+                    prob_map.mark_eq_class_end();
                 } else {
                     eprintln!(
                         "Number of probability vectors should equal total number of equivalence classes"
@@ -986,5 +1011,39 @@ mod tests {
                 ctr += 1;
             }
         }
+    }
+
+    #[test]
+    fn prob_map_access() {
+        let mut pm = ProbMap::new();
+
+        // eq 0 has 2 UMIs, one of frequency 3 the other of frequency 1
+        pm.probs.extend_from_slice(&[0.1, 0.7, 0.1, 0.1]);
+        pm.probs.extend_from_slice(&[0.05, 0.7, 0.15, 0.1]);
+        pm.probs.extend_from_slice(&[0.15, 0.7, 0.05, 0.1]);
+        pm.mark_umi_end();
+        pm.probs.extend_from_slice(&[0.2, 0.2, 0.2, 0.4]);
+        pm.mark_umi_end();
+        pm.mark_eq_class_end();
+
+        // eq 1 has 1 UMI of frequency 2
+        pm.probs.extend_from_slice(&[0.25, 0.75]);
+        pm.probs.extend_from_slice(&[0.2, 0.8]);
+        pm.mark_umi_end();
+        pm.mark_eq_class_end();
+
+        // eq 2 has 3 UMIs each of frequency 1
+        pm.probs.extend_from_slice(&[0.2, 0.6, 0.2]);
+        pm.mark_umi_end();
+        pm.probs.extend_from_slice(&[0.15, 0.35, 0.5]);
+        pm.mark_umi_end();
+        pm.probs.extend_from_slice(&[0.5, 0.2, 0.3]);
+        pm.mark_umi_end();
+        pm.mark_eq_class_end();
+
+        assert_eq!(pm.num_umis_for_eq(0), Some(2));
+        assert_eq!(pm.num_umis_for_eq(1), Some(1));
+        assert_eq!(pm.num_umis_for_eq(2), Some(3));
+        assert_eq!(pm.num_umis_for_eq(3), None);
     }
 }
