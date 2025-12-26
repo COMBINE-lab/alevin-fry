@@ -300,15 +300,22 @@ pub(crate) struct TempProbMap {
 }
 
 pub(crate) struct ProbMap {
-    pub probs: Vec<f64>,     // the concatenated list of probabilities
-    pub offsets: Vec<usize>, // to be able to access the entries for a given eq class
+    pub probs: Vec<f64>, // the concatenated list of probabilities
+    /// access the probabilities for all reads (can be more than 1) corresponding
+    /// to the i'th global UMI (which belongs to some equivalence class determined
+    /// by the rank in eq_indices).
+    pub umi_offsets: Vec<usize>,
+    /// the cumulative indices in the umi_offsets vector that start each new
+    /// equivalence classes' set of umis
+    pub eq_indices: Vec<usize>,
 }
 
 impl ProbMap {
     pub fn new() -> Self {
         Self {
             probs: Vec::new(),
-            offsets: Vec::new(),
+            umi_offsets: Vec::new(),
+            eq_indices: Vec::new(),
         }
     }
 }
@@ -444,6 +451,8 @@ impl TempProbMap {
         self.len() == 0
     }
 
+    /// Reorder this probability map's entries by the equivalence
+    /// class IDs of the underlying map
     pub fn order_by_eq_id(&mut self) {
         let perm = argsort(&self.eq_ids);
         reorder_in_place(&mut self.eq_ids, &perm);
@@ -471,6 +480,7 @@ impl TempProbMap {
         std::mem::swap(&mut new_probs, &mut self.probs);
     }
 
+    /// Get an iterator over the alignments for each equivalence class
     pub(crate) fn eq_class_aln_view_iter(&self) -> ProbMapEqClassIter<'_> {
         ProbMapEqClassIter {
             current_eq_id: 0,
@@ -701,7 +711,7 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    pub(crate) fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
     where
         R: MappedRecord + UmiTaggedRecord + OptionalAlignmentScores,
     {
@@ -717,15 +727,20 @@ impl EqMap {
         // let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         // let mut eqid_map  = HashMap::with_hasher(rand_state);
 
+        // a temporary probability map as we will need to rearrange things
         let mut temp_prob_map = TempProbMap::new();
+        // the final map that will be added to the EQMap
         let mut prob_map = ProbMap::new();
+
         self.eqid_map.clear();
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
             // Take what we need from r up-front
             let refs = r.refs();
-            let umi = r.umi();
+            let _umi = r.umi();
 
+            // if the underlying record type provides scores, then we
+            // get some.
             let maybe_scores = r.maybe_scores();
 
             match self.eqid_map.get_mut(refs) {
@@ -733,6 +748,7 @@ impl EqMap {
                 // umi.
                 Some(v) => {
                     self.eqc_info[*v as usize].umis.push((r.umi(), 1));
+                    // if we have scores, add them labeled with this equivalence class
                     if let Some(scores) = maybe_scores {
                         let score_probs = score_probabilities(scores);
                         // push score probs with associated eq_id of *v
@@ -757,6 +773,7 @@ impl EqMap {
                         eq_num,
                     });
                     self.eqid_map.insert(r.refs().to_vec(), eq_num);
+                    // if we have scores, add them labeled with this equivalence class
                     if let Some(scores) = maybe_scores {
                         let score_probs = score_probabilities(scores);
                         // push score probs with associated eq_id of *v
@@ -773,14 +790,20 @@ impl EqMap {
         self.fill_label_sizes();
 
         // sort the probability map by equivalence class ids
+        // if we have them
         let have_probs = !temp_prob_map.is_empty();
         if have_probs {
             temp_prob_map.order_by_eq_id();
+            prob_map.umi_offsets.push(0);
+            prob_map.eq_indices.push(0);
         }
+        // get an iterartor to iterate over alignment probabilities to the
+        // reads belonging to each equivalence class (in order)
         let mut aln_view_iter = temp_prob_map.eq_class_aln_view_iter();
 
         // initially we inserted duplicate UMIs
         // here, collapse them and keep track of their count
+        // iterate over the equivalence classes in order.
         for idx in 0..self.num_eq_classes() {
             // for each reference in this
             // label, put it in the next free spot
@@ -794,19 +817,40 @@ impl EqMap {
 
             let v = &mut self.eqc_info[idx];
 
-            // perm sorts by UMI value -- each entry corresponds to one read in this eqc
+            // get the permutation that puts the UMIs in order by their value
             let perm = argsort_by(&v.umis, |a, b| a.0.cmp(&b.0));
 
             // if we have probabilites, reorder them as we have the UMIs
             if have_probs {
+                // get the alignment view for the next equivalence class
+                // (i.e. alignments for all reads with this mapping pattern)
                 if let Some(aln_view) = aln_view_iter.next() {
+                    // the first UMI in this equivalence class
+                    let mut curr_umi = v.umis[perm[0]].0;
+
+                    // for each read, in the appropriate order
                     for p in perm.iter() {
+                        // if the current UMI changed, then update the current
+                        // umi and mark then boundary offset for the last probability
+                        // belonging to the previous umi.
+                        if v.umis[*p].0 != curr_umi {
+                            curr_umi = v.umis[*p].0;
+                            prob_map.umi_offsets.push(prob_map.probs.len());
+                        }
+                        // get the probability vector for this read
                         let probs = aln_view
                             .get_probs_for_read_rank(*p)
                             .expect("missing read rank");
+                        // add them to the probability vector we are building
+                        // in the final probability map
                         prob_map.probs.extend_from_slice(probs);
                     }
-                    prob_map.offsets.push(prob_map.probs.len());
+                    // make sure we mark the end offset for the last UMI
+                    prob_map.umi_offsets.push(prob_map.probs.len());
+
+                    // once we've visited all reads for this equivalence class
+                    // mark the end position in the eq_indices vector
+                    prob_map.eq_indices.push(prob_map.umi_offsets.len());
                 } else {
                     eprintln!(
                         "Number of probability vectors should equal total number of equivalence classes"
@@ -847,6 +891,31 @@ impl EqMap {
             self.prob_map = Some(prob_map);
         } else {
             self.prob_map = None;
+        }
+    }
+
+    /// Returns the probability row (length = label_len) for a specific graph node (eqid, umi_idx).
+    pub fn probs_for_eq_umi_tx(
+        &self,
+        eqid: u32,
+        umi_idx: u32,
+        tx_index: usize,
+    ) -> Option<Vec<f64>> {
+        if let Some(ref pmap) = self.prob_map {
+            let label_len = self.refs_for_eqc(eqid).len();
+            // the index in umi_offsets where eqid starts
+            let pmap_eq_idx = pmap.eq_indices[eqid as usize];
+            // the umi_idx umi for this eq class
+            let poffset = pmap.umi_offsets[pmap_eq_idx + umi_idx as usize];
+            // number of occurrences of this UMI
+            let freq = self.eqc_info[eqid as usize].umis[umi_idx as usize].1 as usize;
+            let mut probs = Vec::with_capacity(freq);
+            for i in 0..freq {
+                probs.push(pmap.probs[poffset + i * label_len]);
+            }
+            Some(probs)
+        } else {
+            None
         }
     }
 
