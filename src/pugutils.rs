@@ -390,6 +390,117 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
+/// Find the largest monochromatic spanning arboresence
+/// in the graph `g` starting at vertex `v`.  The arboresence
+/// is monochromatic if every vertex can be "covered" by a single
+/// transcript (i.e. there exists a transcript that appears in the
+/// equivalence class labels of all vertices in the arboresence).
+fn collapse_vertices_weighted(
+    v: u32,
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>, // the set of vertices already covered
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+) -> (Vec<u32>, u32, f64, Vec<(u32, f64)>) {
+    // get a new set to hold vertices
+    type VertexSet = HashSet<u32, ahash::RandomState>;
+    let get_set =
+        |cap: u32| VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone());
+
+    // will hold the nodes in the largest arboresence found
+    let mut highest_prob_mcc: Vec<u32> = Vec::new();
+    let mut highest_prob: f64 = 0.0;
+    let mut eq_txps_prob: Vec<(u32, f64)> = Vec::new();
+    let mut chosen_txp = 0u32;
+    let vert = g.from_index(v as usize);
+
+    //unsafe {
+
+    let nvert = g.node_count();
+
+    // for every transcript in the equivalence class
+    for (tx_index, txp) in eqmap.refs_for_eqc(vert.0).iter().enumerate() {
+        // start a bfs from this vertex
+        let mut bfs_list = VecDeque::new();
+        bfs_list.push_back(v);
+
+        // the set to remember the nodes we've already
+        // visited
+        let mut visited_set = get_set(nvert as u32);
+        visited_set.insert(v);
+
+        // will hold the current arboresence we
+        // are constructing
+        let mut current_mcc = Vec::new();
+        let mut current_prob = Vec::new();
+
+        //obtain the average probabilities for this UMI
+        let prob_vec = eqmap
+            .probs_for_eq_umi_tx(vert.0, vert.1, tx_index)
+            .expect("eq and umi should be valid");
+        let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
+        current_prob.push(avg_prob);
+
+        // get the next vertex in the BFS
+        while let Some(cv) = bfs_list.pop_front() {
+            // add it to the arboresence
+            current_mcc.push(cv);
+
+            // for all of the neighboring vertices that we can
+            // reach (those with outgoing, or bidirected edges)
+            for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
+                let n = g.to_index(nv) as u32;
+
+                // check if we should add this vertex or not:
+                // uncovered_vertices contains the the current set of
+                // *uncovered* vertices in this component (i.e. those
+                // that we still need to explain by some molecule).
+                // so, if n is *not* in uncovered_vertices, then it is not in the
+                // uncovered set, and so it has already been
+                // explained / covered.
+                //
+                // if n hasn't been covered yet, then
+                // check if we've seen n in this traversal
+                // yet. The `insert()` method returns true
+                // if the set didn't have the element, false
+                // otherwise.
+                if !uncovered_vertices.contains(&n) || !visited_set.insert(n) {
+                    continue;
+                }
+
+                // get the set of transcripts present in the
+                // label of the current node.
+                let n_labels = eqmap.refs_for_eqc(nv.0);
+                if let Ok(_n) = n_labels.binary_search(txp) {
+                    bfs_list.push_back(n);
+
+                    //obtain the average probabilities for this UMI
+                    let prob_vec = eqmap
+                        .probs_for_eq_umi_tx(nv.0, nv.1, tx_index)
+                        .expect("eq and umi should be valid");
+                    let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
+                    current_prob.push(avg_prob);
+                }
+            }
+        }
+
+        //compute the average probabilities of the current prob
+        let average_current_prob = current_prob.iter().sum::<f64>() / current_prob.len() as f64;
+        // if this arboresence is the largest we've yet
+        // seen, then record it
+        if highest_prob < average_current_prob {
+            highest_prob_mcc = current_mcc;
+            chosen_txp = *txp;
+            highest_prob = average_current_prob;
+        }
+
+        eq_txps_prob.push((*txp, average_current_prob));
+    }
+    //}// unsafe
+
+    (highest_prob_mcc, chosen_txp, highest_prob, eq_txps_prob)
+}
+
 #[inline]
 fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
@@ -868,12 +979,15 @@ pub fn get_num_molecules<const IS_LONG: bool>(
     eqmap: &EqMap,
     tid_to_gid: &[u32],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    // TODO: (@zzare-umd) This seems redundant with the above, how do we handle that?
+    gene_eqclass_prob_hash: &mut HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
 {
+    const EMPTY_VEC: Vec<(u32, f64)> = vec![];
     type U32Set = HashSet<u32, ahash::RandomState>;
     let get_set = |cap: u32| {
         //let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -977,6 +1091,11 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                 // the transcript that is responsible for the
                 // best mcc covering
                 let mut best_covering_txp = u32::MAX;
+
+                // in the long-read case
+                let mut best_mcc_prob: f64 = 0.0;
+                let mut best_mcc_txp_probs: Vec<(u32, f64)> = Vec::new();
+
                 // for each vertex in the vertex set
                 for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
@@ -984,15 +1103,29 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                     // NOTE: what if there are multiple different mccs that
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
-                    let (new_mcc, covering_txp) =
-                        collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
+                    let (cand_mcc, cand_txp, cand_prob, eq_txs_prob) = if IS_LONG {
+                        collapse_vertices_weighted(*v, &uncovered_vertices, g, eqmap, hasher_state)
+                    } else {
+                        let (new_mcc, covering_txp) =
+                            collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
+                        (new_mcc, covering_txp, 0_f64, EMPTY_VEC)
+                    };
 
-                    let mcc_len = new_mcc.len();
-                    // if the new mcc is better than the current best, then
-                    // it becomes the new best
-                    if best_mcc.len() < mcc_len {
-                        best_mcc = new_mcc;
-                        best_covering_txp = covering_txp;
+                    let mcc_len = cand_mcc.len();
+                    if IS_LONG {
+                        if best_mcc_prob < cand_prob {
+                            best_mcc = cand_mcc;
+                            best_mcc_prob = cand_prob;
+                            best_covering_txp = cand_txp;
+                            best_mcc_txp_probs = eq_txs_prob;
+                        }
+                    } else {
+                        // if the new mcc is better than the current best, then
+                        // it becomes the new best
+                        if best_mcc.len() < mcc_len {
+                            best_mcc = cand_mcc;
+                            best_covering_txp = cand_txp;
+                        }
                     }
                     // we can't do better than covering all
                     // remaining uncovered vertices.  So, if we
@@ -1043,6 +1176,24 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                         //}
                     }
                 }
+
+                // for long reads
+                //obtain the probabiltiy for the global txps
+                let mut global_txp_prob: Vec<f64> = vec![];
+                if IS_LONG {
+                    let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_probs
+                        .iter()
+                        .filter(|(t, _)| global_txps.contains(t))
+                        .map(|(t, p)| (*t, *p))
+                        .collect();
+                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
+                    global_txp_prob = if txp_prob_temp.len() == 1 {
+                        vec![1.0]
+                    } else {
+                        txp_prob_temp.iter().map(|(_, p)| *p).collect()
+                    };
+                }
+
                 // at this point, whatever transcript ids remain in
                 // global_txps appear in all vertices of the mcc
 
@@ -1081,6 +1232,15 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                     "can't find representative gene(s) for a molecule"
                 );
 
+                if IS_LONG {
+                    // TODO: get rid of this clone
+                    let (count, prob_vec) = gene_eqclass_prob_hash
+                        .entry(global_genes.clone())
+                        .or_insert((0, vec![vec![]]));
+                    *count += 1;
+                    prob_vec.push(global_txp_prob);
+                }
+
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
                 let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
@@ -1097,10 +1257,33 @@ pub fn get_num_molecules<const IS_LONG: bool>(
             let tv = comp_verts.first().expect("can't extract first vertex");
             let tl = eqmap.refs_for_eqc(g.from_index(*tv as usize).0);
 
-            if tl.len() == 1 {
-                one_vertex_components[0] += 1;
+            let mut global_txp_prob: Vec<f64> = vec![];
+
+            if IS_LONG {
+                if tl.len() == 1 {
+                    one_vertex_components[0] += 1;
+                    global_txp_prob = vec![1.0];
+                } else {
+                    one_vertex_components[1] += 1;
+                    let mut txp_prob_temp: Vec<(u32, f64)> = vec![];
+                    for (i, t) in tl.iter().enumerate() {
+                        let (eq_id, umi_id) = g.from_index(*tv as usize);
+                        let prob_vec = eqmap
+                            .probs_for_eq_umi_tx(eq_id, umi_id, i)
+                            .expect("should be a valid eq/umi pair");
+                        let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
+                        txp_prob_temp.push((*t, avg_prob));
+                    }
+
+                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
+                    global_txp_prob = txp_prob_temp.iter().map(|(_, p)| *p).collect();
+                }
             } else {
-                one_vertex_components[1] += 1;
+                if tl.len() == 1 {
+                    one_vertex_components[0] += 1;
+                } else {
+                    one_vertex_components[1] += 1;
+                }
             }
 
             let mut global_genes: Vec<u32>;
@@ -1124,6 +1307,16 @@ pub fn get_num_molecules<const IS_LONG: bool>(
             if global_genes.len() > 1 {
                 pug_stats.ambiguous_mccs += 1;
             }
+
+            if IS_LONG {
+                // TODO: get rid of this clone
+                let (count, prob_vec) = gene_eqclass_prob_hash
+                    .entry(global_genes.clone())
+                    .or_insert((0, vec![vec![]]));
+                *count += 1;
+                prob_vec.push(global_txp_prob);
+            }
+
             // incrementing the count of the eqclass label by 1
             let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
             *counter += 1;

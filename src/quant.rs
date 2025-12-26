@@ -42,7 +42,9 @@ use std::fmt;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use crate::em::{EmInitType, em_optimize, em_optimize_subset, run_bootstrap};
+use crate::em::{
+    EmInitType, em_optimize, em_optimize_long_read, em_optimize_subset, run_bootstrap,
+};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
@@ -422,6 +424,9 @@ where
     // running an EM algorithm.
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
+    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+    let mut gene_prob_eqc: HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState> =
+        HashMap::with_hasher(s);
 
     // If we are operating in USA-mode with an EM capable resolution
     // method, we'll use (re-use) these variables to hold the USA-mode
@@ -574,6 +579,8 @@ where
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 &mut gene_eqc,
+                                // TODO: figure out how to address this redundant eqc map
+                                &mut gene_prob_eqc,
                                 &s,
                                 config.large_graph_thresh,
                                 &log,
@@ -625,19 +632,16 @@ where
                                 }
                                 (false, _, true) => {
                                     // not USA-mode
-                                    unimplemented!()
-                                    /*
                                     counts = em_optimize_long_read(
                                         &gene_eqc,
                                         &gene_prob_eqc,
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
-                                        em_init_type,
-                                        num_genes,
+                                        config.em_init_type,
+                                        config.num_genes,
                                         only_unique,
                                         &log,
                                     );
-                                    */
                                 }
                             }
                         }
