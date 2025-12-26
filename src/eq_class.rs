@@ -319,6 +319,14 @@ impl Default for ProbMap {
 }
 
 impl ProbMap {
+    pub fn clear(&mut self) {
+        self.probs.clear();
+        self.umi_offsets.clear();
+        self.eq_indices.clear();
+        self.umi_offsets.push(0);
+        self.eq_indices.push(0);
+    }
+
     pub fn new() -> Self {
         Self {
             probs: Vec::new(),
@@ -545,11 +553,12 @@ impl EqMap {
 
         self.ref_offsets.clear();
         self.ref_labels.clear();
+        self.prob_map.iter_mut().for_each(|x| x.clear());
         // keep map_type
         //self.eqid_map.clear();
     }
 
-    pub fn new(nref_in: u32, map_type: EqMapType) -> EqMap {
+    pub fn new(nref_in: u32, map_type: EqMapType, with_prob_map: bool) -> EqMap {
         let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         EqMap {
             eqc_info: vec![], //HashMap::with_hasher(rs),
@@ -562,7 +571,11 @@ impl EqMap {
             ref_labels: vec![],
             eqid_map: HashMap::with_hasher(rand_state),
             map_type,
-            prob_map: None,
+            prob_map: if with_prob_map {
+                Some(ProbMap::new())
+            } else {
+                None
+            },
         }
     }
 
@@ -764,9 +777,8 @@ impl EqMap {
         // let mut eqid_map  = HashMap::with_hasher(rand_state);
 
         // a temporary probability map as we will need to rearrange things
+        // if there are too many allocations here, revisit reusing this
         let mut temp_prob_map = TempProbMap::new();
-        // the final map that will be added to the EQMap
-        let mut prob_map = ProbMap::new();
 
         self.eqid_map.clear();
         // gather the equivalence class info
@@ -858,6 +870,10 @@ impl EqMap {
 
             // if we have probabilites, reorder them as we have the UMIs
             if have_probs {
+                let prob_map = self
+                    .prob_map
+                    .as_mut()
+                    .expect("should have a probability map");
                 // get the alignment view for the next equivalence class
                 // (i.e. alignments for all reads with this mapping pattern)
                 if let Some(aln_view) = aln_view_iter.next() {
@@ -921,12 +937,6 @@ impl EqMap {
             // remember to push the last element, since we
             // won't see a subsequent "different" element.
             v.umis.push((cur_elem, count));
-        }
-        // if we had read probabilities set them
-        if !temp_prob_map.is_empty() {
-            self.prob_map = Some(prob_map);
-        } else {
-            self.prob_map = None;
         }
     }
 

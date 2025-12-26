@@ -39,10 +39,10 @@ use libradicl::record::{
 use std::fmt;
 //use std::ptr;
 
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 
-use crate::em::{em_optimize, em_optimize_subset, run_bootstrap, EmInitType};
+use crate::em::{EmInitType, em_optimize, em_optimize_subset, run_bootstrap};
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
@@ -401,7 +401,7 @@ where
     // each cell.
     let mut unique_evidence = vec![false; config.num_rows];
     let mut no_ambiguity = vec![false; config.num_rows];
-    let mut eq_map = EqMap::new(num_eq_targets, eq_map_type);
+    let mut eq_map = EqMap::new(num_eq_targets, eq_map_type, IS_LONG);
     let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
     let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
     let mut eds_bytes = Vec::<u8>::new();
@@ -789,10 +789,9 @@ where
                 // mean of the "expressed" genes
                 let mean_expr = sum_umi / num_expr as f32;
                 // number of genes with expression > expressed mean
-                let num_genes_over_mean =
-                    expressed_vec
-                        .iter()
-                        .fold(0u32, |acc, x| if x > &mean_expr { acc + 1u32 } else { acc });
+                let num_genes_over_mean = expressed_vec
+                    .iter()
+                    .fold(0u32, |acc, x| if x > &mean_expr { acc + 1u32 } else { acc });
                 // expressed mean / max expression
                 let mean_by_max = mean_expr / max_umi;
 
@@ -919,7 +918,7 @@ where
     local_nrec
 }
 
-pub(crate)  fn do_quantify<T: BufRead, B, R, const IS_LONG: bool>(
+pub(crate) fn do_quantify<T: BufRead, B, R, const IS_LONG: bool>(
     mut br: T,
     quant_opts: QuantOpts,
     prelude: RadPrelude,
