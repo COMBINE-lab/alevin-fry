@@ -48,34 +48,34 @@ struct QuantArguments {
 */
 
 pub(crate) trait OptionalAlignmentScores {
-    fn scores(&self) -> Option<&[i32]>;
+    fn maybe_scores(&self) -> Option<&[i32]>;
 }
 
 macro_rules! impl_optional_alignment_scores {
     (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident, Some($field:ident)) => {
         impl<$($gen $(: $bound)?),+> OptionalAlignmentScores for $ty_name<$($gen),+> {
-            fn scores(&self) -> Option<&[i32]> {
+            fn maybe_scores(&self) -> Option<&[i32]> {
                 Some(&self.$field)
             }
         }
     };
     (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident, None) => {
         impl<$($gen $(: $bound)?),+> OptionalAlignmentScores for $ty_name<$($gen),+> {
-            fn scores(&self) -> Option<&[i32]> {
+            fn maybe_scores(&self) -> Option<&[i32]> {
                 None
             }
         }
     };
     ($ty:ty, Some($field:ident)) => {
         impl OptionalAlignmentScores for $ty {
-            fn scores(&self) -> Option<&[i32]> {
+            fn maybe_scores(&self) -> Option<&[i32]> {
                 Some(&self.$field)
             }
         }
     };
     ($ty:ty, None) => {
         impl OptionalAlignmentScores for $ty {
-            fn scores(&self) -> Option<&[i32]> {
+            fn maybe_scores(&self) -> Option<&[i32]> {
                 None
             }
         }
@@ -86,12 +86,6 @@ impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadR
 impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
 impl_optional_alignment_scores!(AtacSeqReadRecord, None);
 impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores));
-/*impl<B: ConvertiblePrimitiveInteger> OptionalAlignmentScores for ScLongReadRecordT<B> {
-    fn scores(&self) -> Option<&[i32]> {
-        Some(&self.as_scores)
-    }
-}
-*/
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {
