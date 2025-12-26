@@ -299,6 +299,7 @@ pub(crate) struct TempProbMap {
     pub lengths: Vec<usize>, // the lengths of each prob slice
 }
 
+#[derive(Debug)]
 pub(crate) struct ProbMap {
     pub probs: Vec<f64>, // the concatenated list of probabilities
     /// access the probabilities for all reads (can be more than 1) corresponding
@@ -324,7 +325,7 @@ impl ProbMap {
     }
 
     pub fn mark_eq_class_end(&mut self) {
-        self.eq_indices.push(self.umi_offsets.len());
+        self.eq_indices.push(self.umi_offsets.len() - 1);
     }
 
     pub fn num_umis_for_eq(&self, eq_id: usize) -> Option<usize> {
@@ -927,18 +928,12 @@ impl EqMap {
     ) -> Option<Vec<f64>> {
         if let Some(ref pmap) = self.prob_map {
             let label_len = self.refs_for_eqc(eqid).len();
-            // the index in umi_offsets where eqid starts
-            let pmap_eq_idx = pmap.eq_indices[eqid as usize];
             // the umi_idx umi for this eq class
-            let poffset = pmap.umi_offsets[pmap_eq_idx + umi_idx as usize];
-            // number of occurrences of this UMI
-            let freq = self.eqc_info[eqid as usize].umis[umi_idx as usize].1 as usize;
-            let probs: Vec<f64> = pmap
-                .probs
+            let umi_probs = pmap.probs_for_eq_id_umi_rank(eqid as usize, umi_idx as usize);
+            let probs: Vec<f64> = umi_probs
                 .iter()
-                .skip(poffset + tx_index)
+                .skip(tx_index)
                 .step_by(label_len)
-                .take(freq)
                 .copied()
                 .collect();
             Some(probs)
@@ -1045,5 +1040,185 @@ mod tests {
         assert_eq!(pm.num_umis_for_eq(1), Some(1));
         assert_eq!(pm.num_umis_for_eq(2), Some(3));
         assert_eq!(pm.num_umis_for_eq(3), None);
+
+        assert_eq!(
+            pm.probs_for_eq_id_umi_rank(0, 0),
+            &[
+                0.1, 0.7, 0.1, 0.1, 0.05, 0.7, 0.15, 0.1, 0.15, 0.7, 0.05, 0.1
+            ]
+        );
+        assert_eq!(pm.probs_for_eq_id_umi_rank(0, 1), &[0.2, 0.2, 0.2, 0.4]);
+        assert_eq!(pm.probs_for_eq_id_umi_rank(1, 0), &[0.25, 0.75, 0.2, 0.8]);
+        assert_eq!(pm.probs_for_eq_id_umi_rank(2, 0), &[0.2, 0.6, 0.2]);
+        assert_eq!(pm.probs_for_eq_id_umi_rank(2, 1), &[0.15, 0.35, 0.5]);
+        assert_eq!(pm.probs_for_eq_id_umi_rank(2, 2), &[0.5, 0.2, 0.3]);
+
+        let label_len = 4;
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(0, 0);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.1, 0.05, 0.15]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.7, 0.7, 0.7]);
+        let tx_indx = 2;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.1, 0.15, 0.05]);
+        let tx_indx = 3;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.1, 0.1, 0.1]);
+
+        let label_len = 4;
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(0, 1);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+        let tx_indx = 2;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+        let tx_indx = 3;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.4]);
+
+        let label_len = 2;
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(1, 0);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.25, 0.2]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.75, 0.8]);
+
+        let label_len = 3;
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(2, 0);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.6]);
+        let tx_indx = 2;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(2, 1);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.15]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.35]);
+        let tx_indx = 2;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.5]);
+
+        let tx_indx = 0;
+        let umi_probs = pm.probs_for_eq_id_umi_rank(2, 2);
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.5]);
+        let tx_indx = 1;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.2]);
+        let tx_indx = 2;
+        let probs: Vec<f64> = umi_probs
+            .iter()
+            .skip(tx_indx)
+            .step_by(label_len)
+            .copied()
+            .collect();
+        assert_eq!(probs, vec![0.3]);
     }
 }
