@@ -180,6 +180,7 @@ fn main() -> anyhow::Result<()> {
             ("resolution", "parsimony-em", Some("1")),
             ("resolution", "parsimony-gene", Some("1")),
             ("resolution", "parsimony-gene-em", Some("1")),
+            ("resolution", "forseti-parsimony-em", Some("1")),
         ])
         .hide(true))
     .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
@@ -189,6 +190,7 @@ fn main() -> anyhow::Result<()> {
             ("resolution", "parsimony", Some("1000")),
             ("resolution", "parsimony-em", Some("1000")),
             ("resolution", "parsimony-gene", Some("1000")),
+            ("resolution", "forseti-parsimony-em", Some("1000")),
         ])
         .default_value("0") // for any other mode
         .hide(true))
@@ -436,7 +438,8 @@ fn main() -> anyhow::Result<()> {
                     ResolutionStrategy::Parsimony
                     | ResolutionStrategy::ParsimonyEm
                     | ResolutionStrategy::ParsimonyGene
-                    | ResolutionStrategy::ParsimonyGeneEm => {
+                    | ResolutionStrategy::ParsimonyGeneEm
+                    | ResolutionStrategy::ForsetiParsimonyEm => {
                         pug_exact_umi = true;
                     }
                 }
@@ -457,7 +460,8 @@ fn main() -> anyhow::Result<()> {
                     ResolutionStrategy::Parsimony
                     | ResolutionStrategy::ParsimonyEm
                     | ResolutionStrategy::ParsimonyGene
-                    | ResolutionStrategy::ParsimonyGeneEm => {
+                    | ResolutionStrategy::ParsimonyGeneEm
+                    | ResolutionStrategy::ForsetiParsimonyEm => {
                         pug_exact_umi = false;
                     }
                 }
@@ -486,7 +490,8 @@ fn main() -> anyhow::Result<()> {
             match resolution {
                 ResolutionStrategy::CellRangerLikeEm
                 | ResolutionStrategy::ParsimonyEm
-                | ResolutionStrategy::ParsimonyGeneEm => {
+                | ResolutionStrategy::ParsimonyGeneEm
+                | ResolutionStrategy::ForsetiParsimonyEm => {
                     // sounds good
                 }
                 _ => {

@@ -215,7 +215,7 @@ where
                 );
 
                 let decoder: Box<dyn std::io::BufRead> = Box::new(
-                    bgzf::MultithreadedReader::with_worker_count(decomp_threads, file),
+                    bgzf::io::MultithreadedReader::with_worker_count(decomp_threads, file),
                 );
                 Box::new(nbam::io::Reader::from(decoder))
             }

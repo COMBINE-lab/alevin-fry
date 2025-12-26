@@ -23,3 +23,5 @@ pub mod pugutils;
 pub mod quant;
 pub mod utils;
 pub mod multinomial;
+pub mod mlp_spline;
+pub mod forseti;

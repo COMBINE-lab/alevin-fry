@@ -20,6 +20,7 @@ impl clap::ValueEnum for ResolutionStrategy {
             Self::Parsimony,
             Self::ParsimonyGeneEm,
             Self::ParsimonyGene,
+            Self::ForsetiParsimonyEm,
         ]
     }
 
@@ -32,6 +33,7 @@ impl clap::ValueEnum for ResolutionStrategy {
             Self::Parsimony => Some(clap::builder::PossibleValue::new("parsimony")),
             Self::ParsimonyGeneEm => Some(clap::builder::PossibleValue::new("parsimony-gene-em")),
             Self::ParsimonyGene => Some(clap::builder::PossibleValue::new("parsimony-gene")),
+            Self::ForsetiParsimonyEm => Some(clap::builder::PossibleValue::new("forseti-parsimony-em")),
         }
     }
 }

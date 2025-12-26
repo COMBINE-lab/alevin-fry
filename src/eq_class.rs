@@ -12,6 +12,7 @@ use std::io::BufRead;
 
 use libradicl::chunk;
 use libradicl::record::{MappedRecord, UmiTaggedRecord};
+use libradicl::record::AlevinFryReadRecordWithPosition;
 
 /**
 * Single-cell equivalence class
@@ -34,6 +35,14 @@ pub enum EqMapType {
 #[derive(Debug)]
 pub struct EqMapEntry {
     pub umis: Vec<(u64, u32)>,
+    pub eq_num: u32,
+}
+
+/// Forseti-specific entry: for each eq-class, keep a list
+/// of UMIs, and for each UMI keep the list of read identifiers (here: `read_idx`) rather thanthe umi count
+#[derive(Debug)]
+pub struct EqMapEntryForseti {
+    pub umis: Vec<(u64, Vec<u64>)>,
     pub eq_num: u32,
 }
 // NOTE: this is _clearly_ redundant with the EqMap below.
@@ -203,6 +212,9 @@ pub struct EqMap {
     // for each equivalence class, holds the (umi, freq) pairs
     // and the id of that class
     pub eqc_info: Vec<EqMapEntry>,
+        /// Forseti-specific: for each equivalence class, holds (umi, [read_idx]) pairs.
+    /// `read_idx` is a synthetic stand-in for a BAM `read_name`.
+    pub eqc_info_forseti: Vec<EqMapEntryForseti>,
     // the total number of refrence targets
     pub nref: u32,
     // the total size of the list of all reference
@@ -238,6 +250,7 @@ impl EqMap {
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.eqc_info.clear();
+        self.eqc_info_forseti.clear();
         // keep nref
         self.label_list_size = 0usize;
         self.eq_labels.clear();
@@ -256,6 +269,7 @@ impl EqMap {
         let rand_state = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
         EqMap {
             eqc_info: vec![], //HashMap::with_hasher(rs),
+            eqc_info_forseti: vec![],
             nref: nref_in,
             label_list_size: 0usize,
             eq_labels: vec![],
@@ -497,7 +511,7 @@ impl EqMap {
                         eq_num,
                     });
                     self.eqid_map.insert(r.refs().to_vec(), eq_num);
-                    //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
+                    //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi(),1)], eq_num });
                 }
             }
         }
@@ -545,6 +559,131 @@ impl EqMap {
 
             // remember to push the last element, since we
             // won't see a subsequent "different" element.
+            v.umis.push((cur_elem, count));
+        }
+    }
+
+        /// Like `init_from_chunk`, but additionally records a per-UMI list of `read_idx`
+    /// values (synthetic read names) for Forseti-style debugging/inspection.
+    ///
+    pub fn init_from_chunk_forseti(
+        &mut self,
+        cell_chunk: &mut chunk::Chunk<AlevinFryReadRecordWithPosition>,
+    ) {
+        self.eqid_map.clear();
+        self.eqc_info_forseti.clear();
+
+        // gather the equivalence class info
+        for (local_i, r) in cell_chunk.reads.iter_mut().enumerate() {
+            // local read id within this cell (sufficient because we process each cell independently)
+            let read_idx: u64 = local_i as u64;
+
+            // sanity checks: if these fail, it usually indicates a RAD layout mismatch
+            if local_i < 10 {
+                let n_refs = r.refs().len();
+                let n_dirs = r.dirs.len();
+                let n_pos = r.pos.len();
+                if n_refs != n_dirs || n_refs != n_pos {
+                    panic!(
+                        "RAD record parse mismatch: refs.len()={} dirs.len()={} (bc={}, umi={}). \
+                         This suggests the input RAD file layout does not match the parser expectations.",
+                        r.refs().len(),
+                        r.dirs.len(),
+                        r.bc,
+                        r.umi()
+                    );
+                }
+            }
+
+            // prepare cell_algn_tuple_hashmap
+            //
+            // In collated RAD (when `collate --keep-dir` is used), the first alignment u32 is
+            // encoded as (dir<<31)|ref_id.  We must mask off the high bit before treating the
+            // value as a ref index. We also normalize `r.refs` in-place to contain only `ref_id`
+            // so eq-classes remain transcript-id based (not direction-bit based).
+
+
+            // NOTE: We intentionally do NOT build a per-cell HashMap over *all* alignments
+            // here. It is expensive (hashing + allocations) and Forseti only needs (dir,pos)
+            // for a small subset of reads/refs. Those tuples are looked up on-demand from
+            // the per-read record later (see `pugutils::get_forseti_check_list`).
+            let key = r.refs(); // &[u32]
+            match self.eqid_map.get_mut(key) {
+                // if we've seen this equivalence class before, add the UMI and `read_idx`
+                // We want: ref_list -> [(umi, [read_idx])]
+                Some(v) => {
+                    let eqi = *v as usize;
+                    // TODO: we fill the eqc_info as well to get eq_labels... etc which still (implicitly) based on the eqc_info. and later we may want to make`eqc_info_forseti` a more valid alternative to the eqc_info.
+                    // Hope this is cheap enough.
+                    self.eqc_info[eqi].umis.push((r.umi(), 1));
+
+                    // Forseti trace: keep read_idx list per UMI
+                    let fe = &mut self.eqc_info_forseti[eqi];
+                    if let Some((_u, reads)) = fe.umis.iter_mut().find(|(u, _)| *u == r.umi()) {
+                        // If the UMI exists, append the read name to the list of read_idx
+                        reads.push(read_idx);
+                    } else {
+                        // If the UMI doesn't exist, add a new entry with the UMI and read_idx
+                        fe.umis.push((r.umi(), vec![read_idx]));
+                    }
+                }
+                // otherwise, add the new umi, but we also have some extra bookkeeping
+                None => {
+                    let eq_num = self.eqc_info.len() as u32;
+                    self.label_list_size += key.len();
+                    for tid in key.iter() {
+                        let ridx = *tid as usize;
+                        // ridx was validated above
+                        self.label_counts[ridx] += 1;
+                        //ref_to_eqid[*r as usize].push(eq_num);
+                    }
+                    self.eq_label_starts.push(self.eq_labels.len() as u32);
+                    self.eq_labels.extend(key);
+
+                    self.eqc_info.push(EqMapEntry {
+                        umis: vec![(r.umi(), 1)],
+                        eq_num,
+                    });
+                    self.eqc_info_forseti.push(EqMapEntryForseti {
+                        umis: vec![(r.umi(), vec![read_idx])],
+                        eq_num,
+                    });
+                    self.eqid_map.insert(key.to_vec(), eq_num);
+                }
+            }
+        }
+
+        // final value to avoid special cases
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
+
+        self.fill_ref_offsets();
+        self.fill_label_sizes();
+
+        // same as `init_from_chunk`: fill ref_labels + collapse duplicate UMIs into counts
+        // TODO: make this as a helper function. to avoid code duplication.
+        for idx in 0..self.num_eq_classes() {
+            let label = self.refs_for_eqc(idx as u32).to_vec();
+            for r in label {
+                self.ref_offsets[r as usize] -= 1;
+                self.ref_labels[self.ref_offsets[r as usize] as usize] = self.eqc_info[idx].eq_num;
+            }
+
+            let v = &mut self.eqc_info[idx];
+            v.umis.sort_unstable();
+            let cv = v.umis.clone();
+            v.umis.clear();
+
+            let mut count = 1;
+            let mut cur_elem = cv.first().unwrap().0;
+            for e in cv.iter().skip(1) {
+                if e.0 == cur_elem {
+                    count += 1;
+                } else {
+                    v.umis.push((cur_elem, count));
+                    cur_elem = e.0;
+                    count = 1;
+                }
+            }
             v.umis.push((cur_elem, count));
         }
     }
