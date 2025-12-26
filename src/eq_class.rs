@@ -337,7 +337,7 @@ impl<'a> EqClassAlnProbView<'a> {
     // this equivalence class
     pub fn get_probs_for_read_rank(&self, r: usize) -> Option<&[f64]> {
         // if the rank
-        if r + 1 >= self.num_reads() {
+        if r + 1 > self.num_reads() {
             None
         } else {
             let start = self.cumulative_offsets[r] as usize;
@@ -938,7 +938,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn temp_map_add() {
+    fn temp_prob_map_add() {
         let mut tpm = TempProbMap::new();
         tpm.push(0, &[0.5, 0.5]);
         tpm.push(1, &[0.25, 0.25, 0.5]);
@@ -951,5 +951,40 @@ mod tests {
         assert_eq!(tpm.probs.len(), 7);
         assert_eq!(tpm.lengths, vec![2, 2, 3]);
         assert_eq!(tpm.eq_ids, vec![0_u32, 0, 1]);
+    }
+
+    #[test]
+    fn temp_prob_map_iter() {
+        let mut tpm = TempProbMap::new();
+        tpm.push(0, &[0.5, 0.5]);
+        tpm.push(1, &[0.25, 0.25, 0.5]);
+        tpm.push(0, &[0.75, 0.25]);
+        assert_eq!(tpm.probs.len(), 7);
+        assert_eq!(tpm.lengths, vec![2, 3, 2]);
+        assert_eq!(tpm.eq_ids, vec![0_u32, 1, 0]);
+
+        tpm.order_by_eq_id();
+        assert_eq!(tpm.probs.len(), 7);
+        assert_eq!(tpm.lengths, vec![2, 2, 3]);
+        assert_eq!(tpm.eq_ids, vec![0_u32, 0, 1]);
+
+        let mut tpm_iter = tpm.eq_class_aln_view_iter();
+        let eq_cards = vec![2, 3];
+        let mut ctr = 0;
+        while let Some(ti) = tpm_iter.next() {
+            for rank in 0..ti.num_reads() {
+                let p = ti.get_probs_for_read_rank(rank).expect("have read of rank");
+                if ctr == 0 {
+                    assert_eq!(ti.num_reads(), 2);
+                    assert_eq!(&[0.5, 0.5], p);
+                } else if ctr == 1 {
+                    assert_eq!(&[0.75, 0.25], p);
+                } else if ctr == 2 {
+                    assert_eq!(ti.num_reads(), 1);
+                    assert_eq!(&[0.25, 0.25, 0.5], p);
+                }
+                ctr += 1;
+            }
+        }
     }
 }
