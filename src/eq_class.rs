@@ -293,14 +293,15 @@ pub struct EqMap {
     pub prob_map: Option<ProbMap>,
 }
 
-pub(crate) struct TempProbMap {
+#[derive(Default, Debug)]
+pub struct TempProbMap {
     pub eq_ids: Vec<u32>, // for each score chunk the equivalence class ID to which it belongs
     pub probs: Vec<f64>,  // the concatenated list of probabilities
     pub lengths: Vec<usize>, // the lengths of each prob slice
 }
 
 #[derive(Debug)]
-pub(crate) struct ProbMap {
+pub struct ProbMap {
     pub probs: Vec<f64>, // the concatenated list of probabilities
     /// access the probabilities for all reads (can be more than 1) corresponding
     /// to the i'th global UMI (which belongs to some equivalence class determined
@@ -311,6 +312,12 @@ pub(crate) struct ProbMap {
     pub eq_indices: Vec<usize>,
 }
 
+impl Default for ProbMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProbMap {
     pub fn new() -> Self {
         Self {
@@ -318,6 +325,10 @@ impl ProbMap {
             umi_offsets: vec![0],
             eq_indices: vec![0],
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.probs.is_empty()
     }
 
     pub fn mark_umi_end(&mut self) {
@@ -346,7 +357,7 @@ impl ProbMap {
     }
 }
 
-pub(crate) struct EqClassAlnProbView<'a> {
+pub struct EqClassAlnProbView<'a> {
     pub eq_id: u32,               // the id of this equivalence class
     pub probs: &'a [f64],         // the probabilities
     cumulative_offsets: Vec<u32>, // where the per-read offsets start
@@ -377,7 +388,7 @@ impl<'a> EqClassAlnProbView<'a> {
     }
 }
 
-pub(crate) struct ProbMapEqClassIter<'a> {
+pub struct ProbMapEqClassIter<'a> {
     pub current_eq_id: u32,
     pub current_idx: usize,
     pub current_probs_offset: usize,
@@ -411,7 +422,7 @@ impl<'a> Iterator for ProbMapEqClassIter<'a> {
                 .peekable();
 
             // we should have at least one entry
-            let next_eq_id = it
+            let _first_eq_id = it
                 .next()
                 .expect("each eq class should have at least one read");
             // the number of alignments for this read (should be the cardinality
@@ -506,7 +517,7 @@ impl TempProbMap {
     }
 
     /// Get an iterator over the alignments for each equivalence class
-    pub(crate) fn eq_class_aln_view_iter(&self) -> ProbMapEqClassIter<'_> {
+    pub fn eq_class_aln_view_iter(&self) -> ProbMapEqClassIter<'_> {
         ProbMapEqClassIter {
             current_eq_id: 0,
             current_idx: 0,
@@ -736,7 +747,7 @@ impl EqMap {
         }
     }
 
-    pub(crate) fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
     where
         R: MappedRecord + UmiTaggedRecord + OptionalAlignmentScores,
     {
