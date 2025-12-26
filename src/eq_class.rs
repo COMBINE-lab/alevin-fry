@@ -433,13 +433,13 @@ impl TempProbMap {
         Self {
             eq_ids: Vec::new(),
             probs: Vec::new(),
-            lengths: vec![0],
+            lengths: Vec::new(),
         }
     }
 
     pub fn push(&mut self, eq_id: u32, probs: &[f64]) {
         self.probs.extend_from_slice(probs);
-        self.lengths.push(self.probs.len());
+        self.lengths.push(probs.len());
         self.eq_ids.push(eq_id);
     }
 
@@ -455,7 +455,6 @@ impl TempProbMap {
     /// class IDs of the underlying map
     pub fn order_by_eq_id(&mut self) {
         let perm = argsort(&self.eq_ids);
-        reorder_in_place(&mut self.eq_ids, &perm);
 
         // get cumulative sums to re-order
         let mut cumsum = Vec::with_capacity(self.lengths.len() + 1);
@@ -909,10 +908,14 @@ impl EqMap {
             let poffset = pmap.umi_offsets[pmap_eq_idx + umi_idx as usize];
             // number of occurrences of this UMI
             let freq = self.eqc_info[eqid as usize].umis[umi_idx as usize].1 as usize;
-            let mut probs = Vec::with_capacity(freq);
-            for i in 0..freq {
-                probs.push(pmap.probs[poffset + i * label_len]);
-            }
+            let probs: Vec<f64> = pmap
+                .probs
+                .iter()
+                .skip(poffset + tx_index)
+                .step_by(label_len)
+                .take(freq)
+                .copied()
+                .collect();
             Some(probs)
         } else {
             None
@@ -927,5 +930,26 @@ impl EqMap {
     pub fn refs_for_eqc(&self, idx: u32) -> &[u32] {
         &self.eq_labels[(self.eq_label_starts[idx as usize] as usize)
             ..(self.eq_label_starts[(idx + 1) as usize] as usize)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_map_add() {
+        let mut tpm = TempProbMap::new();
+        tpm.push(0, &[0.5, 0.5]);
+        tpm.push(1, &[0.25, 0.25, 0.5]);
+        tpm.push(0, &[0.75, 0.2]);
+        assert_eq!(tpm.probs.len(), 7);
+        assert_eq!(tpm.lengths, vec![2, 3, 2]);
+        assert_eq!(tpm.eq_ids, vec![0_u32, 1, 0]);
+
+        tpm.order_by_eq_id();
+        assert_eq!(tpm.probs.len(), 7);
+        assert_eq!(tpm.lengths, vec![2, 2, 3]);
+        assert_eq!(tpm.eq_ids, vec![0_u32, 0, 1]);
     }
 }
