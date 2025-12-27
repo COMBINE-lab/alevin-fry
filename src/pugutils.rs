@@ -30,7 +30,7 @@ use slog::{crit, info, warn};
 
 use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
-use crate::utils as afutils;
+use crate::utils::{self as afutils, EqClassPayload};
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
@@ -974,7 +974,7 @@ fn get_num_molecules_large_component(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
-pub fn get_num_molecules<const IS_LONG: bool>(
+pub fn get_num_molecules<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
@@ -1103,7 +1103,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                     // NOTE: what if there are multiple different mccs that
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
-                    let (cand_mcc, cand_txp, cand_prob, eq_txs_prob) = if IS_LONG {
+                    let (cand_mcc, cand_txp, cand_prob, eq_txs_prob) = if P::HAS_PROBS {
                         collapse_vertices_weighted(*v, &uncovered_vertices, g, eqmap, hasher_state)
                     } else {
                         let (new_mcc, covering_txp) =
@@ -1112,7 +1112,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                     };
 
                     let mcc_len = cand_mcc.len();
-                    if IS_LONG {
+                    if P::HAS_PROBS {
                         if best_mcc_prob < cand_prob {
                             best_mcc = cand_mcc;
                             best_mcc_prob = cand_prob;
@@ -1180,7 +1180,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                 // for long reads
                 //obtain the probabiltiy for the global txps
                 let mut global_txp_prob: Vec<f64> = vec![];
-                if IS_LONG {
+                if P::HAS_PROBS {
                     let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_probs
                         .iter()
                         .filter(|(t, _)| global_txps.contains(t))
@@ -1232,7 +1232,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                     "can't find representative gene(s) for a molecule"
                 );
 
-                if IS_LONG {
+                if P::HAS_PROBS {
                     // TODO: get rid of this clone
                     let (count, prob_vec) = gene_eqclass_prob_hash
                         .entry(global_genes.clone())
@@ -1259,7 +1259,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
 
             let mut global_txp_prob: Vec<f64> = vec![];
 
-            if IS_LONG {
+            if P::HAS_PROBS {
                 if tl.len() == 1 {
                     one_vertex_components[0] += 1;
                     global_txp_prob = vec![1.0];
@@ -1308,7 +1308,7 @@ pub fn get_num_molecules<const IS_LONG: bool>(
                 pug_stats.ambiguous_mccs += 1;
             }
 
-            if IS_LONG {
+            if P::HAS_PROBS {
                 // TODO: get rid of this clone
                 let (count, prob_vec) = gene_eqclass_prob_hash
                     .entry(global_genes.clone())

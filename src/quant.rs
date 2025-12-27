@@ -49,7 +49,10 @@ use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 use crate::utils as afutils;
-use crate::utils::{KnownRecordType, OptionalAlignmentScores};
+use crate::utils::{
+    BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
+    OptionalAlignmentScores,
+};
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -378,7 +381,7 @@ struct WorkerSharedState<R: MappedRecord> {
     mmrate: Arc<Mutex<Vec<f64>>>,
 }
 
-fn run_worker_thread<B, R, const IS_LONG: bool>(
+fn run_worker_thread<B, R, P>(
     _worker_num: usize,
     config: WorkerConfig,
     shared: WorkerSharedState<R>,
@@ -398,12 +401,13 @@ where
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,
+    P: EqClassPayload,
 {
     // these can be created once and cleared after processing
     // each cell.
     let mut unique_evidence = vec![false; config.num_rows];
     let mut no_ambiguity = vec![false; config.num_rows];
-    let mut eq_map = EqMap::new(num_eq_targets, eq_map_type, IS_LONG);
+    let mut eq_map = EqMap::new(num_eq_targets, eq_map_type, P::HAS_PROBS);
     let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
     let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
     let mut eds_bytes = Vec::<u8>::new();
@@ -574,7 +578,7 @@ where
                             // for the PUG resolution algorithm, set the hasher
                             // that will be used based on the cell barcode.
                             let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
-                            let pug_stats = pugutils::get_num_molecules::<IS_LONG>(
+                            let pug_stats = pugutils::get_num_molecules::<P>(
                                 &g,
                                 &eq_map,
                                 &shared.tid_to_gid,
@@ -593,7 +597,7 @@ where
 
                             // NOTE: This configuration seems overly complicated
                             // see if we can simplify it.
-                            match (config.usa_mode, only_unique, IS_LONG) {
+                            match (config.usa_mode, only_unique, P::HAS_PROBS) {
                                 (true, true, _) => {
                                     // USA mode, only gene-unqique reads
                                     counts = afutils::extract_counts(&gene_eqc, config.num_rows);
@@ -921,7 +925,7 @@ where
     local_nrec
 }
 
-pub(crate) fn do_quantify<T: BufRead, B, R, const IS_LONG: bool>(
+pub(crate) fn do_quantify<T: BufRead, B, R, P>(
     mut br: T,
     quant_opts: QuantOpts,
     prelude: RadPrelude,
@@ -939,6 +943,7 @@ where
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,
+    P: EqClassPayload,
 {
     let parent = std::path::Path::new(quant_opts.input_dir);
     //let hdr = rad_types::RadHeader::from_bytes(&mut br);
@@ -1312,14 +1317,7 @@ where
 
         // now, make the worker thread
         let handle = std::thread::spawn(move || {
-            run_worker_thread::<_, _, IS_LONG>(
-                worker,
-                config,
-                shared,
-                log,
-                num_eq_targets,
-                eq_map_type,
-            )
+            run_worker_thread::<_, _, P>(worker, config, shared, log, num_eq_targets, eq_map_type)
         });
 
         thread_handles.push(handle);
@@ -1458,7 +1456,12 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
-            do_quantify::<_, u64, ScLongReadRecord, true>(br, quant_opts, prelude, file_tag_map)
+            do_quantify::<_, u64, ScLongReadRecord, LongReadEqClassPayload>(
+                br,
+                quant_opts,
+                prelude,
+                file_tag_map,
+            )
         }
         KnownRecordType::AtacSeq(_bc_len) => {
             info!(log, "record type is short read single-cell ATAC-seq");
@@ -1469,7 +1472,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 log,
                 "record type is short read single-cell RNA-seq with positions"
             );
-            do_quantify::<_, u64, AlevinFryReadRecordWithPosition, false>(
+            do_quantify::<_, u64, AlevinFryReadRecordWithPosition, BasicEqClassPayload>(
                 br,
                 quant_opts,
                 prelude,
@@ -1481,7 +1484,12 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 log,
                 "record type is standard short read single-cell RNA-seq"
             );
-            do_quantify::<_, u64, AlevinFryReadRecord, false>(br, quant_opts, prelude, file_tag_map)
+            do_quantify::<_, u64, AlevinFryReadRecord, BasicEqClassPayload>(
+                br,
+                quant_opts,
+                prelude,
+                file_tag_map,
+            )
         }
     }
 }

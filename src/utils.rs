@@ -47,6 +47,55 @@ struct QuantArguments {
 }
 */
 
+pub trait EqClassPayload {
+    const HAS_PROBS: bool;
+    fn count(&self) -> u32;
+    fn inc(&mut self);
+    fn probs(&self) -> &Vec<Vec<f64>>;
+    fn add_probs(&mut self, p: &[f64]);
+}
+
+pub struct BasicEqClassPayload {
+    pub ct: u32,
+}
+
+impl EqClassPayload for BasicEqClassPayload {
+    const HAS_PROBS: bool = false;
+    fn count(&self) -> u32 {
+        self.ct
+    }
+    fn inc(&mut self) {
+        self.ct += 1;
+    }
+    fn probs(&self) -> &Vec<Vec<f64>> {
+        unimplemented!();
+    }
+    fn add_probs(&mut self, _p: &[f64]) {
+        unimplemented!();
+    }
+}
+
+pub struct LongReadEqClassPayload {
+    pub ct: u32,
+    pub probs: Vec<Vec<f64>>,
+}
+
+impl EqClassPayload for LongReadEqClassPayload {
+    const HAS_PROBS: bool = true;
+    fn count(&self) -> u32 {
+        self.ct
+    }
+    fn inc(&mut self) {
+        self.ct += 1;
+    }
+    fn probs(&self) -> &Vec<Vec<f64>> {
+        &self.probs
+    }
+    fn add_probs(&mut self, p: &[f64]) {
+        self.probs.push(p.to_vec());
+    }
+}
+
 pub(crate) trait OptionalAlignmentScores {
     fn maybe_scores(&self) -> Option<&[i32]>;
 }
