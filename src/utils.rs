@@ -49,6 +49,9 @@ struct QuantArguments {
 
 pub trait EqClassPayload {
     const HAS_PROBS: bool;
+    fn new() -> Self;
+    fn new_from_count(ct: u32) -> Self;
+    fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self;
     fn count(&self) -> u32;
     fn inc(&mut self);
     fn probs(&self) -> &Vec<Vec<f64>>;
@@ -61,6 +64,16 @@ pub struct BasicEqClassPayload {
 
 impl EqClassPayload for BasicEqClassPayload {
     const HAS_PROBS: bool = false;
+    fn new() -> Self {
+        Self { ct: 0 }
+    }
+    fn new_from_count(ct: u32) -> Self {
+        Self { ct }
+    }
+    fn new_from_count_and_probs(_ct: u32, _probs: &[f64]) -> Self {
+        unimplemented!("new_from_count_and_probs not implemented for BasicEqClassPayload");
+    }
+
     fn count(&self) -> u32 {
         self.ct
     }
@@ -82,6 +95,21 @@ pub struct LongReadEqClassPayload {
 
 impl EqClassPayload for LongReadEqClassPayload {
     const HAS_PROBS: bool = true;
+    fn new() -> Self {
+        Self {
+            ct: 0,
+            probs: vec![],
+        }
+    }
+    fn new_from_count(ct: u32) -> Self {
+        Self { ct, probs: vec![] }
+    }
+    fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self {
+        Self {
+            ct,
+            probs: vec![probs.to_vec()],
+        }
+    }
     fn count(&self) -> u32 {
         self.ct
     }

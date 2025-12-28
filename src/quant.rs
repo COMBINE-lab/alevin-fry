@@ -429,8 +429,7 @@ where
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut gene_prob_eqc: HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState> =
-        HashMap::with_hasher(s);
+    let mut gene_prob_eqc: HashMap<Vec<u32>, P, ahash::RandomState> = HashMap::with_hasher(s);
 
     // If we are operating in USA-mode with an EM capable resolution
     // method, we'll use (re-use) these variables to hold the USA-mode
@@ -637,7 +636,6 @@ where
                                 (false, _, true) => {
                                     // not USA-mode
                                     counts = em_optimize_long_read(
-                                        &gene_eqc,
                                         &gene_prob_eqc,
                                         &mut unique_evidence,
                                         &mut no_ambiguity,

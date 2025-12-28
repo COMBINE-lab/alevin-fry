@@ -10,6 +10,7 @@
 #[allow(unused_imports)]
 use crate::eq_class::IndexedEqList;
 use crate::multinomial::Multinomial;
+use crate::utils::EqClassPayload;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
 use nalgebra::base::OVector;
@@ -706,25 +707,27 @@ pub fn run_bootstrap_old(
 }
 
 //em tailored for long read dataset
-pub fn em_update_long_read(
+pub fn em_update_long_read<P: EqClassPayload>(
     alphas_in: &[f32],
     alphas_out: &mut [f32],
-    eqclasses_prob: &HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
+    eqclasses_prob: &HashMap<Vec<u32>, P, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
-    for (labels, (count, prob_vec)) in eqclasses_prob {
+    for (labels, payload) in eqclasses_prob {
+        let count = payload.count();
         if labels.len() > 1 {
+            let prob_vec = payload.probs();
             let mut denominator: f32 = 0.0;
             let mut avg_probs: Vec<f32> = Vec::with_capacity(labels.len());
             for (tx_idx, label) in labels.iter().enumerate() {
-                let sum_prob: f64 = (0..*count as usize).map(|i| prob_vec[i][tx_idx]).sum();
-                let avg_prob: f32 = sum_prob as f32 / *count as f32;
+                let sum_prob: f64 = (0..count as usize).map(|i| prob_vec[i][tx_idx]).sum();
+                let avg_prob: f32 = sum_prob as f32 / count as f32;
                 avg_probs.push(avg_prob);
                 denominator += alphas_in[*label as usize] * avg_prob;
             }
 
             if denominator > 0.0 {
-                let inv_denominator = (*count as f32) / denominator;
+                let inv_denominator = (count as f32) / denominator;
                 for (tx_idx, label) in labels.iter().enumerate() {
                     let index = *label as usize;
                     let count = alphas_in[index] * avg_probs[tx_idx] * inv_denominator;
@@ -733,14 +736,13 @@ pub fn em_update_long_read(
             }
         } else {
             let tidx = labels.first().expect("can't extract labels");
-            alphas_out[*tidx as usize] += *count as f32;
+            alphas_out[*tidx as usize] += count as f32;
         }
     }
 }
 
-pub fn em_optimize_long_read(
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
-    eqclasses_prob: &HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
+pub fn em_optimize_long_read<P: EqClassPayload>(
+    eqclasses_prob: &HashMap<Vec<u32>, P, ahash::RandomState>,
     unique_evidence: &mut [bool],
     no_ambiguity: &mut [bool],
     init_type: EmInitType,
@@ -751,10 +753,10 @@ pub fn em_optimize_long_read(
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
-    for (labels, count) in eqclasses {
+    for (labels, payload) in eqclasses_prob {
         if labels.len() == 1 {
             let idx = labels.first().expect("can't extract labels");
-            alphas_in[*idx as usize] += *count as f32;
+            alphas_in[*idx as usize] += payload.count() as f32;
             unique_evidence[*idx as usize] = true;
         } else {
             for idx in labels {

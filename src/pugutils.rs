@@ -980,7 +980,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
     tid_to_gid: &[u32],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
     // TODO: (@zzare-umd) This seems redundant with the above, how do we handle that?
-    gene_eqclass_prob_hash: &mut HashMap<Vec<u32>, (u32, Vec<Vec<f64>>), ahash::RandomState>,
+    gene_eqclass_prob_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
     log: &slog::Logger,
@@ -1234,11 +1234,11 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
                 if P::HAS_PROBS {
                     // TODO: get rid of this clone
-                    let (count, prob_vec) = gene_eqclass_prob_hash
+                    let payload = gene_eqclass_prob_hash
                         .entry(global_genes.clone())
-                        .or_insert((0, vec![vec![]]));
-                    *count += 1;
-                    prob_vec.push(global_txp_prob);
+                        .or_insert(P::new());
+                    payload.inc();
+                    payload.add_probs(&global_txp_prob);
                 }
 
                 // in our hash, increment the count of this equivalence class
@@ -1310,11 +1310,11 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
             if P::HAS_PROBS {
                 // TODO: get rid of this clone
-                let (count, prob_vec) = gene_eqclass_prob_hash
+                let payload = gene_eqclass_prob_hash
                     .entry(global_genes.clone())
-                    .or_insert((0, vec![vec![]]));
-                *count += 1;
-                prob_vec.push(global_txp_prob);
+                    .or_insert(P::new());
+                payload.inc();
+                payload.add_probs(&global_txp_prob);
             }
 
             // incrementing the count of the eqclass label by 1
