@@ -249,24 +249,26 @@ pub fn forseti_for_multi_best(
         let all_forward = algn_tuple_list.iter().all(|algn_tuple| algn_tuple.0);
         let all_reverse = algn_tuple_list.iter().all(|algn_tuple| !algn_tuple.0);
 
-        let INVALID_POS_LIMIT:u32 =u32::MAX - read_length as u32 - 50;
+        let invalid_pos_limit: u32 = u32::MAX - read_length as u32 - 50;
         let mut mcc_invalid = false;
 
         if all_forward {
             ref_start_list.clear();
             ref_start_list.reserve(algn_tuple_list.len());
-            for &(_is_forward, ref_start) in algn_tuple_list.iter() {
+            for &(_is_forward, ref_start_u32) in algn_tuple_list.iter() {
                 // NOTE: Mimic softclip
                 // TODO:we could have a better way to handle this. if we can use signed int for the ref_start, we could know the length of overhang/clipping.
-                if ref_start > INVALID_POS_LIMIT {
+                if ref_start_u32 > invalid_pos_limit {
                     ref_start_list.push(0 as usize);
-                }else if ref_start > tx_ref_end.try_into().unwrap() {
-                    println!("ref_start: {}", ref_start);
-                    eprintln!("Error: ref_start is not close to 2^32, but exceed ref length");
-                    mcc_invalid = true;
-                    break;
                 }else{
-                    ref_start_list.push(ref_start as usize);
+                    let rs = ref_start_u32 as usize;
+                    if rs > tx_ref_end {
+                        println!("ref_start: {}", rs);
+                        eprintln!("Error: ref_start is not close to 2^32, but exceed ref length");
+                        mcc_invalid = true;
+                        break;
+                    }
+                    ref_start_list.push(rs);
                 }
             }
             if mcc_invalid{
@@ -426,10 +428,10 @@ pub fn forseti_for_multi_best(
 
             for &(_is_reverse, ref_start_u32) in algn_tuple_list.iter() {
                 let mut ref_start = ref_start_u32 as usize;
-                if ref_start > INVALID_POS_LIMIT {
+                if ref_start_u32 > invalid_pos_limit {
                 // mimic softclip
                     ref_start = 0 as usize;
-                }else if ref_start > tx_ref_end.try_into().unwrap(){
+                }else if ref_start > tx_ref_end{
                     eprintln!("Error: ref_start is not close to 2^32, but exceed ref length. This should not happen.");
                     mcc_invalid = true;
                     break;
@@ -503,7 +505,7 @@ pub fn forseti_for_multi_best(
                         }
                     }
                     let max_sum = sum_log_probs.iter().cloned().fold(0.0_f64, f64::max);
-                    let norm_sum_joint_prob = max_sum / ref_end_list.len() as f64
+                    let norm_sum_joint_prob = max_sum / ref_end_list.len() as f64;
                     // Update mcc_to_tx_prob_dict
                     mcc_to_tx_prob_dict.insert(*mcc_idx, norm_sum_joint_prob);
                 }

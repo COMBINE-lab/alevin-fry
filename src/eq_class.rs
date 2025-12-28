@@ -607,8 +607,11 @@ impl EqMap {
             // here. It is expensive (hashing + allocations) and Forseti only needs (dir,pos)
             // for a small subset of reads/refs. Those tuples are looked up on-demand from
             // the per-read record later (see `pugutils::get_forseti_check_list`).
-            let key = r.refs(); // &[u32]
-            match self.eqid_map.get_mut(key) {
+            // r.refs() is &[u32]
+            let mut key_vec = r.refs().to_vec();
+            key_vec.sort_unstable();
+            key_vec.dedup();
+            match self.eqid_map.get_mut(&key_vec) {
                 // if we've seen this equivalence class before, add the UMI and `read_idx`
                 // We want: ref_list -> [(umi, [read_idx])]
                 Some(v) => {
@@ -629,16 +632,17 @@ impl EqMap {
                 }
                 // otherwise, add the new umi, but we also have some extra bookkeeping
                 None => {
+
                     let eq_num = self.eqc_info.len() as u32;
-                    self.label_list_size += key.len();
-                    for tid in key.iter() {
+                    self.label_list_size += key_vec.len();
+                    for tid in key_vec.iter() {
                         let ridx = *tid as usize;
                         // ridx was validated above
                         self.label_counts[ridx] += 1;
                         //ref_to_eqid[*r as usize].push(eq_num);
                     }
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
-                    self.eq_labels.extend(key);
+                    self.eq_labels.extend(key_vec.iter().copied());
 
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
@@ -648,7 +652,7 @@ impl EqMap {
                         umis: vec![(r.umi(), vec![read_idx])],
                         eq_num,
                     });
-                    self.eqid_map.insert(key.to_vec(), eq_num);
+                    self.eqid_map.insert(key_vec, eq_num);
                 }
             }
         }

@@ -67,14 +67,14 @@ pub struct PugResolutionStatistics {
     pub triv_single_gene_ambiguous_ss: u64,
     pub triv_mcc_forseti_needed: u64,
 }
-#[inline]
-fn check_txps_suffix(txp_ids: &[u32], ref_names: &[String]) -> bool {
-    txp_ids.iter().any(|&tid| {
-        ref_names
-            .get(tid as usize)
-            .map(|nm| nm.ends_with("-U"))
-            .unwrap_or(false)
-    })
+
+/// Allowed suffix categories for transcript names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SuffixType {
+    NoneDash, // No suffix tag (no "-X" at the end)
+    T,        // "-T" (anothe type for unspliced)
+    S,        // "-S" (spliced)
+    U,        // "-U" (unspliced)
 }
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -421,19 +421,6 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
-// Forseti path currently wants a list-of-candidates interface (even if length-1).
-#[inline]
-fn collapse_vertices_multi(
-    v: u32,
-    uncovered_vertices: &HashSet<u32, ahash::RandomState>,
-    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
-    eqmap: &EqMap,
-    hasher_state: &ahash::RandomState,
-) -> Vec<(Vec<u32>, u32)> {
-    let (mcc, txp) = collapse_vertices(v, uncovered_vertices, g, eqmap, hasher_state);
-    vec![(mcc, txp)]
-}
-
 #[inline]
 fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
@@ -680,9 +667,9 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R>(
 B: ConvertiblePrimitiveInteger,
     u64: From<B>,
     R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord, 
-       <R as MappedRecord>::ParsingContext: RecordContext, 
-       <R as MappedRecord>::ParsingContext: Clone,
-       <R as MappedRecord>::ParsingContext: Send
+    <R as MappedRecord>::ParsingContext: RecordContext, 
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send
 {
     let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
 
@@ -874,7 +861,7 @@ fn get_num_molecules_large_component(
         // get the (umi, count) pairs
         let umis = v; //&eqinfo.umis;
         let eqid = k; //&eqinfo.eq_num;
-                      // project the transcript ids to gene ids
+                    // project the transcript ids to gene ids
         let mut gset: Vec<u32>;
 
         if gene_level_eq_map {
@@ -1303,8 +1290,10 @@ pub fn get_num_molecules_forseti(
     // To do this, we first extract the set of _transcripts_
     // that label all vertices of the mcc, and then we project
     // the transcripts to their corresponding gene ids.
+
     //let mut global_txps : Vec<u32>;
-    let mut global_txps = get_set(16);
+    // let mut global_txps = get_set(16);
+
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0,
@@ -1318,7 +1307,15 @@ pub fn get_num_molecules_forseti(
         triv_single_gene_ambiguous_ss: 0,
         triv_mcc_forseti_needed: 0,
     };
+
     for (_comp_label, comp_verts) in comps.iter() {
+        let mut best_mcc: Vec<u32> = Vec::with_capacity(comp_verts.len());
+        let mut predict_best_cvr_txp_list: Vec<u32> = Vec::with_capacity(16);
+        let mut global_txps = Vec::with_capacity(16);
+        let mut global_genes = Vec::with_capacity(16);
+        let mut all_global_genes = Vec::with_capacity(16);
+        let mut full_mcc_txp_pairs: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(32);
+
         if comp_verts.len() > 1 {
             // if connected component is large, use existing function. the eq_map will safely use eqc_info rather than eqc_info_forseti.
             if comp_verts.len() > large_graph_thresh {
@@ -1346,118 +1343,108 @@ pub fn get_num_molecules_forseti(
             }
 
             // initial Vec buffers
-            let mut best_mcc: Vec<u32> = Vec::with_capacity(comp_verts.len());
-            let mut best_mcc_list: Vec<(Vec<u32>, u32)> = Vec::new();
-            let mut dedup_best_mcc_list: Vec<(Vec<u32>, u32)> = Vec::new();
-            let mut best_covering_txp_list: Vec<u32> = Vec::new();
-            let mut predicted_best_mcc_list: Vec<Vec<u32>> = Vec::new();
-            let mut all_global_txps = get_set(16);
-            let mut global_txps_check: Vec<u32> = Vec::new();
-            let mut sorted_verts: Vec<u32> = Vec::with_capacity(comp_verts.len());
-
+            let mut best_mcc_list: Vec<Vec<u32>> = Vec::with_capacity(comp_verts.len());
+            let mut predicted_best_mcc_list: Vec<Vec<u32>> = Vec::with_capacity(comp_verts.len());
+            let mut current_global_txps = get_set(16);
+            let mut all_global_txps = Vec::with_capacity(48);
+            let mut seen_mccs = HashSet::with_capacity_and_hasher(uncovered_vertices.len(), hasher_state.clone());
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
-            let mut rng = StdRng::seed_from_u64(seed);
             while !uncovered_vertices.is_empty() {
                 let num_remaining = uncovered_vertices.len();
-                // will hold vertices in the best mcc
+                let mut best_len: usize = 0;
+                let mut current_covering_txp = u32::MAX;
                 best_mcc.clear();
+                global_txps.clear();
                 best_mcc_list.clear();
-                dedup_best_mcc_list.clear();
-                best_covering_txp_list.clear();
                 predicted_best_mcc_list.clear();
+                seen_mccs.clear();
 
                 // the transcript that is responsible for the
                 // best mcc covering
-                let mut best_covering_txp = u32::MAX;
                 let mut find_single_best = false;
 
                 // for each vertex in the vertex set
-                // TODO: should we change back later? YG. 
-                // NOTE: to make the algorithm deterministic,
-                sorted_verts.clear();
-                sorted_verts.extend(uncovered_vertices.iter().copied());
-                sorted_verts.sort_unstable(); // Sort the vertices to guarantee a fixed order
-                for v in sorted_verts.iter() {
+                for v in uncovered_vertices.iter() {
                     // find the largest mcc starting from this vertex
                     // and the transcript that covers it
                     // NOTE: mcc is the mcc consists of a set of vertices.(new_mcc.len() = size of the tree )
-                    //largest_mcc_list = [(current_mcc, chosen_txp), ...]
-                    let largest_mcc_list =
-                        collapse_vertices_multi(*v, &uncovered_vertices, g, eqmap, hasher_state);
+                    let (mut new_mcc, covering_txp) = collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
 
-                    // though we have a list of largest mccs, they are all the same size, only compare the first one with the current best mcc
-                    let first_mcc_tuple = &largest_mcc_list[0];
-                    let mut new_mcc: Vec<u32> = first_mcc_tuple.0.clone();
-                    let covering_txp: u32 = first_mcc_tuple.1;
-                    let mcc_len = new_mcc.len();
-
-                    match mcc_len.cmp(&best_mcc.len()) {
-                        Ordering::Greater => {
-                            // Move `new_mcc` into `best_mcc`
-                            best_mcc.clear();
-                            best_mcc.extend(new_mcc.iter().copied());
-                            best_covering_txp = covering_txp;
-
+                    let current_len = new_mcc.len();
+                    // if the new mcc is better than the current best, then
+                    // it becomes the new best; if the same length, append new ones
+                    if current_len >= best_len && current_len > 0 {
+                        if current_len > best_len {
+                            current_covering_txp = covering_txp;
+                            // if find a larger mcc, reset all states
+                            best_len = current_len;
                             best_mcc_list.clear();
-                            // Use `extend` to add items from `largest_mcc_list`
-                            best_mcc_list.extend(
-                                largest_mcc_list
-                                    .iter()
-                                    .map(|(mcc, txp)| (mcc.clone(), *txp)),
-                            );
+                            seen_mccs.clear();
                         }
-                        Ordering::Equal => {
-                            // Append items when lengths are equal
-                            best_mcc_list.extend(
-                                largest_mcc_list
-                                    .iter()
-                                    .map(|(mcc, txp)| (mcc.clone(), *txp)),
-                            );
-                        }
-                        Ordering::Less => {
-                            // Do nothing when `mcc_len` is less than `best_mcc.len()`
+                        // if mcc is the same length, append new ones
+                        new_mcc.sort_unstable(); 
+                        // use HashSet to ensure no duplicate (vertex combination, txp) in best_mcc_list
+                        if seen_mccs.insert(new_mcc.clone()) {
+                            best_mcc_list.push(new_mcc);
                         }
                     }
-                    // YG. here the best mcc is the largest mcc after we loop all v as a start point.
-                    // we can't do better than covering all
-                    // remaining uncovered vertices.  So, if we
-                    // accomplish that, then quit here.
-                    // TODO: Now, if mcc_len == remaing & remaining == 1, we can call forseti to choose the better one. If we have time. we can do this.
-                    if mcc_len == num_remaining {
-                        break;
-                    }
+                    if best_len > num_remaining { break; }
                 }
-                // YG-TODO: large_mcc is a vec of usize. we can sort it and recognize the same mcc that start from different v but have same combination of v. --> save time by repeat calculating the forseti for these case
-                // best_mcc deduplication
-                dedup_best_mcc_list.clear();
-                for (mcc, txp) in best_mcc_list.iter() {
-                    let mut sorted_mcc = mcc.clone();
-                    sorted_mcc.sort_unstable();
-
-                    // Only push if we don't have this exact (sorted_mcc, txp) pair yet.
-                    if !dedup_best_mcc_list
-                        .iter()
-                        .any(|(existing_mcc, existing_txp)| {
-                            existing_mcc == &sorted_mcc && existing_txp == txp
-                        })
-                    {
-                        dedup_best_mcc_list.push((sorted_mcc, *txp));
-                    }
+                // sanity check
+                // only check the current_covering_txp
+                if current_covering_txp == u32::MAX {
+                    crit!(log, "Could not find a covering transcript");
+                    std::process::exit(1);
                 }
+                // get gene_id of best covering transcript
+                let current_covering_gene = if gene_level_eq_map {
+                    current_covering_txp
+                } else {
+                    tid_to_gid[current_covering_txp as usize]
+                };
 
+                // get all compatible txps for the best mcc list
                 all_global_txps.clear();
-                for (_best_mcc, txp) in dedup_best_mcc_list.iter() {
-                    //Hashset will ignore duplicates
-                    all_global_txps.insert(*txp);
+                // We'll store the (mcc, txp) pairs here for Forseti scoring later
+                // Reusing best_mcc_list to hold the final pairs
+                full_mcc_txp_pairs.clear();
+                let mut filtered_mcc_txp_pairs: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> = HashMap::with_capacity_and_hasher(best_mcc_list.len(), hasher_state.clone());
+                // Process each unique maximum-sized vertex set (MCC) found
+                for mcc in best_mcc_list.iter() {
+                    // Local set to find transcripts that cover ALL vertices in the CURRENT MCC
+                    current_global_txps.clear();
+                    for (index, vertex) in mcc.iter().enumerate() {
+                        // Retrieve the equivalence class ID for the vertex
+                        let eqid = g.from_index(*vertex as usize).0 as u32;
+                        let refs = eqmap.refs_for_eqc(eqid);
+                        
+                        if index == 0 {
+                            // Initialize with transcripts from the first vertex
+                            for lt in eqmap.refs_for_eqc(eqid) {
+                                current_global_txps.insert(*lt);
+                            }
+                        } else {
+                            // Intersect: keep only transcripts present in ALL vertices of this MCC
+                            let txps_for_vert = eqmap.refs_for_eqc(eqid);
+                            current_global_txps.retain(|t| refs.binary_search(t).is_ok());
+                        }
+                    }
+                    // Pair the MCC with each valid transcript as a candidate for Forseti
+                    full_mcc_txp_pairs.push((mcc.clone(), current_global_txps.iter().cloned().collect()));
+                    // For every valid transcript explaining this specific MCC
+                    for &txp in current_global_txps.iter() {
+                        // Add to global set for downstream gene-level deduplication
+                        all_global_txps.push(txp);
+                    }
                 }
-                global_txps_check.clear();
-                global_txps_check.extend(all_global_txps.iter().copied());
-
+                all_global_txps.sort_unstable();
+                all_global_txps.dedup();
                 // project each covering transcript to its
                 // corresponding gene, and dedup the list
-                let mut global_genes: Vec<u32> = if gene_level_eq_map {
-                    global_txps_check.clone()
+                all_global_genes.clear();
+                all_global_genes= if gene_level_eq_map {
+                    all_global_txps.iter().cloned().collect()
                 } else {
                     all_global_txps
                         .iter()
@@ -1466,14 +1453,20 @@ pub fn get_num_molecules_forseti(
                         .collect()
                 };
                 // sort since we will be hashing the ordered vector
-                global_genes.sort_unstable();
+                all_global_genes.sort_unstable();
                 // dedup as well since we don't care about duplicates
-                global_genes.dedup();
+                all_global_genes.dedup();
+
+                // assert the best covering gene in the global gene set
                 assert!(
-                    !global_genes.is_empty(),
+                    all_global_genes.contains(&current_covering_gene),
+                    "best gene {} not in covering set, shouldn't be possible",
+                    current_covering_gene
+                );
+                assert!(
+                    !all_global_genes.is_empty(),
                     "can't find representative gene(s) for a molecule"
                 );
-
                 // check if the best_mcc_list (have 1 or more mcc) have multiple gene label/ amb splicing status(s.s.). If so, we will call forseti. Otherwise, we will randomly choose one mcc.
 
                 // call forseti if we have multiple best mccs to determine the final best mcc and best covering txps
@@ -1481,20 +1474,23 @@ pub fn get_num_molecules_forseti(
 
                 if all_global_txps.len() == 1 {
                     pug_stats.non_triv_mccs_determined_ss.0 += 1;
-                } else if global_genes.len() == 1
-                    && check_txps_suffix(&global_txps_check, ref_names)
+                } else if all_global_genes.len() == 1
+                    && has_single_strict_suffix_type(&all_global_txps, ref_names)
                 {
                     pug_stats.non_triv_mccs_determined_ss.1 += 1;
                 } else {
                     need_forseti = true;
                 }
-
+                // as a default, use the first mcc and its global txps.
+                best_mcc = full_mcc_txp_pairs[0].0.clone();
+                global_txps = full_mcc_txp_pairs[0].1.clone();
+                // update best_mcc and global_txps if we have useful information from forseti.
                 if need_forseti {
                     pug_stats.large_mcc_forseti_needed += 1;
-                    // best_mcc_list: [(mcc, covering_txp), (mcc2, covering_txp2), ...], where mcc is a vector of vertex indices.
-                    // check_mcc_list: [(covering_ref_name, rname_list1),(covering_ref_name2, rname_list2),...]
-                    let check_mcc_list: Vec<(u32, Vec<u64>)> =
-                        get_check_mcc_list(&dedup_best_mcc_list, eqmap, g);
+                    // full_mcc_txp_pairs: [(mcc, covering_txp_list1), (mcc2, covering_txp2), ...], where mcc is a vector of vertex indices.
+                    // check_mcc_list: [(mcc, covering_ref_id, rname_list1),(mcc, covering_ref_id2, rname_list2),...]
+                    let check_mcc_list: Vec<(Vec<u32>, u32, Vec<u64>)> =
+                        get_check_mcc_list(&full_mcc_txp_pairs, eqmap, g);
                     // get the algn tuple from align file;
                     // forseti_checking_list: {(iter_idx, covering_txp_id): [(dir, pos), (dir2, pos2), ...]}
                     let forseti_checking_list = get_forseti_check_list(cell_reads, &check_mcc_list);
@@ -1511,15 +1507,15 @@ pub fn get_num_molecules_forseti(
 
                     match forseti_result {
                         Ok(best_mcc_indices) => {
-                            if best_mcc_indices.len() == 1 {
-                                find_single_best = true;
-                            }
+                            find_single_best = best_mcc_indices.len() == 1;
+
                             for mcc_idx in &best_mcc_indices {
-                                let mcc_info_tuple = &dedup_best_mcc_list[*mcc_idx as usize];
-                                let best_covering_txp_element = mcc_info_tuple.1;
-                                let predicted_best_mcc = mcc_info_tuple.0.clone();
-                                predicted_best_mcc_list.push(predicted_best_mcc);
-                                best_covering_txp_list.push(best_covering_txp_element);
+                                let mcc_info_tuple = &check_mcc_list[*mcc_idx as usize];
+                                let predict_best_cvr_txp = mcc_info_tuple.1;
+                                let predict_best_mcc = mcc_info_tuple.0.clone();
+                                filtered_mcc_txp_pairs.entry(predict_best_mcc)
+                                    .or_insert(Vec::new())
+                                    .push(predict_best_cvr_txp);
                             }
                         }
                         Err(e) => {
@@ -1532,84 +1528,19 @@ pub fn get_num_molecules_forseti(
                     }
                     // after forseti
                     global_txps.clear(); //reset global_txps
-                    if predicted_best_mcc_list.is_empty() || best_covering_txp_list.is_empty() {
-                        // It is possible that the we cannot find a valid score and share txp for all reads in a mcc. In this case, we will have empty result from forseti.
-                        //We will randomly choose the mcc from the best_mcc_list(before forseti) and the corresponding txp.)
-                        // YG NOTE:
-                        // we use the first mcc in the best_mcc_list, which is the same as the original af's implementation. Try to get a no-worse version, serve as a better baseline.
-                        let chosen_mcc_info = &best_mcc_list[0];
-                        let chosen_mcc = chosen_mcc_info.0.clone();
-                        best_mcc = chosen_mcc.clone();
-                        best_covering_txp = chosen_mcc_info.1;
-                        // We iterate over all vertices in the mcc, and for each one, we keep track of the (monotonically non-increasing) set of transcripts that have appeared in all vertices.
-                        for (index, vertex) in chosen_mcc.iter().enumerate() {
-                            // get the underlying graph vertex for this
-                            // vertex in the mcc
-                            let vert = g.from_index((*vertex) as usize);
+                    if !filtered_mcc_txp_pairs.is_empty() {
+                        // we have narrowed down mcc/txps from forseti. update best_mc and global_txps,  
 
-                            // the first element of the vertex tuple is the
-                            // equivalence class id
-                            let eqid = vert.0 as usize;
-
-                            // if this is the first vertex
-                            if index == 0 {
-                                for lt in eqmap.refs_for_eqc(eqid as u32) {
-                                    global_txps.insert(*lt);
-                                }
-                            } else {
-                                //crit!(log, "global txps = {:#?}\ncurr refs = {:#?}", global_txps, eqmap.refs_for_eqc(eqid as u32));
-                                let txps_for_vert = eqmap.refs_for_eqc(eqid as u32);
-                                global_txps.retain(|t| txps_for_vert.binary_search(t).is_ok());
-                                //for lt in eqmap.refs_for_eqc(eqid as u32) {
-                                //    global_txps.remove(lt);
-                                //}
-                            }
-                        }
-                    } else {
-                        // We got valid better txp and mcc from forseti
-
-                        //Even though forseti output all equally best mcc and txp. we will eventually choose just one "best_mcc" to proceed. here we randomly choose one best mcc.
-                        let before_dedup_predicted_best_mcc_list = predicted_best_mcc_list.clone();
-                        predicted_best_mcc_list.dedup();
-                        if predicted_best_mcc_list.len() == 1 {
-                            best_mcc = predicted_best_mcc_list[0].clone();
-                            //NOTE: original af, will finally fix one mcc but the tx and corresponding gene could be multiple. then the so called 'global_genes' will be passed to the gene_eqclass_hash.
-                            // NOTE: why change?[Jan6, 2025] original af will find and use all possible txp after choose a best mcc, but forseti might narrow down the txp set. we will use the narrowed txp set to update the gene_eqclass_hash.
-                            for best_covering_txp in best_covering_txp_list.iter() {
-                                global_txps.insert(*best_covering_txp);
-                            }
-                        } else {
-                            // predicted multiple best mccs, randomly choose one
-                            //generate random number as idx
-
-                            // Logic: we random choose one mcc, then, instead of uisng its original global_txp, we'll use its winner txp from forseti.
-                            let idx = rng.gen_range(0..before_dedup_predicted_best_mcc_list.len());
-                            // Select elements at the same random index
-                            best_mcc.clear();
-                            best_mcc.extend(
-                                before_dedup_predicted_best_mcc_list[idx]
-                                    .iter()
-                                    .copied(),
-                            );
-
-                            // Find all indices in predicted_best_mcc_list that match best_mcc
-                            let matching_indices: Vec<usize> = before_dedup_predicted_best_mcc_list
-                                .iter()
-                                .enumerate()
-                                .filter_map(
-                                    |(i, mcc)| if mcc == &best_mcc { Some(i) } else { None },
-                                )
-                                .collect();
-
-                            // Insert `best_covering_txp` values directly into `global_txps` using matching indices
-                            for &i in &matching_indices {
-                                global_txps.insert(best_covering_txp_list[i]);
-                            }
-                        }
+                        //Even though forseti output all equally best mcc and txp. we will eventually choose just one "best_mcc" to proceed. here we use the first mcc.
+                        let (bm, txps) = filtered_mcc_txp_pairs.iter().next().unwrap();
+                        best_mcc = bm.clone();
+                        global_txps.extend(txps.iter().copied());
+                        //instead of uisng its original global_txp, we use its winner txps(narrowed down txps) from forseti.
+                    }else{
+                        best_mcc = full_mcc_txp_pairs[0].0.clone();
+                        global_txps = full_mcc_txp_pairs[0].1.clone();
                     }
-                    // //check if this mcc have determined splicing status
-                    let mut global_txps_check: Vec<u32> = global_txps.iter().cloned().collect();
-                    global_txps_check.dedup();
+
                     // project each covering transcript to its
                     // corresponding gene, and dedup the list
                     global_genes.clear();
@@ -1626,11 +1557,12 @@ pub fn get_num_molecules_forseti(
                     global_genes.sort_unstable();
                     // dedup as well since we don't care about duplicates
                     global_genes.dedup();
-                    if global_txps_check.len() == 1 {
+
+                    if global_txps.len() == 1 {
                         // only 1 tx found, must have determined splicing status and unique gene
                         pug_stats.non_triv_mccs_determined_ss.0 += 1;
                     } else if global_genes.len() == 1 {
-                        if check_txps_suffix(&global_txps_check, ref_names) {
+                        if has_single_strict_suffix_type(&global_txps, ref_names) {
                             pug_stats.non_triv_mccs_determined_ss.1 += 1;
                         } else {
                             pug_stats.non_triv_single_gene_ambiguous_ss += 1;
@@ -1643,7 +1575,8 @@ pub fn get_num_molecules_forseti(
                 pug_stats.total_mccs += 1;
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
-                let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
+                // NOTE: we reuse the global_genes vector to same memo allocation but here we move it; so we need the std::mem::take to make the global_genes empty.
+                let counter = gene_eqclass_hash.entry(std::mem::take(&mut global_genes)).or_insert(0);
                 *counter += 1;
 
                 // for every vertext that has been covered
@@ -1660,13 +1593,8 @@ pub fn get_num_molecules_forseti(
             // this was a single-vertex subgraph
             let tv = comp_verts.first().expect("can't extract first vertex");
             let tl = eqmap.refs_for_eqc(g.from_index(*tv as usize).0);
-            // let mut best_covering_txp = u32::MAX;
-            // let mut best_mcc: Vec<u32> = Vec::new();
             let mut find_single_best: bool = false;
-            let mut best_covering_txp_list: Vec<u32> = Vec::new();
-            // let mut predicted_best_mcc_list: Vec<Vec<u32>> = Vec::new();
-            let mut global_genes: Vec<u32>;
-
+            global_genes.clear();
             // let best_mcc_winner: u32 = *tv;
 
             if gene_level_eq_map {
@@ -1675,18 +1603,16 @@ pub fn get_num_molecules_forseti(
                 global_genes = tl.iter().map(|i| tid_to_gid[*i as usize]).collect();
                 global_genes.sort_unstable();
                 global_genes.dedup();
-                    }
+            }
 
             // since we have only 1 mcc. only use forseti to narrow down the better coverting txp list.
             let mut need_forseti = false;
             // check if this mcc has multi-gene labels or has undetermined splicing status )
             if global_genes.len() == 1 {
                 if tl.len() == 1 {
-                    //YG_change. tx have determined splicing status and unique gene, as only 1 tx found
                     pug_stats.triv_mccs_determined_ss.0 += 1;
                     one_vertex_components[0] += 1;
-                    // best_covering_txp_list.push(tl[0]); // no nned to update. we already have the global_genes above and only need the global_genes to be passed to gene_eqclass_hash.
-                } else if check_txps_suffix(tl, ref_names) {
+                } else if has_single_strict_suffix_type(tl, ref_names) {
                     one_vertex_components[1] += 1;
                     pug_stats.triv_mccs_determined_ss.1 += 1;
                 } else {
@@ -1703,12 +1629,11 @@ pub fn get_num_molecules_forseti(
                 // need to call forseti to determine the best txps for splicing status or best gene, and we need to update the global_genes accordingly.
 
                 // tv is the only vertex, tl is the txps of the eqclass
-                let mut best_mcc_list: Vec<(Vec<u32>, u32)> = Vec::new();
-                for txp in tl.iter() {
-                    best_mcc_list.push((vec![*tv], *txp));
-                }
-                let check_mcc_list: Vec<(u32, Vec<u64>)> =
-                    get_check_mcc_list(&best_mcc_list, eqmap, g);
+                full_mcc_txp_pairs.clear();
+                full_mcc_txp_pairs.push((vec![*tv], tl.to_vec()));
+
+                let check_mcc_list: Vec<(Vec<u32>, u32, Vec<u64>)> =
+                    get_check_mcc_list(&full_mcc_txp_pairs, eqmap, g);
 
                 let forseti_checking_list = get_forseti_check_list(cell_reads, &check_mcc_list);
 
@@ -1720,20 +1645,16 @@ pub fn get_num_molecules_forseti(
                     mlp,
                     read_length as u16,
                 );
+                
+                predict_best_cvr_txp_list.clear();
                 match forseti_result {
                     Ok(best_mcc_indices) => {
-                        //clear the best_covering_txp_list and insert based on the best_mcc_indices
-                        best_covering_txp_list.clear();
                         // assign single best = 1(mcc,txp)
                         find_single_best = best_mcc_indices.len() == 1;
 
                         for mcc_idx in &best_mcc_indices {
-                            let mcc_info_tuple = &best_mcc_list[*mcc_idx as usize];
-                            let best_covering_txp_element = mcc_info_tuple.1;
-                            // For single-vertex, we do not need to assign best_mcc. there is always only 1 mcc.
-                            // let best_mcc = mcc_info_tuple.0.clone();
-                            // predicted_best_mcc_list.push(best_mcc);
-                            best_covering_txp_list.push(best_covering_txp_element);
+                            let mcc_info_tuple = &check_mcc_list[*mcc_idx as usize];
+                            predict_best_cvr_txp_list.push(mcc_info_tuple.1);
                         }
                     }
                     Err(e) => {
@@ -1744,13 +1665,10 @@ pub fn get_num_molecules_forseti(
                         std::process::exit(1);
                     }
                 }
-                if !best_covering_txp_list.is_empty() {
+                if predict_best_cvr_txp_list.len() > 0 {
                     // update the global genes only if the forseti has valid output.
-                    // calc the global_genes
-                    let mut global_txps_check: Vec<u32> = best_covering_txp_list.to_vec();
-                    global_txps_check.dedup();
                     global_genes.clear();
-                    global_genes = best_covering_txp_list
+                    global_genes = predict_best_cvr_txp_list
                         .iter()
                         .map(|i| tid_to_gid[*i as usize])
                         .collect();
@@ -1762,7 +1680,7 @@ pub fn get_num_molecules_forseti(
                         // single best txp after forseti. have determined splicing status and unique gene
                         pug_stats.triv_mccs_determined_ss.0 += 1;
                     } else if global_genes.len() == 1 {
-                        if check_txps_suffix(&global_txps_check, ref_names) {
+                        if has_single_strict_suffix_type(&predict_best_cvr_txp_list, ref_names) {
                             pug_stats.triv_mccs_determined_ss.1 += 1;
                         } else {
                             pug_stats.triv_single_gene_ambiguous_ss += 1;
@@ -1772,39 +1690,41 @@ pub fn get_num_molecules_forseti(
                     }
                 }
             }
-            let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
+            let counter = gene_eqclass_hash.entry(std::mem::take(&mut global_genes)).or_insert(0);
             *counter += 1;
         }
     }
     pug_stats
 }
 
-// check_mcc_list: [(covering_ref_id, read_idx_list1), (covering_ref_id, read_idx_list2), ...]
+// check_mcc_list: [(mcc, covering_ref_id, read_idx_list1), (mcc, covering_ref_id2, read_idx_list2), ...]
 fn get_check_mcc_list(
-    best_mcc_list: &[(Vec<u32>, u32)],
+    full_mcc_txp_pairs: &[(Vec<u32>, Vec<u32>)],
     eqmap: &EqMap,
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
-) -> Vec<(u32, Vec<u64>)> {
-    // Start from the best_mcc_list, get the check_mcc_list(containing covering txp and read_idx_list) required by forseti
-    // best_mcc_list: [(mcc, covering_txp)], where mcc is a vector of vertex indices.
-    let mut check_mcc_list: Vec<(u32, Vec<u64>)> = Vec::with_capacity(best_mcc_list.len());
-    for (mcc, covering_txp_id) in best_mcc_list {
-        let mut check_read_idx_list: Vec<u64> = Vec::new();
-        for v in mcc.iter() {
-            let (eq_id, umi_idx) = g.from_index(*v as usize);
-            let eq = &eqmap.eqc_info_forseti[eq_id as usize];
-            let (_umi_bit, read_idx_list) = &eq.umis[umi_idx as usize];
-            check_read_idx_list.reserve(read_idx_list.len());
-            check_read_idx_list.extend(read_idx_list.iter().copied());
+) -> Vec<(Vec<u32>, u32, Vec<u64>)> {
+    // Start from the full_mcc_txp_pairs, get the check_mcc_list(containing covering txp and read_idx_list) required by forseti
+    // full_mcc_txp_pairs: [(mcc, covering_txp_list)], where mcc is a vector of vertex indices.
+    let mut check_mcc_list: Vec<(Vec<u32>, u32, Vec<u64>)> = Vec::with_capacity(full_mcc_txp_pairs.len()*5);
+    for (mcc, covering_txp_list) in full_mcc_txp_pairs.iter() {
+        for covering_txp_id in covering_txp_list.iter() {
+            let mut check_read_idx_list: Vec<u64> = Vec::new();
+            for v in mcc.iter() {
+                let (eq_id, umi_idx) = g.from_index(*v as usize);
+                let eq = &eqmap.eqc_info_forseti[eq_id as usize];
+                let (_umi_bit, read_idx_list) = &eq.umis[umi_idx as usize];
+                check_read_idx_list.reserve(read_idx_list.len());
+                check_read_idx_list.extend(read_idx_list.iter().copied());
+            }
+            check_mcc_list.push((mcc.clone(), *covering_txp_id, check_read_idx_list));
         }
-        check_mcc_list.push((*covering_txp_id, check_read_idx_list));
     }
     return check_mcc_list;
 }
 
 fn get_forseti_check_list(
     cell_reads: &[AlevinFryReadRecordWithPosition],
-    check_mcc_list: &[(u32, Vec<u64>)],
+    check_mcc_list: &[(Vec<u32>, u32, Vec<u64>)],
 ) -> HashMap<(usize, u32), Vec<AlgnTuple>> {
     // Forseti only needs alignment tuples for a small subset of (read_idx, covering_txp_id)
     // pairs. Avoid building a large HashMap over all alignments for the cell; instead, look up
@@ -1832,7 +1752,7 @@ fn get_forseti_check_list(
     let mut forseti_checking_list: HashMap<(usize, u32), Vec<AlgnTuple>> =
         HashMap::with_capacity(check_mcc_list.len());
 
-    for (mcc_idx, (covering_txp_id, read_idx_list)) in check_mcc_list.iter().enumerate() {
+    for (mcc_idx, (mcc, covering_txp_id, read_idx_list)) in check_mcc_list.iter().enumerate() {
         let key = (mcc_idx, *covering_txp_id);
         let vec_ref = forseti_checking_list
             .entry(key)
@@ -1845,4 +1765,42 @@ fn get_forseti_check_list(
         }
     }
     forseti_checking_list
+}
+
+/// Determine the suffix category of a transcript name.
+/// Only "-T", "-S", "-U", or no suffix are allowed.
+/// Any other trailing "-X" pattern will be treated as an error.
+#[inline]
+fn strict_suffix_type(name: &str) -> SuffixType {
+    match name.rsplit_once('-') {
+        None => SuffixType::NoneDash, // no dash at all
+        Some((_, tag)) => match tag {
+            "T" => SuffixType::T,
+            "S" => SuffixType::S,
+            "U" => SuffixType::U,
+            _ => panic!("Unsupported transcript suffix: -{}", tag),
+        },
+    }
+}
+#[inline]
+// if have single strict suffix type, return true, otherwise false.
+fn has_single_strict_suffix_type(txp_ids: &[u32], ref_names: &[String]) -> bool {
+    let mut kind: Option<SuffixType> = None;
+
+    for &tid in txp_ids {
+        let name = match ref_names.get(tid as usize) {
+            Some(nm) => nm.as_str(),
+            None => return false,
+        };
+
+        let k = strict_suffix_type(name);
+
+        match kind {
+            None => kind = Some(k),
+            Some(prev) if prev == k => {}
+            Some(_) => return false,
+        }
+    }
+
+    true
 }
