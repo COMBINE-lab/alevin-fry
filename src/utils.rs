@@ -510,8 +510,8 @@ pub fn parse_tg_map(
 /// one gene, but only one *spliced* gene, then it is assigned to
 /// the spliced gene, unless there is too much multimapping
 /// (i.e. it is compatible with > 10 different loci).
-pub fn extract_counts(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_counts<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
 ) -> Vec<f32> {
     // the number of genes not considering status
@@ -520,7 +520,8 @@ pub fn extract_counts(
     let ambig_offset = 2 * unspliced_offset;
     let mut counts = vec![0_f32; num_counts];
 
-    for (labels, count) in gene_eqc {
+    for (labels, payload) in gene_eqc {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -533,7 +534,7 @@ pub fn extract_counts(
                     } else {
                         unspliced_offset + (*gid >> 1) as usize
                     };
-                    counts[idx] += *count as f32;
+                    counts[idx] += count as f32;
                 }
             }
             2 => {
@@ -542,15 +543,15 @@ pub fn extract_counts(
                     if same_gene(*g1, *g2, true) {
                         let idx = ambig_offset + (*g1 >> 1) as usize;
                         //eprintln!("ambig count {} at {}!", *count, idx);
-                        counts[idx] += *count as f32;
+                        counts[idx] += count as f32;
                     } else {
                         // report spliced if we can
                         match (is_spliced(*g1), is_spliced(*g2)) {
                             (true, false) => {
-                                counts[(*g1 >> 1) as usize] += *count as f32;
+                                counts[(*g1 >> 1) as usize] += count as f32;
                             }
                             (false, true) => {
-                                counts[(*g2 >> 1) as usize] += *count as f32;
+                                counts[(*g2 >> 1) as usize] += count as f32;
                             }
                             _ => { /* do nothing */ }
                         }
@@ -580,10 +581,10 @@ pub fn extract_counts(
                                 && same_gene(*sg, *ng, true)
                             {
                                 let idx = ambig_offset + (*sg >> 1) as usize;
-                                counts[idx] += *count as f32;
+                                counts[idx] += count as f32;
                                 continue;
                             }
-                            counts[(*sg >> 1) as usize] += *count as f32;
+                            counts[(*sg >> 1) as usize] += count as f32;
                         }
                     }
                 }
@@ -598,8 +599,8 @@ pub fn extract_counts(
 /// This function is to be used when we are counting UMIs in
 /// USA mode.  Multimappers will be uniformly allocated to the
 /// genes to which they map.
-pub fn extract_counts_mm_uniform(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_counts_mm_uniform<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
 ) -> Vec<f32> {
     // the number of genes not considering status
@@ -609,7 +610,8 @@ pub fn extract_counts_mm_uniform(
     let mut counts = vec![0_f32; num_counts];
     let mut tvec = Vec::<usize>::with_capacity(16);
 
-    for (labels, count) in gene_eqc {
+    for (labels, payload) in gene_eqc {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -622,7 +624,7 @@ pub fn extract_counts_mm_uniform(
                     } else {
                         unspliced_offset + (*gid >> 1) as usize
                     };
-                    counts[idx] += *count as f32;
+                    counts[idx] += count as f32;
                 }
             }
             _ => {
@@ -659,7 +661,7 @@ pub fn extract_counts_mm_uniform(
                     }
                     tvec.push(idx)
                 }
-                let fcount = (*count as f32) / (tvec.len() as f32);
+                let fcount = (count as f32) / (tvec.len() as f32);
                 for g in &tvec {
                     counts[*g] += fcount;
                 }
@@ -677,8 +679,8 @@ pub fn extract_counts_mm_uniform(
 /// spliced, unspliced and ambiguous gene IDs based on UMI mappings,
 /// and `eq_id_count` will enumerate the count of UMIs for each
 /// observed equivalence class.
-pub fn extract_usa_eqmap(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_usa_eqmap<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
     idx_eq_list: &mut IndexedEqList,
     eq_id_count: &mut Vec<(u32, u32)>,
@@ -700,7 +702,8 @@ pub fn extract_usa_eqmap(
     let ambig_offset = 2 * unspliced_offset;
     let mut tvec = Vec::<u32>::with_capacity(16);
 
-    for (ctr, (labels, count)) in gene_eqc.iter().enumerate() {
+    for (ctr, (labels, payload)) in gene_eqc.iter().enumerate() {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -714,7 +717,7 @@ pub fn extract_usa_eqmap(
                         unspliced_offset + (*gid >> 1) as usize
                     };
                     idx_eq_list.add_single_label(idx as u32);
-                    eq_id_count.push((ctr as u32, *count));
+                    eq_id_count.push((ctr as u32, count));
                 }
             }
             _ => {
@@ -756,7 +759,7 @@ pub fn extract_usa_eqmap(
                 // and the USA mode labels are 1-1, we don't need this
                 // so avoid the sort here.
                 idx_eq_list.add_label_vec(tvec.as_slice());
-                eq_id_count.push((ctr as u32, *count));
+                eq_id_count.push((ctr as u32, count));
             }
         }
     }

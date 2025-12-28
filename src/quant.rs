@@ -427,9 +427,7 @@ where
     // will attempt to resolve gene multi-mapping reads by
     // running an EM algorithm.
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut gene_eqc: HashMap<Vec<u32>, u32, ahash::RandomState> = HashMap::with_hasher(s);
-    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut gene_prob_eqc: HashMap<Vec<u32>, P, ahash::RandomState> = HashMap::with_hasher(s);
+    let mut gene_eqc: HashMap<Vec<u32>, P, ahash::RandomState> = HashMap::with_hasher(s);
 
     // If we are operating in USA-mode with an EM capable resolution
     // method, we'll use (re-use) these variables to hold the USA-mode
@@ -485,7 +483,7 @@ where
                         ResolutionStrategy::CellRangerLike
                         | ResolutionStrategy::CellRangerLikeEm => {
                             if small_cell {
-                                pugutils::get_num_molecules_cell_ranger_like_small::<B, R>(
+                                pugutils::get_num_molecules_cell_ranger_like_small::<B, R, P>(
                                     &mut c,
                                     &shared.tid_to_gid,
                                     config.num_genes,
@@ -582,8 +580,6 @@ where
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 &mut gene_eqc,
-                                // TODO: figure out how to address this redundant eqc map
-                                &mut gene_prob_eqc,
                                 &s,
                                 config.large_graph_thresh,
                                 &log,
@@ -636,7 +632,7 @@ where
                                 (false, _, true) => {
                                     // not USA-mode
                                     counts = em_optimize_long_read(
-                                        &gene_prob_eqc,
+                                        &gene_eqc,
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
@@ -707,9 +703,10 @@ where
                     } else {
                         // non USA-mode
                         counts = vec![0f32; config.num_genes];
-                        for (k, v) in gene_eqc.iter() {
+                        for (k, payload) in gene_eqc.iter() {
+                            let v = payload.count();
                             if k.len() == 1 {
-                                counts[*k.first().unwrap() as usize] += *v as f32;
+                                counts[*k.first().unwrap() as usize] += v as f32;
                             } else {
                                 match config.resolution {
                                     ResolutionStrategy::CellRangerLikeEm
@@ -896,15 +893,16 @@ where
                     // the next available global id for a gene-level
                     // equivalence class
                     let mut next_id = geqmap.global_eqc.len() as u64;
-                    for (labels, count) in gene_eqc.iter() {
+                    for (labels, payload) in gene_eqc.iter() {
+                        let count = payload.count();
                         let mut found = true;
                         match geqmap.global_eqc.get(labels) {
                             Some(eqid) => {
-                                geqmap.cell_level_count.push((*eqid, *count));
+                                geqmap.cell_level_count.push((*eqid, count));
                             }
                             None => {
                                 found = false;
-                                geqmap.cell_level_count.push((next_id, *count));
+                                geqmap.cell_level_count.push((next_id, count));
                             }
                         }
                         if !found {

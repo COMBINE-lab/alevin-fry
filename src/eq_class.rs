@@ -14,7 +14,7 @@ use std::io::BufRead;
 use libradicl::chunk;
 use libradicl::record::{MappedRecord, UmiTaggedRecord};
 
-use crate::utils::OptionalAlignmentScores;
+use crate::utils::{EqClassPayload, OptionalAlignmentScores};
 
 fn score_probabilities(scores: &[i32]) -> Vec<f64> {
     const DENOM: f64 = 10.0;
@@ -163,8 +163,8 @@ impl IndexedEqList {
     }
 
     /// Creates an `IndexedEqList` from a HashMap of eq labels to counts
-    pub fn init_from_hash(
-        eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    pub fn init_from_hash<P: EqClassPayload>(
+        eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
         num_genes: usize,
     ) -> IndexedEqList {
         let num_eqc = eqclasses.len();

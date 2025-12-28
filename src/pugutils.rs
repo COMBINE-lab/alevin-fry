@@ -502,9 +502,9 @@ fn collapse_vertices_weighted(
 }
 
 #[inline]
-fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
+fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
 ) {
     // sort the triplets
     // first on umi
@@ -539,7 +539,10 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
             // update the count of the equivalence class of genes
             // that gets this UMI
 
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            gene_eqclass_hash
+                .entry(best_genes.clone())
+                .or_insert(P::new())
+                .inc();
 
             // the next umi and gene
             curr_umi = umi;
@@ -629,15 +632,18 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig(
 
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            gene_eqclass_hash
+                .entry(best_genes.clone())
+                .or_insert(P::new())
+                .inc();
         }
     }
 }
 
 #[inline]
-fn resolve_num_molecules_crlike_from_vec(
+fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
 ) {
     // sort the triplets
     // first on umi
@@ -667,7 +673,10 @@ fn resolve_num_molecules_crlike_from_vec(
         if umi != curr_umi {
             // update the count of the equivalence class of genes
             // that gets this UMI
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            gene_eqclass_hash
+                .entry(best_genes.clone())
+                .or_insert(P::new())
+                .inc();
 
             // the next umi and gene
             curr_umi = umi;
@@ -731,16 +740,19 @@ fn resolve_num_molecules_crlike_from_vec(
 
         // if this was the last UMI in the list
         if cidx == umi_gene_count_vec.len() - 1 {
-            *gene_eqclass_hash.entry(best_genes.clone()).or_insert(0) += 1;
+            gene_eqclass_hash
+                .entry(best_genes.clone())
+                .or_insert(P::new())
+                .inc();
         }
     }
 }
 
-pub fn get_num_molecules_cell_ranger_like_small<B, R>(
+pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     cell_chunk: &mut chunk::Chunk<R>,
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) where
@@ -784,11 +796,11 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R>(
     }
 }
 
-pub fn get_num_molecules_cell_ranger_like(
+pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
     _log: &slog::Logger,
 ) {
@@ -901,13 +913,13 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
 /// given the connected component (subgraph) of `g` defined by the
 /// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
 /// within this subgraph.
-fn get_num_molecules_large_component(
+fn get_num_molecules_large_component<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eq_map: &EqMap,
     vertex_ids: &[u32],
     tid_to_gid: &[u32],
     hasher_state: &ahash::RandomState,
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     _log: &slog::Logger,
 ) {
     let gene_level_eq_map = match eq_map.map_type {
@@ -978,9 +990,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
     tid_to_gid: &[u32],
-    gene_eqclass_hash: &mut HashMap<Vec<u32>, u32, ahash::RandomState>,
-    // TODO: (@zzare-umd) This seems redundant with the above, how do we handle that?
-    gene_eqclass_prob_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
     log: &slog::Logger,
@@ -1232,19 +1242,14 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     "can't find representative gene(s) for a molecule"
                 );
 
-                if P::HAS_PROBS {
-                    // TODO: get rid of this clone
-                    let payload = gene_eqclass_prob_hash
-                        .entry(global_genes.clone())
-                        .or_insert(P::new());
-                    payload.inc();
-                    payload.add_probs(&global_txp_prob);
-                }
-
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
-                let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
-                *counter += 1;
+                let payload = gene_eqclass_hash.entry(global_genes).or_insert(P::new());
+                payload.inc();
+
+                if P::HAS_PROBS {
+                    payload.add_probs(&global_txp_prob);
+                }
 
                 // for every vertext that has been covered
                 // remove it from uncovered_vertices
@@ -1308,18 +1313,12 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 pug_stats.ambiguous_mccs += 1;
             }
 
+            // incrementing the count of the eqclass label by 1
+            let payload = gene_eqclass_hash.entry(global_genes).or_insert(P::new());
+            payload.inc();
             if P::HAS_PROBS {
-                // TODO: get rid of this clone
-                let payload = gene_eqclass_prob_hash
-                    .entry(global_genes.clone())
-                    .or_insert(P::new());
-                payload.inc();
                 payload.add_probs(&global_txp_prob);
             }
-
-            // incrementing the count of the eqclass label by 1
-            let counter = gene_eqclass_hash.entry(global_genes).or_insert(0);
-            *counter += 1;
         }
 
         //let rand_cover = rand::thread_rng().choose(&tl)

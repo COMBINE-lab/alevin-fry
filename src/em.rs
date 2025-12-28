@@ -299,13 +299,14 @@ pub fn em_optimize_subset(
     alphas_in
 }
 
-pub fn em_update(
+pub fn em_update<P: EqClassPayload>(
     alphas_in: &[f32],
     alphas_out: &mut [f32],
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
-    for (labels, count) in eqclasses {
+    for (labels, payload) in eqclasses {
+        let count = payload.count();
         if labels.len() > 1 {
             let mut denominator: f32 = 0.0;
             for label in labels {
@@ -313,7 +314,7 @@ pub fn em_update(
             }
 
             if denominator > 0.0 {
-                let inv_denominator = *count as f32 / denominator;
+                let inv_denominator = count as f32 / denominator;
                 for label in labels {
                     let index = *label as usize;
                     let count = alphas_in[index] * inv_denominator;
@@ -322,13 +323,13 @@ pub fn em_update(
             }
         } else {
             let tidx = labels.first().expect("can't extract labels");
-            alphas_out[*tidx as usize] += *count as f32;
+            alphas_out[*tidx as usize] += count as f32;
         }
     }
 }
 
-pub fn em_optimize(
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn em_optimize<P: EqClassPayload>(
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
     unique_evidence: &mut [bool],
     no_ambiguity: &mut [bool],
     init_type: EmInitType,
@@ -339,10 +340,11 @@ pub fn em_optimize(
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
-    for (labels, count) in eqclasses {
+    for (labels, payload) in eqclasses {
+        let count = payload.count();
         if labels.len() == 1 {
             let idx = labels.first().expect("can't extract labels");
-            alphas_in[*idx as usize] += *count as f32;
+            alphas_in[*idx as usize] += count as f32;
             unique_evidence[*idx as usize] = true;
         } else {
             for idx in labels {
@@ -519,8 +521,8 @@ pub(crate) fn run_bootstrap_subset(
     bootstraps
 }
 
-pub fn run_bootstrap(
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn run_bootstrap<P: EqClassPayload>(
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -547,7 +549,10 @@ pub fn run_bootstrap(
     let cell_data: Vec<(u32, u32)> = eqclasses
         .iter()
         .enumerate()
-        .map(|(idx, (_labels, count))| (idx as u32, *count))
+        .map(|(idx, (_labels, payload))| {
+            let count = payload.count();
+            (idx as u32, count)
+        })
         .collect();
 
     // now that we have the `IndexedEqList` representation of this data, just
@@ -563,6 +568,7 @@ pub fn run_bootstrap(
     )
 }
 
+/*
 #[allow(dead_code)]
 pub fn run_bootstrap_old(
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -705,6 +711,7 @@ pub fn run_bootstrap_old(
 
     bootstraps
 }
+*/
 
 //em tailored for long read dataset
 pub fn em_update_long_read<P: EqClassPayload>(
