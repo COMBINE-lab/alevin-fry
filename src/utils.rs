@@ -1095,6 +1095,7 @@ impl FromStr for InternalVersionInfo {
 #[cfg(test)]
 mod tests {
     use crate::utils::InternalVersionInfo;
+    use crate::utils::ProbMap;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
@@ -1175,5 +1176,25 @@ mod tests {
                 1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
             ]
         );
+    }
+
+    #[test]
+    fn prob_map_works() {
+        let probs = vec![0.15, 0.25, 0.10, 0.5];
+        let mut pm = ProbMap::new_from_probs(&probs);
+        pm.add_probs(&[0.2, 0.1, 0.05, 0.65]);
+
+        assert_eq!(&pm[0], &[0.15, 0.25, 0.10, 0.5]);
+        assert_eq!(&pm[1], &[0.2, 0.1, 0.05, 0.65]);
+        assert_eq!(pm[1][2], 0.05);
+    }
+
+    #[test]
+    #[should_panic]
+    fn prob_map_oob_panics() {
+        let probs = vec![0.15, 0.25, 0.10, 0.5];
+        let mut pm = ProbMap::new_from_probs(&probs);
+        pm.add_probs(&[0.2, 0.1, 0.05, 0.65]);
+        std::hint::black_box(&pm[2][2]);
     }
 }
