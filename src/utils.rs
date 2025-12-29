@@ -64,25 +64,37 @@ pub struct BasicEqClassPayload {
 
 impl EqClassPayload for BasicEqClassPayload {
     const HAS_PROBS: bool = false;
+
+    #[inline(always)]
     fn new() -> Self {
         Self { ct: 0 }
     }
+
+    #[inline(always)]
     fn new_from_count(ct: u32) -> Self {
         Self { ct }
     }
+
     fn new_from_count_and_probs(_ct: u32, _probs: &[f64]) -> Self {
         unimplemented!("new_from_count_and_probs not implemented for BasicEqClassPayload");
     }
 
+    #[inline(always)]
     fn count(&self) -> u32 {
         self.ct
     }
+
+    #[inline(always)]
     fn inc(&mut self) {
         self.ct += 1;
     }
+
+    #[inline(always)]
     fn probs(&self) -> &Vec<Vec<f64>> {
         unimplemented!();
     }
+
+    #[inline(always)]
     fn add_probs(&mut self, _p: &[f64]) {
         unimplemented!();
     }
@@ -95,30 +107,44 @@ pub struct LongReadEqClassPayload {
 
 impl EqClassPayload for LongReadEqClassPayload {
     const HAS_PROBS: bool = true;
+
+    #[inline(always)]
     fn new() -> Self {
         Self {
             ct: 0,
             probs: vec![],
         }
     }
+
+    #[inline(always)]
     fn new_from_count(ct: u32) -> Self {
         Self { ct, probs: vec![] }
     }
+
+    #[inline(always)]
     fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self {
         Self {
             ct,
             probs: vec![probs.to_vec()],
         }
     }
+
+    #[inline(always)]
     fn count(&self) -> u32 {
         self.ct
     }
+
+    #[inline(always)]
     fn inc(&mut self) {
         self.ct += 1;
     }
+
+    #[inline(always)]
     fn probs(&self) -> &Vec<Vec<f64>> {
         &self.probs
     }
+
+    #[inline(always)]
     fn add_probs(&mut self, p: &[f64]) {
         self.probs.push(p.to_vec());
     }
