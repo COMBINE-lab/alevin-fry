@@ -1088,8 +1088,8 @@ pub fn get_num_molecules<P: EqClassPayload>(
             // cause the parsimony resolution to be deterministic, but potentially at the
             // cost of increasing bias.
             let mut uncovered_vertices = get_set(comp_verts.len() as u32);
-            for v in comp_verts.iter().cloned() {
-                uncovered_vertices.insert(v);
+            for v in comp_verts.iter() {
+                uncovered_vertices.insert(*v);
             }
 
             // we will remove covered vertices from uncovered_vertices until they are
@@ -1187,14 +1187,13 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     }
                 }
 
-                // for long reads
-                //obtain the probabiltiy for the global txps
+                // for long reads obtain the probabiltiy for the global txps
                 let mut global_txp_prob: Vec<f64> = vec![];
                 if P::HAS_PROBS {
                     let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_probs
                         .iter()
                         .filter(|(t, _)| global_txps.contains(t))
-                        .map(|(t, p)| (*t, *p))
+                        .cloned()
                         .collect();
                     txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
                     global_txp_prob = if txp_prob_temp.len() == 1 {
@@ -1251,7 +1250,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     payload.add_probs(&global_txp_prob);
                 }
 
-                // for every vertext that has been covered
+                // for every vertex that has been covered
                 // remove it from uncovered_vertices
                 for rv in best_mcc.iter() {
                     uncovered_vertices.remove(rv);
@@ -1271,7 +1270,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 if tl.len() == 1 {
                     global_txp_prob = vec![1.0];
                 } else {
-                    let mut txp_prob_temp: Vec<(u32, f64)> = vec![];
+                    let mut txp_prob_temp: Vec<(u32, f64)> = Vec::with_capacity(tl.len());
                     for (i, t) in tl.iter().enumerate() {
                         let (eq_id, umi_id) = g.from_index(*tv as usize);
                         let prob_vec = eqmap
@@ -1284,7 +1283,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
                     global_txp_prob = txp_prob_temp.iter().map(|(_, p)| *p).collect();
                 }
-            } 
+            }
 
             let mut global_genes: Vec<u32>;
 
