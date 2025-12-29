@@ -47,6 +47,15 @@ struct QuantArguments {
 }
 */
 
+
+/// Trait that allows us to paramaterize the payload stored along with 
+/// and equivalence class.  The most basic (required) information is a 
+/// count.  However, it is also possible to store probabilities, read start
+/// positions, or other information.  The design idea is that the associated
+/// constants allow one to query (at compile time, and based on the specific 
+/// concrete type implementing this trait), what the capabilities are. Once 
+/// we support more than probabilities, there may be a more elegant way to do 
+/// this (e.g. const enums?).
 pub trait EqClassPayload {
     const HAS_PROBS: bool;
     fn new() -> Self;
@@ -58,6 +67,7 @@ pub trait EqClassPayload {
     fn add_probs(&mut self, p: &[f64]);
 }
 
+/// Most basic equivalence class payload with just a count.
 pub struct BasicEqClassPayload {
     pub ct: u32,
 }
@@ -100,6 +110,8 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 }
 
+/// Equivalence class payload with a count a probability 
+/// vector.
 pub struct LongReadEqClassPayload {
     pub ct: u32,
     pub probs: Vec<Vec<f64>>,
