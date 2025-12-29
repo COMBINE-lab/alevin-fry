@@ -57,15 +57,15 @@ struct QuantArguments {
 /// this (e.g. const enums?).
 pub trait EqClassPayload {
     const HAS_PROBS: bool;
-    fn new() -> Self;
-    fn new_from_count(ct: u32) -> Self;
-    fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self;
+    fn new(eqc_len: usize) -> Self;
+    fn new_from_count(eqc_len: usize, ct: u32) -> Self;
+    fn new_from_count_and_probs(eqc_len: usize, ct: u32, probs: &[f64]) -> Self;
     fn count(&self) -> u32;
     fn inc(&mut self);
     // a 1D (unrolled) slice of all probabilities associated with this
     // equivalence class
     fn probs(&self) -> &[f64];
-    // the i-th row of the probability vector (length of the slice is 
+    // the i-th row of the probability vector (length of the slice is
     // equial to the cardinality of the equivalence class label).
     fn prob_row(&self, i: usize) -> &[f64];
     fn add_probs(&mut self, p: &[f64]);
@@ -80,16 +80,16 @@ impl EqClassPayload for BasicEqClassPayload {
     const HAS_PROBS: bool = false;
 
     #[inline(always)]
-    fn new() -> Self {
+    fn new(_eqc_len: usize) -> Self {
         Self { ct: 0 }
     }
 
     #[inline(always)]
-    fn new_from_count(ct: u32) -> Self {
+    fn new_from_count(_eqc_len: usize, ct: u32) -> Self {
         Self { ct }
     }
 
-    fn new_from_count_and_probs(_ct: u32, _probs: &[f64]) -> Self {
+    fn new_from_count_and_probs(_eqc_len: usize, _ct: u32, _probs: &[f64]) -> Self {
         unimplemented!("new_from_count_and_probs not implemented for BasicEqClassPayload");
     }
 
@@ -134,25 +134,26 @@ impl EqClassPayload for LongReadEqClassPayload {
     const HAS_PROBS: bool = true;
 
     #[inline(always)]
-    fn new() -> Self {
+    fn new(label_len: usize) -> Self {
         Self {
             ct: 0,
             probs: vec![],
-            label_len: 0,
+            label_len,
         }
     }
 
     #[inline(always)]
-    fn new_from_count(ct: u32) -> Self {
+    fn new_from_count(label_len: usize, ct: u32) -> Self {
         Self {
             ct,
             probs: vec![],
-            label_len: 0,
+            label_len,
         }
     }
 
     #[inline(always)]
-    fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self {
+    fn new_from_count_and_probs(label_len: usize, ct: u32, probs: &[f64]) -> Self {
+        debug_assert_eq!(label_len, probs.len());
         Self {
             ct,
             probs: probs.to_vec(),
@@ -184,7 +185,6 @@ impl EqClassPayload for LongReadEqClassPayload {
     #[inline(always)]
     fn add_probs(&mut self, p: &[f64]) {
         // can we avoid this branch?
-        if self.label_len == 0 { self.label_len = p.len(); }
         debug_assert_eq!(p.len(), self.label_len);
         self.probs.extend_from_slice(p);
     }

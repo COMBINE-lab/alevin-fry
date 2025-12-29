@@ -541,7 +541,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
 
             gene_eqclass_hash
                 .entry(best_genes.clone())
-                .or_insert(P::new())
+                .or_insert(P::new(best_genes.len()))
                 .inc();
 
             // the next umi and gene
@@ -634,7 +634,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
         if cidx == umi_gene_count_vec.len() - 1 {
             gene_eqclass_hash
                 .entry(best_genes.clone())
-                .or_insert(P::new())
+                .or_insert(P::new(best_genes.len()))
                 .inc();
         }
     }
@@ -675,7 +675,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
             // that gets this UMI
             gene_eqclass_hash
                 .entry(best_genes.clone())
-                .or_insert(P::new())
+                .or_insert(P::new(best_genes.len()))
                 .inc();
 
             // the next umi and gene
@@ -742,7 +742,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
         if cidx == umi_gene_count_vec.len() - 1 {
             gene_eqclass_hash
                 .entry(best_genes.clone())
-                .or_insert(P::new())
+                .or_insert(P::new(best_genes.len()))
                 .inc();
         }
     }
@@ -1243,7 +1243,10 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
-                let payload = gene_eqclass_hash.entry(global_genes).or_insert(P::new());
+                let eq_label_len = global_genes.len();
+                let payload = gene_eqclass_hash
+                    .entry(global_genes)
+                    .or_insert(P::new(eq_label_len));
                 payload.inc();
 
                 if P::HAS_PROBS {
@@ -1308,7 +1311,10 @@ pub fn get_num_molecules<P: EqClassPayload>(
             }
 
             // incrementing the count of the eqclass label by 1
-            let payload = gene_eqclass_hash.entry(global_genes).or_insert(P::new());
+            let eq_label_len = global_genes.len();
+            let payload = gene_eqclass_hash
+                .entry(global_genes)
+                .or_insert(P::new(eq_label_len));
             payload.inc();
             if P::HAS_PROBS {
                 payload.add_probs(&global_txp_prob);
