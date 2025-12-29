@@ -47,14 +47,13 @@ struct QuantArguments {
 }
 */
 
-
-/// Trait that allows us to paramaterize the payload stored along with 
-/// and equivalence class.  The most basic (required) information is a 
+/// Trait that allows us to paramaterize the payload stored along with
+/// and equivalence class.  The most basic (required) information is a
 /// count.  However, it is also possible to store probabilities, read start
 /// positions, or other information.  The design idea is that the associated
-/// constants allow one to query (at compile time, and based on the specific 
-/// concrete type implementing this trait), what the capabilities are. Once 
-/// we support more than probabilities, there may be a more elegant way to do 
+/// constants allow one to query (at compile time, and based on the specific
+/// concrete type implementing this trait), what the capabilities are. Once
+/// we support more than probabilities, there may be a more elegant way to do
 /// this (e.g. const enums?).
 pub trait EqClassPayload {
     const HAS_PROBS: bool;
@@ -63,7 +62,12 @@ pub trait EqClassPayload {
     fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self;
     fn count(&self) -> u32;
     fn inc(&mut self);
-    fn probs(&self) -> &Vec<Vec<f64>>;
+    // a 1D (unrolled) slice of all probabilities associated with this
+    // equivalence class
+    fn probs(&self) -> &[f64];
+    // the i-th row of the probability vector (length of the slice is 
+    // equial to the cardinality of the equivalence class label).
+    fn prob_row(&self, i: usize) -> &[f64];
     fn add_probs(&mut self, p: &[f64]);
 }
 
@@ -100,7 +104,12 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 
     #[inline(always)]
-    fn probs(&self) -> &Vec<Vec<f64>> {
+    fn probs(&self) -> &[f64] {
+        unimplemented!();
+    }
+
+    #[inline(always)]
+    fn prob_row(&self, _i: usize) -> &[f64] {
         unimplemented!();
     }
 
@@ -110,11 +119,15 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 }
 
-/// Equivalence class payload with a count a probability 
+/// Equivalence class payload with a count a probability
 /// vector.
 pub struct LongReadEqClassPayload {
     pub ct: u32,
-    pub probs: Vec<Vec<f64>>,
+    pub probs: Vec<f64>,
+    // the length of the label of the equivalence
+    // class (the length of each "inner" vector
+    // in the probability vector above.
+    label_len: usize,
 }
 
 impl EqClassPayload for LongReadEqClassPayload {
@@ -125,19 +138,25 @@ impl EqClassPayload for LongReadEqClassPayload {
         Self {
             ct: 0,
             probs: vec![],
+            label_len: 0,
         }
     }
 
     #[inline(always)]
     fn new_from_count(ct: u32) -> Self {
-        Self { ct, probs: vec![] }
+        Self {
+            ct,
+            probs: vec![],
+            label_len: 0,
+        }
     }
 
     #[inline(always)]
     fn new_from_count_and_probs(ct: u32, probs: &[f64]) -> Self {
         Self {
             ct,
-            probs: vec![probs.to_vec()],
+            probs: probs.to_vec(),
+            label_len: probs.len(),
         }
     }
 
@@ -152,13 +171,22 @@ impl EqClassPayload for LongReadEqClassPayload {
     }
 
     #[inline(always)]
-    fn probs(&self) -> &Vec<Vec<f64>> {
+    fn probs(&self) -> &[f64] {
         &self.probs
     }
 
     #[inline(always)]
+    fn prob_row(&self, i: usize) -> &[f64] {
+        let s = i * self.label_len;
+        &self.probs[s..(s + self.label_len)]
+    }
+
+    #[inline(always)]
     fn add_probs(&mut self, p: &[f64]) {
-        self.probs.push(p.to_vec());
+        // can we avoid this branch?
+        if self.label_len == 0 { self.label_len = p.len(); }
+        debug_assert_eq!(p.len(), self.label_len);
+        self.probs.extend_from_slice(p);
     }
 }
 
