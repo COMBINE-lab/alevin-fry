@@ -64,7 +64,7 @@ pub trait EqClassPayload {
     fn inc(&mut self);
     // a 1D (unrolled) slice of all probabilities associated with this
     // equivalence class
-    fn probs(&self) -> &[f64];
+    fn probs(&self) -> &ProbMap<f64>;
     // the i-th row of the probability vector (length of the slice is
     // equial to the cardinality of the equivalence class label).
     fn prob_row(&self, i: usize) -> &[f64];
@@ -104,7 +104,7 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 
     #[inline(always)]
-    fn probs(&self) -> &[f64] {
+    fn probs(&self) -> &ProbMap<f64> {
         unimplemented!();
     }
 
@@ -119,15 +119,49 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 }
 
+pub struct ProbMap<T: Clone + Copy> {
+    probs: Vec<T>,
+    stride: usize,
+}
+
+impl<T: Clone + Copy> ProbMap<T> {
+    #[inline(always)]
+    fn new(stride: usize) -> Self {
+        Self {
+            probs: Vec::new(),
+            stride,
+        }
+    }
+
+    #[inline(always)]
+    fn new_from_probs(probs: &[T]) -> Self {
+        Self {
+            probs: probs.to_vec(),
+            stride: probs.len(),
+        }
+    }
+
+    #[inline(always)]
+    fn add_probs(&mut self, p: &[T]) {
+        debug_assert_eq!(self.stride, p.len());
+        self.probs.extend_from_slice(p);
+    }
+}
+
+impl<T: Clone + Copy> std::ops::Index<usize> for ProbMap<T> {
+    type Output = [T];
+
+    fn index(&self, i: usize) -> &Self::Output {
+        let s = i * self.stride;
+        &self.probs[s..(s + self.stride)]
+    }
+}
+
 /// Equivalence class payload with a count a probability
 /// vector.
 pub struct LongReadEqClassPayload {
     pub ct: u32,
-    pub probs: Vec<f64>,
-    // the length of the label of the equivalence
-    // class (the length of each "inner" vector
-    // in the probability vector above.
-    label_len: usize,
+    pub prob_map: ProbMap<f64>,
 }
 
 impl EqClassPayload for LongReadEqClassPayload {
@@ -137,8 +171,7 @@ impl EqClassPayload for LongReadEqClassPayload {
     fn new(label_len: usize) -> Self {
         Self {
             ct: 0,
-            probs: vec![],
-            label_len,
+            prob_map: ProbMap::new(label_len),
         }
     }
 
@@ -146,8 +179,7 @@ impl EqClassPayload for LongReadEqClassPayload {
     fn new_from_count(label_len: usize, ct: u32) -> Self {
         Self {
             ct,
-            probs: vec![],
-            label_len,
+            prob_map: ProbMap::new(label_len),
         }
     }
 
@@ -156,8 +188,7 @@ impl EqClassPayload for LongReadEqClassPayload {
         debug_assert_eq!(label_len, probs.len());
         Self {
             ct,
-            probs: probs.to_vec(),
-            label_len: probs.len(),
+            prob_map: ProbMap::new_from_probs(probs),
         }
     }
 
@@ -172,21 +203,18 @@ impl EqClassPayload for LongReadEqClassPayload {
     }
 
     #[inline(always)]
-    fn probs(&self) -> &[f64] {
-        &self.probs
+    fn probs(&self) -> &ProbMap<f64> {
+        &self.prob_map
     }
 
     #[inline(always)]
     fn prob_row(&self, i: usize) -> &[f64] {
-        let s = i * self.label_len;
-        &self.probs[s..(s + self.label_len)]
+        &self.prob_map[i]
     }
 
     #[inline(always)]
     fn add_probs(&mut self, p: &[f64]) {
-        // can we avoid this branch?
-        debug_assert_eq!(p.len(), self.label_len);
-        self.probs.extend_from_slice(p);
+        self.prob_map.add_probs(p);
     }
 }
 
