@@ -1264,12 +1264,13 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
             let mut global_txp_prob: Vec<f64> = vec![];
 
+            let vcindex: usize = if tl.len() == 1 { 0 } else { 1 };
+            one_vertex_components[vcindex] += 1;
+
             if P::HAS_PROBS {
                 if tl.len() == 1 {
-                    one_vertex_components[0] += 1;
                     global_txp_prob = vec![1.0];
                 } else {
-                    one_vertex_components[1] += 1;
                     let mut txp_prob_temp: Vec<(u32, f64)> = vec![];
                     for (i, t) in tl.iter().enumerate() {
                         let (eq_id, umi_id) = g.from_index(*tv as usize);
@@ -1283,11 +1284,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
                     global_txp_prob = txp_prob_temp.iter().map(|(_, p)| *p).collect();
                 }
-            } else if tl.len() == 1 {
-                one_vertex_components[0] += 1;
-            } else {
-                one_vertex_components[1] += 1;
-            }
+            } 
 
             let mut global_genes: Vec<u32>;
 
