@@ -26,7 +26,7 @@ use std::f32;
 //    pub counts: u32,
 //}
 
-const MIN_ALPHA: f32 = 1e-8;
+const _MIN_ALPHA: f32 = 1e-8;
 const MIN_OUTPUT_ALPHA: f32 = 0.01;
 const ALPHA_CHECK_CUTOFF: f32 = 1e-2;
 

@@ -124,7 +124,7 @@ impl EqClassPayload for LongReadEqClassPayload {
     }
 }
 
-pub(crate) trait OptionalAlignmentScores {
+pub trait OptionalAlignmentScores {
     fn maybe_scores(&self) -> Option<&[i32]>;
 }
 

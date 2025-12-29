@@ -1283,12 +1283,10 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
                     global_txp_prob = txp_prob_temp.iter().map(|(_, p)| *p).collect();
                 }
+            } else if tl.len() == 1 {
+                one_vertex_components[0] += 1;
             } else {
-                if tl.len() == 1 {
-                    one_vertex_components[0] += 1;
-                } else {
-                    one_vertex_components[1] += 1;
-                }
+                one_vertex_components[1] += 1;
             }
 
             let mut global_genes: Vec<u32>;
