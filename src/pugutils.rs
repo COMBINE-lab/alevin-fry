@@ -352,9 +352,6 @@ fn collapse_vertices(
     let mut largest_mcc: Vec<u32> = Vec::new();
     let mut chosen_txp = 0u32;
     let vert = g.from_index(v as usize);
-
-    //unsafe {
-
     let nvert = g.node_count();
 
     // for every transcript in the equivalence class
@@ -402,8 +399,7 @@ fn collapse_vertices(
 
                 // get the set of transcripts present in the
                 // label of the current node.
-                let n_labels = eqmap.refs_for_eqc(nv.0);
-                if let Ok(_n) = n_labels.binary_search(txp) {
+                if let Ok(_n) = eqmap.refs_for_eqc(nv.0).binary_search(txp) {
                     bfs_list.push_back(n);
                 }
             }
@@ -419,6 +415,154 @@ fn collapse_vertices(
     //}// unsafe
 
     (largest_mcc, chosen_txp)
+}
+
+fn collapse_vertices_keep_ties(
+    v: u32,
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+) -> HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> {
+    type VertexSet = HashSet<u32, ahash::RandomState>;
+    let get_set = |cap: u32| VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone());
+
+    let mut all_mcc_txp_map: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> = HashMap::with_capacity_and_hasher(g.node_count() as usize, hasher_state.clone());
+    
+    let mut max_len = 0usize;
+    let vert = g.from_index(v as usize);
+
+    for txp in eqmap.refs_for_eqc(vert.0).iter() {
+        let mut bfs_list = VecDeque::new();
+        bfs_list.push_back(v);
+        let mut visited_set = get_set(g.node_count() as u32);
+        visited_set.insert(v);
+
+        let mut current_mcc = Vec::new();
+        while let Some(cv) = bfs_list.pop_front() {
+            current_mcc.push(cv);
+            for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
+                let n = g.to_index(nv) as u32;
+                if !uncovered_vertices.contains(&n) || !visited_set.insert(n) {
+                    continue;
+                }
+                if let Ok(_) = eqmap.refs_for_eqc(nv.0).binary_search(txp) {
+                    bfs_list.push_back(n);
+                }
+            }
+        }
+
+        let current_len = current_mcc.len();
+        if current_len >= max_len && current_len > 0 {
+            if current_len > max_len {
+                max_len = current_len;
+                all_mcc_txp_map.clear();
+            }
+            // sort the mcc to ensure the key is unique
+            current_mcc.sort_unstable(); 
+            all_mcc_txp_map.entry(current_mcc).or_default().push(*txp);
+        }
+    }
+
+    // dedup the txp list in each mcc
+    for txps in all_mcc_txp_map.values_mut() {
+        txps.sort_unstable();
+        txps.dedup();
+    }
+
+    all_mcc_txp_map
+}
+
+/// From a start vertex `v`, enumerate ALL maximum-size MCCs (ties kept).
+/// Each returned MCC is sorted, so it can be used as a dedup key.
+/// The txp_list is the set of transcripts that generate exactly that MCC
+/// from this start vertex (i.e., compatible with all vertices in that MCC
+/// under this BFS rule).
+pub fn collapse_vertices_multi(
+    v: u32,
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+) -> Vec<(Vec<u32>, Vec<u32>)> {
+    type VertexSet = HashSet<u32, ahash::RandomState>;
+    let get_set =
+        |cap: usize| VertexSet::with_capacity_and_hasher(cap, hasher_state.clone());
+
+    // (eqid, umi_idx) for this vertex
+    let vert = g.from_index(v as usize);
+    let nvert = g.node_count();
+    let mut best_len: usize = 0;
+
+    // Map sorted_mcc -> txp_list
+    let mut best_map: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(8, hasher_state.clone());
+
+    // Try each transcript in the starting vertex label
+    for &txp in eqmap.refs_for_eqc(vert.0).iter() {
+        let mut bfs = VecDeque::new();
+        bfs.push_back(v);
+
+        let mut visited = get_set(nvert);
+        visited.insert(v);
+
+        let mut current_mcc: Vec<u32> = Vec::new();
+
+        while let Some(cv) = bfs.pop_front() {
+            current_mcc.push(cv);
+
+            // Traverse outgoing neighbors (same as original collapse_vertices)
+            for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
+                let n = g.to_index(nv) as u32;
+
+                // only consider uncovered vertices, and don't revisit
+                if !uncovered_vertices.contains(&n) || !visited.insert(n) {
+                    continue;
+                }
+
+                // Check if txp is present in this neighbor's eqc labels
+                // NOTE: requires refs_for_eqc(...) sorted
+                let n_labels = eqmap.refs_for_eqc(nv.0);
+                if n_labels.binary_search(&txp).is_ok() {
+                    bfs.push_back(n);
+                }
+            }
+        }
+
+        let cur_len = current_mcc.len();
+        if cur_len == 0 {
+            continue;
+        }
+
+        // Canonicalize MCC as sorted key
+        current_mcc.sort_unstable();
+
+        if cur_len > best_len {
+            best_len = cur_len;
+            best_map.clear();
+            best_map.insert(current_mcc, vec![txp]);
+        } else if cur_len == best_len {
+            // Merge txp into the txp_list for this MCC key
+            best_map
+                .entry(current_mcc)
+                .or_insert_with(|| Vec::new())
+                .push(txp);
+        }
+        // if cur_len < best_len: ignore
+    }
+
+    // Convert map -> vec, and sort/dedup txp_list in each entry
+    let mut out: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(best_map.len());
+    for (mcc, mut txps) in best_map {
+        txps.sort_unstable();
+        txps.dedup();
+        out.push((mcc, txps));
+    }
+
+    // Optional: stable-ish ordering for deterministic behavior
+    // (sort by mcc length desc (all same), then lexicographic)
+    out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 #[inline]
@@ -1258,10 +1402,12 @@ pub fn get_num_molecules_forseti(
     large_graph_thresh: usize,
     cell_reads: &[AlevinFryReadRecordWithPosition],
     read_length: u16,
+    max_frag_len: u16,
     ref_names: &[String],
     spliceu_txome: &HashMap<u32, Vec<u8>>,
     spline_lookup: &Array1<f64>,
     mlp: &nn::Sequential,
+    tx_status_lookup: &Vec<u8>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics{
     type U32Set = HashSet<u32, ahash::RandomState>;
@@ -1347,7 +1493,9 @@ pub fn get_num_molecules_forseti(
             let mut predicted_best_mcc_list: Vec<Vec<u32>> = Vec::with_capacity(comp_verts.len());
             let mut current_global_txps = get_set(16);
             let mut all_global_txps = Vec::with_capacity(48);
+            let mut full_mcc_txp_map: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> = HashMap::with_capacity_and_hasher(comp_verts.len() as usize, hasher_state.clone());
             let mut seen_mccs = HashSet::with_capacity_and_hasher(uncovered_vertices.len(), hasher_state.clone());
+            
             // we will remove covered vertices from uncovered_vertices until they are
             // all gone (until all vertices have been covered)
             while !uncovered_vertices.is_empty() {
@@ -1359,7 +1507,8 @@ pub fn get_num_molecules_forseti(
                 best_mcc_list.clear();
                 predicted_best_mcc_list.clear();
                 seen_mccs.clear();
-
+                full_mcc_txp_pairs.clear();
+                full_mcc_txp_map.clear();
                 // the transcript that is responsible for the
                 // best mcc covering
                 let mut find_single_best = false;
@@ -1369,30 +1518,34 @@ pub fn get_num_molecules_forseti(
                     // find the largest mcc starting from this vertex
                     // and the transcript that covers it
                     // NOTE: mcc is the mcc consists of a set of vertices.(new_mcc.len() = size of the tree )
-                    let (mut new_mcc, covering_txp) = collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
+                    let keep_tie_mcc_txp_map = collapse_vertices_keep_ties(*v, &uncovered_vertices, g, eqmap, hasher_state);
 
-                    let current_len = new_mcc.len();
-                    // if the new mcc is better than the current best, then
+                    let current_max_len = keep_tie_mcc_txp_map.keys().next().unwrap().len();
+                    // if the new mcc is larger than the current best, then
                     // it becomes the new best; if the same length, append new ones
-                    if current_len >= best_len && current_len > 0 {
-                        if current_len > best_len {
-                            current_covering_txp = covering_txp;
-                            // if find a larger mcc, reset all states
-                            best_len = current_len;
+                    if current_max_len >= best_len && current_max_len > 0 {
+                        if current_max_len > best_len {
+                            // Found a new global maximum: reset everything
+                            best_len = current_max_len;
                             best_mcc_list.clear();
+                            full_mcc_txp_map.clear();
                             seen_mccs.clear();
                         }
-                        // if mcc is the same length, append new ones
-                        new_mcc.sort_unstable(); 
-                        // use HashSet to ensure no duplicate (vertex combination, txp) in best_mcc_list
-                        if seen_mccs.insert(new_mcc.clone()) {
-                            best_mcc_list.push(new_mcc);
+                        // If current_max_len == best_len (or we just reset), merge these results
+                        for (mcc, txps) in keep_tie_mcc_txp_map.into_iter() {
+                            // Check if this specific set of vertices was already found via another starting vertex v
+                            if seen_mccs.insert(mcc.clone()) {
+                                full_mcc_txp_map.insert(mcc, txps);
+                            }
                         }
                     }
-                    if best_len > num_remaining { break; }
+                    if best_len == num_remaining { break; }
                 }
+                // Select initial representative for asserts/logic from the first winning MCC
+                let (first_mcc, first_txp_list) = full_mcc_txp_map.iter().next().expect("No MCC found");
+                let current_covering_txp = *first_txp_list.first().unwrap();
                 // sanity check
-                // only check the current_covering_txp
+                // only check the current_covering_txp, as a representative of the txps
                 if current_covering_txp == u32::MAX {
                     crit!(log, "Could not find a covering transcript");
                     std::process::exit(1);
@@ -1408,35 +1561,9 @@ pub fn get_num_molecules_forseti(
                 all_global_txps.clear();
                 // We'll store the (mcc, txp) pairs here for Forseti scoring later
                 // Reusing best_mcc_list to hold the final pairs
-                full_mcc_txp_pairs.clear();
-                let mut filtered_mcc_txp_pairs: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> = HashMap::with_capacity_and_hasher(best_mcc_list.len(), hasher_state.clone());
-                // Process each unique maximum-sized vertex set (MCC) found
-                for mcc in best_mcc_list.iter() {
-                    // Local set to find transcripts that cover ALL vertices in the CURRENT MCC
-                    current_global_txps.clear();
-                    for (index, vertex) in mcc.iter().enumerate() {
-                        // Retrieve the equivalence class ID for the vertex
-                        let eqid = g.from_index(*vertex as usize).0 as u32;
-                        let refs = eqmap.refs_for_eqc(eqid);
-                        
-                        if index == 0 {
-                            // Initialize with transcripts from the first vertex
-                            for lt in eqmap.refs_for_eqc(eqid) {
-                                current_global_txps.insert(*lt);
-                            }
-                        } else {
-                            // Intersect: keep only transcripts present in ALL vertices of this MCC
-                            let txps_for_vert = eqmap.refs_for_eqc(eqid);
-                            current_global_txps.retain(|t| refs.binary_search(t).is_ok());
-                        }
-                    }
-                    // Pair the MCC with each valid transcript as a candidate for Forseti
-                    full_mcc_txp_pairs.push((mcc.clone(), current_global_txps.iter().cloned().collect()));
-                    // For every valid transcript explaining this specific MCC
-                    for &txp in current_global_txps.iter() {
-                        // Add to global set for downstream gene-level deduplication
-                        all_global_txps.push(txp);
-                    }
+
+                for (mcc, txps) in full_mcc_txp_map.iter() {
+                    all_global_txps.extend(txps.iter().copied());
                 }
                 all_global_txps.sort_unstable();
                 all_global_txps.dedup();
@@ -1475,22 +1602,36 @@ pub fn get_num_molecules_forseti(
                 if all_global_txps.len() == 1 {
                     pug_stats.non_triv_mccs_determined_ss.0 += 1;
                 } else if all_global_genes.len() == 1
-                    && has_single_strict_suffix_type(&all_global_txps, ref_names)
+                    && has_single_strict_suffix_type(&all_global_txps, tx_status_lookup)
                 {
                     pug_stats.non_triv_mccs_determined_ss.1 += 1;
                 } else {
                     need_forseti = true;
                 }
                 // as a default, use the first mcc and its global txps.
-                best_mcc = full_mcc_txp_pairs[0].0.clone();
-                global_txps = full_mcc_txp_pairs[0].1.clone();
+                best_mcc = full_mcc_txp_map.keys().next().unwrap().clone();
+                global_txps = full_mcc_txp_map.values().next().unwrap().clone();
+                global_genes = if gene_level_eq_map {
+                    global_txps.iter().cloned().collect()
+                } else {
+                    global_txps
+                        .iter()
+                        .cloned()
+                        .map(|i| tid_to_gid[i as usize])
+                        .collect()
+                };
+                global_genes.sort_unstable();
+                global_genes.dedup();
+
+                let mut filtered_mcc_txp_pairs: HashMap<Vec<u32>, Vec<u32>, ahash::RandomState> = HashMap::with_capacity_and_hasher(full_mcc_txp_map.keys().len(), hasher_state.clone());
+
                 // update best_mcc and global_txps if we have useful information from forseti.
                 if need_forseti {
                     pug_stats.large_mcc_forseti_needed += 1;
-                    // full_mcc_txp_pairs: [(mcc, covering_txp_list1), (mcc2, covering_txp2), ...], where mcc is a vector of vertex indices.
+                    // full_mcc_txp_map: mcc -->covering_txp_list
                     // check_mcc_list: [(mcc, covering_ref_id, rname_list1),(mcc, covering_ref_id2, rname_list2),...]
                     let check_mcc_list: Vec<(Vec<u32>, u32, Vec<u64>)> =
-                        get_check_mcc_list(&full_mcc_txp_pairs, eqmap, g);
+                    get_check_mcc_list_from_map(&full_mcc_txp_map, eqmap, g);
                     // get the algn tuple from align file;
                     // forseti_checking_list: {(iter_idx, covering_txp_id): [(dir, pos), (dir2, pos2), ...]}
                     let forseti_checking_list = get_forseti_check_list(cell_reads, &check_mcc_list);
@@ -1503,6 +1644,7 @@ pub fn get_num_molecules_forseti(
                         spline_lookup,
                         mlp,
                         read_length as u16,
+                        max_frag_len,
                     );
 
                     match forseti_result {
@@ -1537,8 +1679,8 @@ pub fn get_num_molecules_forseti(
                         global_txps.extend(txps.iter().copied());
                         //instead of uisng its original global_txp, we use its winner txps(narrowed down txps) from forseti.
                     }else{
-                        best_mcc = full_mcc_txp_pairs[0].0.clone();
-                        global_txps = full_mcc_txp_pairs[0].1.clone();
+                        best_mcc = full_mcc_txp_map.keys().next().unwrap().clone();
+                        global_txps = full_mcc_txp_map.values().next().unwrap().clone();
                     }
 
                     // project each covering transcript to its
@@ -1562,7 +1704,7 @@ pub fn get_num_molecules_forseti(
                         // only 1 tx found, must have determined splicing status and unique gene
                         pug_stats.non_triv_mccs_determined_ss.0 += 1;
                     } else if global_genes.len() == 1 {
-                        if has_single_strict_suffix_type(&global_txps, ref_names) {
+                        if has_single_strict_suffix_type(&global_txps, tx_status_lookup) {
                             pug_stats.non_triv_mccs_determined_ss.1 += 1;
                         } else {
                             pug_stats.non_triv_single_gene_ambiguous_ss += 1;
@@ -1576,6 +1718,10 @@ pub fn get_num_molecules_forseti(
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
                 // NOTE: we reuse the global_genes vector to same memo allocation but here we move it; so we need the std::mem::take to make the global_genes empty.
+                assert!(
+                    !global_genes.is_empty(),
+                    " in the non-trivial mcc, can't find representative gene(s) for a molecule"
+                );
                 let counter = gene_eqclass_hash.entry(std::mem::take(&mut global_genes)).or_insert(0);
                 *counter += 1;
 
@@ -1612,7 +1758,7 @@ pub fn get_num_molecules_forseti(
                 if tl.len() == 1 {
                     pug_stats.triv_mccs_determined_ss.0 += 1;
                     one_vertex_components[0] += 1;
-                } else if has_single_strict_suffix_type(tl, ref_names) {
+                } else if has_single_strict_suffix_type(tl, tx_status_lookup) {
                     one_vertex_components[1] += 1;
                     pug_stats.triv_mccs_determined_ss.1 += 1;
                 } else {
@@ -1644,6 +1790,7 @@ pub fn get_num_molecules_forseti(
                     spline_lookup,
                     mlp,
                     read_length as u16,
+                    max_frag_len,
                 );
                 
                 predict_best_cvr_txp_list.clear();
@@ -1680,7 +1827,7 @@ pub fn get_num_molecules_forseti(
                         // single best txp after forseti. have determined splicing status and unique gene
                         pug_stats.triv_mccs_determined_ss.0 += 1;
                     } else if global_genes.len() == 1 {
-                        if has_single_strict_suffix_type(&predict_best_cvr_txp_list, ref_names) {
+                        if has_single_strict_suffix_type(&predict_best_cvr_txp_list, tx_status_lookup) {
                             pug_stats.triv_mccs_determined_ss.1 += 1;
                         } else {
                             pug_stats.triv_single_gene_ambiguous_ss += 1;
@@ -1690,6 +1837,10 @@ pub fn get_num_molecules_forseti(
                     }
                 }
             }
+            assert!(
+                !global_genes.is_empty(),
+                " in the trivial mcc, can't find representative gene(s) for a molecule"
+            );
             let counter = gene_eqclass_hash.entry(std::mem::take(&mut global_genes)).or_insert(0);
             *counter += 1;
         }
@@ -1720,6 +1871,45 @@ fn get_check_mcc_list(
         }
     }
     return check_mcc_list;
+}
+
+
+fn get_check_mcc_list_from_map(
+    full_mcc_txp_map: &HashMap<Vec<u32>, Vec<u32>, ahash::RandomState>,
+    eqmap: &EqMap,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+) -> Vec<(Vec<u32>, u32, Vec<u64>)> {
+    // Capacity: Total entries will be the sum of the lengths of all txp lists
+    let total_entries: usize = full_mcc_txp_map.values().map(|v| v.len()).sum();
+    let mut check_mcc_list: Vec<(Vec<u32>, u32, Vec<u64>)> = Vec::with_capacity(total_entries);
+    let mut check_read_idx_list: Vec<u64> = Vec::new();
+    for (mcc, covering_txp_list) in full_mcc_txp_map.iter() {
+        check_read_idx_list.clear();
+        // 1. Pre-collect all read indices for this MCC once
+        // (Since all txps in the list cover the same MCC, the reads are the same)
+        for v in mcc.iter() {
+            let (eq_id, umi_idx) = g.from_index(*v as usize);
+            let eq = &eqmap.eqc_info_forseti[eq_id as usize];
+            let (_umi_bit, read_idx_list) = &eq.umis[umi_idx as usize];
+            check_read_idx_list.extend(read_idx_list.iter().copied());
+        }
+
+        // 2. Sort and Dedup the read list to keep it clean and efficient for downstream
+        check_read_idx_list.sort_unstable();
+        check_read_idx_list.dedup();
+
+        // 3. For every transcript that generated this MCC, push a record
+        for &covering_txp_id in covering_txp_list.iter() {
+            // We clone the MCC and the Read List for each transcript
+            check_mcc_list.push((
+                mcc.clone(), 
+                covering_txp_id, 
+                check_read_idx_list.clone()
+            ));
+        }
+    }
+    
+    check_mcc_list
 }
 
 fn get_forseti_check_list(
@@ -1782,25 +1972,15 @@ fn strict_suffix_type(name: &str) -> SuffixType {
         },
     }
 }
-#[inline]
 // if have single strict suffix type, return true, otherwise false.
-fn has_single_strict_suffix_type(txp_ids: &[u32], ref_names: &[String]) -> bool {
-    let mut kind: Option<SuffixType> = None;
+#[inline]
+fn has_single_strict_suffix_type(txp_ids: &[u32], status_lookup: &[u8]) -> bool {
+    if txp_ids.is_empty() { return false; }
 
-    for &tid in txp_ids {
-        let name = match ref_names.get(tid as usize) {
-            Some(nm) => nm.as_str(),
-            None => return false,
-        };
+    let first_status = status_lookup[txp_ids[0] as usize];
+    
+    if first_status == 0 { return false; }
 
-        let k = strict_suffix_type(name);
-
-        match kind {
-            None => kind = Some(k),
-            Some(prev) if prev == k => {}
-            Some(_) => return false,
-        }
-    }
-
-    true
+    // check if all the txps have the same status
+    txp_ids[1..].iter().all(|&tid| status_lookup[tid as usize] == first_status)
 }

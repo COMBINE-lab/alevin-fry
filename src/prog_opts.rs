@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 #[derive(TypedBuilder, Debug, Serialize)]
 //#[builder(name = "QuantOptsBuilder")]
-pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
+pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h> {
     pub input_dir: &'a PathBuf,
     pub tg_map: &'b PathBuf,
     pub output_dir: &'c PathBuf,
@@ -35,7 +35,9 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub sa_model: SplicedAmbiguityModel,
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
+    pub max_frag_len: u16,
     pub filter_list: Option<&'d PathBuf>,
+    pub spliceu_fa: &'h PathBuf,
     pub cmdline: &'e str,
     pub version: &'f str,
     #[serde(skip_serializing)]

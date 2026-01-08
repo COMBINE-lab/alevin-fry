@@ -154,6 +154,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").required(true).value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
+    .arg(arg!(-s --"spliceu-fa" <SPLICEUFA> "spliceu transcriptome fasta file").required(true).value_parser(value_parser!(PathBuf)))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
@@ -197,6 +198,10 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
         .value_parser(value_parser!(usize))
         .default_value("10")
+        .hide(true))
+    .arg(arg!(--"max-frag-len" <MAXFRAGLEN> "the maximum fragment length to consider for splicing ambiguity resolution")
+        .value_parser(value_parser!(u16))
+        .default_value("1000")
         .hide(true));
 
     let infer_app = Command::new("infer")
@@ -421,9 +426,12 @@ fn main() -> anyhow::Result<()> {
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
         let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
+        let max_frag_len = *t.get_one("max-frag-len").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
+        // splieu_fa_path
+        let spliceu_fa: &PathBuf = t.get_one("spliceu-fa").unwrap();
         let mut pug_exact_umi = false;
 
         match umi_edit_dist {
@@ -525,8 +533,10 @@ fn main() -> anyhow::Result<()> {
             .sa_model(sa_model)
             .small_thresh(small_thresh)
             .large_graph_thresh(large_graph_thresh)
+            .max_frag_len(max_frag_len)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)
+            .spliceu_fa(spliceu_fa)
             .cmdline(&cmdline)
             .version(VERSION)
             .log(&log)

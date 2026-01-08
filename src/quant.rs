@@ -52,6 +52,7 @@ use crate::pugutils;
 use crate::utils::KnownRecordType;
 use crate::utils as afutils;
 use crate::mlp_spline::{create_mlp_with_tch, load_mlp_params, load_spline_lookup_table};
+use crate::forseti::build_status_lookup;
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
@@ -932,8 +933,7 @@ where
                                 ResolutionStrategy::ForsetiParsimonyEm => {
                                     warn!(log, "ForsetiParsimonyEm reached in generic do_quantify(); stopping.");
                                     panic!("Internal routing bug: ForsetiParsimonyEm must go through do_quantify_forseti()");
-                                    // 或者：
-                                    // unreachable!("Internal routing bug: ...");
+    
                                 }
                             }
 
@@ -1357,6 +1357,7 @@ pub fn do_quantify_forseti<T: BufRead, B >(
         let mut sa_model = quant_opts.sa_model;
         let small_thresh = quant_opts.small_thresh;
         let large_graph_thresh = quant_opts.large_graph_thresh;
+        let max_frag_len = quant_opts.max_frag_len;
         let filter_list = quant_opts.filter_list;
         let log = quant_opts.log;
         let num_threads = quant_opts.num_threads;
@@ -1504,6 +1505,7 @@ pub fn do_quantify_forseti<T: BufRead, B >(
                 }
             }
         }
+
         // TODO: if use_forseti, load mlp parameters from the file, otherwise skip
     
         // ----------------------load mlp parameters---------------
@@ -1518,7 +1520,8 @@ pub fn do_quantify_forseti<T: BufRead, B >(
         // -------prepare spliceu_txome------------
         let mut spliceu_txome: HashMap<u32, Vec<u8>> = HashMap::new();
         // read the spliceu fasta file (via needletail)
-        let spliceu_fa = "/fs/nexus-projects/sc_frag_len/nextflow/end2end_forseti_2026/INDEX_generation/af_test_workdir/human-2024-A_spliceu_TxBody_scratch0_2048/ref/roers_ref.fa";
+        let spliceu_fa = quant_opts.spliceu_fa;
+        // let spliceu_fa = "/fs/nexus-projects/sc_frag_len/nextflow/end2end_forseti_2026/INDEX_generation/af_test_workdir/human-2024-A_spliceu_TxBody_scratch0_2048/ref/roers_ref.fa";
         let mut fastx = parse_fastx_file(spliceu_fa).context("failed to open spliceu fasta")?;
         while let Some(record) = fastx.next() {
             let record = record.context("failed reading spliceu fasta record")?;
@@ -1526,24 +1529,23 @@ pub fn do_quantify_forseti<T: BufRead, B >(
             let mut ref_name = std::str::from_utf8(record.id())
                 .context("spliceu fasta record id was not utf-8")?
                 .to_string();
-            // TODO: use t2g for splicing status
-            if ref_name.ends_with("-U") {
-                // change suffix to -T
-                ref_name = ref_name.replace("-U", "-T");
-            } 
-                if let Some(&ref_id) = rname_to_id.get(&ref_name) {
-                    // store sequence as raw bytes (A/C/G/T/N...)
-                    spliceu_txome.insert(ref_id, record.seq().to_vec());
-                }
+
+            if let Some(&ref_id) = rname_to_id.get(&ref_name) {
+                // store sequence as raw bytes (A/C/G/T/N...)
+                spliceu_txome.insert(ref_id, record.seq().to_vec());
+            }
             }
         info!(log, "Finished. spliceu_txome has {} ref seqs.", spliceu_txome.len());
-    
+        // build the tx status lookup table
+        let tx_status_lookup: Vec<u8> = build_status_lookup(&quant_opts.tg_map, &hdr.ref_names)?;
+
         // Share read-only resources across worker threads
         let ref_names = Arc::new(hdr.ref_names.clone());
         let spliceu_txome = Arc::new(spliceu_txome);
         let spline_lookup = Arc::new(spline_lookup);
         let mlp_params = Arc::new(mlp_params);
-    
+        let tx_status_lookup = Arc::new(tx_status_lookup);
+
         let mut _num_reads: usize = 0;
     
         let pbar = ProgressBar::with_draw_target(
@@ -1706,6 +1708,8 @@ pub fn do_quantify_forseti<T: BufRead, B >(
             let spliceu_txome = spliceu_txome.clone();
             let spline_lookup = spline_lookup.clone();
             let mlp_params = mlp_params.clone();
+            let tx_status_lookup = tx_status_lookup.clone();
+            let max_frag_len = max_frag_len;
             
     
             // if we are performing parsimony-gene or parsimony-gene-em
@@ -1747,6 +1751,7 @@ pub fn do_quantify_forseti<T: BufRead, B >(
                 let mut bt_eds_bytes: Vec<u8> = Vec::new();
                 let mut eds_mean_bytes: Vec<u8> = Vec::new();
                 let mut eds_var_bytes: Vec<u8> = Vec::new();
+
     
                 // the variable we will use to bind the *cell-specific* gene-level
                 // equivalence class table.
@@ -1985,10 +1990,12 @@ pub fn do_quantify_forseti<T: BufRead, B >(
                                             large_graph_thresh,
                                             &c.reads,
                                             read_length,
+                                            max_frag_len as u16,
                                             ref_names.as_ref(),
                                             spliceu_txome.as_ref(),
                                             spline_lookup.as_ref(),
                                             &mlp,
+                                            tx_status_lookup.as_ref(),
                                             &log,
                                         );
                                         // clear eqmap state for next cell (matches other resolution branches)

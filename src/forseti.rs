@@ -1,12 +1,12 @@
 use crate::mlp_spline::predict_with_tch;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use ndarray::prelude::*;
 use ndarray::{Array1, Array2};
 use ndarray::s;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use tch::nn;
 type MCCIndex = usize;
 type CoveringTxpId = u32;
@@ -14,6 +14,7 @@ type CoveringTxpId = u32;
 type AlgnTuple = (bool, u32);
 type ForsetiCheckingList = HashMap<(MCCIndex, CoveringTxpId), Vec<AlgnTuple>>;
 use memchr::memmem;
+
 
 fn reverse_complement(seq: &str) -> Result<String, String> {
     let complement = |base: char| match base {
@@ -193,6 +194,55 @@ fn process_binding_affinity(
 
     Ok(downstream_binding_affinity)
 }
+
+pub fn build_status_lookup(
+    t2g_path: &std::path::PathBuf,
+    ref_names: &[String],
+) -> Result<Vec<u8>> {
+    // 1. Map name to tx_id (index) for O(1) translation during parsing
+    let name_to_id: HashMap<&str, usize> = ref_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.as_str(), i))
+        .collect();
+
+    let file = File::open(t2g_path)
+        .with_context(|| format!("Could not open T2G file: {:?}", t2g_path))?;
+    let reader = BufReader::new(file);
+
+    // Initialize with a dummy byte (e.g., 0)
+    let mut status_lookup = vec![0u8; ref_names.len()];
+
+    for (line_idx, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() { continue; }
+
+        // Split by Tab since it's a TSV
+        let cols: Vec<&str> = line.split('\t').collect();
+
+        // 2. Column count check
+        if cols.len() < 3 {
+            bail!(
+                "Error: forseti need 3 col t2g (contain splicing status). \
+                 Found {} columns at line {}. Path: {:?}",
+                cols.len(),
+                line_idx + 1,
+                t2g_path
+            );
+        }
+
+        let tx_name = cols[0];
+        let status_char = cols[2].as_bytes()[0]; // Take 'S', 'U', or 'T'
+
+        // 3. Store status using tx_id as the index
+        if let Some(&tx_id) = name_to_id.get(tx_name) {
+            status_lookup[tx_id] = status_char;
+        }
+    }
+
+    Ok(status_lookup)
+}
+
 pub fn forseti_for_multi_best(
     forseti_checking_list: &ForsetiCheckingList,
     ref_names: &[String],
@@ -200,12 +250,13 @@ pub fn forseti_for_multi_best(
     spline_lookup: &Array1<f64>,
     mlp: &nn::Sequential,
     read_length: u16,
+    max_frag_len: u16,
 ) -> Result<Vec<u16>> {
     // Set up parameters
     let snr_min_size = 6;
     let discount_perc = 1.0_f64;
     let polya_tail_len = 200;
-    let max_frag_len = 1000;
+    let max_frag_len = max_frag_len;
     let binding_affinity_threshold = 0.0;
     let pattern = "A".repeat(snr_min_size);
     let pattern_bytes = pattern.as_bytes();
@@ -280,7 +331,7 @@ pub fn forseti_for_multi_best(
             }
 
             let overlap_wdow_start = *ref_start_list.iter().max().unwrap();
-            let overlap_wdow_end = *ref_start_list.iter().min().unwrap() + max_frag_len;
+            let overlap_wdow_end = *ref_start_list.iter().min().unwrap() + max_frag_len as usize;
             if overlap_wdow_start >= overlap_wdow_end {
                 continue;
             }
@@ -380,9 +431,9 @@ pub fn forseti_for_multi_best(
 
                 let ovlp_wdow_length = (overlap_wdow_end  - overlap_wdow_start + 1)
                 .min(ovlp_wdow_dis_to_tx_end_30mer + 1 + polya_tail_len);
-
+                let valid_len = ovlp_wdow_length.saturating_sub(ovlp_wdow_dis_to_tx_end_30mer);
                 tail_sum_log_probs.clear();
-                tail_sum_log_probs.resize(ovlp_wdow_length, 0.0);
+                tail_sum_log_probs.resize(valid_len, 0.0);
                 // tail_joint_prob length is determined per-alignment
                 for &ref_start in &ref_start_list {
                     // here we compute the ovlp_start to the last 30 mer of the ref
@@ -453,7 +504,7 @@ pub fn forseti_for_multi_best(
                 .cloned()
                 .max()
                 .unwrap()
-                .saturating_sub(max_frag_len);
+                .saturating_sub(max_frag_len as usize);
             if overlap_wdow_start >= overlap_wdow_end {
                 continue;
             }
@@ -504,7 +555,7 @@ pub fn forseti_for_multi_best(
                             sum_log_probs[i] += (affinity * frag_prob * anti_sense_penalty + EPS).ln();
                         }
                     }
-                    let max_sum = sum_log_probs.iter().cloned().fold(0.0_f64, f64::max);
+                    let max_sum = sum_log_probs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
                     let norm_sum_joint_prob = max_sum / ref_end_list.len() as f64;
                     // Update mcc_to_tx_prob_dict
                     mcc_to_tx_prob_dict.insert(*mcc_idx, norm_sum_joint_prob);
