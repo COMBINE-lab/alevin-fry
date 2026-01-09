@@ -51,7 +51,7 @@ use crate::pugutils;
 use crate::utils as afutils;
 use crate::utils::{
     BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
-    OptionalAlignmentScores,
+    OptionalAlignmentExtras,
 };
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
@@ -396,7 +396,7 @@ where
         + CollatableMappedRecord<B>
         + KnownSize
         + UmiTaggedRecord
-        + OptionalAlignmentScores
+        + OptionalAlignmentExtras
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -568,7 +568,9 @@ where
                             {
                                 eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
                             } else {
+                                //eprintln!("before the init from chunk");
                                 eq_map.init_from_chunk(&mut c);
+                                //eprintln!("after the init from chunk");
                             }
 
                             let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
@@ -934,7 +936,7 @@ where
         + CollatableMappedRecord<B>
         + KnownSize
         + UmiTaggedRecord
-        + OptionalAlignmentScores
+        + OptionalAlignmentExtras
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,

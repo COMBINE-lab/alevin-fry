@@ -14,26 +14,81 @@ use std::io::BufRead;
 use libradicl::chunk;
 use libradicl::record::{MappedRecord, UmiTaggedRecord};
 
-use crate::utils::{EqClassPayload, OptionalAlignmentScores};
+use crate::utils::{EqClassPayload, OptionalAlignmentExtras};
+use statrs::distribution::{Normal, Continuous};
+use std::f64::consts::LN_10;
 
 fn score_probabilities(scores: &[i32]) -> Vec<f64> {
-    const DENOM: f64 = 10.0;
+    const DENOM: f64 = 5.0;
+    //eprintln!("DENOM val: {:?}", DENOM);
     let max_score = *scores.iter().max().unwrap();
 
     let mut out: Vec<f64> = scores
         .iter()
         .map(|&s| (((s - max_score) as f64) / DENOM).exp())
         .collect();
-    let sum: f64 = out.iter().sum();
-    if sum > 0.0 {
-        for p in out.iter_mut() {
-            *p /= sum;
-        }
-    } else {
-        // raise some error!
-    }
+    //let sum: f64 = out.iter().sum();
+    //if sum > 0.0 {
+    //    for p in out.iter_mut() {
+    //        *p /= sum;
+    //    }
+    //} else {
+    //    // raise some error!
+    //}
     out
 }
+
+
+fn end_probabilities(
+    ends: &[u32],
+    tlens: &[u32],
+) -> Vec<f64> {
+    let std_dev: f64 = 100.0;
+    let thresh: f64 = 100.0;
+    let min_end: f64 = 3.0;
+    assert_eq!(ends.len(), tlens.len());
+    assert!(std_dev > 0.0);
+
+    // This is μ=0, σ=std_dev
+    let dist = Normal::new(0.0, std_dev)
+        .expect("should be able to construct a normal distribution");
+
+    // Precompute ln_pdf(0) once (normalization to make weight(0)=1)
+    let ln_pdf0 = dist.ln_pdf(0.0);
+    let ln_floor = -min_end * LN_10;
+
+    // Compute unnormalized weights
+    let mut out: Vec<f64> = ends
+        .iter()
+        .zip(tlens.iter())
+        .map(|(&end, &tlen)| {
+            // 3' model distance from sequenced end:
+            // dist_from_end = tlen - end
+            let dist_from_end = (tlen as f64) - (end as f64);
+
+            // extra_dist = max(dist_from_end - thresh, 0)
+            let extra_dist = (dist_from_end - thresh).max(0.0);
+
+            // ln w = ln_pdf(extra_dist) - ln_pdf(0)
+            let ln_w = dist.ln_pdf(extra_dist) - ln_pdf0;
+
+            let final_value = ln_w.max(ln_floor);
+
+            final_value.exp()
+        })
+        .collect();
+
+    // Normalize to sum to 1
+    //let sum: f64 = out.iter().sum();
+    //if sum > 0.0 {
+    //    for p in out.iter_mut() {
+    //        *p /= sum;
+    //    }
+    //}
+
+    out
+}
+
 
 // Modified from https://stackoverflow.com/questions/69764050/how-to-get-the-indices-that-would-sort-a-vec
 // kmdreko
@@ -767,7 +822,7 @@ impl EqMap {
 
     pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
     where
-        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentScores,
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
     {
         /*
         if cell_chunk.reads.len() < 10 {
@@ -794,7 +849,7 @@ impl EqMap {
 
             // if the underlying record type provides scores, then we
             // get some.
-            let maybe_scores = r.maybe_scores();
+            let maybe_aln_extras = r.maybe_aln_extras();
 
             match self.eqid_map.get_mut(refs) {
                 // if we've seen this equivalence class before, just add the new
@@ -802,10 +857,21 @@ impl EqMap {
                 Some(v) => {
                     self.eqc_info[*v as usize].umis.push((r.umi(), 1));
                     // if we have scores, add them labeled with this equivalence class
-                    if let Some(scores) = maybe_scores {
+                    if let Some(extras) = maybe_aln_extras {
+                        let scores = extras.as_scores;
+                        let ends   = extras.ends;
+                        let tlens  = extras.tlens;
                         let score_probs = score_probabilities(scores);
+                        let end_probs = end_probabilities(ends, tlens);
+                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let prob_sum: f64 = final_probs.iter().sum();
+                        if prob_sum > 0.0 {
+                            for p in final_probs.iter_mut() {
+                                *p /= prob_sum;
+                            }
+                        }
                         // push score probs with associated eq_id of *v
-                        temp_prob_map.push(*v, &score_probs);
+                        temp_prob_map.push(*v, &final_probs);
                     };
                 }
                 // otherwise, add the new umi, but we also have some extra bookkeeping
@@ -827,10 +893,21 @@ impl EqMap {
                     });
                     self.eqid_map.insert(r.refs().to_vec(), eq_num);
                     // if we have scores, add them labeled with this equivalence class
-                    if let Some(scores) = maybe_scores {
+                    if let Some(extras) = maybe_aln_extras {
+                        let scores = extras.as_scores;
+                        let ends   = extras.ends;
+                        let tlens  = extras.tlens;
                         let score_probs = score_probabilities(scores);
+                        let end_probs = end_probabilities(ends, tlens);
+                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let prob_sum: f64 = final_probs.iter().sum();
+                        if prob_sum > 0.0 {
+                            for p in final_probs.iter_mut() {
+                                *p /= prob_sum;
+                            }
+                        }
                         // push score probs with associated eq_id of *v
-                        temp_prob_map.push(eq_num, &score_probs);
+                        temp_prob_map.push(eq_num, &final_probs);
                     }
                     //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
                 }

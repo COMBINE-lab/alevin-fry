@@ -218,45 +218,68 @@ impl EqClassPayload for LongReadEqClassPayload {
     }
 }
 
-pub trait OptionalAlignmentScores {
-    fn maybe_scores(&self) -> Option<&[i32]>;
+pub struct AlnExtras<'a> {
+    pub as_scores: &'a [i32],
+    pub ends: &'a [u32],
+    pub tlens: &'a [u32], 
 }
 
-macro_rules! impl_optional_alignment_scores {
-    (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident, Some($field:ident)) => {
-        impl<$($gen $(: $bound)?),+> OptionalAlignmentScores for $ty_name<$($gen),+> {
-            fn maybe_scores(&self) -> Option<&[i32]> {
-                Some(&self.$field)
+pub trait OptionalAlignmentExtras {
+    fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>>;
+}
+
+macro_rules! impl_optional_alignment_extras {
+    // Generic record type that HAS the fields
+    (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident,
+        Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)
+    ) => {
+        impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                Some(AlnExtras {
+                    as_scores: &self.$scores,
+                    ends: &self.$ends,
+                    tlens: &self.$tlens,
+                })
             }
         }
     };
+
+    // Generic record type that DOES NOT have the fields
     (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident, None) => {
-        impl<$($gen $(: $bound)?),+> OptionalAlignmentScores for $ty_name<$($gen),+> {
-            fn maybe_scores(&self) -> Option<&[i32]> {
+        impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
                 None
             }
         }
     };
-    ($ty:ty, Some($field:ident)) => {
-        impl OptionalAlignmentScores for $ty {
-            fn maybe_scores(&self) -> Option<&[i32]> {
-                Some(&self.$field)
+
+    // Non-generic record type that HAS the fields
+    ($ty:ty, Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)) => {
+        impl OptionalAlignmentExtras for $ty {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                Some(AlnExtras {
+                    as_scores: &self.$scores,
+                    ends: &self.$ends,
+                    tlens: &self.$tlens,
+                })
             }
         }
     };
+
+    // Non-generic record type that DOES NOT have the fields
     ($ty:ty, None) => {
-        impl OptionalAlignmentScores for $ty {
-            fn maybe_scores(&self) -> Option<&[i32]> {
+        impl OptionalAlignmentExtras for $ty {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
                 None
             }
         }
     };
 }
 
-impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
-impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
-impl_optional_alignment_scores!(AtacSeqReadRecord, None);
-impl_optional_alignment_scores!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores));
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
+impl_optional_alignment_extras!(AtacSeqReadRecord, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, ends = ends, tlens = tlens));
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {
