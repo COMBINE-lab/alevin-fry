@@ -272,8 +272,10 @@ pub fn forseti_for_multi_best(
     let mut sum_log_probs: Vec<f64> = Vec::new();
     let mut tail_sum_log_probs: Vec<f64> = Vec::new();
     const EPS: f64 = 1e-12;
+    let mut best_mcc_indices: Vec<u16> = Vec::new();
+    let mut max_score = f64::NEG_INFINITY;
 
-    let mut mcc_to_tx_prob_dict: HashMap<MCCIndex, f64> = HashMap::new();
+
     // algn_tuple_list is direction(fw, reverse) and ref_start
     for ((mcc_idx, covering_txp_id), algn_tuple_list) in forseti_checking_list {
         let mut norm_sum_joint_prob = f64::NEG_INFINITY;
@@ -470,9 +472,6 @@ pub fn forseti_for_multi_best(
                     norm_sum_joint_prob = norm_max_tail_log;
                 }
             }
-
-            // Update mcc_to_tx_prob_dict
-            mcc_to_tx_prob_dict.insert(*mcc_idx, norm_sum_joint_prob);
         } else if all_reverse {
             ref_end_list.clear();
             ref_end_list.reserve(algn_tuple_list.len());
@@ -556,9 +555,7 @@ pub fn forseti_for_multi_best(
                         }
                     }
                     let max_sum = sum_log_probs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    let norm_sum_joint_prob = max_sum / ref_end_list.len() as f64;
-                    // Update mcc_to_tx_prob_dict
-                    mcc_to_tx_prob_dict.insert(*mcc_idx, norm_sum_joint_prob);
+                    norm_sum_joint_prob = max_sum / ref_end_list.len() as f64;
                 }
             }else{
                 continue;
@@ -567,39 +564,21 @@ pub fn forseti_for_multi_best(
             eprintln!("Error: algn_tuple_list is not all forward or all reverse. This should not happen.");
             continue;
         }
+
+        // Update the best scores and indices in a single pass
+        if norm_sum_joint_prob > max_score {
+            max_score = norm_sum_joint_prob;
+            best_mcc_indices.clear();
+            best_mcc_indices.push(*mcc_idx as u16);
+        } else if (norm_sum_joint_prob - max_score).abs() < 1e-6 && norm_sum_joint_prob != f64::NEG_INFINITY {
+            best_mcc_indices.push(*mcc_idx as u16);
+        }
     }
 
-    // if invalid_pos_skipped > 0 {
-    //     eprintln!(
-    //         "Forseti summary: skipped {} MCC(s) due to invalid alignment start pos (printed first {}).",
-    //         invalid_pos_skipped, INVALID_POS_PRINT_LIMIT,
-    //     );
-    // }
-
-    // Process mcc_to_tx_prob_dict to find best indices
-    let mcc_pred_score_list: Vec<(MCCIndex, f64)> = mcc_to_tx_prob_dict
-        .iter()
-        .map(|(&mcc_idx, &score)| (mcc_idx, score))
-        .collect();
-
-    if mcc_pred_score_list.is_empty() {
+    if best_mcc_indices.is_empty() {
         return Ok(Vec::new());
     }
 
-    let (_best_score, best_mcc_indices): (f64, Vec<u16>) = mcc_pred_score_list.iter().fold(
-        (f64::MIN, Vec::new()),
-        |(max_score, mut indices), &(mcc_idx, score)| {
-            if score > max_score {
-                (score, vec![mcc_idx.try_into().unwrap()]) // New max score found, reset indices
-            } else if (score - max_score).abs() < f64::EPSILON {
-                indices.push(mcc_idx.try_into().unwrap()); // Tie with current max, add index
-                (max_score, indices)
-            } else {
-                (max_score, indices) // No change
-            }
-        },
-    );
-    // println!("Best score: {}", best_score);
 
     Ok(best_mcc_indices)
 }
