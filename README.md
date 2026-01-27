@@ -8,6 +8,9 @@ You can read the paper describing alevin fry, "Alevin-fry unlocks rapid, accurat
 
 **Note**: We recommend using [`piscem`](https://github.com/COMBINE-lab/piscem) as the back-end mapper, rather than salmon, as it is substantially more resource-frugal, faster, and is a larger focus of current and future development.
 
+> [!NOTE]
+> **For Forseti Users**: If you intend to use `forseti` as the quantification strategy, you **must** generate the RAD file using `piscem map-sc` with the `--with-position` flag. This flag ensures that the alignment position information required by the `forseti` algorithm is included in the output RAD file.
+
 ### Getting started with `alevin-fry` and dedicated documentation
 
 While this `README` contains some useful information to get started and some pointers, `alevin-fry` has it's own [dedicated documentation site](https://alevin-fry.readthedocs.io/en/latest/), hosted on `ReadTheDocs`.
