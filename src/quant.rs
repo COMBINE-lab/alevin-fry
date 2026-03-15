@@ -30,11 +30,13 @@ use std::thread;
 
 use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
+use libradicl::collation::CollationManifest;
 use libradicl::record::{
     AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
     CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
     MultiBarcodeReadRecord, RecordContext, ScLongReadRecord, UmiTaggedRecord,
 };
+use std::path::PathBuf;
 
 use std::fmt;
 //use std::ptr;
@@ -1496,35 +1498,28 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 num_bc,
                 cell_bc_len,
             );
-            // For multi-barcode collated files, the collation has already grouped
-            // records by (sample, cell). Each chunk is one cell's data, and the
-            // chunks are ordered hierarchically by sample then cell.
-            //
-            // The existing do_quantify machinery processes chunks independently,
-            // so we can dispatch directly to it using MultiBarcodeReadRecord.
-            // The collate_key() returns the cell barcode, which is used for
-            // barcode labeling in the output.
-            //
-            // TODO: Use collation_manifest.bin to split output into per-sample
-            // directories or produce combined matrices with composite labels
-            // (controlled by --multi-sample-output flag).
-            //
-            // For now, all samples are quantified together into a single output,
-            // with cell barcodes from all samples in one matrix. Users can
-            // distinguish samples by the collation manifest.
-            info!(
-                log,
-                "Quantifying multi-barcode data ({} barcode levels). \
-                 Note: per-sample output splitting is not yet implemented; \
-                 all samples will be quantified into a single output directory.",
-                num_bc,
-            );
+
+            // Run quantification using MultiBarcodeReadRecord.
+            // The collation has grouped records by (sample, cell) and each chunk
+            // is one cell's data. collate_key() returns the cell barcode.
+            let input_dir = quant_opts.input_dir.clone();
+            let output_dir = quant_opts.output_dir.clone();
+
             do_quantify::<_, u64, MultiBarcodeReadRecord, BasicEqClassPayload>(
                 br,
                 quant_opts,
                 prelude,
                 file_tag_map,
-            )
+            )?;
+
+            // Post-process: create combined matrix with composite sample+cell labels
+            // if a collation manifest is available.
+            let manifest_path = input_dir.join("collation_manifest.bin");
+            if manifest_path.exists() {
+                rewrite_barcodes_with_sample_prefix(&manifest_path, &output_dir, log)?;
+            }
+
+            Ok(())
         }
     }
 }
@@ -1534,4 +1529,79 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
 pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
+}
+
+/// Rewrite barcode labels in quants_mat_rows.txt to include sample prefixes.
+///
+/// After quantification, the output contains cell barcodes from all samples
+/// in one matrix. This function reads the collation manifest and rewrites
+/// the barcode file so each label is prefixed with the sample name:
+///   `sample_name_ACGTACGT` instead of just `ACGTACGT`.
+///
+/// This produces the "combined" output format where sample identity is
+/// encoded in the barcode labels.
+fn rewrite_barcodes_with_sample_prefix(
+    manifest_path: &std::path::Path,
+    output_dir: &PathBuf,
+    log: &slog::Logger,
+) -> anyhow::Result<()> {
+    use std::io::BufRead;
+
+    let manifest = CollationManifest::read_from_file(manifest_path)?;
+    if manifest.sample_groups.is_empty() {
+        return Ok(());
+    }
+
+    let output_matrix_path = output_dir.join("alevin");
+    let bc_path = output_matrix_path.join("quants_mat_rows.txt");
+    if !bc_path.exists() {
+        return Ok(());
+    }
+
+    // Read all existing barcodes
+    let bc_file = File::open(&bc_path)?;
+    let reader = std::io::BufReader::new(bc_file);
+    let barcodes: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
+
+    // Build sample assignment: for each barcode (by row index), determine which sample it belongs to
+    // using the manifest's chunk ranges.
+    let mut sample_labels: Vec<String> = Vec::with_capacity(barcodes.len());
+    let mut bc_idx: u64 = 0;
+
+    for group in &manifest.sample_groups {
+        let default_name = format!("{:x}", group.key);
+        let sample_name = group.name.as_deref().unwrap_or(&default_name);
+        let num_cells = group.num_chunks; // one chunk per cell
+
+        for _ in 0..num_cells {
+            if (bc_idx as usize) < barcodes.len() {
+                let original_bc = &barcodes[bc_idx as usize];
+                sample_labels.push(format!("{}_{}", sample_name, original_bc));
+            }
+            bc_idx += 1;
+        }
+    }
+
+    // If manifest doesn't cover all barcodes (shouldn't happen but be safe),
+    // keep remaining barcodes as-is
+    while (bc_idx as usize) < barcodes.len() {
+        sample_labels.push(barcodes[bc_idx as usize].clone());
+        bc_idx += 1;
+    }
+
+    // Write the composite labels back
+    let bc_file = File::create(&bc_path)?;
+    let mut writer = BufWriter::new(bc_file);
+    for label in &sample_labels {
+        writeln!(writer, "{}", label)?;
+    }
+
+    info!(
+        log,
+        "Rewrote {} barcode labels with sample prefixes from {} samples",
+        sample_labels.len(),
+        manifest.sample_groups.len(),
+    );
+
+    Ok(())
 }

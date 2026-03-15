@@ -953,26 +953,55 @@ where
                 cell_bc_len,
             );
             let parsing_context = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
-            do_collate_multi_bc(
-                input_dir,
-                &rad_dir,
-                parsing_context,
-                prelude,
-                br,
-                end_header_pos,
-                num_threads,
-                max_records,
-                total_to_collate,
-                compress_out,
-                cmdline,
-                version,
-                log,
-            )
+
+            // Choose collation mode based on metadata or CLI flag.
+            // The two-round mode is more modular and generalizable to N levels;
+            // the fast mode is a single-pass optimization for 2-level protocols.
+            // Default to fast mode for now.
+            //
+            // TODO: read --collation-mode from CLI and pass through
+            let use_fast_path = true;
+
+            if use_fast_path {
+                info!(log, "Using fast single-pass collation mode");
+                do_collate_multi_bc_fast(
+                    input_dir,
+                    &rad_dir,
+                    parsing_context,
+                    prelude,
+                    br,
+                    end_header_pos,
+                    num_threads,
+                    max_records,
+                    total_to_collate,
+                    compress_out,
+                    cmdline,
+                    version,
+                    log,
+                )
+            } else {
+                info!(log, "Using two-round collation mode");
+                do_collate_multi_bc_two_round(
+                    input_dir,
+                    &rad_dir,
+                    parsing_context,
+                    prelude,
+                    br,
+                    end_header_pos,
+                    num_threads,
+                    max_records,
+                    total_to_collate,
+                    compress_out,
+                    cmdline,
+                    version,
+                    log,
+                )
+            }
         }
     }
 }
 
-/// Multi-barcode hierarchical collation.
+/// Multi-barcode hierarchical collation — fast single-pass mode.
 ///
 /// This function handles RAD files with multiple barcodes per read (e.g., 10x Flex).
 /// It performs a single-pass collation where records are bucketed by corrected cell
@@ -982,7 +1011,7 @@ where
 ///   [sample_0/cell_0, sample_0/cell_1, ..., sample_1/cell_0, ...]
 /// plus a `collation_manifest.bin` sidecar describing sample boundaries.
 #[allow(clippy::too_many_arguments)]
-fn do_collate_multi_bc<P1, P2, A: Read + Seek>(
+fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     input_dir: P1,
     rad_dir: P2,
     rec_context: MultiBarcodeRecordContext,
@@ -1580,6 +1609,475 @@ where
     info!(
         log,
         "Multi-barcode collation complete: {} output chunks",
+        total_output_chunks.to_formatted_string(&Locale::en),
+    );
+
+    Ok(())
+}
+
+/// Multi-barcode hierarchical collation — two-round mode.
+///
+/// Round 1: Reads the multi-barcode RAD file, corrects sample BCs, and writes
+///          per-sample intermediate RAD files (same format, filtered to one sample).
+/// Round 2: For each sample, runs standard cell-level collation using the existing
+///          do_collate_with_temp machinery, then appends the output chunks to
+///          the final collated file and builds the collation manifest.
+///
+/// This mode is more modular and generalizes to N barcode levels by adding more rounds.
+#[allow(clippy::too_many_arguments)]
+fn do_collate_multi_bc_two_round<P1, P2, A: Read + Seek>(
+    input_dir: P1,
+    rad_dir: P2,
+    rec_context: MultiBarcodeRecordContext,
+    prelude: RadPrelude,
+    mut br: BufReader<A>,
+    end_header_pos: u64,
+    num_threads: u32,
+    max_records: u32,
+    total_to_collate: u64,
+    compress_out: bool,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let i_dir = std::path::Path::new(rad_dir.as_ref());
+    let input_rad_path = i_dir.join("map.rad");
+    let input_dir: PathBuf = input_dir.into();
+    let parent = std::path::Path::new(input_dir.as_path());
+
+    // Read metadata
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))?;
+    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let expected_ori: Strand = get_orientation(&mdata)
+        .map_err(|e| anyhow!("Error reading strand info: {}", e))?;
+
+    // Load sample info
+    let sample_info_file = File::open(parent.join("sample_info.json"))
+        .context("could not open sample_info.json")?;
+    let sample_info: serde_json::Value = serde_json::from_reader(&sample_info_file)?;
+    let num_samples = sample_info["num_samples"].as_u64().unwrap() as usize;
+    let sample_entries = sample_info["samples"].as_array().unwrap();
+
+    // Load sample permit map
+    let sample_map_file = File::open(parent.join("sample_permit_map.bin"))?;
+    let sample_permit_map: HashMap<u64, u64> =
+        bincode::deserialize_from(BufReader::new(sample_map_file))
+            .map_err(|e| anyhow!("couldn't deserialize sample_permit_map.bin: {}", e))?;
+
+    // Build sample_bc -> index mapping and sample names
+    let mut sample_bc_to_idx: HashMap<u64, usize> = HashMap::new();
+    let mut sample_names: Vec<String> = Vec::new();
+    for (idx, entry) in sample_entries.iter().enumerate() {
+        let bc_str = entry["barcode"].as_str().unwrap_or("0x0");
+        let bc = u64::from_str_radix(bc_str.trim_start_matches("0x"), 16).unwrap_or(0);
+        sample_bc_to_idx.insert(bc, idx);
+        sample_names.push(entry["name"].as_str().unwrap_or(&format!("{:x}", bc)).to_string());
+    }
+
+    info!(log, "Two-round collation: Round 1 — scatter by sample...");
+
+    // === ROUND 1: Scatter records into per-sample intermediate RAD files ===
+    let round1_dir = parent.join("_collate_round1");
+    std::fs::create_dir_all(&round1_dir)?;
+
+    // Create per-sample RAD writers. Each intermediate file has the same header
+    // as the input but will contain only that sample's records.
+    let mut per_sample_writers: Vec<Option<BufWriter<File>>> = Vec::new();
+    let mut per_sample_nchunks: Vec<u64> = vec![0; num_samples];
+    let mut per_sample_nrecs: Vec<u64> = vec![0; num_samples];
+
+    for (idx, name) in sample_names.iter().enumerate() {
+        let sample_rad_path = round1_dir.join(format!("sample_{}.rad", name));
+        let f = File::create(&sample_rad_path)?;
+        let mut writer = BufWriter::with_capacity(1048576, f);
+
+        // Copy the header from the input RAD (will backpatch num_chunks later)
+        let mut rfile = File::open(&input_rad_path)?;
+        let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+        let mut hdr_bytes = vec![0u8; pos as usize];
+        rfile.read_exact(&mut hdr_bytes)?;
+        // Set num_chunks to 0 (will backpatch)
+        let chunk_bytes = std::mem::size_of::<u64>() as u64;
+        let nc_pos = (end_header_pos - chunk_bytes) as usize;
+        hdr_bytes[nc_pos..nc_pos + 8].copy_from_slice(&0u64.to_le_bytes());
+        writer.write_all(&hdr_bytes)?;
+
+        per_sample_writers.push(Some(writer));
+    }
+
+    let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation = expected_ori.into();
+    let hdr = &prelude.hdr;
+
+    // Read chunks and scatter to per-sample files
+    let pbar = ProgressBar::with_draw_target(
+        Some(hdr.num_chunks),
+        ProgressDrawTarget::stderr_with_hz(5u8),
+    );
+    pbar.set_style(
+        ProgressStyle::with_template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks")
+            .unwrap()
+            .progress_chars("##-"),
+    );
+
+    for _ in 0..hdr.num_chunks {
+        let c = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut br, &rec_context);
+        // Group records by sample
+        let mut per_sample_records: Vec<Vec<&MultiBarcodeReadRecord>> =
+            (0..num_samples).map(|_| Vec::new()).collect();
+
+        for read in &c.reads {
+            let sample_bc: u64 = read.barcodes[0].into();
+            if let Some(&corrected) = sample_permit_map.get(&sample_bc) {
+                if let Some(&idx) = sample_bc_to_idx.get(&corrected) {
+                    per_sample_records[idx].push(read);
+                }
+            }
+        }
+
+        // Write per-sample chunks
+        for (idx, records) in per_sample_records.iter().enumerate() {
+            if records.is_empty() {
+                continue;
+            }
+            if let Some(ref mut writer) = per_sample_writers[idx] {
+                // Write chunk: nbytes (u32) + nrec (u32) + records
+                let mut chunk_buf = Vec::new();
+                // Placeholder for nbytes and nrec
+                chunk_buf.extend_from_slice(&0u32.to_le_bytes());
+                chunk_buf.extend_from_slice(&(records.len() as u32).to_le_bytes());
+                for rec in records {
+                    rec.write(&mut chunk_buf, &rec_context)?;
+                }
+                // Backpatch nbytes
+                let nbytes = chunk_buf.len() as u32;
+                chunk_buf[0..4].copy_from_slice(&nbytes.to_le_bytes());
+                writer.write_all(&chunk_buf)?;
+                per_sample_nchunks[idx] += 1;
+                per_sample_nrecs[idx] += records.len() as u64;
+            }
+        }
+        pbar.inc(1);
+    }
+    pbar.finish_and_clear();
+
+    // Flush and backpatch num_chunks in per-sample files
+    for (idx, writer_opt) in per_sample_writers.iter_mut().enumerate() {
+        if let Some(writer) = writer_opt.take() {
+            drop(writer); // flush
+            let name = &sample_names[idx];
+            let sample_rad_path = round1_dir.join(format!("sample_{}.rad", name));
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&sample_rad_path)?;
+            let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+            let chunk_bytes = std::mem::size_of::<u64>() as u64;
+            let nc_pos = (end_header_pos - chunk_bytes) as usize;
+            f.seek(std::io::SeekFrom::Start(nc_pos as u64))?;
+            f.write_all(&per_sample_nchunks[idx].to_le_bytes())?;
+            info!(
+                log,
+                "Round 1: sample '{}' — {} chunks, {} records",
+                name, per_sample_nchunks[idx], per_sample_nrecs[idx],
+            );
+        }
+    }
+
+    info!(log, "Two-round collation: Round 2 — per-sample cell collation...");
+
+    // === ROUND 2: Per-sample cell-level collation ===
+    // For each sample, run the existing collation machinery on the intermediate file,
+    // using the cell barcode (collate_key()) as the collation key.
+
+    let cfname = if compress_out { "map.collated.rad.sz" } else { "map.collated.rad" };
+    let oname = parent.join(cfname);
+    if oname.exists() {
+        std::fs::remove_file(&oname)?;
+    }
+    let ofile = File::create(&oname)?;
+    let mut final_writer = BufWriter::with_capacity(1048576, ofile);
+
+    // Write the header once (from the first sample's intermediate file, with total num_chunks)
+    let total_cells: u64 = {
+        // We'll count cells during per-sample collation
+        // For now, write header with placeholder
+        let mut rfile = File::open(&input_rad_path)?;
+        let pos_val = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+        let mut hdr_bytes = vec![0u8; pos_val as usize];
+        rfile.read_exact(&mut hdr_bytes)?;
+        // Will backpatch num_chunks after all samples are processed
+        let nc_pos = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
+        hdr_bytes[nc_pos..nc_pos + 8].copy_from_slice(&0u64.to_le_bytes());
+
+        if compress_out {
+            let mut compressed =
+                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(hdr_bytes.len())));
+            compressed.write_all(&hdr_bytes)?;
+            let cbuf = compressed.into_inner()?;
+            final_writer.write_all(cbuf.get_ref())?;
+        } else {
+            final_writer.write_all(&hdr_bytes)?;
+        }
+        0u64
+    };
+    drop(final_writer);
+
+    let mut manifest = CollationManifest::new(vec!["sample".to_string(), "cell".to_string()]);
+    let mut total_output_chunks: u64 = 0;
+
+    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(
+        1048576,
+        std::fs::OpenOptions::new().append(true).open(&oname)?,
+    )));
+
+    for (sample_idx, name) in sample_names.iter().enumerate() {
+        let sample_rad_path = round1_dir.join(format!("sample_{}.rad", name));
+        if per_sample_nrecs[sample_idx] == 0 {
+            info!(log, "Round 2: skipping sample '{}' (no records)", name);
+            continue;
+        }
+
+        // Load this sample's cell permit maps
+        let sample_dir = parent.join(format!("sample_{}", name));
+        let freq_path = sample_dir.join("permit_freq.bin");
+        let map_path = sample_dir.join("permit_map.bin");
+
+        if !freq_path.exists() || !map_path.exists() {
+            info!(log, "Round 2: skipping sample '{}' (no permit maps)", name);
+            continue;
+        }
+
+        // Read permit_freq.bin to get cell barcode frequency list
+        let freq_file = File::open(&freq_path)?;
+        let mut freq_reader = BufReader::new(freq_file);
+        let mut freq_hdr = [0u8; 16];
+        freq_reader.read_exact(&mut freq_hdr)?;
+        let cell_freq_map: HashMap<u64, u64> =
+            bincode::deserialize_from(freq_reader)
+                .map_err(|e| anyhow!("couldn't deserialize {}: {}", freq_path.display(), e))?;
+
+        // Sort by frequency descending (same as standard collate)
+        let mut tsv_map: Vec<(u64, u64)> = cell_freq_map.into_iter().collect();
+        tsv_map.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let sample_total_cells = tsv_map.len() as u64;
+        let sample_total_records: u64 = tsv_map.iter().map(|x| x.1).sum();
+
+        // Open the sample's intermediate RAD file
+        let sample_file = File::open(&sample_rad_path)?;
+        let mut sample_br = BufReader::new(sample_file);
+        let sample_prelude = RadPrelude::from_bytes(&mut sample_br)?;
+        let sample_ftm = sample_prelude.file_tags.parse_tags_from_bytes(&mut sample_br)?;
+        let sample_ctx = sample_prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+
+        // Compute end_header_pos for the sample file
+        let sample_end_hdr_pos = sample_br.get_mut().stream_position().unwrap()
+            - (sample_br.buffer().len() as u64);
+
+        info!(
+            log,
+            "Round 2: collating sample '{}' — {} cells, {} records",
+            name, sample_total_cells, sample_total_records,
+        );
+
+        // Use the existing collation machinery for cell-level collation.
+        // We use collate_temporary_bucket_twopass_generic indirectly by
+        // building temp buckets and scattering, same as do_collate_with_temp.
+        let chunk_start = total_output_chunks;
+
+        // Load cell permit map
+        let cell_map_file = File::open(&map_path)?;
+        let cell_correct_map: Arc<HashMap<u64, u64>> =
+            Arc::new(bincode::deserialize_from(BufReader::new(cell_map_file))
+                .map_err(|e| anyhow!("couldn't deserialize {}: {}", map_path.display(), e))?);
+
+        // Build output_cache for this sample's cells
+        let n_workers = if num_threads > 1 { (num_threads - 1) as usize } else { 1 };
+        let max_records_per_thread = (max_records / n_workers as u32) + 1;
+
+        let mut sample_output_cache = HashMap::<u64, Arc<libradicl::TempBucket>>::new();
+        let mut sample_temp_buckets = vec![(
+            0u32, 0u32,
+            Arc::new(libradicl::TempBucket::from_id_and_parent(0, &round1_dir)),
+        )];
+        let mut alloc = 0u64;
+        let mut nbchunks = 0u32;
+
+        for (bc, freq) in &tsv_map {
+            sample_output_cache.insert(*bc, sample_temp_buckets.last().unwrap().2.clone());
+            alloc += freq;
+            nbchunks += 1;
+            if alloc >= max_records_per_thread as u64 {
+                sample_temp_buckets.last_mut().unwrap().0 = nbchunks;
+                sample_temp_buckets.last_mut().unwrap().1 = alloc as u32;
+                let tn = sample_temp_buckets.len() as u32;
+                sample_temp_buckets.push((
+                    0, 0,
+                    Arc::new(libradicl::TempBucket::from_id_and_parent(tn, &round1_dir)),
+                ));
+                alloc = 0;
+                nbchunks = 0;
+            }
+        }
+        if nbchunks > 0 {
+            sample_temp_buckets.last_mut().unwrap().0 = nbchunks;
+            sample_temp_buckets.last_mut().unwrap().1 = alloc as u32;
+        }
+
+        let sample_output_cache = Arc::new(sample_output_cache);
+        let nbuckets = sample_temp_buckets.len();
+
+        // Scatter phase for this sample
+        let expected_ori_mfo2: libradicl::rad_types::MappedFragmentOrientation =
+            expected_ori.into();
+        let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &sample_ctx);
+        let total_sample_recs = per_sample_nrecs[sample_idx];
+        let loc_buffer_size = std::cmp::min(
+            262_144usize,
+            std::cmp::max(1000, min_rec_len * max_records as usize / (nbuckets * n_workers.max(1))),
+        );
+
+        // Single-threaded scatter for simplicity (per-sample files are smaller)
+        for _ in 0..per_sample_nchunks[sample_idx] {
+            let mut hdr_buf = [0u8; 8];
+            sample_br.read_exact(&mut hdr_buf).unwrap();
+            let nbytes_chunk = u32::from_le_bytes([hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3]]);
+            let nrec_chunk = u32::from_le_bytes([hdr_buf[4], hdr_buf[5], hdr_buf[6], hdr_buf[7]]);
+
+            // Read the chunk data and use libradicl's dump function
+            let mut buf = vec![0u8; nbytes_chunk as usize];
+            buf[0..8].copy_from_slice(&hdr_buf);
+            sample_br.read_exact(&mut buf[8..]).unwrap();
+
+            let mut nbr = BufReader::new(Cursor::new(&buf[..]));
+            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::new();
+            let mut backing = vec![0u8; loc_buffer_size * nbuckets];
+            for bid in 0..nbuckets {
+                let start = bid * loc_buffer_size;
+                let ptr = backing[start..start + loc_buffer_size].as_mut_ptr();
+                local_buffers.push(Cursor::new(unsafe {
+                    std::slice::from_raw_parts_mut(ptr, loc_buffer_size)
+                }));
+            }
+
+            libradicl::dump_corrected_cb_chunk_to_temp_file_generic::<u64, _, MultiBarcodeReadRecord>(
+                &mut nbr,
+                &sample_ctx,
+                &cell_correct_map,
+                &expected_ori,
+                &sample_output_cache,
+                &mut local_buffers,
+                loc_buffer_size,
+            );
+
+            // Flush local buffers
+            for (composite_key, bucket) in sample_output_cache.iter() {
+                let bid = bucket.bucket_id as usize;
+                if bid < local_buffers.len() {
+                    let pos = local_buffers[bid].position() as usize;
+                    if pos > 0 {
+                        let bw = &bucket.bucket_writer;
+                        let mut w = bw.lock().unwrap();
+                        w.write_all(&local_buffers[bid].get_ref()[..pos]).unwrap();
+                        local_buffers[bid].set_position(0);
+                    }
+                }
+            }
+        }
+
+        // Flush all sample temp buckets
+        for (_, _, bucket) in &sample_temp_buckets {
+            let bw = &bucket.bucket_writer;
+            let mut w = bw.lock().unwrap();
+            w.flush().unwrap();
+        }
+
+        // Gather phase for this sample
+        let mut sample_chunks: u64 = 0;
+        for (_, _, bucket) in &sample_temp_buckets {
+            let nrec = bucket.num_records_written.load(Ordering::SeqCst);
+            if nrec == 0 { continue; }
+
+            let bid = bucket.bucket_id;
+            let tpath = round1_dir.join(format!("bucket_{}.tmp", bid));
+            if !tpath.exists() { continue; }
+            let tfile = File::open(&tpath)?;
+            let mut treader = BufReader::new(tfile);
+
+            let mut cmap: HashMap<u64, TempCellInfo, ahash::RandomState> = HashMap::default();
+            let nc = libradicl::collate_temporary_bucket_twopass_generic::<
+                u64, _, _, MultiBarcodeReadRecord,
+            >(&mut treader, &sample_ctx, nrec, &owriter, compress_out, &mut cmap);
+
+            sample_chunks += nc as u64;
+            std::fs::remove_file(&tpath).ok();
+        }
+
+        total_output_chunks += sample_chunks;
+
+        // Add to manifest
+        let bc_str = sample_entries[sample_idx]["barcode"].as_str().unwrap_or("0x0");
+        let bc = u64::from_str_radix(bc_str.trim_start_matches("0x"), 16).unwrap_or(0);
+        manifest.add_sample_group(SampleGroup {
+            key: bc,
+            name: Some(name.clone()),
+            chunk_start,
+            num_chunks: sample_chunks,
+            num_records: per_sample_nrecs[sample_idx],
+        });
+
+        info!(log, "Round 2: sample '{}' — {} output chunks", name, sample_chunks);
+    }
+
+    // Flush final output
+    if let Ok(mut oput) = owriter.lock() {
+        oput.flush()?;
+    }
+
+    // Backpatch total num_chunks in the output file header
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&oname)?;
+        let nc_pos = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
+        if !compress_out {
+            f.seek(std::io::SeekFrom::Start(nc_pos as u64))?;
+            f.write_all(&total_output_chunks.to_le_bytes())?;
+        }
+        // For compressed output, backpatching is not straightforward; skip for now.
+    }
+
+    // Write collation manifest
+    let manifest_path = parent.join("collation_manifest.bin");
+    manifest.write_to_file(&manifest_path)?;
+
+    // Write collate metadata
+    {
+        let collate_meta = json!({
+            "cmd": cmdline,
+            "version_str": version,
+            "compressed_output": compress_out,
+            "multi_barcode": true,
+            "num_samples": num_samples,
+            "collation_mode": "two-round",
+        });
+        let cm_path = parent.join("collate.json");
+        let mut cm_file = File::create(cm_path)?;
+        serde_json::to_writer_pretty(&mut cm_file, &collate_meta)?;
+    }
+
+    // Cleanup round 1 intermediate files
+    for name in &sample_names {
+        let p = round1_dir.join(format!("sample_{}.rad", name));
+        std::fs::remove_file(&p).ok();
+    }
+    std::fs::remove_dir(&round1_dir).ok();
+
+    info!(
+        log,
+        "Two-round collation complete: {} samples, {} total output chunks",
+        manifest.sample_groups.len(),
         total_output_chunks.to_formatted_string(&Locale::en),
     );
 
