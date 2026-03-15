@@ -90,6 +90,10 @@ nalgebra = "0.34.1"
 rand_distr = "0.5.1"
 statrs = "0.18"
 
+[dev-dependencies]
+tempfile = "3"
+slog-term = "2.9.2"
+
 [profile.release]
 #debug = true
 lto = "thin"
