@@ -943,6 +943,24 @@ where
                 }
             }
         }
+        KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc) => {
+            info!(
+                log,
+                "record type is multi-barcode single-cell RNA-seq ({} barcode levels, cell BC len = {})",
+                num_bc,
+                cell_bc_len,
+            );
+            // TODO: Implement hierarchical collation:
+            // Two-round (default): first collate by sample BC, then by cell BC per sample
+            // Fast path: single-pass composite bucketing by (sample_idx, cell_bc)
+            // Write collation_manifest.bin sidecar describing sample boundaries
+            anyhow::bail!(
+                "Multi-barcode collation is not yet implemented. \
+                 This RAD file contains {} barcode levels. \
+                 Hierarchical collation support (e.g., 10x Flex) is under active development.",
+                num_bc,
+            )
+        }
     }
 }
 

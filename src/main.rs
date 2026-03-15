@@ -126,7 +126,23 @@ fn main() -> anyhow::Result<()> {
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .value_parser(value_parser!(usize))
-                .default_value("10"));
+                .default_value("10"))
+        // Multi-barcode options (e.g., 10x Flex)
+        .arg(
+            arg!(--"sample-bc-list" <SAMPLELIST> "file containing known sample/library barcodes (one per line); triggers multi-barcode mode")
+                .value_parser(pathbuf_file_exists_validator)
+        )
+        .arg(
+            arg!(--"sample-names" <SAMPLENAMES> "file mapping sample barcodes to human-readable names (TSV: barcode\\tname)")
+                .value_parser(pathbuf_file_exists_validator)
+                .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"sample-correction-mode" <SCMODE> "correction mode for sample barcodes")
+                .value_parser(["exact", "1-edit"])
+                .default_value("exact")
+                .requires("sample-bc-list")
+        );
 
     let collate_app = Command::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
@@ -142,7 +158,10 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-c --compress "compress the output collated RAD file"))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
          .value_parser(value_parser!(u32))
-         .default_value("30000000"));
+         .default_value("30000000"))
+    .arg(arg!(--"collation-mode" <CMODE> "collation mode for multi-barcode data: two-round (generalizable) or fast (single-pass for 2-level)")
+         .value_parser(["two-round", "fast"])
+         .default_value("two-round"));
 
     let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")
@@ -195,7 +214,11 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
         .value_parser(value_parser!(usize))
         .default_value("10")
-        .hide(true));
+        .hide(true))
+    // Multi-sample output option (for multi-barcode RAD files)
+    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "output mode for multi-sample data: separate per-sample matrices, one combined matrix, or both")
+        .value_parser(["separate", "combined", "both"])
+        .default_value("separate"));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")

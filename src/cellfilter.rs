@@ -538,6 +538,24 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 file_tag_map,
             )
         }
+        KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc) => {
+            info!(
+                log,
+                "record type is multi-barcode single-cell RNA-seq ({} barcode levels, cell BC len = {})",
+                num_bc,
+                cell_bc_len,
+            );
+            // TODO: Implement multi-barcode generate-permit-list:
+            // 1. Correct sample BCs against --sample-bc-list
+            // 2. Per-sample: count cell BC frequencies and generate permit lists
+            // 3. Output: sample_permit_map.bin, per-sample permit_map.bin + permit_freq.bin
+            anyhow::bail!(
+                "Multi-barcode generate-permit-list is not yet implemented. \
+                 This RAD file contains {} barcode levels. \
+                 Multi-barcode support (e.g., 10x Flex) is under active development.",
+                num_bc,
+            )
+        }
     }
 }
 

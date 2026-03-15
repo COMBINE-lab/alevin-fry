@@ -1489,6 +1489,26 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 file_tag_map,
             )
         }
+        KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc) => {
+            info!(
+                log,
+                "record type is multi-barcode single-cell RNA-seq ({} barcode levels, cell BC len = {})",
+                num_bc,
+                cell_bc_len,
+            );
+            // TODO: Implement hierarchical quantification:
+            // 1. Load collation_manifest.bin to know sample boundaries
+            // 2. Per sample: process chunks as standard single-sample quant
+            // 3. Output controlled by --multi-sample-output: separate, combined, or both
+            //    - separate: per-sample directories with expression matrices
+            //    - combined: single matrix with composite "sample_name_cellBC" labels
+            anyhow::bail!(
+                "Multi-barcode quantification is not yet implemented. \
+                 This RAD file contains {} barcode levels. \
+                 Per-sample quantification support (e.g., 10x Flex) is under active development.",
+                num_bc,
+            )
+        }
     }
 }
 

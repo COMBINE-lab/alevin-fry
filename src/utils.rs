@@ -287,12 +287,48 @@ pub(crate) enum KnownRecordType {
     AtacSeq(u16),
     RnaShortPos(u16),
     RnaShort(u16),
+    /// Multi-barcode record (e.g., 10x Flex).
+    /// Fields: (cell_bc_len, num_barcodes)
+    RnaShortMultiBC(u16, u16),
+}
+
+impl KnownRecordType {
+    /// Whether this record type has multiple barcodes.
+    pub(crate) fn is_multi_barcode(&self) -> bool {
+        matches!(self, KnownRecordType::RnaShortMultiBC(_, _))
+    }
+
+    /// Number of barcode levels for this record type.
+    pub(crate) fn num_barcodes(&self) -> u16 {
+        match self {
+            KnownRecordType::RnaShortMultiBC(_, n) => *n,
+            _ => 1,
+        }
+    }
 }
 
 pub(crate) fn get_record_type_from_prelude(
     prelude: &RadPrelude,
     file_tag_map: &TagMap,
 ) -> KnownRecordType {
+    // Check for multi-barcode first (presence of num_barcodes file-level tag)
+    if let Some(num_bc_val) = file_tag_map.get("num_barcodes") {
+        let num_bc: u16 = num_bc_val
+            .try_into()
+            .expect("should be able to parse \"num_barcodes\" as a u16");
+        if num_bc > 1 {
+            // Multi-barcode: the cell BC length is the last barcode level
+            // (b{N-1}len), or we can use the innermost barcode length.
+            let cell_bc_tag = format!("b{}len", num_bc - 1);
+            let cell_bc_len: u16 = file_tag_map
+                .get(&cell_bc_tag)
+                .unwrap_or_else(|| panic!("multi-barcode RAD file should have a \"{}\" file-level tag", cell_bc_tag))
+                .try_into()
+                .unwrap_or_else(|_| panic!("should be able to parse \"{}\" as a u16", cell_bc_tag));
+            return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc);
+        }
+    }
+
     let aln_tags = &prelude.aln_tags;
     if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
         // long-read single cell
@@ -304,7 +340,6 @@ pub(crate) fn get_record_type_from_prelude(
         KnownRecordType::RnaLong(bc_len)
     } else if aln_tags.has_tag("pos") {
         // alevin-fry with positions
-        // TODO: Switch this out with position aware type when we have it
         let bc_len: u16 = file_tag_map
             .get("cblen")
             .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
