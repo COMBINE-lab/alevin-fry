@@ -950,10 +950,27 @@ where
                 num_bc,
                 cell_bc_len,
             );
-            // TODO: Implement hierarchical collation:
-            // Two-round (default): first collate by sample BC, then by cell BC per sample
-            // Fast path: single-pass composite bucketing by (sample_idx, cell_bc)
-            // Write collation_manifest.bin sidecar describing sample boundaries
+            // TODO: Implement hierarchical collation.
+            //
+            // The collation will use:
+            // - sample_permit_map.bin (from generate-permit-list) to correct sample BCs
+            // - Per-sample permit_map.bin / permit_freq.bin for cell BC correction
+            // - sample_info.json for sample metadata
+            //
+            // Two-round approach (default, --collation-mode two-round):
+            //   Round 1: Scatter records by corrected sample BC into per-sample temp files
+            //   Round 2: Per sample, collate by corrected cell BC using existing machinery
+            //   Write collation_manifest.bin with sample -> chunk range mapping
+            //
+            // Fast path (--collation-mode fast):
+            //   Single pass with composite (sample_idx, cell_bc) bucket keys
+            //
+            // The output is a single collated RAD file with chunks ordered hierarchically:
+            //   [sample_0/cell_0, sample_0/cell_1, ..., sample_1/cell_0, ...]
+            // and a collation_manifest.bin sidecar describing sample boundaries.
+            //
+            // Record type used: MultiBarcodeReadRecordT<u64> (from libradicl)
+            // Context type: MultiBarcodeRecordContext
             anyhow::bail!(
                 "Multi-barcode collation is not yet implemented. \
                  This RAD file contains {} barcode levels. \

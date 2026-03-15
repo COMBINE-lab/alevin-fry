@@ -22,7 +22,7 @@ use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
 use alevin_fry::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
-use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
+use alevin_fry::prog_opts::{self, GenPermitListOpts, QuantOpts};
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[global_allocator]
@@ -369,6 +369,19 @@ fn main() -> anyhow::Result<()> {
             .get_one::<u32>("threads")
             .expect("valid integer number of threads") as usize;
 
+        // Parse multi-barcode options
+        let sample_bc_list: Option<PathBuf> =
+            t.get_one::<PathBuf>("sample-bc-list").cloned();
+        let sample_names: Option<PathBuf> =
+            t.get_one::<PathBuf>("sample-names").cloned();
+        let sample_correction_mode = match t
+            .get_one::<String>("sample-correction-mode")
+            .map(|s| s.as_str())
+        {
+            Some("1-edit") => prog_opts::SampleCorrectionMode::OneEdit,
+            _ => prog_opts::SampleCorrectionMode::Exact,
+        };
+
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
             .output_dir(output_dir)
@@ -379,6 +392,9 @@ fn main() -> anyhow::Result<()> {
             .velo_mode(velo_mode)
             .cmdline(&cmdline)
             .log(&log)
+            .sample_bc_list(sample_bc_list)
+            .sample_names(sample_names)
+            .sample_correction_mode(sample_correction_mode)
             .build();
 
         match generate_permit_list(gpl_opts) {
