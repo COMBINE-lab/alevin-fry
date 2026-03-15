@@ -32,8 +32,8 @@ use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
 use libradicl::record::{
     AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
-    CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord, RecordContext,
-    ScLongReadRecord, UmiTaggedRecord,
+    CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
+    MultiBarcodeReadRecord, RecordContext, ScLongReadRecord, UmiTaggedRecord,
 };
 
 use std::fmt;
@@ -1496,17 +1496,34 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 num_bc,
                 cell_bc_len,
             );
-            // TODO: Implement hierarchical quantification:
-            // 1. Load collation_manifest.bin to know sample boundaries
-            // 2. Per sample: process chunks as standard single-sample quant
-            // 3. Output controlled by --multi-sample-output: separate, combined, or both
-            //    - separate: per-sample directories with expression matrices
-            //    - combined: single matrix with composite "sample_name_cellBC" labels
-            anyhow::bail!(
-                "Multi-barcode quantification is not yet implemented. \
-                 This RAD file contains {} barcode levels. \
-                 Per-sample quantification support (e.g., 10x Flex) is under active development.",
+            // For multi-barcode collated files, the collation has already grouped
+            // records by (sample, cell). Each chunk is one cell's data, and the
+            // chunks are ordered hierarchically by sample then cell.
+            //
+            // The existing do_quantify machinery processes chunks independently,
+            // so we can dispatch directly to it using MultiBarcodeReadRecord.
+            // The collate_key() returns the cell barcode, which is used for
+            // barcode labeling in the output.
+            //
+            // TODO: Use collation_manifest.bin to split output into per-sample
+            // directories or produce combined matrices with composite labels
+            // (controlled by --multi-sample-output flag).
+            //
+            // For now, all samples are quantified together into a single output,
+            // with cell barcodes from all samples in one matrix. Users can
+            // distinguish samples by the collation manifest.
+            info!(
+                log,
+                "Quantifying multi-barcode data ({} barcode levels). \
+                 Note: per-sample output splitting is not yet implemented; \
+                 all samples will be quantified into a single output directory.",
                 num_bc,
+            );
+            do_quantify::<_, u64, MultiBarcodeReadRecord, BasicEqClassPayload>(
+                br,
+                quant_opts,
+                prelude,
+                file_tag_map,
             )
         }
     }

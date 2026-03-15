@@ -16,7 +16,7 @@ use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
 use libradicl::record::{
     AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AtacSeqReadRecord,
-    ConvertiblePrimitiveInteger, ScLongReadRecordT,
+    ConvertiblePrimitiveInteger, MultiBarcodeReadRecordT, ScLongReadRecordT,
 };
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
@@ -279,6 +279,7 @@ macro_rules! impl_optional_alignment_extras {
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
 impl_optional_alignment_extras!(AtacSeqReadRecord, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, MultiBarcodeReadRecordT, None);
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, ends = ends, tlens = tlens));
 
 #[derive(Debug, Copy, Clone)]
