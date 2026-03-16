@@ -1323,20 +1323,14 @@ where
     let rec_context = Arc::new(rec_context);
 
     // Build tiered cell correction structure:
-    // Tier 1 (identity): HashSet of all valid barcodes across all samples.
-    //   A valid barcode always corrects to itself. This is the fast path.
+    // Tier 1 (per-sample identity): HashSet of valid barcodes for each sample.
+    //   A valid barcode corrects to itself within that sample. This is the fast path.
+    //   The valid set differs per sample — the same barcode may be valid in one sample
+    //   but not another (different cell populations per sample).
     // Tier 2 (per-sample BarcodeLookupMap): for barcodes NOT in the identity set,
     //   do on-the-fly 1-edit neighbor lookup. Much cheaper than pre-materializing
     //   the full correction HashMap (which can be 100M+ entries).
     let cell_correction = {
-        let mut identity: std::collections::HashSet<u64, ahash::RandomState> =
-            std::collections::HashSet::default();
-        for valid_bcs in &per_sample_valid_bcs {
-            for &bc in valid_bcs {
-                identity.insert(bc);
-            }
-        }
-
         // Get cell BC length from the first non-empty sample's freq file
         let cell_bclen = {
             let freq_path = sample_names.iter().find_map(|name| {
@@ -1353,7 +1347,14 @@ where
             }
         };
 
-        // Build per-sample BarcodeLookupMap for 1-edit correction
+        // Per-sample identity sets: valid barcodes that self-correct within each sample
+        let per_sample_identity: Vec<std::collections::HashSet<u64, ahash::RandomState>> =
+            per_sample_valid_bcs
+                .iter()
+                .map(|valid_bcs| valid_bcs.iter().copied().collect())
+                .collect();
+
+        // Per-sample BarcodeLookupMap for 1-edit correction
         let per_sample_lookup: Vec<libradicl::BarcodeLookupMap> = per_sample_valid_bcs
             .iter()
             .map(|valid_bcs| {
@@ -1361,16 +1362,17 @@ where
             })
             .collect();
 
-        let identity_count = identity.len();
-        let lookup_sizes: usize = per_sample_lookup.iter().map(|m| m.barcodes.len()).sum();
+        let total_identity: usize = per_sample_identity.iter().map(|s| s.len()).sum();
+        let total_lookup: usize = per_sample_lookup.iter().map(|m| m.barcodes.len()).sum();
         info!(
             log,
-            "Cell correction: {} identity barcodes (fast path), {} total barcodes in per-sample lookup maps (bc_len={})",
-            identity_count.to_formatted_string(&Locale::en),
-            lookup_sizes.to_formatted_string(&Locale::en),
+            "Cell correction: {} total identity barcodes across {} samples (fast path), {} total in lookup maps (bc_len={})",
+            total_identity.to_formatted_string(&Locale::en),
+            num_samples,
+            total_lookup.to_formatted_string(&Locale::en),
             cell_bclen,
         );
-        Arc::new((identity, per_sample_lookup, cell_bclen))
+        Arc::new((per_sample_identity, per_sample_lookup))
     };
 
     // SCATTER PHASE: Multi-threaded scatter using header-peek pattern
@@ -1461,11 +1463,11 @@ where
                             }
                         };
 
-                        // Look up cell BC correction (tiered: identity fast path, then per-sample 1-edit lookup)
+                        // Look up cell BC correction (tiered: per-sample identity fast path, then 1-edit lookup)
                         let cell_bc: u64 = tup.collate_key().into();
-                        let (ref identity, ref per_sample_lookup, _cell_bclen) = *cell_corr;
-                        let corrected_cell = if identity.contains(&cell_bc) {
-                            // Fast path: valid barcode, corrects to itself
+                        let (ref per_sample_identity, ref per_sample_lookup) = *cell_corr;
+                        let corrected_cell = if per_sample_identity[sample_idx].contains(&cell_bc) {
+                            // Fast path: valid barcode in this sample, corrects to itself
                             cell_bc
                         } else {
                             // Slow path: 1-edit neighbor lookup in per-sample BarcodeLookupMap
