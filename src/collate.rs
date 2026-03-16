@@ -1584,7 +1584,7 @@ where
     }
 
     // GATHER PHASE: Merge temp buckets into final collated file
-    info!(log, "Starting gather phase...");
+    info!(log, "Starting gather phase ({} worker threads)...", n_workers);
 
     let pbar_gather = ProgressBar::with_draw_target(
         Some(temp_buckets.len() as u64),
@@ -1593,111 +1593,111 @@ where
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
-    // Process buckets sequentially (simpler for manifest tracking)
+    // Multi-threaded gather: workers pop temp buckets from a queue,
+    // call collate_temporary_bucket_twopass_generic, delete temp files.
+    let fq = Arc::new(ArrayQueue::<(u32, u32, Arc<libradicl::TempBucket>)>::new(
+        (n_workers / 2).max(1) + n_workers,
+    ));
+    let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
+
+    let mut gather_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
+
+    for _worker in 0..n_workers {
+        let in_q = fq.clone();
+        let buckets_remaining = buckets_to_process.clone();
+        let input_dir_clone: PathBuf = parent.to_path_buf();
+        let owriter_clone = owriter.clone();
+        let pbar_clone = pbar_gather.clone();
+        let ctx = rec_context.clone();
+
+        let handle = thread::spawn(move || {
+            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+            let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+            let mut local_chunks = 0u64;
+            let p = std::path::Path::new(&input_dir_clone);
+
+            while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                if let Some(temp_bucket) = in_q.pop() {
+                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+                    cmap.clear();
+
+                    let nrec = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+                    if nrec == 0 {
+                        pbar_clone.inc(1);
+                        continue;
+                    }
+
+                    let fname = p.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                    let tfile = File::open(&fname).expect("couldn't open temporary file");
+                    let mut treader = BufReader::new(tfile);
+
+                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<
+                        u64, _, _, MultiBarcodeReadRecord,
+                    >(
+                        &mut treader, &ctx, nrec, &owriter_clone, compress_out, &mut cmap,
+                    ) as u64;
+
+                    drop(treader);
+                    std::fs::remove_file(&fname).ok();
+                    pbar_clone.inc(1);
+                }
+            }
+            local_chunks
+        });
+        gather_handles.push(handle);
+    }
+
+    // Push temp buckets to the gather queue
+    for tb in temp_buckets.iter() {
+        let mut bclone = (tb.0, tb.1, tb.2.clone());
+        while let Err(t) = fq.push(bclone) {
+            bclone = t;
+            while fq.is_full() {}
+        }
+    }
+
+    // Wait for gather workers
+    let mut total_output_chunks: u64 = 0;
+    for handle in gather_handles {
+        total_output_chunks += handle.join().unwrap();
+    }
+    pbar_gather.finish_and_clear();
+
+    // Build manifest from the tsv_map (which encodes sample→cell mappings)
     let mut manifest = CollationManifest::new(vec![
         "sample".to_string(),
         "cell".to_string(),
     ]);
-    let mut total_output_chunks: u64 = 0;
-    let mut current_sample_idx: Option<usize> = None;
-    let mut current_sample_chunk_start: u64 = 0;
-    let mut current_sample_num_chunks: u64 = 0;
-    let mut current_sample_num_records: u64 = 0;
 
-    // Sort tsv_map entries by composite key to determine sample boundaries
-    let mut sorted_keys: Vec<(u64, usize)> = tsv_map
-        .iter()
-        .map(|(k, _)| {
-            let sidx = (*k >> 48) as usize;
-            (*k, sidx)
-        })
-        .collect();
-    sorted_keys.sort();
-    sorted_keys.dedup_by_key(|x| x.0);
-
-    for (_, _, bucket) in &temp_buckets {
-        let nrec_written = bucket.num_records_written.load(Ordering::SeqCst);
-        if nrec_written == 0 {
-            pbar_gather.inc(1);
-            continue;
-        }
-
-        let bid = bucket.bucket_id;
-        let tpath = parent.join(format!("bucket_{}.tmp", bid));
-        let tfile = File::open(&tpath)
-            .with_context(|| format!("couldn't open temp bucket {}", tpath.display()))?;
-        let mut treader = BufReader::new(tfile);
-
-        let mut cmap: HashMap<u64, TempCellInfo, ahash::RandomState> = HashMap::default();
-
-        let num_chunks_in_bucket =
-            libradicl::collate_temporary_bucket_twopass_generic::<u64, _, _, MultiBarcodeReadRecord>(
-                &mut treader,
-                &rec_context,
-                nrec_written,
-                &owriter,
-                compress_out,
-                &mut cmap,
-            );
-
-        // Track sample boundaries from the cell BCs in this bucket
-        for (composite_key, _) in &cmap {
-            let sample_idx = (*composite_key >> 48) as usize;
-            match current_sample_idx {
-                None => {
-                    current_sample_idx = Some(sample_idx);
-                    current_sample_chunk_start = total_output_chunks;
-                }
-                Some(prev_idx) if prev_idx != sample_idx => {
-                    // Finalize previous sample
-                    if let Some(prev) = current_sample_idx {
-                        let bc_str = &sample_entries[prev]["barcode"];
-                        let bc = u64::from_str_radix(
-                            bc_str.as_str().unwrap_or("0").trim_start_matches("0x"),
-                            16,
-                        ).unwrap_or(0);
-                        manifest.add_sample_group(SampleGroup {
-                            key: bc,
-                            name: Some(sample_names[prev].clone()),
-                            chunk_start: current_sample_chunk_start,
-                            num_chunks: current_sample_num_chunks,
-                            num_records: current_sample_num_records,
-                        });
-                    }
-                    current_sample_idx = Some(sample_idx);
-                    current_sample_chunk_start = total_output_chunks;
-                    current_sample_num_chunks = 0;
-                    current_sample_num_records = 0;
-                }
-                _ => {}
-            }
-        }
-        current_sample_num_chunks += num_chunks_in_bucket as u64;
-        current_sample_num_records += nrec_written as u64;
-        total_output_chunks += num_chunks_in_bucket as u64;
-
-        // Clean up temp file
-        std::fs::remove_file(&tpath).ok();
-        pbar_gather.inc(1);
+    // Group cells by sample from the tsv_map composite keys
+    let mut sample_chunk_counts: HashMap<usize, (u64, u64)> = HashMap::new(); // sample_idx -> (num_cells, num_records)
+    for (composite_key, freq) in &tsv_map {
+        let sidx = (*composite_key >> 48) as usize;
+        let entry = sample_chunk_counts.entry(sidx).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += freq;
     }
-    pbar_gather.finish_and_clear();
 
-    // Finalize last sample
-    if let Some(prev) = current_sample_idx {
-        if prev < sample_entries.len() {
-            let bc_str = &sample_entries[prev]["barcode"];
+    let mut chunk_offset: u64 = 0;
+    let mut sample_indices: Vec<usize> = sample_chunk_counts.keys().copied().collect();
+    sample_indices.sort();
+    for sidx in sample_indices {
+        let (num_cells, num_records) = sample_chunk_counts[&sidx];
+        if sidx < sample_entries.len() {
+            let bc_str = &sample_entries[sidx]["barcode"];
             let bc = u64::from_str_radix(
                 bc_str.as_str().unwrap_or("0").trim_start_matches("0x"),
                 16,
             ).unwrap_or(0);
             manifest.add_sample_group(SampleGroup {
                 key: bc,
-                name: Some(sample_names[prev].clone()),
-                chunk_start: current_sample_chunk_start,
-                num_chunks: current_sample_num_chunks,
-                num_records: current_sample_num_records,
+                name: Some(sample_names[sidx].clone()),
+                chunk_start: chunk_offset,
+                num_chunks: num_cells,
+                num_records,
             });
         }
+        chunk_offset += num_cells;
     }
 
     // Write collation manifest
