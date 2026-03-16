@@ -1645,6 +1645,17 @@ where
     if let Ok(mut oput) = owriter.lock() {
         oput.flush()?;
     }
+    drop(owriter);
+
+    // Backpatch num_chunks in the output file header
+    if !compress_out {
+        let chunk_bytes = std::mem::size_of::<u64>() as u64;
+        let nc_pos = end_header_pos - chunk_bytes;
+        let mut ofile = std::fs::OpenOptions::new().write(true).open(&oname)?;
+        ofile.seek(std::io::SeekFrom::Start(nc_pos))?;
+        ofile.write_all(&total_output_chunks.to_le_bytes())?;
+        info!(log, "Backpatched num_chunks to {} in output file", total_output_chunks);
+    }
 
     info!(
         log,

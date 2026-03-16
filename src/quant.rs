@@ -1077,9 +1077,16 @@ where
     //let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
+    // Get barcode length: standard files use "cblen", multi-barcode files
+    // use "b{N-1}len" where N is the number of barcodes. Try both.
     let barcode_tag = file_tag_map
         .get("cblen")
-        .expect("tag map must contain cblen");
+        .or_else(|| {
+            // Multi-barcode: try b1len, b0len, etc.
+            file_tag_map.get("b1len")
+                .or_else(|| file_tag_map.get("b0len"))
+        })
+        .expect("tag map must contain cblen or bNlen for barcode length");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
     // if we have a filter list, extract it here
