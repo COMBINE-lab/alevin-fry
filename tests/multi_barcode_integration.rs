@@ -394,3 +394,33 @@ fn test_collation_manifest_roundtrip() {
     assert_eq!(restored.total_chunks(), 180);
     assert_eq!(restored.total_records(), 90000);
 }
+
+/// Test reading from the real Flex RAD file (if available)
+#[test]
+fn test_read_real_flex_rad() {
+    let rad_path = std::path::Path::new("flex_data/map_output3/map.rad");
+    if !rad_path.exists() {
+        eprintln!("Skipping test_read_real_flex_rad: RAD file not found");
+        return;
+    }
+    
+    let f = std::fs::File::open(rad_path).unwrap();
+    let mut reader = std::io::BufReader::new(f);
+    
+    let prelude = libradicl::header::RadPrelude::from_bytes(&mut reader).unwrap();
+    let ftm = prelude.file_tags.parse_tags_from_bytes(&mut reader).unwrap();
+    
+    let ctx = prelude.get_record_context::<libradicl::record::MultiBarcodeRecordContext>().unwrap();
+    eprintln!("Context: {:?}", ctx);
+    
+    // Read first chunk
+    let chunk = libradicl::chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut reader, &ctx);
+    eprintln!("Chunk: nbytes={}, nrec={}, reads.len()={}", chunk.nbytes, chunk.nrec, chunk.reads.len());
+    
+    assert!(chunk.nrec > 0, "First chunk should have records");
+    assert_eq!(chunk.reads.len(), chunk.nrec as usize, "reads.len() should match nrec");
+    
+    let r = &chunk.reads[0];
+    eprintln!("First read: barcodes={:?}, umi={}, refs={:?}", r.barcodes.as_slice(), r.umi, &r.refs);
+    assert_eq!(r.barcodes.len(), 2, "Should have 2 barcodes (sample + cell)");
+}

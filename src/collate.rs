@@ -93,6 +93,40 @@ where
         return Err(anyhow!(es));
     }
 
+    // Check if this is multi-barcode mode (no global permit_freq.bin,
+    // but sample_info.json exists)
+    let is_multi_barcode = mdata.get("multi_barcode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if is_multi_barcode {
+        // Multi-barcode: skip permit_freq.bin loading, go directly to collate_with_temp
+        // which will detect the multi-barcode record type and use per-sample permit maps.
+        // total_to_collate is computed from sample_info.json
+        let sample_info_file = File::open(parent.join("sample_info.json"))
+            .context("couldn't open sample_info.json for multi-barcode collation")?;
+        let sample_info: serde_json::Value = serde_json::from_reader(sample_info_file)?;
+        let total_to_collate = sample_info["matched_reads"]
+            .as_u64()
+            .unwrap_or(0);
+
+        info!(log, "Multi-barcode mode: {} total reads to collate", total_to_collate);
+
+        // tsv_map is empty — do_collate_multi_bc will build its own from per-sample data
+        return collate_with_temp(
+            input_dir,
+            rad_dir,
+            num_threads,
+            max_records,
+            Vec::new(), // tsv_map not used for multi-barcode
+            total_to_collate,
+            compress_out,
+            cmdline,
+            version_str,
+            log,
+        );
+    }
+
     // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
         crit!(
@@ -1317,56 +1351,30 @@ where
                     break;
                 }
                 while let Some((_chunk_num, buf)) = q_clone.pop() {
-                    let mut nbr = BufReader::new(Cursor::new(&buf[..]));
+                    let mut nbr = Cursor::new(&buf[..]);
 
-                    // Read chunk header
-                    let mut hdr_buf = [0u8; 8];
-                    nbr.read_exact(&mut hdr_buf).unwrap();
-                    let _nbytes = u32::from_le_bytes([hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3]]);
-                    let nrec = u32::from_le_bytes([hdr_buf[4], hdr_buf[5], hdr_buf[6], hdr_buf[7]]);
+                    // Read entire chunk using the standard Chunk reader
+                    let chunk = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(
+                        &mut nbr, &ctx,
+                    );
 
                     // Process each record in the chunk
-                    for _ in 0..nrec {
-                        let hdr = MultiBarcodeReadRecord::from_bytes_collatable_header(
-                            &mut nbr, &ctx,
-                        );
-                        let hdr = match hdr {
-                            Ok(h) => h,
-                            Err(_) => continue,
-                        };
+                    for mut rr in chunk.reads {
+
+                        if rr.refs.is_empty() {
+                            continue;
+                        }
 
                         // Extract sample BC (level 0) and look up correction
-                        let sample_bc: u64 = hdr.barcodes[0].into();
+                        let sample_bc: u64 = rr.barcodes[0].into();
                         let corrected_sample = match sample_map.get(&sample_bc) {
                             Some(&cs) => cs,
-                            None => {
-                                // Skip record: sample BC not in permit map
-                                // Read and discard alignment data
-                                let skip_bytes = MultiBarcodeReadRecord::nbytes(hdr.naln, &ctx)
-                                    - std::mem::size_of::<u32>() // naln already read
-                                    - ctx.total_bc_bytes()        // barcodes already read
-                                    - ctx.umit.bytes_for_type();  // UMI already read
-                                if skip_bytes > 0 {
-                                    let mut skip_buf = vec![0u8; skip_bytes];
-                                    let _ = nbr.read_exact(&mut skip_buf);
-                                }
-                                continue;
-                            }
+                            None => continue,
                         };
                         let sample_idx = match sample_idx_map.get(&corrected_sample) {
                             Some(&idx) => idx,
                             None => continue,
                         };
-
-                        // Read full record with orientation filtering
-                        let mut mutable_hdr = hdr;
-                        let mut rr = MultiBarcodeReadRecord::from_bytes_with_header_retain_ori(
-                            &mut nbr, &mut mutable_hdr, &ctx, &expected_ori_mfo,
-                        );
-
-                        if rr.refs.is_empty() {
-                            continue;
-                        }
 
                         // Extract cell BC (last barcode) and look up correction
                         let cell_bc: u64 = rr.collate_key().into();
@@ -1374,6 +1382,8 @@ where
                             Some(&cc) => cc,
                             None => continue,
                         };
+
+                        let mutable_hdr_naln = rr.refs.len() as u32;
 
                         // Set corrected barcodes
                         rr.set_collation_key_at_level(0, corrected_sample.into());
@@ -1390,7 +1400,7 @@ where
                         };
 
                         let nb = MultiBarcodeReadRecord::nbytes(
-                            mutable_hdr.naln, &ctx,
+                            mutable_hdr_naln, &ctx,
                         );
                         let bid = bucket.bucket_id as usize;
 
@@ -1437,34 +1447,64 @@ where
 
     // Main thread: read chunks and push onto work queue
     let mut chunk_num = 0usize;
-    for _ in 0..hdr.num_chunks {
-        // Read chunk header
-        let mut hbuf = [0u8; 8];
-        br.read_exact(&mut hbuf).unwrap();
-        let nbytes_chunk = hbuf.pread::<u32>(0).unwrap();
-        let _nrec_chunk = hbuf.pread::<u32>(4).unwrap();
+    // Single-threaded scatter: read chunks directly and process inline
+    // (Using main thread for correctness; can be parallelized once working)
+    info!(log, "Starting scatter phase (single-threaded)...");
+    let mut total_scattered: u64 = 0;
 
-        // Read chunk data
-        let mut buf = vec![0u8; nbytes_chunk as usize];
-        buf[0..8].copy_from_slice(&hbuf);
-        br.read_exact(&mut buf[8..]).unwrap();
+    for chunk_idx in 0..hdr.num_chunks {
+        let c = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut br, &rec_context);
 
-        // Push to queue (blocking)
-        let mut bclone = (chunk_num, buf);
-        while let Err(t) = q.push(bclone) {
-            bclone = t;
-            std::thread::yield_now();
+        for mut rr in c.reads {
+            if rr.refs.is_empty() {
+                continue;
+            }
+
+            let sample_bc: u64 = rr.barcodes[0].into();
+            let corrected_sample = match sample_permit_map.get(&sample_bc) {
+                Some(&cs) => cs,
+                None => continue,
+            };
+            let sample_idx = match sample_bc_to_idx.get(&corrected_sample) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+
+            let cell_bc: u64 = rr.collate_key().into();
+            let corrected_cell = match per_sample_cell_maps[sample_idx].get(&cell_bc) {
+                Some(&cc) => cc,
+                None => continue,
+            };
+
+            rr.set_collation_key_at_level(0, corrected_sample.into());
+            rr.set_collate_key(corrected_cell.into());
+
+            let composite_key =
+                ((sample_idx as u64) << 48) | (corrected_cell & 0x0000_FFFF_FFFF_FFFF);
+
+            let bucket = match output_cache.get(&composite_key) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            let mutable_hdr_naln = rr.refs.len() as u32;
+            let nb = MultiBarcodeReadRecord::nbytes(mutable_hdr_naln, &rec_context);
+
+            // Write directly to bucket file
+            let bw = &bucket.bucket_writer;
+            let mut writer = bw.lock().unwrap();
+            rr.write(&mut *writer, &rec_context).unwrap();
+            drop(writer);
+            bucket.num_records_written.fetch_add(1, Ordering::SeqCst);
+            bucket.num_bytes_written.fetch_add(nb as u64, Ordering::SeqCst);
+            total_scattered += 1;
         }
-        chunk_num += 1;
-        pbar_inner.inc(1);
+
+        if chunk_idx % 1000 == 0 {
+            pbar_inner.inc(1000);
+        }
     }
     pbar_inner.finish_and_clear();
-
-    // Wait for scatter workers to finish
-    let mut total_scattered: u64 = 0;
-    for handle in thread_handles {
-        total_scattered += handle.join().unwrap();
-    }
     info!(log, "Scatter phase complete: {} records scattered", total_scattered.to_formatted_string(&Locale::en));
 
     // Flush all temp bucket writers
