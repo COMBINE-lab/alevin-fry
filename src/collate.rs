@@ -22,9 +22,9 @@ use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AlevinFryRecordContext,
-    CollatableMappedRecord, ConvertiblePrimitiveInteger, HierarchicallyCollatable,
-    KnownSize, MappedRecord, MultiBarcodeReadRecord, MultiBarcodeRecordContext,
-    ScLongReadRecordContext, ScLongReadRecordT,
+    CollatableMappedRecord, CollatableRecordHeader, ConvertiblePrimitiveInteger,
+    HierarchicallyCollatable, KnownSize, MappedRecord, MultiBarcodeReadRecord,
+    MultiBarcodeRecordContext, RecordHeader, ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::schema::TempCellInfo;
 use libradicl::collation::{CollationManifest, SampleGroup};
@@ -1447,64 +1447,232 @@ where
 
     // Main thread: read chunks and push onto work queue
     let mut chunk_num = 0usize;
-    // Single-threaded scatter: read chunks directly and process inline
-    // (Using main thread for correctness; can be parallelized once working)
-    info!(log, "Starting scatter phase (single-threaded)...");
-    let mut total_scattered: u64 = 0;
+    // Build tiered cell correction structure
+    let cell_correction = {
+        let mut identity: std::collections::HashSet<u64, ahash::RandomState> =
+            std::collections::HashSet::default();
+        let mut per_sample_corrections: Vec<HashMap<u64, u64>> =
+            vec![HashMap::new(); num_samples];
 
-    for chunk_idx in 0..hdr.num_chunks {
-        let c = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut br, &rec_context);
+        // First pass: collect identity mappings (raw == corrected)
+        for map in per_sample_cell_maps.iter() {
+            for (&raw, &corrected) in map.as_ref() {
+                if raw == corrected {
+                    identity.insert(raw);
+                }
+            }
+        }
+        // Second pass: collect non-identity, remove from identity if conflicting
+        for (idx, map) in per_sample_cell_maps.iter().enumerate() {
+            for (&raw, &corrected) in map.as_ref() {
+                if raw != corrected {
+                    identity.remove(&raw);
+                    per_sample_corrections[idx].insert(raw, corrected);
+                }
+            }
+        }
+        let identity_count = identity.len();
+        let correction_count: usize = per_sample_corrections.iter().map(|m| m.len()).sum();
+        info!(
+            log,
+            "Cell correction tiers: {} identity (fast path), {} per-sample corrections",
+            identity_count.to_formatted_string(&Locale::en),
+            correction_count.to_formatted_string(&Locale::en),
+        );
+        Arc::new((identity, per_sample_corrections))
+    };
 
-        for mut rr in c.reads {
-            if rr.refs.is_empty() {
-                continue;
+    // SCATTER PHASE: Multi-threaded scatter using header-peek pattern
+    info!(log, "Starting scatter phase ({} worker threads)...", n_workers);
+
+    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
+    let chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
+    let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
+
+    let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &rec_context);
+    let loc_buffer_size = std::cmp::min(
+        262_144usize,
+        std::cmp::max(1000, min_rec_len * max_records as usize / (nbuckets * n_workers)),
+    );
+
+    let sample_permit_map = Arc::new(sample_permit_map);
+    let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
+    let rec_context = Arc::new(rec_context);
+
+    for _worker in 0..n_workers {
+        let in_q = q.clone();
+        let chunks_remaining = chunks_to_process.clone();
+        let oc = output_cache.clone();
+        let sample_map = sample_permit_map.clone();
+        let sample_idx_map = sample_bc_to_idx.clone();
+        let cell_corr = cell_correction.clone();
+        let ctx = rec_context.clone();
+        let loc_temp_buckets = temp_buckets.clone();
+        let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation =
+            expected_ori.into();
+
+        let handle = thread::spawn(move || {
+            // Thread-local buffer backing: one contiguous allocation, split into per-bucket cursors
+            let mut local_buffer_backing = vec![0u8; loc_buffer_size * nbuckets];
+            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::with_capacity(nbuckets);
+            let mut tslice = local_buffer_backing.as_mut_slice();
+            for _ in 0..nbuckets {
+                let (first, rest) = tslice.split_at_mut(loc_buffer_size);
+                local_buffers.push(Cursor::new(first));
+                tslice = rest;
             }
 
-            let sample_bc: u64 = rr.barcodes[0].into();
-            let corrected_sample = match sample_permit_map.get(&sample_bc) {
-                Some(&cs) => cs,
-                None => continue,
-            };
-            let sample_idx = match sample_bc_to_idx.get(&corrected_sample) {
-                Some(&idx) => idx,
-                None => continue,
-            };
+            let mut tbuf = vec![0u8; 4096]; // skip buffer for unmatched records
+            let mut processed: u64 = 0;
 
-            let cell_bc: u64 = rr.collate_key().into();
-            let corrected_cell = match per_sample_cell_maps[sample_idx].get(&cell_bc) {
-                Some(&cc) => cc,
-                None => continue,
-            };
+            while chunks_remaining.load(Ordering::SeqCst) > 0 {
+                if let Some((_chunk_num, buf)) = in_q.pop() {
+                    chunks_remaining.fetch_sub(1, Ordering::SeqCst);
 
-            rr.set_collation_key_at_level(0, corrected_sample.into());
-            rr.set_collate_key(corrected_cell.into());
+                    // Parse chunk using the same pattern as dump_corrected_cb_chunk_to_temp_file_generic
+                    let mut reader = BufReader::new(&buf[..]);
 
-            let composite_key =
-                ((sample_idx as u64) << 48) | (corrected_cell & 0x0000_FFFF_FFFF_FFFF);
+                    // Read chunk header
+                    let mut hdr_buf = [0u8; 8];
+                    reader.read_exact(&mut hdr_buf).unwrap();
+                    let _nbytes = hdr_buf.pread::<u32>(0).unwrap();
+                    let nrec = hdr_buf.pread::<u32>(4).unwrap();
 
-            let bucket = match output_cache.get(&composite_key) {
-                Some(b) => b,
-                None => continue,
-            };
+                    for _ in 0..nrec {
+                        // Two-pass read: header first (peek), then body
+                        let mut tup = MultiBarcodeReadRecord::from_bytes_collatable_header(
+                            &mut reader, &ctx,
+                        ).expect("could read multi-BC header");
 
-            let mutable_hdr_naln = rr.refs.len() as u32;
-            let nb = MultiBarcodeReadRecord::nbytes(mutable_hdr_naln, &rec_context);
+                        // Extract sample BC (level 0) and look up correction
+                        let sample_bc: u64 = tup.barcodes[0].into();
+                        let corrected_sample = match sample_map.get(&sample_bc) {
+                            Some(&cs) => cs,
+                            None => {
+                                // Skip alignment data for unmatched sample BC
+                                let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
+                                    * tup.naln() as usize;
+                                if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
+                                reader.read_exact(&mut tbuf[..req_len]).unwrap();
+                                if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
+                                continue;
+                            }
+                        };
+                        let sample_idx = match sample_idx_map.get(&corrected_sample) {
+                            Some(&idx) => idx,
+                            None => {
+                                let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
+                                    * tup.naln() as usize;
+                                if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
+                                reader.read_exact(&mut tbuf[..req_len]).unwrap();
+                                if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
+                                continue;
+                            }
+                        };
 
-            // Write directly to bucket file
-            let bw = &bucket.bucket_writer;
-            let mut writer = bw.lock().unwrap();
-            rr.write(&mut *writer, &rec_context).unwrap();
-            drop(writer);
-            bucket.num_records_written.fetch_add(1, Ordering::SeqCst);
-            bucket.num_bytes_written.fetch_add(nb as u64, Ordering::SeqCst);
-            total_scattered += 1;
+                        // Look up cell BC correction (tiered: identity fast path, then per-sample)
+                        let cell_bc: u64 = tup.collate_key().into();
+                        let (ref identity, ref per_sample_corr) = *cell_corr;
+                        let corrected_cell = if identity.contains(&cell_bc) {
+                            cell_bc
+                        } else if let Some(&cc) = per_sample_corr[sample_idx].get(&cell_bc) {
+                            cc
+                        } else {
+                            // No correction available — skip alignment data
+                            let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
+                                * tup.naln() as usize;
+                            if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
+                            reader.read_exact(&mut tbuf[..req_len]).unwrap();
+                            if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
+                            continue;
+                        };
+
+                        // Compute composite key for bucket lookup
+                        let composite_key =
+                            ((sample_idx as u64) << 48) | (corrected_cell & 0x0000_FFFF_FFFF_FFFF);
+
+                        if let Some(bucket) = oc.get(&composite_key) {
+                            // Read full record (alignments) with orientation filtering
+                            let mut rr = MultiBarcodeReadRecord::from_bytes_with_header_retain_ori(
+                                &mut reader, &mut tup, &ctx, &expected_ori_mfo,
+                            );
+
+                            if rr.is_empty() {
+                                continue;
+                            }
+
+                            // Set corrected barcodes
+                            rr.set_collation_key_at_level(0, corrected_sample.into());
+                            rr.set_collate_key(corrected_cell.into());
+
+                            let na = tup.naln() as usize;
+                            let nb = MultiBarcodeReadRecord::nbytes(na as u32, &ctx);
+
+                            let buffidx = bucket.bucket_id as usize;
+                            let bcursor = &mut local_buffers[buffidx];
+                            let len = bcursor.position() as usize;
+
+                            // Flush if buffer would overflow
+                            if len + nb >= loc_buffer_size {
+                                let mut filebuf = bucket.bucket_writer.lock().unwrap();
+                                filebuf.write_all(&bcursor.get_ref()[..len]).unwrap();
+                                bcursor.set_position(0);
+                            }
+
+                            // Write corrected record to local buffer
+                            rr.write(bcursor, &ctx).expect("can write record");
+                            bucket.num_records_written.fetch_add(1, Ordering::SeqCst);
+                            bucket.num_bytes_written.fetch_add(nb as u64, Ordering::SeqCst);
+                            processed += 1;
+                        } else {
+                            // No bucket for this composite key — skip alignment data
+                            let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
+                                * tup.naln() as usize;
+                            if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
+                            reader.read_exact(&mut tbuf[..req_len]).unwrap();
+                            if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
+                        }
+                    }
+                }
+            }
+
+            // Flush remaining local buffers
+            for (bucket_id, lb) in local_buffers.iter().enumerate() {
+                let len = lb.position() as usize;
+                if len > 0 {
+                    let mut filebuf = loc_temp_buckets[bucket_id].2.bucket_writer.lock().unwrap();
+                    filebuf.write_all(&lb.get_ref()[..len]).unwrap();
+                }
+            }
+            processed
+        });
+        thread_handles.push(handle);
+    }
+
+    // Main thread: read chunks and push to work queue
+    let mut buf = vec![0u8; 65536];
+    for cell_num in 0..(hdr.num_chunks as usize) {
+        let (nbytes_chunk, nrec_chunk) =
+            chunk::Chunk::<MultiBarcodeReadRecord>::read_header(&mut br);
+        buf.resize(nbytes_chunk as usize, 0);
+        buf.pwrite::<u32>(nbytes_chunk, 0).unwrap();
+        buf.pwrite::<u32>(nrec_chunk, 4).unwrap();
+        br.read_exact(&mut buf[8..]).unwrap();
+
+        let mut bclone = (cell_num, buf.clone());
+        while let Err(t) = q.push(bclone) {
+            bclone = t;
+            while q.is_full() {}
         }
-
-        if chunk_idx % 1000 == 0 {
-            pbar_inner.inc(1000);
-        }
+        pbar_inner.inc(1);
     }
     pbar_inner.finish_and_clear();
+
+    // Wait for workers
+    let mut total_scattered: u64 = 0;
+    for handle in thread_handles {
+        total_scattered += handle.join().unwrap();
+    }
     info!(log, "Scatter phase complete: {} records scattered", total_scattered.to_formatted_string(&Locale::en));
 
     // Flush all temp bucket writers
