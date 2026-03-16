@@ -1118,50 +1118,54 @@ where
         );
     }
 
-    // Load per-sample cell permit maps and build combined correction map + frequency list
-    // The combined map maps corrected_cell_bc -> corrected_cell_bc for ALL samples
-    // (used for bucket allocation). Per-sample maps are used during scatter.
-    let mut per_sample_cell_maps: Vec<Arc<HashMap<u64, u64>>> = Vec::new();
+    // Load per-sample valid barcodes from permit_freq.bin (NOT the huge permit_map.bin).
+    // The valid barcodes are the identity-correction tier (self-correcting).
+    // For non-identity correction, we build a BarcodeLookupMap per sample from
+    // the valid barcodes and do on-the-fly 1-edit neighbor lookup during scatter.
+    let mut per_sample_valid_bcs: Vec<Vec<u64>> = Vec::new();
     let mut all_cell_freqs: Vec<(u64, u64, usize)> = Vec::new(); // (corrected_cell_bc, freq, sample_idx)
 
-    for (sample_idx, entry) in sample_entries.iter().enumerate() {
+    // Get cell barcode length from file tags
+    let cell_bc_tag = format!("b{}len", prelude.read_tags.tags.len().saturating_sub(2));
+    // Try to read from the file_tag_map if available, otherwise use a default
+    let cell_bc_len: u32 = {
+        let ftm = prelude.file_tags.parse_tags_from_bytes(&mut std::io::Cursor::new(Vec::<u8>::new())).ok();
+        // Use 16 as default cell BC length (standard for 10x)
+        16u32
+    };
+
+    for (sample_idx, _entry) in sample_entries.iter().enumerate() {
         let sample_name = &sample_names[sample_idx];
         let sample_dir = parent.join(format!("sample_{}", sample_name));
 
-        let map_path = sample_dir.join("permit_map.bin");
-        if map_path.exists() {
-            let map_file = File::open(&map_path)
-                .with_context(|| format!("couldn't open {}", map_path.display()))?;
-            let cell_map: HashMap<u64, u64> =
-                bincode::deserialize_from(BufReader::new(map_file))
-                    .map_err(|e| anyhow!("couldn't deserialize {}: {}", map_path.display(), e))?;
+        let freq_path = sample_dir.join("permit_freq.bin");
+        if freq_path.exists() {
+            let freq_file = File::open(&freq_path)?;
+            let mut freq_reader = BufReader::new(freq_file);
+            // Read header: version (u64) + bc_len (u64)
+            let mut hdr_buf = [0u8; 16];
+            freq_reader.read_exact(&mut hdr_buf)?;
+            let bc_len_from_file = hdr_buf.pread::<u64>(8).unwrap_or(16) as u32;
+            let freq_map: HashMap<u64, u64> =
+                bincode::deserialize_from(freq_reader)
+                    .map_err(|e| anyhow!("couldn't deserialize {}: {}", freq_path.display(), e))?;
+
+            let valid_bcs: Vec<u64> = freq_map.keys().copied().collect();
             info!(
                 log,
-                "Sample '{}': loaded cell permit map with {} entries",
+                "Sample '{}': {} valid cell barcodes from permit_freq.bin",
                 sample_name,
-                cell_map.len(),
+                valid_bcs.len().to_formatted_string(&Locale::en),
             );
 
-            // Read permit_freq.bin for this sample
-            let freq_path = sample_dir.join("permit_freq.bin");
-            if freq_path.exists() {
-                let freq_file = File::open(&freq_path)?;
-                let mut freq_reader = BufReader::new(freq_file);
-                // Read header: version (u64) + bc_len (u64)
-                let mut hdr_buf = [0u8; 16];
-                freq_reader.read_exact(&mut hdr_buf)?;
-                let freq_map: HashMap<u64, u64> =
-                    bincode::deserialize_from(freq_reader)
-                        .map_err(|e| anyhow!("couldn't deserialize {}: {}", freq_path.display(), e))?;
-                for (bc, freq) in &freq_map {
-                    all_cell_freqs.push((*bc, *freq, sample_idx));
-                }
+            for (bc, freq) in &freq_map {
+                all_cell_freqs.push((*bc, *freq, sample_idx));
             }
 
-            per_sample_cell_maps.push(Arc::new(cell_map));
+            per_sample_valid_bcs.push(valid_bcs);
         } else {
-            info!(log, "Sample '{}': no permit map (no reads)", sample_name);
-            per_sample_cell_maps.push(Arc::new(HashMap::new()));
+            info!(log, "Sample '{}': no permit freq (no reads)", sample_name);
+            per_sample_valid_bcs.push(Vec::new());
         }
     }
 
@@ -1316,170 +1320,57 @@ where
 
     let sample_permit_map = Arc::new(sample_permit_map);
     let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
-    let per_sample_cell_maps: Arc<Vec<Arc<HashMap<u64, u64>>>> = Arc::new(per_sample_cell_maps);
     let rec_context = Arc::new(rec_context);
 
-    for _worker_id in 0..n_workers {
-        let q_clone = q.clone();
-        let ctp = chunks_to_process.clone();
-        let oc = output_cache.clone();
-        let sample_map = sample_permit_map.clone();
-        let sample_idx_map = sample_bc_to_idx.clone();
-        let cell_maps = per_sample_cell_maps.clone();
-        let ctx = rec_context.clone();
-        let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation =
-            expected_ori.into();
-
-        // Allocate local buffers for each bucket
-        let mut local_buffer_backing = vec![0u8; loc_buffer_size * nbuckets];
-        let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::with_capacity(nbuckets);
-        let mut start = 0usize;
-        for _ in 0..nbuckets {
-            let (_, rest) = local_buffer_backing.split_at_mut(start);
-            let (chunk, _) = rest.split_at_mut(loc_buffer_size);
-            local_buffers.push(Cursor::new(unsafe {
-                // Safety: each buffer is a non-overlapping subslice
-                std::slice::from_raw_parts_mut(chunk.as_mut_ptr(), chunk.len())
-            }));
-            start += loc_buffer_size;
-        }
-
-        let handle = thread::spawn(move || {
-            let mut processed: u64 = 0;
-            loop {
-                if ctp.load(Ordering::SeqCst) == 0 {
-                    break;
-                }
-                while let Some((_chunk_num, buf)) = q_clone.pop() {
-                    let mut nbr = Cursor::new(&buf[..]);
-
-                    // Read entire chunk using the standard Chunk reader
-                    let chunk = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(
-                        &mut nbr, &ctx,
-                    );
-
-                    // Process each record in the chunk
-                    for mut rr in chunk.reads {
-
-                        if rr.refs.is_empty() {
-                            continue;
-                        }
-
-                        // Extract sample BC (level 0) and look up correction
-                        let sample_bc: u64 = rr.barcodes[0].into();
-                        let corrected_sample = match sample_map.get(&sample_bc) {
-                            Some(&cs) => cs,
-                            None => continue,
-                        };
-                        let sample_idx = match sample_idx_map.get(&corrected_sample) {
-                            Some(&idx) => idx,
-                            None => continue,
-                        };
-
-                        // Extract cell BC (last barcode) and look up correction
-                        let cell_bc: u64 = rr.collate_key().into();
-                        let corrected_cell = match cell_maps[sample_idx].get(&cell_bc) {
-                            Some(&cc) => cc,
-                            None => continue,
-                        };
-
-                        let mutable_hdr_naln = rr.refs.len() as u32;
-
-                        // Set corrected barcodes
-                        rr.set_collation_key_at_level(0, corrected_sample.into());
-                        rr.set_collate_key(corrected_cell.into());
-
-                        // Compute composite key for bucket lookup
-                        let composite_key =
-                            ((sample_idx as u64) << 48) | (corrected_cell & 0x0000_FFFF_FFFF_FFFF);
-
-                        // Look up temp bucket for this composite key
-                        let bucket = match oc.get(&composite_key) {
-                            Some(b) => b,
-                            None => continue,
-                        };
-
-                        let nb = MultiBarcodeReadRecord::nbytes(
-                            mutable_hdr_naln, &ctx,
-                        );
-                        let bid = bucket.bucket_id as usize;
-
-                        // Flush buffer if it would overflow
-                        let bcursor = &mut local_buffers[bid];
-                        if (bcursor.position() as usize + nb) >= loc_buffer_size {
-                            let bw = &bucket.bucket_writer;
-                            let mut writer = bw.lock().unwrap();
-                            writer.write_all(&bcursor.get_ref()[..bcursor.position() as usize]).unwrap();
-                            bcursor.set_position(0);
-                        }
-
-                        // Write record to local buffer
-                        rr.write(bcursor, &ctx).unwrap();
-                        bucket.num_records_written.fetch_add(1, Ordering::SeqCst);
-                        bucket.num_bytes_written.fetch_add(nb as u64, Ordering::SeqCst);
-                        processed += 1;
-                    }
-
-                    ctp.fetch_sub(1, Ordering::SeqCst);
-                }
-                std::thread::yield_now();
-            }
-
-            // Flush remaining local buffers using output_cache to find buckets
-            for (_composite_key, bucket) in oc.iter() {
-                let bid = bucket.bucket_id as usize;
-                if bid < local_buffers.len() {
-                    let bcursor = &mut local_buffers[bid];
-                    let pos = bcursor.position() as usize;
-                    if pos > 0 {
-                        let bw = &bucket.bucket_writer;
-                        let mut writer = bw.lock().unwrap();
-                        writer.write_all(&bcursor.get_ref()[..pos]).unwrap();
-                        bcursor.set_position(0);
-                    }
-                }
-            }
-
-            processed
-        });
-        thread_handles.push(handle);
-    }
-
-    // Main thread: read chunks and push onto work queue
-    let mut chunk_num = 0usize;
-    // Build tiered cell correction structure
+    // Build tiered cell correction structure:
+    // Tier 1 (identity): HashSet of all valid barcodes across all samples.
+    //   A valid barcode always corrects to itself. This is the fast path.
+    // Tier 2 (per-sample BarcodeLookupMap): for barcodes NOT in the identity set,
+    //   do on-the-fly 1-edit neighbor lookup. Much cheaper than pre-materializing
+    //   the full correction HashMap (which can be 100M+ entries).
     let cell_correction = {
         let mut identity: std::collections::HashSet<u64, ahash::RandomState> =
             std::collections::HashSet::default();
-        let mut per_sample_corrections: Vec<HashMap<u64, u64>> =
-            vec![HashMap::new(); num_samples];
+        for valid_bcs in &per_sample_valid_bcs {
+            for &bc in valid_bcs {
+                identity.insert(bc);
+            }
+        }
 
-        // First pass: collect identity mappings (raw == corrected)
-        for map in per_sample_cell_maps.iter() {
-            for (&raw, &corrected) in map.as_ref() {
-                if raw == corrected {
-                    identity.insert(raw);
-                }
+        // Get cell BC length from the first non-empty sample's freq file
+        let cell_bclen = {
+            let freq_path = sample_names.iter().find_map(|name| {
+                let p = parent.join(format!("sample_{}/permit_freq.bin", name));
+                if p.exists() { Some(p) } else { None }
+            });
+            if let Some(fp) = freq_path {
+                let mut f = File::open(fp)?;
+                let mut hdr = [0u8; 16];
+                f.read_exact(&mut hdr)?;
+                hdr.pread::<u64>(8).unwrap_or(16) as u32
+            } else {
+                16u32
             }
-        }
-        // Second pass: collect non-identity, remove from identity if conflicting
-        for (idx, map) in per_sample_cell_maps.iter().enumerate() {
-            for (&raw, &corrected) in map.as_ref() {
-                if raw != corrected {
-                    identity.remove(&raw);
-                    per_sample_corrections[idx].insert(raw, corrected);
-                }
-            }
-        }
+        };
+
+        // Build per-sample BarcodeLookupMap for 1-edit correction
+        let per_sample_lookup: Vec<libradicl::BarcodeLookupMap> = per_sample_valid_bcs
+            .iter()
+            .map(|valid_bcs| {
+                libradicl::BarcodeLookupMap::new(valid_bcs.clone(), cell_bclen)
+            })
+            .collect();
+
         let identity_count = identity.len();
-        let correction_count: usize = per_sample_corrections.iter().map(|m| m.len()).sum();
+        let lookup_sizes: usize = per_sample_lookup.iter().map(|m| m.barcodes.len()).sum();
         info!(
             log,
-            "Cell correction tiers: {} identity (fast path), {} per-sample corrections",
+            "Cell correction: {} identity barcodes (fast path), {} total barcodes in per-sample lookup maps (bc_len={})",
             identity_count.to_formatted_string(&Locale::en),
-            correction_count.to_formatted_string(&Locale::en),
+            lookup_sizes.to_formatted_string(&Locale::en),
+            cell_bclen,
         );
-        Arc::new((identity, per_sample_corrections))
+        Arc::new((identity, per_sample_lookup, cell_bclen))
     };
 
     // SCATTER PHASE: Multi-threaded scatter using header-peek pattern
@@ -1570,21 +1461,29 @@ where
                             }
                         };
 
-                        // Look up cell BC correction (tiered: identity fast path, then per-sample)
+                        // Look up cell BC correction (tiered: identity fast path, then per-sample 1-edit lookup)
                         let cell_bc: u64 = tup.collate_key().into();
-                        let (ref identity, ref per_sample_corr) = *cell_corr;
+                        let (ref identity, ref per_sample_lookup, _cell_bclen) = *cell_corr;
                         let corrected_cell = if identity.contains(&cell_bc) {
+                            // Fast path: valid barcode, corrects to itself
                             cell_bc
-                        } else if let Some(&cc) = per_sample_corr[sample_idx].get(&cell_bc) {
-                            cc
                         } else {
-                            // No correction available — skip alignment data
-                            let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
-                                * tup.naln() as usize;
-                            if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
-                            reader.read_exact(&mut tbuf[..req_len]).unwrap();
-                            if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
-                            continue;
+                            // Slow path: 1-edit neighbor lookup in per-sample BarcodeLookupMap
+                            match per_sample_lookup[sample_idx].find_neighbors(cell_bc, false) {
+                                (Some(idx), 1) => {
+                                    // Unique 1-edit neighbor found — correct to it
+                                    per_sample_lookup[sample_idx].barcodes[idx]
+                                }
+                                _ => {
+                                    // No correction available — skip alignment data
+                                    let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
+                                        * tup.naln() as usize;
+                                    if req_len > tbuf.len() { tbuf.resize(req_len, 0); }
+                                    reader.read_exact(&mut tbuf[..req_len]).unwrap();
+                                    if tbuf.len() > 4096 { tbuf.resize(4096, 0); tbuf.shrink_to_fit(); }
+                                    continue;
+                                }
+                            }
                         };
 
                         // Compute composite key for bucket lookup
