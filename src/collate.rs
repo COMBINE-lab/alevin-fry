@@ -243,6 +243,72 @@ fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> u
     }
 }
 
+/// Correct unmapped barcode counts for multi-barcode (Flex) data.
+///
+/// Reads the raw unmapped_bc_count.bin (keyed by composite sample_bc|cell_bc),
+/// corrects both barcodes, and writes unmapped_bc_count_collated.bin keyed by
+/// the collation composite key (sample_idx << 48 | corrected_cell_bc).
+fn correct_unmapped_counts_multi_bc(
+    unmapped_file: &std::path::Path,
+    sample_permit_map: &HashMap<u64, u64>,
+    sample_bc_to_idx: &HashMap<u64, usize>,
+    per_sample_identity: &[std::collections::HashSet<u64, ahash::RandomState>],
+    per_sample_lookup: &[libradicl::BarcodeLookupMap],
+    parent: &std::path::Path,
+) {
+    let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
+
+    if let Ok(i_file) = File::open(unmapped_file) {
+        let mut br = BufReader::new(i_file);
+        let mut rbuf = [0u8; std::mem::size_of::<u64>() + std::mem::size_of::<u32>()];
+
+        while br.read_exact(&mut rbuf[..]).is_ok() {
+            let composite_raw = rbuf.pread::<u64>(0).unwrap();
+            let v = rbuf.pread::<u32>(std::mem::size_of::<u64>()).unwrap();
+
+            // Decompose: sample_bc in upper 32 bits, cell_bc in lower 32 bits
+            let sample_bc = composite_raw >> 32;
+            let cell_bc = composite_raw & 0xFFFFFFFF;
+
+            // Correct sample BC
+            let corrected_sample = match sample_permit_map.get(&sample_bc) {
+                Some(&cs) => cs,
+                None => continue,
+            };
+            let sample_idx = match sample_bc_to_idx.get(&corrected_sample) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+
+            // Correct cell BC (same tiered approach as scatter)
+            let corrected_cell = if sample_idx < per_sample_identity.len()
+                && per_sample_identity[sample_idx].contains(&cell_bc)
+            {
+                cell_bc
+            } else if sample_idx < per_sample_lookup.len() {
+                match per_sample_lookup[sample_idx].find_neighbors(cell_bc, false) {
+                    (Some(idx), 1) => per_sample_lookup[sample_idx].barcodes[idx],
+                    _ => continue,
+                }
+            } else {
+                continue
+            };
+
+            // Key by corrected cell BC (not composite) so quant can look up
+            // by collate_key() directly. If the same cell BC appears in multiple
+            // samples, their unmapped counts are summed — this is acceptable since
+            // the mapping rate is a per-cell metric.
+            *unmapped_count.entry(corrected_cell).or_insert(0) += v;
+        }
+    }
+
+    let s_path = parent.join("unmapped_bc_count_collated.bin");
+    let s_file = std::fs::File::create(s_path).expect("could not create serialization file.");
+    let mut s_writer = BufWriter::new(&s_file);
+    bincode::serialize_into(&mut s_writer, &unmapped_count)
+        .expect("couldn't serialize corrected unmapped bc count.");
+}
+
 fn correct_unmapped_counts(
     correct_map: &Arc<HashMap<u64, u64>>,
     unmapped_file: &std::path::Path,
@@ -1581,6 +1647,20 @@ where
         let bw = &bucket.bucket_writer;
         let mut writer = bw.lock().unwrap();
         writer.flush().unwrap();
+    }
+
+    // Correct unmapped barcode counts for multi-barcode data
+    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
+    {
+        let (ref per_sample_id, ref per_sample_lu) = *cell_correction;
+        correct_unmapped_counts_multi_bc(
+            &unmapped_file,
+            &sample_permit_map,
+            &sample_bc_to_idx,
+            per_sample_id,
+            per_sample_lu,
+            parent,
+        );
     }
 
     // GATHER PHASE: Merge temp buckets into final collated file
