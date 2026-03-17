@@ -379,7 +379,7 @@ struct WorkerSharedState<R: MappedRecord> {
     eqid_map_lock: Arc<Mutex<EqcMap>>,
     alt_res_cells: Arc<Mutex<Vec<u64>>>,
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
-    unmapped_count: Arc<HashMap<u64, u32>>,
+    unmapped_count: Arc<libradicl::unmapped::CollatedUnmappedCounts>,
     mmrate: Arc<Mutex<Vec<f64>>>,
 }
 
@@ -785,10 +785,7 @@ where
                 let dedup_rate = sum_umi / num_mapped as f32;
 
                 let bcint = bc.into();
-                let num_unmapped = match shared.unmapped_count.get(&bcint) {
-                    Some(nu) => *nu,
-                    None => 0u32,
-                };
+                let num_unmapped = shared.unmapped_count.get_single(bcint);
 
                 let mapping_rate = num_mapped as f32 / (num_mapped + num_unmapped) as f32;
 
@@ -1059,10 +1056,16 @@ where
     );
 
     // read the map for the number of unmapped reads per corrected barcode
-    let bc_unmapped_file =
-        std::fs::File::open(parent.join("unmapped_bc_count_collated.bin")).unwrap();
-    let bc_unmapped_map: Arc<HashMap<u64, u32>> =
-        Arc::new(bincode::deserialize_from(&bc_unmapped_file).unwrap());
+    let bc_unmapped_map: Arc<libradicl::unmapped::CollatedUnmappedCounts> = Arc::new(
+        libradicl::unmapped::CollatedUnmappedCounts::read_from_file(
+            &parent.join("unmapped_bc_count_collated.bin"),
+        )
+        .unwrap_or_else(|_| {
+            libradicl::unmapped::CollatedUnmappedCounts::new_single(
+                libradicl::rad_types::RadIntId::U32,
+            )
+        }),
+    );
 
     // file-level
     let fl_tags = &prelude.file_tags;

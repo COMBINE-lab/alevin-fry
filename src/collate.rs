@@ -256,12 +256,13 @@ fn correct_unmapped_counts_multi_bc(
     per_sample_lookup: &[libradicl::BarcodeLookupMap],
     parent: &std::path::Path,
 ) {
-    use libradicl::unmapped::{UnmappedBcFormat, UnmappedBcRecordReader, UnmappedBcRecordWriter};
+    use libradicl::unmapped::{CollatedUnmappedCounts, UnmappedBcFormat, UnmappedBcRecordReader};
 
-    // Collated output: keyed by corrected cell BC for quant compatibility.
-    // We use the standard bincode HashMap<u64, u32> format for the collated file
-    // so that quant's existing reader works unchanged.
-    let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
+    // Multi-barcode: keyed by (corrected_sample, corrected_cell) for per-sample accuracy
+    let mut collated = CollatedUnmappedCounts::new_multi(vec![
+        libradicl::rad_types::RadIntId::U32,
+        libradicl::rad_types::RadIntId::U32,
+    ]);
 
     if let Ok(i_file) = File::open(unmapped_file) {
         let mut br = BufReader::new(i_file);
@@ -270,21 +271,13 @@ fn correct_unmapped_counts_multi_bc(
         let format = match UnmappedBcFormat::read_header(&mut br) {
             Ok(Some(fmt)) => fmt,
             Ok(None) => {
-                // Empty file — nothing to do
                 let s_path = parent.join("unmapped_bc_count_collated.bin");
-                let s_file = std::fs::File::create(s_path).expect("could not create file.");
-                let mut s_writer = BufWriter::new(&s_file);
-                bincode::serialize_into(&mut s_writer, &unmapped_count)
-                    .expect("couldn't serialize.");
+                collated.write_to_file(&s_path).expect("could not write collated file.");
                 return;
             }
-            Err(e) => {
-                // Could not read unmapped BC format header — skip unmapped correction
+            Err(_) => {
                 let s_path = parent.join("unmapped_bc_count_collated.bin");
-                let s_file = std::fs::File::create(s_path).expect("could not create file.");
-                let mut s_writer = BufWriter::new(&s_file);
-                bincode::serialize_into(&mut s_writer, &unmapped_count)
-                    .expect("couldn't serialize.");
+                collated.write_to_file(&s_path).expect("could not write collated file.");
                 return;
             }
         };
@@ -295,7 +288,7 @@ fn correct_unmapped_counts_multi_bc(
             if barcodes.len() < 2 {
                 // Single-barcode record — shouldn't happen in multi-BC path but handle gracefully
                 let cell_bc = barcodes[0];
-                *unmapped_count.entry(cell_bc).or_insert(0) += count;
+                collated.insert_single(cell_bc, count);
                 continue;
             }
 
@@ -327,57 +320,70 @@ fn correct_unmapped_counts_multi_bc(
                 continue
             };
 
-            // Key by corrected cell BC for quant compatibility.
-            // TODO: for full per-sample accuracy, key by composite (sample_idx, cell_bc)
-            // and update quant to look up by composite. For now, cell BC is sufficient
-            // since the mapping rate is still meaningful per-cell.
-            *unmapped_count.entry(corrected_cell).or_insert(0) += count;
+            // Per-sample accuracy: key by (corrected_sample, corrected_cell)
+            collated.insert_multi(corrected_sample, corrected_cell, count);
         }
     }
 
     let s_path = parent.join("unmapped_bc_count_collated.bin");
-    let s_file = std::fs::File::create(s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &unmapped_count)
-        .expect("couldn't serialize corrected unmapped bc count.");
+    collated
+        .write_to_file(&s_path)
+        .expect("could not write collated unmapped bc count.");
 }
 
+/// Correct unmapped barcode counts for single-barcode data.
+///
+/// Reads unmapped_bc_count.bin (self-describing format), applies cell BC
+/// correction, writes unmapped_bc_count_collated.bin.
 fn correct_unmapped_counts(
     correct_map: &Arc<HashMap<u64, u64>>,
     unmapped_file: &std::path::Path,
     parent: &std::path::Path,
 ) {
-    let i_file = File::open(unmapped_file).unwrap();
-    let mut br = BufReader::new(i_file);
+    use libradicl::unmapped::{CollatedUnmappedCounts, UnmappedBcFormat, UnmappedBcRecordReader};
 
-    // enough to hold a key value pair (a u64 key and u32 value)
-    let mut rbuf = [0u8; std::mem::size_of::<u64>() + std::mem::size_of::<u32>()];
+    let mut collated = CollatedUnmappedCounts::new_single(libradicl::rad_types::RadIntId::U32);
 
-    let mut unmapped_count: HashMap<u64, u32> = HashMap::new();
+    if let Ok(i_file) = File::open(unmapped_file) {
+        let mut br = BufReader::new(i_file);
 
-    // pre-populate the output map with all valid keys
-    // keys (corrected barcodes) with no unmapped reads
-    // will simply have a value of 0.
-    //for (&_ubc, &cbc) in correct_map.iter() {
-    //    unmapped_count.entry(cbc).or_insert(0);
-    //}
-
-    // collect all of the information from the existing
-    // serialized map (that may contain repeats)
-    while br.read_exact(&mut rbuf[..]).is_ok() {
-        let k = rbuf.pread::<u64>(0).unwrap();
-        let v = rbuf.pread::<u32>(std::mem::size_of::<u64>()).unwrap();
-        // get the corrected key for the raw key
-        if let Some((&_rk, &ck)) = correct_map.get_key_value(&k) {
-            *unmapped_count.entry(ck).or_insert(0) += v;
+        // Try new self-describing format first
+        match UnmappedBcFormat::read_header(&mut br) {
+            Ok(Some(fmt)) => {
+                // New format: read structured records
+                let mut reader = UnmappedBcRecordReader::new(fmt);
+                while let Ok(Some((bcs, count))) = reader.read_record(&mut br) {
+                    let raw_bc = bcs[0];
+                    if let Some(&corrected) = correct_map.get(&raw_bc) {
+                        collated.insert_single(corrected, count);
+                    }
+                }
+            }
+            Ok(None) => {
+                // Empty file — nothing to do
+            }
+            Err(_) => {
+                // Couldn't read header — try legacy format (raw u64+u32 pairs)
+                // Reopen the file since we consumed the first byte
+                if let Ok(i_file) = File::open(unmapped_file) {
+                    let mut br = BufReader::new(i_file);
+                    let mut rbuf = [0u8; std::mem::size_of::<u64>() + std::mem::size_of::<u32>()];
+                    while br.read_exact(&mut rbuf[..]).is_ok() {
+                        let k = rbuf.pread::<u64>(0).unwrap();
+                        let v = rbuf.pread::<u32>(std::mem::size_of::<u64>()).unwrap();
+                        if let Some(&ck) = correct_map.get(&k) {
+                            collated.insert_single(ck, v);
+                        }
+                    }
+                }
+            }
         }
     }
 
     let s_path = parent.join("unmapped_bc_count_collated.bin");
-    let s_file = std::fs::File::create(s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &unmapped_count)
-        .expect("couldn't serialize corrected unmapped bc count.");
+    collated
+        .write_to_file(&s_path)
+        .expect("could not write collated unmapped bc count.");
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
