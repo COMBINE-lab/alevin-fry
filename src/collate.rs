@@ -2073,14 +2073,13 @@ where
             sample_br.read_exact(&mut buf[8..]).unwrap();
 
             let mut nbr = BufReader::new(Cursor::new(&buf[..]));
-            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::new();
             let mut backing = vec![0u8; loc_buffer_size * nbuckets];
-            for bid in 0..nbuckets {
-                let start = bid * loc_buffer_size;
-                let ptr = backing[start..start + loc_buffer_size].as_mut_ptr();
-                local_buffers.push(Cursor::new(unsafe {
-                    std::slice::from_raw_parts_mut(ptr, loc_buffer_size)
-                }));
+            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::with_capacity(nbuckets);
+            let mut tslice = backing.as_mut_slice();
+            for _ in 0..nbuckets {
+                let (first, rest) = tslice.split_at_mut(loc_buffer_size);
+                local_buffers.push(Cursor::new(first));
+                tslice = rest;
             }
 
             libradicl::dump_corrected_cb_chunk_to_temp_file_generic::<u64, _, MultiBarcodeReadRecord>(
