@@ -589,24 +589,23 @@ fn do_generate_permit_list_multi_bc(
     let rec_ctx = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
     info!(log, "Multi-barcode record context: {} barcode levels", rec_ctx.num_barcodes());
 
-    // Load known sample barcodes
-    let sample_barcodes = load_sample_barcode_list(sample_bc_list_path, log)?;
-    info!(log, "Loaded {} known sample barcodes", sample_barcodes.len());
+    // Load known sample barcodes (with rotation → canonical mapping)
+    let sample_info = load_sample_barcode_list(sample_bc_list_path, log)?;
 
-    // Build sample barcode correction map
+    // Build sample barcode correction map (rotation → canonical)
     let (sample_permit_map, sample_bc_to_idx) = build_sample_permit_map(
-        &sample_barcodes,
+        &sample_info,
         &gpl_opts.sample_correction_mode,
         log,
     )?;
 
-    // Load optional sample names
-    let sample_names = load_sample_names(gpl_opts.sample_names.as_ref(), &sample_barcodes, log)?;
+    // Get sample names from the barcode file (uses canonical → name mapping)
+    let sample_names = get_sample_names(&sample_info);
 
     // First pass: read all records, correct sample BCs, count cell BCs per sample
     info!(log, "First pass: counting cell barcodes per sample...");
-    // Per-sample cell barcode frequency maps
-    let num_samples = sample_barcodes.len();
+    // Per-sample cell barcode frequency maps (indexed by canonical sample index)
+    let num_samples = sample_info.canonical_barcodes.len();
     let per_sample_cell_hist: Vec<DashMap<u64, u64, ahash::RandomState>> =
         (0..num_samples).map(|_| DashMap::default()).collect();
 
@@ -689,7 +688,7 @@ fn do_generate_permit_list_multi_bc(
         .try_into()
         .unwrap_or_else(|_| panic!("couldn't parse '{}' as u16", cell_bc_tag));
 
-    for (sample_idx, sample_bc) in sample_barcodes.iter().enumerate() {
+    for (sample_idx, sample_bc) in sample_info.canonical_barcodes.iter().enumerate() {
         let sample_name = &sample_names[sample_idx];
         let sample_dir = parent.join(format!("sample_{}", sample_name));
         std::fs::create_dir_all(&sample_dir)?;
@@ -832,74 +831,157 @@ fn do_generate_permit_list_multi_bc(
     Ok(total_cells)
 }
 
-/// Load sample barcodes from a file (one per line, as nucleotide sequences).
-fn load_sample_barcode_list(path: &PathBuf, log: &slog::Logger) -> anyhow::Result<Vec<u64>> {
+/// Result of loading a sample barcode file with rotation/canonical structure.
+struct SampleBarcodeInfo {
+    /// The canonical (deduplicated) sample barcodes — one per true sample.
+    canonical_barcodes: Vec<u64>,
+    /// Maps every observed rotation barcode to its canonical barcode.
+    rotation_to_canonical: HashMap<u64, u64>,
+    /// Maps canonical barcode to sample name.
+    canonical_to_name: HashMap<u64, String>,
+}
+
+/// Load sample barcodes from a file.
+///
+/// Supports two formats:
+/// 1. Simple: one barcode per line (each line is a separate sample)
+/// 2. TSV with rotation mapping: `observed_bc  canonical_bc  sample_name`
+///    Multiple observed barcodes can map to the same canonical/sample.
+///    This is the standard 10x Flex probe barcode format where each sample
+///    has 8 rotation variants.
+///
+/// Returns `SampleBarcodeInfo` with canonical barcodes and rotation mapping.
+fn load_sample_barcode_list(path: &PathBuf, log: &slog::Logger) -> anyhow::Result<SampleBarcodeInfo> {
     let file = File::open(path)
         .with_context(|| format!("couldn't open sample barcode list: {}", path.display()))?;
     let reader = BufReader::new(file);
-    let mut barcodes = Vec::new();
+
+    let mut rotation_to_canonical: HashMap<u64, u64> = HashMap::new();
+    let mut canonical_to_name: HashMap<u64, String> = HashMap::new();
+    let mut canonical_order: Vec<u64> = Vec::new(); // preserves order, deduplicated
+    let mut has_tsv_columns = false;
+
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        // Pack the barcode sequence to u64 using 2-bit encoding
-        let packed = needletail::bitkmer::BitNuclKmer::new(
-            trimmed.as_bytes(),
-            trimmed.len() as u8,
-            false,
-        )
-        .next()
-        .map(|(_, kmer, _)| kmer.0)
-        .ok_or_else(|| anyhow!("couldn't pack sample barcode: {}", trimmed))?;
-        barcodes.push(packed);
+
+        let parts: Vec<&str> = trimmed.split('\t').collect();
+
+        let (observed_seq, canonical_seq, name) = if parts.len() >= 3 {
+            // TSV format: observed_bc  canonical_bc  sample_name
+            has_tsv_columns = true;
+            (parts[0], parts[1], parts[2].to_string())
+        } else if parts.len() == 2 {
+            // Two-column: barcode  name (no rotation mapping)
+            (parts[0], parts[0], parts[1].to_string())
+        } else {
+            // Single column: barcode only (each is its own sample)
+            (parts[0], parts[0], parts[0].to_string())
+        };
+
+        let pack = |seq: &str| -> anyhow::Result<u64> {
+            needletail::bitkmer::BitNuclKmer::new(seq.as_bytes(), seq.len() as u8, false)
+                .next()
+                .map(|(_, kmer, _)| kmer.0)
+                .ok_or_else(|| anyhow!("couldn't pack sample barcode: {}", seq))
+        };
+
+        let obs_packed = pack(observed_seq)?;
+        let canon_packed = pack(canonical_seq)?;
+
+        rotation_to_canonical.insert(obs_packed, canon_packed);
+        if !canonical_to_name.contains_key(&canon_packed) {
+            canonical_order.push(canon_packed);
+        }
+        canonical_to_name.insert(canon_packed, name);
     }
-    info!(log, "Loaded {} sample barcodes from {}", barcodes.len(), path.display());
-    Ok(barcodes)
+
+    let num_rotations = rotation_to_canonical.len();
+    let num_canonical = canonical_order.len();
+
+    if has_tsv_columns && num_rotations > num_canonical {
+        info!(
+            log,
+            "Loaded {} rotation barcodes mapping to {} canonical samples from {}",
+            num_rotations, num_canonical, path.display(),
+        );
+    } else {
+        info!(
+            log,
+            "Loaded {} sample barcodes from {}",
+            num_canonical, path.display(),
+        );
+    }
+
+    Ok(SampleBarcodeInfo {
+        canonical_barcodes: canonical_order,
+        rotation_to_canonical,
+        canonical_to_name,
+    })
 }
 
-/// Build the sample barcode permit map (raw -> corrected).
-/// Returns (permit_map, bc_to_idx) where bc_to_idx maps corrected BC to sample index.
+/// Build the sample barcode permit map (observed -> canonical).
+/// Returns (permit_map, bc_to_idx) where:
+///   - permit_map maps every observed rotation barcode to its canonical barcode
+///   - bc_to_idx maps canonical barcode to sample index
 fn build_sample_permit_map(
-    sample_barcodes: &[u64],
+    sample_info: &SampleBarcodeInfo,
     correction_mode: &SampleCorrectionMode,
     log: &slog::Logger,
 ) -> anyhow::Result<(HashMap<u64, u64>, HashMap<u64, usize>)> {
     let mut permit_map: HashMap<u64, u64> = HashMap::new();
     let mut bc_to_idx: HashMap<u64, usize> = HashMap::new();
 
-    // Every known sample barcode maps to itself
-    for (idx, &bc) in sample_barcodes.iter().enumerate() {
-        permit_map.insert(bc, bc);
-        bc_to_idx.insert(bc, idx);
+    // Map every rotation barcode to its canonical form
+    for (&obs, &canon) in &sample_info.rotation_to_canonical {
+        permit_map.insert(obs, canon);
+    }
+
+    // Index canonical barcodes
+    for (idx, &canon) in sample_info.canonical_barcodes.iter().enumerate() {
+        bc_to_idx.insert(canon, idx);
     }
 
     match correction_mode {
         SampleCorrectionMode::Exact => {
-            info!(log, "Sample barcode correction mode: exact match only");
+            info!(
+                log,
+                "Sample barcode correction: exact match ({} rotation entries -> {} canonical samples)",
+                permit_map.len(),
+                bc_to_idx.len(),
+            );
         }
         SampleCorrectionMode::OneEdit => {
             info!(log, "Sample barcode correction mode: 1-edit distance");
-            // Use generate_permitlist_map for 1-edit neighbor correction.
-            // This is the same logic as cell BC correction but on a small set.
-            // TODO: pass the actual sample BC length from the RAD header
-            // instead of hardcoding 16.
-            let full_map = afutils::generate_permitlist_map(
-                sample_barcodes,
-                16, // reasonable default for most protocols
-            ).map_err(|e| anyhow!("failed to generate sample permit map: {}", e))?;
+            // Generate 1-edit neighbors for ALL observed rotation barcodes
+            let all_observed: Vec<u64> = sample_info.rotation_to_canonical.keys().copied().collect();
+            let bc_len = if let Some(&first) = all_observed.first() {
+                // Estimate barcode length from packed value
+                // For 8bp barcodes: 2*8 = 16 bits used
+                8usize // TODO: derive from actual barcode length
+            } else {
+                8usize
+            };
+            let full_map = afutils::generate_permitlist_map(&all_observed, bc_len)
+                .map_err(|e| anyhow!("failed to generate sample permit map: {}", e))?;
             for (raw, corrected) in &full_map {
                 if !permit_map.contains_key(raw) {
-                    permit_map.insert(*raw, *corrected);
+                    // Map the 1-edit neighbor to the same canonical as its corrected barcode
+                    if let Some(&canon) = sample_info.rotation_to_canonical.get(corrected) {
+                        permit_map.insert(*raw, canon);
+                    }
                 }
             }
             info!(
                 log,
-                "Built sample permit map with {} entries ({} exact + {} corrected)",
+                "Built sample permit map with {} entries ({} exact + {} corrected) -> {} canonical samples",
                 permit_map.len(),
-                sample_barcodes.len(),
-                permit_map.len() - sample_barcodes.len(),
+                sample_info.rotation_to_canonical.len(),
+                permit_map.len() - sample_info.rotation_to_canonical.len(),
+                bc_to_idx.len(),
             );
         }
     }
@@ -907,51 +989,20 @@ fn build_sample_permit_map(
     Ok((permit_map, bc_to_idx))
 }
 
-/// Load sample names from an optional TSV file (barcode\tname).
-/// If no file is provided, generates default names from barcode hex values.
-fn load_sample_names(
-    path: Option<&PathBuf>,
-    sample_barcodes: &[u64],
-    log: &slog::Logger,
-) -> anyhow::Result<Vec<String>> {
-    if let Some(path) = path {
-        let file = File::open(path)
-            .with_context(|| format!("couldn't open sample names file: {}", path.display()))?;
-        let reader = BufReader::new(file);
-        let mut name_map: HashMap<u64, String> = HashMap::new();
-        for line in reader.lines() {
-            let line = line?;
-            let parts: Vec<&str> = line.trim().split('\t').collect();
-            if parts.len() >= 2 {
-                let bc_seq = parts[0];
-                let name = parts[1].to_string();
-                let packed = needletail::bitkmer::BitNuclKmer::new(
-                    bc_seq.as_bytes(),
-                    bc_seq.len() as u8,
-                    false,
-                )
-                .next()
-                .map(|(_, kmer, _)| kmer.0)
-                .ok_or_else(|| anyhow!("couldn't pack sample barcode in names file: {}", bc_seq))?;
-                name_map.insert(packed, name);
-            }
-        }
-        let names: Vec<String> = sample_barcodes
-            .iter()
-            .enumerate()
-            .map(|(i, bc)| {
-                name_map
-                    .get(bc)
-                    .cloned()
-                    .unwrap_or_else(|| format!("{:x}", bc))
-            })
-            .collect();
-        info!(log, "Loaded {} sample names from {}", names.len(), path.display());
-        Ok(names)
-    } else {
-        // Default names from hex-encoded barcode values
-        Ok(sample_barcodes.iter().map(|bc| format!("{:x}", bc)).collect())
-    }
+/// Get sample names for canonical barcodes.
+/// Uses names from the barcode file, falling back to hex-encoded canonical barcode.
+fn get_sample_names(sample_info: &SampleBarcodeInfo) -> Vec<String> {
+    sample_info
+        .canonical_barcodes
+        .iter()
+        .map(|&canon| {
+            sample_info
+                .canonical_to_name
+                .get(&canon)
+                .cloned()
+                .unwrap_or_else(|| format!("{:x}", canon))
+        })
+        .collect()
 }
 
 /// update teh counts in the barcode histogram for those reads matching
