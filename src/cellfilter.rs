@@ -618,21 +618,27 @@ fn do_generate_permit_list_multi_bc(
         _ => (None, 0u64),
     };
 
-    // First pass: read all records, correct sample BCs, count cell BCs per sample.
+    // First pass: read all records in parallel, correct sample BCs, count cell BCs per sample.
     // When a whitelist is present, only count cell BCs that are in the whitelist;
     // collect non-matching BCs per-sample for later 1-edit correction.
-    info!(log, "First pass: counting cell barcodes per sample...");
+    info!(log, "First pass: counting cell barcodes per sample ({} threads)...", gpl_opts.threads);
     let num_samples = sample_info.canonical_barcodes.len();
-    // Per-sample cell barcode frequency (only whitelist-matching BCs)
+    // Per-sample cell barcode frequency (only whitelist-matching BCs) — thread-safe
     let per_sample_cell_hist: Vec<DashMap<u64, u64, ahash::RandomState>> =
         (0..num_samples).map(|_| DashMap::default()).collect();
-    // Per-sample unmatched cell barcodes (for 1-edit rescue)
+    // Per-sample unmatched cell barcodes (for 1-edit rescue) — per-worker, merged after
     let per_sample_unmatched: Vec<std::sync::Mutex<Vec<u64>>> =
         (0..num_samples).map(|_| std::sync::Mutex::new(Vec::new())).collect();
 
-    let mut total_reads: u64 = 0;
-    let mut matched_reads: u64 = 0;
-    let mut unmatched_reads: u64 = 0;
+    let total_reads = std::sync::atomic::AtomicU64::new(0);
+    let matched_reads = std::sync::atomic::AtomicU64::new(0);
+    let unmatched_reads = std::sync::atomic::AtomicU64::new(0);
+
+    let nworkers = gpl_opts.threads.max(1);
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<MultiBarcodeReadRecord>::new(
+        &prelude,
+        std::num::NonZeroUsize::new(nworkers).unwrap(),
+    );
 
     let num_chunks = prelude.hdr.num_chunks;
     let pbar = ProgressBar::with_draw_target(
@@ -647,43 +653,108 @@ fn do_generate_permit_list_multi_bc(
         .progress_chars("##-"),
     );
 
-    for _ in 0..num_chunks {
-        let c = chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut ifile, &rec_ctx);
-        for read in &c.reads {
-            total_reads += 1;
+    // Wrap shared state in Arcs for the worker threads
+    let per_sample_cell_hist = std::sync::Arc::new(per_sample_cell_hist);
+    let per_sample_unmatched = std::sync::Arc::new(per_sample_unmatched);
+    let sample_permit_map = std::sync::Arc::new(sample_permit_map);
+    let sample_bc_to_idx = std::sync::Arc::new(sample_bc_to_idx);
+    let cell_bc_whitelist = std::sync::Arc::new(cell_bc_whitelist);
+    let total_reads_arc = &total_reads;
+    let matched_reads_arc = &matched_reads;
+    let unmatched_reads_arc = &unmatched_reads;
 
-            // Check orientation
-            if !read.has_alignment_on_strand(expected_ori) {
-                continue;
-            }
+    std::thread::scope(|s| {
+        // Spawn worker threads
+        let mut handles = Vec::new();
+        for _ in 0..nworkers {
+            let q = chunk_reader.get_queue();
+            let done = chunk_reader.is_done();
+            let hist = per_sample_cell_hist.clone();
+            let unmatched = per_sample_unmatched.clone();
+            let spm = sample_permit_map.clone();
+            let s2i = sample_bc_to_idx.clone();
+            let wl = cell_bc_whitelist.clone();
 
-            // Extract sample barcode (level 0) and cell barcode (last level)
-            let sample_bc: u64 = read.collation_key_at_level(0).into();
-            let cell_bc: u64 = read.collate_key().into();
+            let handle = s.spawn(move || {
+                let mut local_total = 0u64;
+                let mut local_matched = 0u64;
+                let mut local_unmatched_sample = 0u64;
+                // Per-sample local unmatched buffers to reduce lock contention
+                let num_s = hist.len();
+                let mut local_unmatched_bufs: Vec<Vec<u64>> =
+                    (0..num_s).map(|_| Vec::new()).collect();
 
-            // Correct sample barcode
-            if let Some(&corrected_sample) = sample_permit_map.get(&sample_bc) {
-                if let Some(&sample_idx) = sample_bc_to_idx.get(&corrected_sample) {
-                    matched_reads += 1;
-                    // If we have a whitelist, only count cell BCs in it
-                    if let Some(ref wl) = cell_bc_whitelist {
-                        if wl.contains_key(&cell_bc) {
-                            *per_sample_cell_hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
-                        } else {
-                            per_sample_unmatched[sample_idx].lock().unwrap().push(cell_bc);
+                while !done.load(Ordering::SeqCst) || !q.is_empty() {
+                    while let Some(meta_chunk) = q.pop() {
+                        for c in meta_chunk.iter() {
+                            for read in &c.reads {
+                                local_total += 1;
+
+                                if !read.has_alignment_on_strand(expected_ori) {
+                                    continue;
+                                }
+
+                                let sample_bc: u64 = read.collation_key_at_level(0).into();
+                                let cell_bc: u64 = read.collate_key().into();
+
+                                if let Some(&corrected_sample) = spm.get(&sample_bc) {
+                                    if let Some(&sample_idx) = s2i.get(&corrected_sample) {
+                                        local_matched += 1;
+                                        if let Some(ref wl_map) = *wl {
+                                            if wl_map.contains_key(&cell_bc) {
+                                                *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                                            } else {
+                                                local_unmatched_bufs[sample_idx].push(cell_bc);
+                                            }
+                                        } else {
+                                            *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                                        }
+                                    }
+                                } else {
+                                    local_unmatched_sample += 1;
+                                }
+                            }
                         }
-                    } else {
-                        // No whitelist — count all observed BCs
-                        *per_sample_cell_hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
                     }
                 }
-            } else {
-                unmatched_reads += 1;
-            }
+
+                // Flush local unmatched buffers
+                for (idx, buf) in local_unmatched_bufs.into_iter().enumerate() {
+                    if !buf.is_empty() {
+                        unmatched[idx].lock().unwrap().extend(buf);
+                    }
+                }
+
+                (local_total, local_matched, local_unmatched_sample)
+            });
+            handles.push(handle);
         }
-        pbar.inc(1);
-    }
+
+        // Start the chunk reader (this feeds the queue from the BufReader)
+        let cb = |_new_bytes: u64, new_rec: u64| {
+            pbar.inc(new_rec);
+        };
+        let _ = chunk_reader.start(&mut ifile, Some(cb));
+
+        // Join workers and aggregate counts
+        for handle in handles {
+            let (lt, lm, lu) = handle.join().expect("worker thread panicked");
+            total_reads_arc.fetch_add(lt, Ordering::SeqCst);
+            matched_reads_arc.fetch_add(lm, Ordering::SeqCst);
+            unmatched_reads_arc.fetch_add(lu, Ordering::SeqCst);
+        }
+    });
     pbar.finish_and_clear();
+
+    let total_reads = total_reads.load(Ordering::SeqCst);
+    let matched_reads = matched_reads.load(Ordering::SeqCst);
+    let unmatched_reads = unmatched_reads.load(Ordering::SeqCst);
+
+    // Unwrap the Arcs (single owner again after threads join)
+    let sample_permit_map = std::sync::Arc::into_inner(sample_permit_map).unwrap();
+    let sample_bc_to_idx = std::sync::Arc::into_inner(sample_bc_to_idx).unwrap();
+    let per_sample_cell_hist = std::sync::Arc::into_inner(per_sample_cell_hist).unwrap();
+    let per_sample_unmatched = std::sync::Arc::into_inner(per_sample_unmatched).unwrap();
 
     info!(
         log,
