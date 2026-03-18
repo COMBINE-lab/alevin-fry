@@ -15,7 +15,6 @@ use libradicl::chunk;
 use libradicl::record::{MappedRecord, UmiTaggedRecord};
 
 use crate::utils::{EqClassPayload, OptionalAlignmentExtras};
-use statrs::distribution::{Normal, Continuous};
 use std::f64::consts::LN_10;
 
 fn score_probabilities(scores: &[i32]) -> Vec<f64> {
@@ -23,7 +22,7 @@ fn score_probabilities(scores: &[i32]) -> Vec<f64> {
     //eprintln!("DENOM val: {:?}", DENOM);
     let max_score = *scores.iter().max().unwrap();
 
-    let mut out: Vec<f64> = scores
+    let out: Vec<f64> = scores
         .iter()
         .map(|&s| (((s - max_score) as f64) / DENOM).exp())
         .collect();
@@ -49,16 +48,16 @@ fn end_probabilities(
     assert_eq!(ends.len(), tlens.len());
     assert!(std_dev > 0.0);
 
-    // This is μ=0, σ=std_dev
-    let dist = Normal::new(0.0, std_dev)
-        .expect("should be able to construct a normal distribution");
-
-    // Precompute ln_pdf(0) once (normalization to make weight(0)=1)
-    let ln_pdf0 = dist.ln_pdf(0.0);
+    // For a zero-mean normal, ln_pdf(x) - ln_pdf(0) simplifies exactly to
+    //   -(x^2) / (2 * sigma^2)
+    // This avoids pulling in a stats crate while preserving the same shape
+    // and improving numerical stability by eliminating subtraction of two
+    // nearly equal log-density values.
+    let inv_two_var = 0.5 / (std_dev * std_dev);
     let ln_floor = -min_end * LN_10;
 
     // Compute unnormalized weights
-    let mut out: Vec<f64> = ends
+    let out: Vec<f64> = ends
         .iter()
         .zip(tlens.iter())
         .map(|(&end, &tlen)| {
@@ -70,7 +69,7 @@ fn end_probabilities(
             let extra_dist = (dist_from_end - thresh).max(0.0);
 
             // ln w = ln_pdf(extra_dist) - ln_pdf(0)
-            let ln_w = dist.ln_pdf(extra_dist) - ln_pdf0;
+            let ln_w = -(extra_dist * extra_dist) * inv_two_var;
 
             let final_value = ln_w.max(ln_floor);
 
@@ -733,7 +732,13 @@ impl EqMap {
     ) where
         R: MappedRecord + UmiTaggedRecord,
     {
-        self.eqid_map.clear();
+        // Avoid O(capacity) clear on large maps — recreate instead.
+        if self.eqid_map.capacity() > 256 {
+            let rs = self.eqid_map.hasher().clone();
+            self.eqid_map = HashMap::with_hasher(rs);
+        } else {
+            self.eqid_map.clear();
+        }
 
         let mut gvec: Vec<u32> = vec![];
         // gather the equivalence class info
@@ -840,7 +845,12 @@ impl EqMap {
         // if there are too many allocations here, revisit reusing this
         let mut temp_prob_map = TempProbMap::new();
 
-        self.eqid_map.clear();
+        if self.eqid_map.capacity() > 256 {
+            let rs = self.eqid_map.hasher().clone();
+            self.eqid_map = HashMap::with_hasher(rs);
+        } else {
+            self.eqid_map.clear();
+        }
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
             // Take what we need from r up-front
@@ -1091,10 +1101,8 @@ mod tests {
         assert_eq!(tpm.lengths, vec![2, 2, 3]);
         assert_eq!(tpm.eq_ids, vec![0_u32, 0, 1]);
 
-        let mut tpm_iter = tpm.eq_class_aln_view_iter();
-        let eq_cards = vec![2, 3];
         let mut ctr = 0;
-        while let Some(ti) = tpm_iter.next() {
+        for ti in tpm.eq_class_aln_view_iter() {
             for rank in 0..ti.num_reads() {
                 let p = ti.get_probs_for_read_rank(rank).expect("have read of rank");
                 if ctr == 0 {

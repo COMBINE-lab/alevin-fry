@@ -1,0 +1,19 @@
+- name: Use portable Cargo config for CI builds
+  shell: bash
+  run: |
+    set -euo pipefail
+    cp .cargo/config-portable.toml .cargo/config.toml
+
+- name: Force AVX2 for x86_64 (via RUSTFLAGS)
+  if: contains(join(matrix.targets, ','), 'x86_64-')
+  shell: bash
+  run: |
+    set -euo pipefail
+    echo 'RUSTFLAGS=-C target-cpu=x86-64-v3 -C target-feature=+avx2' >> "$GITHUB_ENV"
+
+- name: Show effective x86_64 rustflags (proof)
+  if: contains(join(matrix.targets, ','), 'x86_64-')
+  shell: bash
+  run: |
+    set -euo pipefail
+    echo "RUSTFLAGS=${RUSTFLAGS-}"

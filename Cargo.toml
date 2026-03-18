@@ -34,9 +34,9 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
+libradicl = { version = "0.12" }
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.11.0" }
 #libradicl = { version = "0.11.0" }
 anyhow = "1.0.100"
 arrayvec = "0.7.6"
@@ -61,7 +61,7 @@ slog-term = "2.9.2"
 slog-async = "2.8.0"
 smallvec = "1.15.1"
 snap = "1.1.1"
-rand = { version = "0.9.2" }
+rand = { version = "0.10" }
 chrono = "0.4.42"
 csv = "1.4.0"
 mimalloc = { version = "0.1.48", default-features = false }
@@ -70,8 +70,6 @@ num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
 itertools = "0.14.0"
 thiserror = "2.0.17"
-#sce = { git = "https://github.com/parazodiac/SingleCellExperiment", branch = "dev", version = "0.2.0" }
-sce = { version = "0.2.0" }
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
 clap = { version = "4.5.53", features = [
@@ -84,11 +82,13 @@ clap = { version = "4.5.53", features = [
   "error-context",
 ] }
 
-noodles = { version = "0.104.0", features = ["bam", "bgzf", "sam"] }
+noodles = { version = "0.108.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
-nalgebra = "0.34.1"
-rand_distr = "0.5.1"
-statrs = "0.18"
+rand_distr = "0.6"
+
+[dev-dependencies]
+tempfile = "3"
+slog-term = "2.9.2"
 
 [profile.release]
 #debug = true
@@ -100,27 +100,3 @@ opt-level = 3
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-# Config for 'dist'
-[workspace.metadata.dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.25.1"
-# CI backends to support
-ci = "github"
-# The installers to generate for each app
-installers = ["shell"]
-# Target platforms to build apps for (Rust target-triple syntax)
-targets = [
-  "aarch64-apple-darwin",
-  "x86_64-apple-darwin",
-  "x86_64-unknown-linux-gnu",
-]
-# Which actions to run on pull requests
-pr-run-mode = "plan"
-# Path that installers should place binaries in
-install-path = "CARGO_HOME"
-# Whether to install an updater program
-install-updater = true
-
-[workspace.metadata.dist.github-custom-runners]
-aarch64-apple-darwin = "macos-14"

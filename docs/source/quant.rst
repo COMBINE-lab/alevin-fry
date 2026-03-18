@@ -35,9 +35,7 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``--quant-subset <SFILE>`` : This optional argument provides a file containing list of barcodes to quantify (one barcode per line, written as a string), those not in this list will be ignored during inference and will not appear in the output quantification matrix.  If this argument is not provided, then all of the original barcodes will be quantified.
 
-* ``--use-mtx`` : This flag will cause the output to be written in matrix market coordinate format (which is the default).
-
-* ``--use-eds`` : This flag will cause the output to be written in EDS format rather than in matrix market format.
+* ``--use-mtx`` : This flag is accepted for backwards compatibility. Matrix market coordinate format is the default (and currently only) output format.
 
 There are also a few flags that are not immediately exposed:
 
@@ -48,14 +46,13 @@ There are also a few flags that are not immediately exposed:
 output
 ------
 
-The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``quants_mat.mtx`` (or ``counts.eds.gz`` if run with the ``--use-eds`` flag), ``quants_mat_cols.txt``, ``quant.json``, and ``featureDump.txt``.  The ``quant.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``featureDump.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
+The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``quants_mat.mtx``, ``quants_mat_cols.txt``, ``quant.json``, and ``featureDump.txt``.  The ``quant.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``featureDump.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
 
 If ``quant`` was executed in USA mode, then the resulting count matrix will be of dimension ``C``x``3G`` where ``C`` is the number of quantified cells (barcodes) and ``G`` is the number of genes.  This is because, in USA mode, ``alevin-fry`` quantifies the UMI count attributable to each splicing state of each gene in each cell, where the splicing state is one of spliced (S), unspliced (U) or ambiguous (A).  If ``quant`` was run with a two-column transcript-to-gene map (not in USA-mode), then the resulting count matrix will be a ``C``x``G`` matrix, as splicing status is not tracked.  For more details on USA mode and its uses, please read the ``alevin-fry`` `paper <https://www.nature.com/articles/s41592-022-01408-3>`__ or `preprint <https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1>`__, or the `corresponding tutorial <https://combine-lab.github.io/alevin-fry-tutorials/2021/improving-txome-specificity/>`__.
 
-The ``quants_mat.mtx`` is a matrix market `coordinate format <https://math.nist.gov/MatrixMarket/formats.html>`__ file (or if running with ``--use-eds`` then ``counts.eds.gz`` is a gzipped file in EDS_ format) that stores the gene-by-cell expression matrix. The two other files provide the labels for the rows and columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that contains the names of the rows of the matrix, in the order in which it is written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a text file that contains the names of the columns of the matrix, in the order in which it is written, with one barcode name written per line.
+The ``quants_mat.mtx`` is a matrix market `coordinate format <https://math.nist.gov/MatrixMarket/formats.html>`__ file that stores the gene-by-cell expression matrix. The two other files provide the labels for the rows and columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that contains the names of the rows of the matrix, in the order in which it is written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a text file that contains the names of the columns of the matrix, in the order in which it is written, with one barcode name written per line.
 
 .. _alevin: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1670-y
-.. _EDS: https://github.com/COMBINE-lab/EDS
 
 ..
   matrix market coordinate format file where the number of *rows* is equal to the number of

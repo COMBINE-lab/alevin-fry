@@ -31,7 +31,7 @@ use libradicl::{
 };
 
 use needletail::bitkmer::*;
-use rand::Rng;
+use rand::RngExt;
 use std::error::Error;
 use std::path::Path;
 use std::str;

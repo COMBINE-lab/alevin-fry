@@ -29,7 +29,6 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub init_uniform: bool,
     pub summary_stat: bool,
     pub dump_eq: bool,
-    pub use_mtx: bool,
     pub resolution: ResolutionStrategy,
     pub pug_exact_umi: bool,
     pub sa_model: SplicedAmbiguityModel,
@@ -40,6 +39,15 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub version: &'f str,
     #[serde(skip_serializing)]
     pub log: &'g slog::Logger,
+}
+
+/// Correction mode for sample barcodes in multi-barcode protocols.
+#[derive(Debug, Clone, Serialize)]
+pub enum SampleCorrectionMode {
+    /// Exact match only — no error correction
+    Exact,
+    /// Allow single-edit correction using BarcodeLookupMap
+    OneEdit,
 }
 
 #[derive(TypedBuilder, Debug, Serialize)]
@@ -54,4 +62,14 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub version: &'d str,
     #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
+    /// Path to known sample barcode list (one per line). When present,
+    /// triggers multi-barcode mode (e.g., 10x Flex).
+    #[builder(default)]
+    pub sample_bc_list: Option<PathBuf>,
+    /// Path to sample name mapping file (TSV: barcode\tname).
+    #[builder(default)]
+    pub sample_names: Option<PathBuf>,
+    /// Correction mode for sample barcodes.
+    #[builder(default = SampleCorrectionMode::Exact)]
+    pub sample_correction_mode: SampleCorrectionMode,
 }
