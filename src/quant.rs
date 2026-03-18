@@ -36,7 +36,6 @@ use libradicl::record::{
     CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
     MultiBarcodeReadRecord, RecordContext, ScLongReadRecord, UmiTaggedRecord,
 };
-use std::path::PathBuf;
 
 use std::fmt;
 //use std::ptr;
@@ -166,7 +165,6 @@ struct QuantOutputInfo {
     barcode_file: BufWriter<fs::File>,
     eds_file: BufWriter<GzEncoder<fs::File>>,
     feature_file: BufWriter<fs::File>,
-    trimat: sprs::TriMatI<f32, u32>,
     row_index: usize,
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
@@ -356,7 +354,6 @@ struct WorkerConfig {
     usa_mode: bool,
     usa_offsets: Option<(usize, usize)>,
     em_init_type: EmInitType,
-    small_thresh: usize,
     large_graph_thresh: usize,
     pug_exact_umi: bool,
     sa_model: SplicedAmbiguityModel,
@@ -472,7 +469,7 @@ fn quantify_small_cell_sparse<B, R>(
         if !usa_mode {
             gid
         } else if afutils::is_spliced(gid) {
-            (gid >> 1)
+            gid >> 1
         } else {
             (unspliced_offset as u32) + (gid >> 1)
         }
@@ -493,7 +490,7 @@ fn quantify_small_cell_sparse<B, R>(
     // Commit a resolved UMI to gene_umi_buf. For single-winner UMIs,
     // maps to slot and pushes. For multi-gene ties in USA mode, applies
     // splicing-aware resolution matching extract_counts in utils.rs.
-    let mut commit_umi =
+    let commit_umi =
         |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
             match best.len() {
                 0 => {}
@@ -1279,7 +1276,7 @@ where
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let mut sa_model = quant_opts.sa_model;
-    let small_thresh = quant_opts.small_thresh;
+    let _small_thresh = quant_opts.small_thresh;
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
     let log = quant_opts.log;
@@ -1510,7 +1507,7 @@ where
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
-    let tmcap = if use_mtx {
+    let _tmcap = if use_mtx {
         // Estimate initial triplet capacity. The 10% density assumption is
         // far too high for large multiplexed datasets (actual density is often
         // <0.5%). Cap at 256M entries (~3GB) to avoid massive overallocation
@@ -1548,21 +1545,18 @@ where
         None
     };
 
-    let trimat = sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows), tmcap);
-
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::new(bc_file),
         eds_file: BufWriter::new(buffered),
         feature_file: BufWriter::new(ff_file),
-        trimat,
         row_index: 0usize,
         bootstrap_helper: boot_helper,
     }));
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
-    let mut thread_handles: Vec<thread::JoinHandle<(usize, Vec<(usize, usize, f32)>)>> =
-        Vec::with_capacity(n_workers);
+    type WorkerTriplets = (usize, Vec<(usize, usize, f32)>);
+    let mut thread_handles: Vec<thread::JoinHandle<WorkerTriplets>> = Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
     // (i.e. across all cells) gene-level equivalence
@@ -1632,7 +1626,6 @@ where
             } else {
                 EmInitType::Informative
             },
-            small_thresh,
             large_graph_thresh,
             pug_exact_umi,
             sa_model,
@@ -1905,7 +1898,7 @@ pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
 /// encoded in the barcode labels.
 fn rewrite_barcodes_with_sample_prefix(
     manifest_path: &std::path::Path,
-    output_dir: &PathBuf,
+    output_dir: &std::path::Path,
     log: &slog::Logger,
 ) -> anyhow::Result<()> {
     use std::io::BufRead;
@@ -1957,6 +1950,42 @@ fn rewrite_barcodes_with_sample_prefix(
     let mut writer = BufWriter::new(bc_file);
     for label in &sample_labels {
         writeln!(writer, "{}", label)?;
+    }
+
+    // Also rewrite featureDump.txt to include a sample_name column
+    let fd_path = output_dir.join("featureDump.txt");
+    if fd_path.exists() {
+        let fd_file = File::open(&fd_path)?;
+        let fd_reader = std::io::BufReader::new(fd_file);
+        let fd_lines: Vec<String> = fd_reader.lines().collect::<Result<Vec<_>, _>>()?;
+
+        // Build sample name for each row (same order as barcodes)
+        let mut row_sample_names: Vec<String> = Vec::with_capacity(barcodes.len());
+        for group in &manifest.sample_groups {
+            let default_name = format!("{:x}", group.key);
+            let sample_name = group.name.as_deref().unwrap_or(&default_name);
+            for _ in 0..group.num_chunks {
+                row_sample_names.push(sample_name.to_string());
+            }
+        }
+
+        let fd_file = File::create(&fd_path)?;
+        let mut fd_writer = BufWriter::new(fd_file);
+        for (i, line) in fd_lines.iter().enumerate() {
+            if i == 0 {
+                // Header: insert sample_name after CB
+                writeln!(fd_writer, "CB\tsample_name\t{}", &line["CB\t".len()..])?;
+            } else {
+                // Data: insert sample name after the first column
+                let row_idx = i - 1; // 0-based data row
+                let sample = row_sample_names.get(row_idx).map(|s| s.as_str()).unwrap_or("unknown");
+                if let Some(tab_pos) = line.find('\t') {
+                    writeln!(fd_writer, "{}\t{}\t{}", &line[..tab_pos], sample, &line[tab_pos + 1..])?;
+                } else {
+                    writeln!(fd_writer, "{}", line)?;
+                }
+            }
+        }
     }
 
     info!(
