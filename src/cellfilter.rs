@@ -602,18 +602,38 @@ fn do_generate_permit_list_multi_bc(
     // Get sample names from the barcode file (uses canonical → name mapping)
     let sample_names = get_sample_names(&sample_info);
 
-    // First pass: read all records, correct sample BCs, count cell BCs per sample
+    // Load external cell barcode whitelist if provided (e.g. 737K 10x list).
+    // This is used to filter cell barcodes — only whitelist BCs are counted directly;
+    // non-matching BCs are collected for 1-edit correction later.
+    let (cell_bc_whitelist, min_reads) = match &gpl_opts.fmeth {
+        CellFilterMethod::UnfilteredExternalList(wl_path, mr) => {
+            info!(log, "Loading external cell barcode whitelist from {}", wl_path.display());
+            let wl_file = File::open(wl_path)
+                .with_context(|| format!("couldn't open whitelist {}", wl_path.display()))?;
+            let mut first_bclen = 0usize;
+            let wl = populate_unfiltered_barcode_map(BufReader::new(wl_file), &mut first_bclen);
+            info!(log, "Loaded {} cell barcodes from whitelist (bclen={})", wl.len(), first_bclen);
+            (Some(wl), *mr as u64)
+        }
+        _ => (None, 0u64),
+    };
+
+    // First pass: read all records, correct sample BCs, count cell BCs per sample.
+    // When a whitelist is present, only count cell BCs that are in the whitelist;
+    // collect non-matching BCs per-sample for later 1-edit correction.
     info!(log, "First pass: counting cell barcodes per sample...");
-    // Per-sample cell barcode frequency maps (indexed by canonical sample index)
     let num_samples = sample_info.canonical_barcodes.len();
+    // Per-sample cell barcode frequency (only whitelist-matching BCs)
     let per_sample_cell_hist: Vec<DashMap<u64, u64, ahash::RandomState>> =
         (0..num_samples).map(|_| DashMap::default()).collect();
+    // Per-sample unmatched cell barcodes (for 1-edit rescue)
+    let per_sample_unmatched: Vec<std::sync::Mutex<Vec<u64>>> =
+        (0..num_samples).map(|_| std::sync::Mutex::new(Vec::new())).collect();
 
     let mut total_reads: u64 = 0;
     let mut matched_reads: u64 = 0;
     let mut unmatched_reads: u64 = 0;
 
-    // Read chunks sequentially (first pass is for counting only)
     let num_chunks = prelude.hdr.num_chunks;
     let pbar = ProgressBar::with_draw_target(
         Some(num_chunks),
@@ -644,8 +664,18 @@ fn do_generate_permit_list_multi_bc(
             // Correct sample barcode
             if let Some(&corrected_sample) = sample_permit_map.get(&sample_bc) {
                 if let Some(&sample_idx) = sample_bc_to_idx.get(&corrected_sample) {
-                    *per_sample_cell_hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
                     matched_reads += 1;
+                    // If we have a whitelist, only count cell BCs in it
+                    if let Some(ref wl) = cell_bc_whitelist {
+                        if wl.contains_key(&cell_bc) {
+                            *per_sample_cell_hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                        } else {
+                            per_sample_unmatched[sample_idx].lock().unwrap().push(cell_bc);
+                        }
+                    } else {
+                        // No whitelist — count all observed BCs
+                        *per_sample_cell_hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                    }
                 }
             } else {
                 unmatched_reads += 1;
@@ -717,79 +747,157 @@ fn do_generate_permit_list_multi_bc(
             continue;
         }
 
-        // Apply the same filter method as single-barcode to this sample's cell BCs
-        let mut freq: Vec<u64> = cell_hist.values().copied().collect();
-        freq.sort_unstable();
-        freq.reverse();
+        // Determine which cell BCs to keep, applying the same logic as single-barcode.
+        // For UnfilteredExternalList: keep all whitelist BCs with >= min_reads,
+        // then rescue unmatched BCs via 1-edit correction.
+        let mut kept_bcs: Vec<u64> = Vec::new();
+        let mut sample_freq_map: HashMap<u64, u64, ahash::RandomState> = HashMap::default();
 
-        let num_cells = match &gpl_opts.fmeth {
-            CellFilterMethod::KneeFinding => {
-                let knee = knee_finding::get_knee(&freq, 100, log);
-                info!(log, "  Knee found at cell {} for sample '{}'", knee, sample_name);
-                knee
+        match &gpl_opts.fmeth {
+            CellFilterMethod::UnfilteredExternalList(_, _) => {
+                // Filter by min_reads: keep whitelist BCs that pass threshold
+                let mut below_threshold_bcs = Vec::new();
+                for (bc, count) in cell_hist.iter() {
+                    if *count >= min_reads {
+                        kept_bcs.push(*bc);
+                        sample_freq_map.insert(*bc, *count);
+                    } else {
+                        // BCs below threshold: add their reads to unmatched for rescue
+                        for _ in 0..*count {
+                            below_threshold_bcs.push(*bc);
+                        }
+                    }
+                }
+
+                info!(
+                    log,
+                    "  {} whitelist BCs pass min_reads={} for sample '{}'",
+                    kept_bcs.len(), min_reads, sample_name,
+                );
+
+                // Build BarcodeLookupMap from kept BCs for 1-edit correction
+                let bcmap = BarcodeLookupMap::new(kept_bcs.clone(), cell_bc_len as u32);
+
+                // Rescue unmatched cell BCs (not in whitelist) via 1-edit correction
+                let mut unmatched = per_sample_unmatched[sample_idx].lock().unwrap();
+                unmatched.append(&mut below_threshold_bcs);
+                unmatched.sort_unstable();
+
+                let mut found_approx = 0usize;
+                let mut ambig_approx = 0usize;
+                let mut not_found = 0usize;
+                let mut corrected_list = Vec::<(u64, u64)>::new();
+
+                for (count, ubc) in unmatched.iter().dedup_with_count() {
+                    match bcmap.find_neighbors(*ubc, false) {
+                        (Some(x), n) => {
+                            let cbc = bcmap.barcodes[x];
+                            if cbc != *ubc && n == 1 {
+                                *sample_freq_map.entry(cbc).or_insert(0) += count as u64;
+                                corrected_list.push((*ubc, cbc));
+                                found_approx += count;
+                            }
+                            if n > 1 {
+                                ambig_approx += count;
+                            }
+                        }
+                        (None, _) => {
+                            not_found += count;
+                        }
+                    }
+                }
+
+                info!(
+                    log,
+                    "  {} unmatched BCs for sample '{}': {} rescued (1-edit), {} ambiguous, {} not found",
+                    unmatched.len(), sample_name,
+                    found_approx.to_formatted_string(&Locale::en),
+                    ambig_approx.to_formatted_string(&Locale::en),
+                    not_found.to_formatted_string(&Locale::en),
+                );
+
+                // Write the corrected_list for this sample
+                let corr_path = sample_dir.join("permit_map.bin");
+                // Build the full permit map: identity for kept + correction for rescued
+                let mut full_permit_list: HashMap<u64, u64> = HashMap::with_capacity(
+                    kept_bcs.len() + corrected_list.len(),
+                );
+                for &bc in &kept_bcs {
+                    full_permit_list.insert(bc, bc);
+                }
+                for (uncorrected, corrected) in &corrected_list {
+                    full_permit_list.entry(*uncorrected).or_insert(*corrected);
+                }
+                let map_file = File::create(&corr_path)?;
+                bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
+                    .map_err(|e| anyhow!("failed to serialize permit map: {}", e))?;
             }
-            CellFilterMethod::ForceCells(n) => (*n).min(freq.len()),
-            CellFilterMethod::ExpectCells(n) => {
-                let robust_quantile = *n;
-                let robust_div = 10_f64;
-                let threshold = freq[0] / robust_quantile as u64;
-                // freq is sorted descending, find where it drops below threshold
-                let idx = freq.iter().position(|&f| f < threshold).unwrap_or(freq.len());
-                (idx as f64 * robust_div) as usize
+            CellFilterMethod::KneeFinding => {
+                let mut freq: Vec<u64> = cell_hist.values().copied().collect();
+                freq.sort_unstable();
+                freq.reverse();
+                let knee = knee_finding::get_knee(&freq, 100, log);
+                let threshold = if knee > 0 { freq[knee.saturating_sub(1)] } else { 0 };
+                for (bc, count) in cell_hist.iter() {
+                    if *count >= threshold {
+                        kept_bcs.push(*bc);
+                        sample_freq_map.insert(*bc, *count);
+                    }
+                }
+                info!(log, "  Knee at {}, {} cells retained for sample '{}'", knee, kept_bcs.len(), sample_name);
+
+                let full_permit_list = afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                    .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let map_path = sample_dir.join("permit_map.bin");
+                let map_file = File::create(&map_path)?;
+                bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
+                    .map_err(|e| anyhow!("failed to serialize permit map: {}", e))?;
             }
             _ => {
-                // For UnfilteredExternalList and ExplicitList, use all observed BCs
-                // (the external list will be applied separately)
-                freq.len()
+                // ForceCells, ExpectCells, ExplicitList: use frequency-based selection
+                let mut freq: Vec<u64> = cell_hist.values().copied().collect();
+                freq.sort_unstable();
+                freq.reverse();
+                let num_cells = match &gpl_opts.fmeth {
+                    CellFilterMethod::ForceCells(n) => (*n).min(freq.len()),
+                    CellFilterMethod::ExpectCells(n) => {
+                        let threshold = freq[0] / *n as u64;
+                        let idx = freq.iter().position(|&f| f < threshold).unwrap_or(freq.len());
+                        (idx as f64 * 10.0) as usize
+                    }
+                    _ => freq.len(),
+                }.min(freq.len());
+                let threshold = if num_cells > 0 { freq[num_cells.saturating_sub(1)] } else { 0 };
+                for (bc, count) in cell_hist.iter() {
+                    if *count >= threshold {
+                        kept_bcs.push(*bc);
+                        sample_freq_map.insert(*bc, *count);
+                    }
+                }
+                info!(log, "  {} cells retained for sample '{}'", kept_bcs.len(), sample_name);
+
+                let full_permit_list = afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                    .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let map_path = sample_dir.join("permit_map.bin");
+                let map_file = File::create(&map_path)?;
+                bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
+                    .map_err(|e| anyhow!("failed to serialize permit map: {}", e))?;
             }
-        };
-        let num_cells = num_cells.min(freq.len());
-
-        // Build permit list: BCs with frequency >= threshold
-        let threshold = if num_cells > 0 && num_cells <= freq.len() {
-            freq[num_cells.saturating_sub(1)]
-        } else {
-            0
-        };
-        let valid_bcs: Vec<u64> = cell_hist
-            .iter()
-            .filter(|(_, count)| **count >= threshold)
-            .map(|(bc, _)| *bc)
-            .collect();
-
-        info!(log, "  {} cells retained for sample '{}'", valid_bcs.len(), sample_name);
-
-        // Generate permit map with edit-distance-1 correction
-        let full_permit_list =
-            afutils::generate_permitlist_map(&valid_bcs, cell_bc_len as usize)
-                .map_err(|e| anyhow!("failed to generate permit list map for sample '{}': {}", sample_name, e))?;
+        }
 
         // Write per-sample permit_freq.bin
         let freq_path = sample_dir.join("permit_freq.bin");
-        let mut sample_freq_map: HashMap<u64, u64, ahash::RandomState> =
-            HashMap::default();
-        for &bc in &valid_bcs {
-            if let Some(&count) = cell_hist.get(&bc) {
-                sample_freq_map.insert(bc, count);
-            }
-        }
         afutils::write_permit_list_freq(&freq_path, cell_bc_len, &sample_freq_map)
             .map_err(|e| anyhow!("failed to write permit freq for sample '{}': {}", sample_name, e))?;
 
-        // Write per-sample permit_map.bin
-        let map_path = sample_dir.join("permit_map.bin");
-        let map_file = File::create(&map_path)?;
-        bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
-            .map_err(|e| anyhow!("failed to serialize permit map: {}", e))?;
+        total_cells += kept_bcs.len() as u64;
 
-        total_cells += valid_bcs.len() as u64;
-
-        let sample_total_reads: u64 = cell_hist.values().sum();
+        let sample_total_reads: u64 = sample_freq_map.values().sum();
         sample_info_entries.push(serde_json::json!({
             "name": sample_name,
             "barcode": format!("0x{:x}", sample_bc),
             "num_reads": sample_total_reads,
-            "num_cells": valid_bcs.len(),
+            "num_cells": kept_bcs.len(),
         }));
     }
 
