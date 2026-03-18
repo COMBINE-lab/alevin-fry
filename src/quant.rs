@@ -378,6 +378,10 @@ struct WorkerSharedState<R: MappedRecord> {
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<libradicl::unmapped::CollatedUnmappedCounts>,
     mmrate: Arc<Mutex<Vec<f64>>>,
+    /// Maps cell_num (chunk index in collated file) → sample index. None for single-barcode.
+    cell_sample_idx: Option<Arc<Vec<u16>>>,
+    /// Sample names indexed by sample index. None for single-barcode.
+    sample_names: Option<Arc<Vec<String>>>,
 }
 
 /// Threshold (in number of records) below which a cell uses the fast path
@@ -1144,9 +1148,19 @@ where
 
                         // write to barcode file
                         let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
-                        writeln!(&mut writer.barcode_file, "{}", unsafe {
-                            std::str::from_utf8_unchecked(bc_bytes)
-                        })
+                        let bc_str = unsafe { std::str::from_utf8_unchecked(bc_bytes) };
+
+                        // For multi-barcode data, prefix with sample name
+                        let sample_name = shared.cell_sample_idx.as_ref().and_then(|idx| {
+                            let si = *idx.get(cell_num)? as usize;
+                            shared.sample_names.as_ref()?.get(si).map(|s| s.as_str())
+                        });
+
+                        if let Some(sn) = sample_name {
+                            writeln!(&mut writer.barcode_file, "{}_{}", sn, bc_str)
+                        } else {
+                            writeln!(&mut writer.barcode_file, "{}", bc_str)
+                        }
                         .expect("can't write to barcode file.");
 
                         // write to matrix file
@@ -1157,19 +1171,27 @@ where
                                 .write_all(&eds_bytes)
                                 .expect("can't write to matrix file.");
                         }
-                        writeln!(
-                            &mut writer.feature_file,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            unsafe { std::str::from_utf8_unchecked(bc_bytes) },
-                            (num_mapped + num_unmapped),
-                            num_mapped,
-                            sum_umi,
-                            mapping_rate,
-                            dedup_rate,
-                            mean_by_max,
-                            num_expr,
-                            num_genes_over_mean
-                        )
+
+                        // write to feature dump file
+                        if let Some(sn) = sample_name {
+                            writeln!(
+                                &mut writer.feature_file,
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                bc_str, sn,
+                                (num_mapped + num_unmapped),
+                                num_mapped, sum_umi, mapping_rate,
+                                dedup_rate, mean_by_max, num_expr, num_genes_over_mean
+                            )
+                        } else {
+                            writeln!(
+                                &mut writer.feature_file,
+                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                                bc_str,
+                                (num_mapped + num_unmapped),
+                                num_mapped, sum_umi, mapping_rate,
+                                dedup_rate, mean_by_max, num_expr, num_genes_over_mean
+                            )
+                        }
                         .expect("can't write to feature file");
 
                         if config.num_bootstraps > 0 {
@@ -1267,7 +1289,32 @@ where
     P: EqClassPayload,
 {
     let parent = std::path::Path::new(quant_opts.input_dir);
-    //let hdr = rad_types::RadHeader::from_bytes(&mut br);
+    let output_dir = std::path::Path::new(quant_opts.output_dir);
+
+    // Load collation manifest if present (multi-barcode data).
+    // Build a lookup from cell_num (chunk index) → sample index,
+    // plus a list of sample names. This is used to write sample-prefixed
+    // barcodes and the sample_name column in featureDump.txt directly
+    // during quantification, avoiding a non-deterministic post-processing step.
+    let manifest_path = parent.join("collation_manifest.bin");
+    let (cell_sample_idx, sample_names) = if manifest_path.exists() {
+        let manifest = CollationManifest::read_from_file(&manifest_path)?;
+        let mut names = Vec::new();
+        let mut idx_map = Vec::new();
+        for (si, group) in manifest.sample_groups.iter().enumerate() {
+            let default_name = format!("{:x}", group.key);
+            let name = group.name.as_deref().unwrap_or(&default_name).to_string();
+            names.push(name);
+            for _ in 0..group.num_chunks {
+                idx_map.push(si as u16);
+            }
+        }
+        (Some(idx_map), Some(names))
+    } else {
+        (None, None)
+    };
+    let cell_sample_idx = cell_sample_idx.map(std::sync::Arc::new);
+    let sample_names = sample_names.map(std::sync::Arc::new);
 
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
@@ -1500,10 +1547,17 @@ where
 
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
-    writeln!(
-        ff_file,
-        "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
-    )?;
+    if cell_sample_idx.is_some() {
+        writeln!(
+            ff_file,
+            "CB\tsample_name\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+        )?;
+    } else {
+        writeln!(
+            ff_file,
+            "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
+        )?;
+    }
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
@@ -1650,6 +1704,8 @@ where
             empty_resolved_cells,
             unmapped_count,
             mmrate,
+            cell_sample_idx: cell_sample_idx.clone(),
+            sample_names: sample_names.clone(),
         };
 
         // now, make the worker thread
@@ -1868,13 +1924,6 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 file_tag_map,
             )?;
 
-            // Post-process: create combined matrix with composite sample+cell labels
-            // if a collation manifest is available.
-            let manifest_path = input_dir.join("collation_manifest.bin");
-            if manifest_path.exists() {
-                rewrite_barcodes_with_sample_prefix(&manifest_path, &output_dir, log)?;
-            }
-
             Ok(())
         }
     }
@@ -1887,113 +1936,3 @@ pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     //Ok(())
 }
 
-/// Rewrite barcode labels in quants_mat_rows.txt to include sample prefixes.
-///
-/// After quantification, the output contains cell barcodes from all samples
-/// in one matrix. This function reads the collation manifest and rewrites
-/// the barcode file so each label is prefixed with the sample name:
-///   `sample_name_ACGTACGT` instead of just `ACGTACGT`.
-///
-/// This produces the "combined" output format where sample identity is
-/// encoded in the barcode labels.
-fn rewrite_barcodes_with_sample_prefix(
-    manifest_path: &std::path::Path,
-    output_dir: &std::path::Path,
-    log: &slog::Logger,
-) -> anyhow::Result<()> {
-    use std::io::BufRead;
-
-    let manifest = CollationManifest::read_from_file(manifest_path)?;
-    if manifest.sample_groups.is_empty() {
-        return Ok(());
-    }
-
-    let output_matrix_path = output_dir.join("alevin");
-    let bc_path = output_matrix_path.join("quants_mat_rows.txt");
-    if !bc_path.exists() {
-        return Ok(());
-    }
-
-    // Read all existing barcodes
-    let bc_file = File::open(&bc_path)?;
-    let reader = std::io::BufReader::new(bc_file);
-    let barcodes: Vec<String> = reader.lines().collect::<Result<Vec<_>, _>>()?;
-
-    // Build sample assignment: for each barcode (by row index), determine which sample it belongs to
-    // using the manifest's chunk ranges.
-    let mut sample_labels: Vec<String> = Vec::with_capacity(barcodes.len());
-    let mut bc_idx: u64 = 0;
-
-    for group in &manifest.sample_groups {
-        let default_name = format!("{:x}", group.key);
-        let sample_name = group.name.as_deref().unwrap_or(&default_name);
-        let num_cells = group.num_chunks; // one chunk per cell
-
-        for _ in 0..num_cells {
-            if (bc_idx as usize) < barcodes.len() {
-                let original_bc = &barcodes[bc_idx as usize];
-                sample_labels.push(format!("{}_{}", sample_name, original_bc));
-            }
-            bc_idx += 1;
-        }
-    }
-
-    // If manifest doesn't cover all barcodes (shouldn't happen but be safe),
-    // keep remaining barcodes as-is
-    while (bc_idx as usize) < barcodes.len() {
-        sample_labels.push(barcodes[bc_idx as usize].clone());
-        bc_idx += 1;
-    }
-
-    // Write the composite labels back
-    let bc_file = File::create(&bc_path)?;
-    let mut writer = BufWriter::new(bc_file);
-    for label in &sample_labels {
-        writeln!(writer, "{}", label)?;
-    }
-
-    // Also rewrite featureDump.txt to include a sample_name column
-    let fd_path = output_dir.join("featureDump.txt");
-    if fd_path.exists() {
-        let fd_file = File::open(&fd_path)?;
-        let fd_reader = std::io::BufReader::new(fd_file);
-        let fd_lines: Vec<String> = fd_reader.lines().collect::<Result<Vec<_>, _>>()?;
-
-        // Build sample name for each row (same order as barcodes)
-        let mut row_sample_names: Vec<String> = Vec::with_capacity(barcodes.len());
-        for group in &manifest.sample_groups {
-            let default_name = format!("{:x}", group.key);
-            let sample_name = group.name.as_deref().unwrap_or(&default_name);
-            for _ in 0..group.num_chunks {
-                row_sample_names.push(sample_name.to_string());
-            }
-        }
-
-        let fd_file = File::create(&fd_path)?;
-        let mut fd_writer = BufWriter::new(fd_file);
-        for (i, line) in fd_lines.iter().enumerate() {
-            if i == 0 {
-                // Header: insert sample_name after CB
-                writeln!(fd_writer, "CB\tsample_name\t{}", &line["CB\t".len()..])?;
-            } else {
-                // Data: insert sample name after the first column
-                let row_idx = i - 1; // 0-based data row
-                let sample = row_sample_names.get(row_idx).map(|s| s.as_str()).unwrap_or("unknown");
-                if let Some(tab_pos) = line.find('\t') {
-                    writeln!(fd_writer, "{}\t{}\t{}", &line[..tab_pos], sample, &line[tab_pos + 1..])?;
-                } else {
-                    writeln!(fd_writer, "{}", line)?;
-                }
-            }
-        }
-    }
-
-    info!(
-        log,
-        "Rewrote {} barcode labels with sample prefixes from {} samples",
-        sample_labels.len(),
-        manifest.sample_groups.len(),
-    );
-
-    Ok(())
-}
