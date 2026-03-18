@@ -383,6 +383,147 @@ struct WorkerSharedState<R: MappedRecord> {
     mmrate: Arc<Mutex<Vec<f64>>>,
 }
 
+/// Threshold (in number of records) below which a cell uses the fast path
+/// that avoids HashMap-based equivalence class construction entirely.
+const SMALL_CELL_FAST_THRESHOLD: usize = 100;
+
+/// Sparse fast path for quantifying small cells without any HashMap or dense
+/// vector overhead.
+///
+/// Implements the same cr-like (winner-take-all) UMI resolution as
+/// `resolve_num_molecules_crlike_from_vec` in pugutils, but outputs sparse
+/// `(gene_id, umi)` pairs in sorted order so the caller can extract counts
+/// via run-length counting — avoiding both O(num_genes) dense vector zeroing
+/// and the O(num_genes) scan to find non-zero entries.
+///
+/// For each read, all transcripts are projected to gene IDs (with dedup).
+/// For each UMI, gene votes are tallied across all reads. If there is a
+/// unique gene with the maximum vote count, that UMI is attributed to that
+/// gene. Tied UMIs (multi-gene) are discarded, matching cr-like semantics.
+fn quantify_small_cell_sparse<B, R>(
+    chunk: &mut libradicl::chunk::Chunk<R>,
+    tid_to_gid: &[u32],
+    // Output: sorted (gene_id, umi) pairs for single-winner UMIs
+    gene_umi_buf: &mut Vec<(u32, u64)>,
+    // Reusable scratch buffer for (umi, gene, count) triplets
+    umi_gene_triplets: &mut Vec<(u64, u32, u32)>,
+) where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord
+        + CollatableMappedRecord<B>
+        + KnownSize
+        + UmiTaggedRecord
+        + 'static,
+{
+    gene_umi_buf.clear();
+    umi_gene_triplets.clear();
+
+    // Phase 1: For each read, project transcript refs to gene IDs (deduped)
+    // and emit (umi, gene, 1) triplets — same as get_num_molecules_cell_ranger_like_small.
+    for read in &chunk.reads {
+        let umi = read.umi();
+        let refs = read.refs();
+
+        // Collect unique gene IDs for this read's reference set.
+        // Use a small inline approach: for most reads the gene set is 1-3 genes.
+        let first_ref = refs.first().copied().unwrap_or(0) as usize;
+        if refs.is_empty() {
+            continue;
+        }
+        let first_gid = tid_to_gid[first_ref];
+        let mut is_single_gene = true;
+        // Check if all refs map to the same gene (common case)
+        for &ref_id in &refs[1..] {
+            if tid_to_gid[ref_id as usize] != first_gid {
+                is_single_gene = false;
+                break;
+            }
+        }
+        if is_single_gene {
+            umi_gene_triplets.push((umi, first_gid, 1));
+        } else {
+            // Multi-gene read: collect unique gene IDs
+            // For < 100 reads, this branch is rare and the allocation is tiny
+            let mut gset: smallvec::SmallVec<[u32; 4]> = refs
+                .iter()
+                .map(|&tid| tid_to_gid[tid as usize])
+                .collect();
+            gset.sort_unstable();
+            gset.dedup();
+            for &g in &gset {
+                umi_gene_triplets.push((umi, g, 1));
+            }
+        }
+    }
+
+    if umi_gene_triplets.is_empty() {
+        return;
+    }
+
+    // Phase 2: cr-like resolution — same algorithm as
+    // resolve_num_molecules_crlike_from_vec in pugutils.
+    // Sort by (umi, gene, count).
+    umi_gene_triplets.sort_unstable();
+
+    let mut curr_umi = umi_gene_triplets[0].0;
+    let mut curr_gn = umi_gene_triplets[0].1;
+    let mut max_count = 0u32;
+    let mut count_aggr = 0u32;
+    let mut best_gene: u32 = curr_gn;
+    let mut is_tied = false;
+
+    for idx in 0..umi_gene_triplets.len() {
+        let (umi, gn, ct) = umi_gene_triplets[idx];
+
+        if umi != curr_umi {
+            // Commit previous UMI: only if there's a unique winner
+            if !is_tied {
+                gene_umi_buf.push((best_gene, curr_umi));
+            }
+
+            // Reset for new UMI
+            curr_umi = umi;
+            curr_gn = gn;
+            count_aggr = ct;
+            max_count = ct;
+            best_gene = gn;
+            is_tied = false;
+        } else {
+            // Same UMI
+            if gn == curr_gn {
+                count_aggr += ct;
+            } else {
+                count_aggr = ct;
+                curr_gn = gn;
+            }
+
+            use std::cmp::Ordering;
+            match count_aggr.cmp(&max_count) {
+                Ordering::Greater => {
+                    max_count = count_aggr;
+                    best_gene = gn;
+                    is_tied = false;
+                }
+                Ordering::Equal => {
+                    if gn != best_gene {
+                        is_tied = true;
+                    }
+                }
+                Ordering::Less => {}
+            }
+        }
+
+        // Commit last UMI
+        if idx == umi_gene_triplets.len() - 1 && !is_tied {
+            gene_umi_buf.push((best_gene, curr_umi));
+        }
+    }
+
+    // Sort output by (gene, umi) for the caller's run-length counting
+    gene_umi_buf.sort_unstable();
+}
+
 fn run_worker_thread<B, R, P>(
     _worker_num: usize,
     config: WorkerConfig,
@@ -390,7 +531,7 @@ fn run_worker_thread<B, R, P>(
     log: slog::Logger,
     num_eq_targets: u32,
     eq_map_type: EqMapType,
-) -> usize
+) -> (usize, Vec<(usize, usize, f32)>)
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -413,6 +554,13 @@ where
     let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
     let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
     let mut eds_bytes = Vec::<u8>::new();
+    // Thread-local triplet buffer for MTX output. Accumulating triplets locally
+    // avoids holding the global mutex during add_triplet, which was the primary
+    // bottleneck serializing all workers.
+    let mut local_triplets: Vec<(usize, usize, f32)> = Vec::new();
+    // Reusable buffers for the small-cell sparse fast path
+    let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
+    let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
     let mut bt_eds_bytes: Vec<u8> = Vec::new();
     let mut eds_mean_bytes: Vec<u8> = Vec::new();
     let mut eds_var_bytes: Vec<u8> = Vec::new();
@@ -470,10 +618,69 @@ where
                 // cell.
                 let mut counts: Vec<f32>;
                 let mut alt_resolution = false;
+                let mut max_umi = 0.0f32;
+                let mut sum_umi = 0.0f32;
+                let mut num_expr: u32 = 0;
 
                 let mut bootstraps: Vec<Vec<f32>> = Vec::new();
 
-                let non_trivial = c.reads.len() >= config.small_thresh;
+                // Fast path for very small cells: bypass all HashMap-based
+                // equivalence class machinery. Directly compute gene counts
+                // via sorted Vec dedup, and build the sparse output
+                // (expressed_vec/expressed_ind) directly — avoiding both the
+                // O(num_genes) dense counts vector allocation AND the
+                // O(num_genes) scan to extract non-zero entries.
+                let used_fast_path;
+                if c.reads.len() < SMALL_CELL_FAST_THRESHOLD {
+                    used_fast_path = true;
+                    quantify_small_cell_sparse::<B, R>(
+                        &mut c,
+                        &shared.tid_to_gid,
+                        &mut gene_umi_buf,
+                        &mut umi_gene_triplets,
+                    );
+                    // gene_umi_buf is now sorted and deduped (gene_id, umi) pairs.
+                    // Build expressed_vec/expressed_ind by run-length counting genes.
+                    expressed_vec.clear();
+                    expressed_ind.clear();
+                    let mut sum_umi_local = 0.0f32;
+                    let mut max_umi_local = 0.0f32;
+                    if !gene_umi_buf.is_empty() {
+                        let mut cur_gene = gene_umi_buf[0].0;
+                        let mut cur_count = 0u32;
+                        for &(gid, _) in gene_umi_buf.iter() {
+                            if gid == cur_gene {
+                                cur_count += 1;
+                            } else {
+                                // emit previous gene
+                                let c = cur_count as f32;
+                                expressed_ind.push(cur_gene as usize);
+                                expressed_vec.push(c);
+                                sum_umi_local += c;
+                                if c > max_umi_local { max_umi_local = c; }
+                                cur_gene = gid;
+                                cur_count = 1;
+                            }
+                        }
+                        // emit last gene
+                        let c = cur_count as f32;
+                        expressed_ind.push(cur_gene as usize);
+                        expressed_vec.push(c);
+                        sum_umi_local += c;
+                        if c > max_umi_local { max_umi_local = c; }
+                    }
+                    // Set the output variables that the rest of the function expects
+                    max_umi = max_umi_local;
+                    sum_umi = sum_umi_local;
+                    num_expr = expressed_vec.len() as u32;
+                    // counts is only needed for EDS output; build lazily below
+                    counts = Vec::new();
+                } else
+
+                // Original path for larger cells
+                {
+                used_fast_path = false;
+                let non_trivial = true; // all cells here have >= SMALL_CELL_FAST_THRESHOLD reads
                 if non_trivial {
                     // TODO: some testing was done, but see if there is a better way to set this value.
                     let small_cell = c.reads.len() <= 250;
@@ -749,6 +956,7 @@ where
                         }
                     } // if the user requested bootstraps
                 } // end of else branch for trivial size cells
+                } // end of else block for non-fast-path cells
 
                 if alt_resolution {
                     shared.alt_res_cells.lock().unwrap().push(cell_num as u64);
@@ -757,20 +965,27 @@ where
                 //
                 // featuresStream << "\t" << numRawReads
                 //   << "\t" << numMappedReads
-                let mut max_umi = 0.0f32;
-                let mut sum_umi = 0.0f32;
-                let mut num_expr: u32 = 0;
-                expressed_vec.clear();
-                expressed_ind.clear();
+                //
+                // For fast-path cells, max_umi/sum_umi/num_expr/expressed_*
+                // are already computed sparsely above. For non-fast-path
+                // cells, extract them from the dense counts vector.
+                if !used_fast_path {
+                    let mut max_umi_local = 0.0f32;
+                    let mut sum_umi_local = 0.0f32;
+                    expressed_vec.clear();
+                    expressed_ind.clear();
 
-                for (gn, c) in counts.iter().enumerate() {
-                    max_umi = if *c > max_umi { *c } else { max_umi };
-                    sum_umi += *c;
-                    if *c > 0.0 {
-                        num_expr += 1;
-                        expressed_vec.push(*c);
-                        expressed_ind.push(gn);
+                    for (gn, c) in counts.iter().enumerate() {
+                        max_umi_local = if *c > max_umi_local { *c } else { max_umi_local };
+                        sum_umi_local += *c;
+                        if *c > 0.0 {
+                            num_expr += 1;
+                            expressed_vec.push(*c);
+                            expressed_ind.push(gn);
+                        }
                     }
+                    max_umi = max_umi_local;
+                    sum_umi = sum_umi_local;
                 }
 
                 if num_expr == 0 {
@@ -804,6 +1019,13 @@ where
                     let bc_mer: BitKmer = (bc.into(), config.barcode_len as u8);
 
                     if !config.use_mtx {
+                        // For fast-path cells, counts is empty — build dense from sparse
+                        if used_fast_path && counts.is_empty() {
+                            counts = vec![0f32; config.num_rows];
+                            for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                                counts[ind] = val;
+                            }
+                        }
                         eds_bytes = sce::eds::as_bytes(&counts, config.num_rows)
                             .expect("can't convert vector to eds");
                     }
@@ -826,6 +1048,9 @@ where
                         }
                     }
 
+                    // Scope the lock to minimize hold time — triplet accumulation
+                    // happens after the lock is released.
+                    {
                     let writer_deref = shared.bcout.lock();
                     let writer = &mut *writer_deref.unwrap();
 
@@ -847,11 +1072,6 @@ where
                             .eds_file
                             .write_all(&eds_bytes)
                             .expect("can't write to matrix file.");
-                    } else {
-                        // fill out the triplet matrix in memory
-                        for (ind, val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                            writer.trimat.add_triplet(row_index, *ind, *val);
-                        }
                     }
                     writeln!(
                         &mut writer.feature_file,
@@ -884,7 +1104,15 @@ where
                                 .expect("can't write to bootstrap file");
                         }
                     } // done bootstrap writing
-                }
+                    } // lock on bc_writer released here (end of scope)
+
+                    // Accumulate MTX triplets in thread-local buffer (no lock held)
+                    if config.use_mtx {
+                        for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                            local_triplets.push((row_index, ind, val));
+                        }
+                    }
+                } // end of cell processing
 
                 // if we are dumping the equivalence class output, fill in
                 // the in-memory representation here.
@@ -914,12 +1142,21 @@ where
                     //let bc_mer: BitKmer = (bc, bclen as u8);
                     geqmap.cell_offset.push((row_index, gene_eqc.len()));
                 }
-                // clear the gene eqc map
-                gene_eqc.clear();
+                // Reset the gene eqc map only if it was used (i.e., NOT the fast path).
+                // For fast-path cells (nrec < SMALL_CELL_FAST_THRESHOLD), gene_eqc was
+                // never touched, so clearing it is pure waste — and the O(capacity) clear
+                // was the 95% bottleneck when processing millions of tiny cells.
+                if nrec >= SMALL_CELL_FAST_THRESHOLD as u32 {
+                    if gene_eqc.capacity() > 256 {
+                        gene_eqc = HashMap::with_hasher(ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64));
+                    } else {
+                        gene_eqc.clear();
+                    }
+                }
             } // for all cells in this meta chunk
         } // while we can get work
     } // while cells remain
-    local_nrec
+    (local_nrec, local_triplets)
 }
 
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
@@ -1183,7 +1420,12 @@ where
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     let tmcap = if use_mtx {
-        (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize
+        // Estimate initial triplet capacity. The 10% density assumption is
+        // far too high for large multiplexed datasets (actual density is often
+        // <0.5%). Cap at 256M entries (~3GB) to avoid massive overallocation
+        // that causes swap thrashing; the triplet vec will grow as needed.
+        let estimate = (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize;
+        estimate.min(256_000_000)
     } else {
         0usize
     };
@@ -1228,7 +1470,8 @@ where
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
-    let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
+    let mut thread_handles: Vec<thread::JoinHandle<(usize, Vec<(usize, usize, f32)>)>> =
+        Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
     // (i.e. across all cells) gene-level equivalence
@@ -1378,10 +1621,14 @@ where
     }
 
     let mut total_records = 0usize;
+    let mut all_triplets: Vec<(usize, usize, f32)> = Vec::new();
     for h in thread_handles {
         match h.join() {
-            Ok(rc) => {
+            Ok((rc, triplets)) => {
                 total_records += rc;
+                if use_mtx {
+                    all_triplets.extend(triplets);
+                }
             }
             Err(_e) => {
                 info!(log, "thread panicked");
@@ -1391,13 +1638,26 @@ where
 
     // write to matrix market if we are using it
     if use_mtx {
+        info!(
+            log,
+            "building triplet matrix from {} entries",
+            all_triplets.len().to_formatted_string(&Locale::en),
+        );
         let writer_deref = bc_writer.lock();
         let writer = &mut *writer_deref.unwrap();
         writer.eds_file.flush().unwrap();
         // now remove it
         fs::remove_file(&mat_path)?;
+
+        // Build the trimat from all worker-local triplets
+        let mut trimat =
+            sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows), all_triplets.len());
+        for (row, col, val) in all_triplets {
+            trimat.add_triplet(row, col, val);
+        }
+
         let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        sprs::io::write_matrix_market(mtx_path, &writer.trimat)?;
+        sprs::io::write_matrix_market(mtx_path, &trimat)?;
     }
 
     let pb_msg = format!(

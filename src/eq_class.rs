@@ -733,7 +733,13 @@ impl EqMap {
     ) where
         R: MappedRecord + UmiTaggedRecord,
     {
-        self.eqid_map.clear();
+        // Avoid O(capacity) clear on large maps — recreate instead.
+        if self.eqid_map.capacity() > 256 {
+            let rs = self.eqid_map.hasher().clone();
+            self.eqid_map = HashMap::with_hasher(rs);
+        } else {
+            self.eqid_map.clear();
+        }
 
         let mut gvec: Vec<u32> = vec![];
         // gather the equivalence class info
@@ -840,7 +846,12 @@ impl EqMap {
         // if there are too many allocations here, revisit reusing this
         let mut temp_prob_map = TempProbMap::new();
 
-        self.eqid_map.clear();
+        if self.eqid_map.capacity() > 256 {
+            let rs = self.eqid_map.hasher().clone();
+            self.eqid_map = HashMap::with_hasher(rs);
+        } else {
+            self.eqid_map.clear();
+        }
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
             // Take what we need from r up-front
