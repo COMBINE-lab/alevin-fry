@@ -28,9 +28,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use libradicl::collation::CollationManifest;
 use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
-use libradicl::collation::CollationManifest;
 use libradicl::record::{
     AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
     CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
@@ -392,29 +392,32 @@ const SMALL_CELL_FAST_THRESHOLD: usize = 100;
 ///
 /// Implements the same cr-like (winner-take-all) UMI resolution as
 /// `resolve_num_molecules_crlike_from_vec` in pugutils, but outputs sparse
-/// `(gene_id, umi)` pairs in sorted order so the caller can extract counts
+/// `(slot_index, umi)` pairs in sorted order so the caller can extract counts
 /// via run-length counting — avoiding both O(num_genes) dense vector zeroing
 /// and the O(num_genes) scan to find non-zero entries.
 ///
 /// For each read, all transcripts are projected to gene IDs (with dedup).
 /// For each UMI, gene votes are tallied across all reads. If there is a
 /// unique gene with the maximum vote count, that UMI is attributed to that
-/// gene. Tied UMIs (multi-gene) are discarded, matching cr-like semantics.
+/// gene. Tied UMIs (multi-gene) are discarded in non-USA mode.
+///
+/// In USA mode, tied UMIs undergo splicing-aware resolution matching the
+/// logic in `extract_counts`: same-gene S+U → ambiguous slot, cross-gene
+/// prefer-spliced, etc. The output indices are USA slot offsets (spliced,
+/// unspliced, or ambiguous) rather than raw gene IDs.
 fn quantify_small_cell_sparse<B, R>(
     chunk: &mut libradicl::chunk::Chunk<R>,
     tid_to_gid: &[u32],
-    // Output: sorted (gene_id, umi) pairs for single-winner UMIs
+    usa_mode: bool,
+    num_rows: usize, // num_genes in non-USA, 3*num_genes in USA
+    // Output: sorted (slot_index, umi) pairs for resolved UMIs
     gene_umi_buf: &mut Vec<(u32, u64)>,
     // Reusable scratch buffer for (umi, gene, count) triplets
     umi_gene_triplets: &mut Vec<(u64, u32, u32)>,
 ) where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
-    R: MappedRecord
-        + CollatableMappedRecord<B>
-        + KnownSize
-        + UmiTaggedRecord
-        + 'static,
+    R: MappedRecord + CollatableMappedRecord<B> + KnownSize + UmiTaggedRecord + 'static,
 {
     gene_umi_buf.clear();
     umi_gene_triplets.clear();
@@ -445,10 +448,8 @@ fn quantify_small_cell_sparse<B, R>(
         } else {
             // Multi-gene read: collect unique gene IDs
             // For < 100 reads, this branch is rare and the allocation is tiny
-            let mut gset: smallvec::SmallVec<[u32; 4]> = refs
-                .iter()
-                .map(|&tid| tid_to_gid[tid as usize])
-                .collect();
+            let mut gset: smallvec::SmallVec<[u32; 4]> =
+                refs.iter().map(|&tid| tid_to_gid[tid as usize]).collect();
             gset.sort_unstable();
             gset.dedup();
             for &g in &gset {
@@ -461,6 +462,22 @@ fn quantify_small_cell_sparse<B, R>(
         return;
     }
 
+    // USA mode slot offsets
+    let unspliced_offset = if usa_mode { num_rows / 3 } else { 0 };
+    let ambig_offset = if usa_mode { 2 * unspliced_offset } else { 0 };
+
+    // Map a raw USA gene ID to its output slot index.
+    // In non-USA mode, the gene ID is used directly.
+    let to_slot = |gid: u32| -> u32 {
+        if !usa_mode {
+            gid
+        } else if afutils::is_spliced(gid) {
+            (gid >> 1)
+        } else {
+            (unspliced_offset as u32) + (gid >> 1)
+        }
+    };
+
     // Phase 2: cr-like resolution — same algorithm as
     // resolve_num_molecules_crlike_from_vec in pugutils.
     // Sort by (umi, gene, count).
@@ -470,25 +487,77 @@ fn quantify_small_cell_sparse<B, R>(
     let mut curr_gn = umi_gene_triplets[0].1;
     let mut max_count = 0u32;
     let mut count_aggr = 0u32;
-    let mut best_gene: u32 = curr_gn;
-    let mut is_tied = false;
+    // Track the full set of best genes (needed for USA splicing resolution)
+    let mut best_genes: smallvec::SmallVec<[u32; 4]> = smallvec::smallvec![curr_gn];
+
+    // Commit a resolved UMI to gene_umi_buf. For single-winner UMIs,
+    // maps to slot and pushes. For multi-gene ties in USA mode, applies
+    // splicing-aware resolution matching extract_counts in utils.rs.
+    let mut commit_umi =
+        |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
+            match best.len() {
+                0 => {}
+                1 => {
+                    buf.push((to_slot(best[0]), umi));
+                }
+                _ if !usa_mode => {
+                    // Non-USA: multi-gene tie → discard
+                }
+                2 => {
+                    // USA: same logic as extract_counts len==2
+                    let (g1, g2) = (best[0], best[1]);
+                    if afutils::same_gene(g1, g2, true) {
+                        // S+U of same gene → ambiguous slot
+                        buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
+                    } else {
+                        // Different genes: prefer spliced
+                        match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
+                            (true, false) => buf.push(((g1 >> 1), umi)),
+                            (false, true) => buf.push(((g2 >> 1), umi)),
+                            _ => {} // both spliced or both unspliced → discard
+                        }
+                    }
+                }
+                n if n <= 10 => {
+                    // USA: same logic as extract_counts len==3..10
+                    // Find spliced genes
+                    let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
+                    if let Some(&first_spliced) = spliced_iter.next() {
+                        if spliced_iter.next().is_some() {
+                            // 2+ spliced genes → gene-ambiguous, discard
+                        } else {
+                            // Exactly 1 spliced gene. Check if its unspliced
+                            // counterpart is also in the set.
+                            let has_unspliced_partner = best.iter().any(|&g| {
+                                g != first_spliced && afutils::same_gene(first_spliced, g, true)
+                            });
+                            if has_unspliced_partner {
+                                buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
+                            } else {
+                                buf.push(((first_spliced >> 1), umi));
+                            }
+                        }
+                    }
+                    // No spliced genes at all → discard
+                }
+                _ => {} // >10 labels → discard
+            }
+        };
 
     for idx in 0..umi_gene_triplets.len() {
         let (umi, gn, ct) = umi_gene_triplets[idx];
 
         if umi != curr_umi {
-            // Commit previous UMI: only if there's a unique winner
-            if !is_tied {
-                gene_umi_buf.push((best_gene, curr_umi));
-            }
+            // Commit previous UMI
+            commit_umi(&best_genes, curr_umi, gene_umi_buf);
 
             // Reset for new UMI
             curr_umi = umi;
             curr_gn = gn;
             count_aggr = ct;
             max_count = ct;
-            best_gene = gn;
-            is_tied = false;
+            best_genes.clear();
+            best_genes.push(gn);
         } else {
             // Same UMI
             if gn == curr_gn {
@@ -502,25 +571,28 @@ fn quantify_small_cell_sparse<B, R>(
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
-                    best_gene = gn;
-                    is_tied = false;
+                    match &best_genes[..] {
+                        [x] if *x == gn => {}
+                        _ => {
+                            best_genes.clear();
+                            best_genes.push(gn);
+                        }
+                    }
                 }
                 Ordering::Equal => {
-                    if gn != best_gene {
-                        is_tied = true;
-                    }
+                    best_genes.push(gn);
                 }
                 Ordering::Less => {}
             }
         }
 
         // Commit last UMI
-        if idx == umi_gene_triplets.len() - 1 && !is_tied {
-            gene_umi_buf.push((best_gene, curr_umi));
+        if idx == umi_gene_triplets.len() - 1 {
+            commit_umi(&best_genes, curr_umi, gene_umi_buf);
         }
     }
 
-    // Sort output by (gene, umi) for the caller's run-length counting
+    // Sort output by (slot, umi) for the caller's run-length counting
     gene_umi_buf.sort_unstable();
 }
 
@@ -636,6 +708,8 @@ where
                     quantify_small_cell_sparse::<B, R>(
                         &mut c,
                         &shared.tid_to_gid,
+                        config.usa_mode,
+                        config.num_rows,
                         &mut gene_umi_buf,
                         &mut umi_gene_triplets,
                     );
@@ -657,7 +731,9 @@ where
                                 expressed_ind.push(cur_gene as usize);
                                 expressed_vec.push(c);
                                 sum_umi_local += c;
-                                if c > max_umi_local { max_umi_local = c; }
+                                if c > max_umi_local {
+                                    max_umi_local = c;
+                                }
                                 cur_gene = gid;
                                 cur_count = 1;
                             }
@@ -667,7 +743,9 @@ where
                         expressed_ind.push(cur_gene as usize);
                         expressed_vec.push(c);
                         sum_umi_local += c;
-                        if c > max_umi_local { max_umi_local = c; }
+                        if c > max_umi_local {
+                            max_umi_local = c;
+                        }
                     }
                     // Set the output variables that the rest of the function expects
                     max_umi = max_umi_local;
@@ -676,286 +754,291 @@ where
                     // counts is only needed for EDS output; build lazily below
                     counts = Vec::new();
                 } else
-
                 // Original path for larger cells
                 {
-                used_fast_path = false;
-                let non_trivial = true; // all cells here have >= SMALL_CELL_FAST_THRESHOLD reads
-                if non_trivial {
-                    // TODO: some testing was done, but see if there is a better way to set this value.
-                    let small_cell = c.reads.len() <= 250;
+                    used_fast_path = false;
+                    let non_trivial = true; // all cells here have >= SMALL_CELL_FAST_THRESHOLD reads
+                    if non_trivial {
+                        // TODO: some testing was done, but see if there is a better way to set this value.
+                        let small_cell = c.reads.len() <= 250;
 
-                    // TODO: Is there an easy / clean way to have similar
-                    // optimized code paths for other resolution methods?
+                        // TODO: Is there an easy / clean way to have similar
+                        // optimized code paths for other resolution methods?
 
-                    match config.resolution {
-                        ResolutionStrategy::CellRangerLike
-                        | ResolutionStrategy::CellRangerLikeEm => {
-                            if small_cell {
-                                pugutils::get_num_molecules_cell_ranger_like_small::<B, R, P>(
-                                    &mut c,
-                                    &shared.tid_to_gid,
-                                    config.num_genes,
-                                    &mut gene_eqc,
-                                    config.sa_model,
-                                    &log,
-                                );
-                            } else {
-                                eq_map.init_from_chunk::<R>(&mut c);
-                                pugutils::get_num_molecules_cell_ranger_like(
+                        match config.resolution {
+                            ResolutionStrategy::CellRangerLike
+                            | ResolutionStrategy::CellRangerLikeEm => {
+                                if small_cell {
+                                    pugutils::get_num_molecules_cell_ranger_like_small::<B, R, P>(
+                                        &mut c,
+                                        &shared.tid_to_gid,
+                                        config.num_genes,
+                                        &mut gene_eqc,
+                                        config.sa_model,
+                                        &log,
+                                    );
+                                } else {
+                                    eq_map.init_from_chunk::<R>(&mut c);
+                                    pugutils::get_num_molecules_cell_ranger_like(
+                                        &eq_map,
+                                        &shared.tid_to_gid,
+                                        config.num_genes,
+                                        &mut gene_eqc,
+                                        config.sa_model,
+                                        &log,
+                                    );
+                                    eq_map.clear();
+                                }
+                                let only_unique =
+                                    config.resolution == ResolutionStrategy::CellRangerLike;
+
+                                // NOTE: This configuration seems overly complicated
+                                // see if we can simplify it.
+                                match (config.usa_mode, only_unique) {
+                                    (true, true) => {
+                                        // USA mode, only gene-unqique reads
+                                        counts =
+                                            afutils::extract_counts(&gene_eqc, config.num_rows);
+                                    }
+                                    (true, false) => {
+                                        // USA mode, use EM
+                                        afutils::extract_usa_eqmap(
+                                            &gene_eqc,
+                                            config.num_rows,
+                                            &mut idx_eq_list,
+                                            &mut eq_id_count,
+                                        );
+                                        counts = em_optimize_subset(
+                                            &idx_eq_list,
+                                            &eq_id_count,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            config.em_init_type,
+                                            config.num_rows,
+                                            only_unique,
+                                            config.usa_offsets,
+                                            &log,
+                                        );
+                                    }
+                                    (false, _) => {
+                                        // not USA-mode
+                                        counts = em_optimize(
+                                            &gene_eqc,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            config.em_init_type,
+                                            config.num_genes,
+                                            only_unique,
+                                            &log,
+                                        );
+                                    }
+                                }
+                            }
+                            ResolutionStrategy::Trivial => {
+                                eq_map.init_from_chunk(&mut c);
+                                let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                     &eq_map,
                                     &shared.tid_to_gid,
                                     config.num_genes,
-                                    &mut gene_eqc,
-                                    config.sa_model,
                                     &log,
                                 );
+                                counts = ct.0;
+                                shared.mmrate.lock().unwrap()[cell_num] = ct.1;
                                 eq_map.clear();
                             }
-                            let only_unique =
-                                config.resolution == ResolutionStrategy::CellRangerLike;
+                            ResolutionStrategy::Parsimony
+                            | ResolutionStrategy::ParsimonyEm
+                            | ResolutionStrategy::ParsimonyGene
+                            | ResolutionStrategy::ParsimonyGeneEm => {
+                                if (config.resolution == ResolutionStrategy::ParsimonyGene)
+                                    || (config.resolution == ResolutionStrategy::ParsimonyGeneEm)
+                                {
+                                    eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
+                                } else {
+                                    //eprintln!("before the init from chunk");
+                                    eq_map.init_from_chunk(&mut c);
+                                    //eprintln!("after the init from chunk");
+                                }
 
-                            // NOTE: This configuration seems overly complicated
-                            // see if we can simplify it.
-                            match (config.usa_mode, only_unique) {
-                                (true, true) => {
-                                    // USA mode, only gene-unqique reads
-                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
-                                }
-                                (true, false) => {
-                                    // USA mode, use EM
-                                    afutils::extract_usa_eqmap(
-                                        &gene_eqc,
-                                        config.num_rows,
-                                        &mut idx_eq_list,
-                                        &mut eq_id_count,
-                                    );
-                                    counts = em_optimize_subset(
-                                        &idx_eq_list,
-                                        &eq_id_count,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_rows,
-                                        only_unique,
-                                        config.usa_offsets,
-                                        &log,
-                                    );
-                                }
-                                (false, _) => {
-                                    // not USA-mode
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_genes,
-                                        only_unique,
-                                        &log,
-                                    );
+                                let g =
+                                    pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
+                                // for the PUG resolution algorithm, set the hasher
+                                // that will be used based on the cell barcode.
+                                let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
+                                let pug_stats = pugutils::get_num_molecules::<P>(
+                                    &g,
+                                    &eq_map,
+                                    &shared.tid_to_gid,
+                                    &mut gene_eqc,
+                                    &s,
+                                    config.large_graph_thresh,
+                                    &log,
+                                );
+                                alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+                                eq_map.clear();
+
+                                let only_unique = (config.resolution
+                                    == ResolutionStrategy::Parsimony)
+                                    || (config.resolution == ResolutionStrategy::ParsimonyGene);
+
+                                // NOTE: This configuration seems overly complicated
+                                // see if we can simplify it.
+                                match (config.usa_mode, only_unique, P::HAS_PROBS) {
+                                    (true, true, _) => {
+                                        // USA mode, only gene-unqique reads
+                                        counts =
+                                            afutils::extract_counts(&gene_eqc, config.num_rows);
+                                    }
+                                    (true, false, _) => {
+                                        // USA mode, use EM
+                                        afutils::extract_usa_eqmap(
+                                            &gene_eqc,
+                                            config.num_rows,
+                                            &mut idx_eq_list,
+                                            &mut eq_id_count,
+                                        );
+                                        counts = em_optimize_subset(
+                                            &idx_eq_list,
+                                            &eq_id_count,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            config.em_init_type,
+                                            config.num_rows,
+                                            only_unique,
+                                            config.usa_offsets,
+                                            &log,
+                                        );
+                                    }
+                                    (false, _, false) => {
+                                        // not USA-mode
+                                        counts = em_optimize(
+                                            &gene_eqc,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            config.em_init_type,
+                                            config.num_genes,
+                                            only_unique,
+                                            &log,
+                                        );
+                                    }
+                                    (false, _, true) => {
+                                        // not USA-mode
+                                        counts = em_optimize_long_read(
+                                            &gene_eqc,
+                                            &mut unique_evidence,
+                                            &mut no_ambiguity,
+                                            config.em_init_type,
+                                            config.num_genes,
+                                            only_unique,
+                                            &log,
+                                        );
+                                    }
                                 }
                             }
                         }
-                        ResolutionStrategy::Trivial => {
-                            eq_map.init_from_chunk(&mut c);
-                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
-                                &eq_map,
-                                &shared.tid_to_gid,
-                                config.num_genes,
+
+                        if config.num_bootstraps > 0 {
+                            bootstraps = run_bootstrap(
+                                &gene_eqc,
+                                config.num_bootstraps,
+                                &counts,
+                                config.init_uniform,
+                                config.summary_stat,
                                 &log,
                             );
-                            counts = ct.0;
-                            shared.mmrate.lock().unwrap()[cell_num] = ct.1;
-                            eq_map.clear();
                         }
-                        ResolutionStrategy::Parsimony
-                        | ResolutionStrategy::ParsimonyEm
-                        | ResolutionStrategy::ParsimonyGene
-                        | ResolutionStrategy::ParsimonyGeneEm => {
-                            if (config.resolution == ResolutionStrategy::ParsimonyGene)
-                                || (config.resolution == ResolutionStrategy::ParsimonyGeneEm)
-                            {
-                                eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
-                            } else {
-                                //eprintln!("before the init from chunk");
-                                eq_map.init_from_chunk(&mut c);
-                                //eprintln!("after the init from chunk");
-                            }
 
-                            let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
-                            // for the PUG resolution algorithm, set the hasher
-                            // that will be used based on the cell barcode.
-                            let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
-                            let pug_stats = pugutils::get_num_molecules::<P>(
-                                &g,
-                                &eq_map,
-                                &shared.tid_to_gid,
-                                &mut gene_eqc,
-                                &s,
-                                config.large_graph_thresh,
-                                &log,
-                            );
-                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-                            eq_map.clear();
+                        // clear our local variables
+                        // eq_map.clear();
 
-                            let only_unique = (config.resolution == ResolutionStrategy::Parsimony)
-                                || (config.resolution == ResolutionStrategy::ParsimonyGene);
+                        // fill requires >= 1.50.0
+                        unique_evidence.fill(false);
+                        no_ambiguity.fill(false);
 
-                            // NOTE: This configuration seems overly complicated
-                            // see if we can simplify it.
-                            match (config.usa_mode, only_unique, P::HAS_PROBS) {
-                                (true, true, _) => {
-                                    // USA mode, only gene-unqique reads
-                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
-                                }
-                                (true, false, _) => {
-                                    // USA mode, use EM
-                                    afutils::extract_usa_eqmap(
-                                        &gene_eqc,
-                                        config.num_rows,
-                                        &mut idx_eq_list,
-                                        &mut eq_id_count,
-                                    );
-                                    counts = em_optimize_subset(
-                                        &idx_eq_list,
-                                        &eq_id_count,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_rows,
-                                        only_unique,
-                                        config.usa_offsets,
-                                        &log,
-                                    );
-                                }
-                                (false, _, false) => {
-                                    // not USA-mode
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_genes,
-                                        only_unique,
-                                        &log,
-                                    );
-                                }
-                                (false, _, true) => {
-                                    // not USA-mode
-                                    counts = em_optimize_long_read(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_genes,
-                                        only_unique,
-                                        &log,
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    if config.num_bootstraps > 0 {
-                        bootstraps = run_bootstrap(
-                            &gene_eqc,
-                            config.num_bootstraps,
-                            &counts,
-                            config.init_uniform,
-                            config.summary_stat,
+                        // done clearing
+                    } else {
+                        // very small number of reads, avoid data structure
+                        // overhead and resolve looking at the actual records
+                        pugutils::get_num_molecules_cell_ranger_like_small(
+                            &mut c,
+                            &shared.tid_to_gid,
+                            config.num_genes,
+                            &mut gene_eqc,
+                            config.sa_model,
                             &log,
                         );
-                    }
-
-                    // clear our local variables
-                    // eq_map.clear();
-
-                    // fill requires >= 1.50.0
-                    unique_evidence.fill(false);
-                    no_ambiguity.fill(false);
-
-                    // done clearing
-                } else {
-                    // very small number of reads, avoid data structure
-                    // overhead and resolve looking at the actual records
-                    pugutils::get_num_molecules_cell_ranger_like_small(
-                        &mut c,
-                        &shared.tid_to_gid,
-                        config.num_genes,
-                        &mut gene_eqc,
-                        config.sa_model,
-                        &log,
-                    );
-                    // USA-mode
-                    if config.usa_mode {
-                        // here, just like for non-USA mode,
-                        // we substitute EM with uniform allocation in
-                        // this special case
-                        match config.resolution {
-                            ResolutionStrategy::CellRangerLike
-                            | ResolutionStrategy::Parsimony
-                            | ResolutionStrategy::ParsimonyGene => {
-                                counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                        // USA-mode
+                        if config.usa_mode {
+                            // here, just like for non-USA mode,
+                            // we substitute EM with uniform allocation in
+                            // this special case
+                            match config.resolution {
+                                ResolutionStrategy::CellRangerLike
+                                | ResolutionStrategy::Parsimony
+                                | ResolutionStrategy::ParsimonyGene => {
+                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                }
+                                ResolutionStrategy::CellRangerLikeEm
+                                | ResolutionStrategy::ParsimonyEm
+                                | ResolutionStrategy::ParsimonyGeneEm => {
+                                    counts = afutils::extract_counts_mm_uniform(
+                                        &gene_eqc,
+                                        config.num_rows,
+                                    );
+                                }
+                                _ => {
+                                    counts = vec![0f32; config.num_genes];
+                                    warn!(
+                                        log,
+                                        "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode."
+                                    );
+                                }
                             }
-                            ResolutionStrategy::CellRangerLikeEm
-                            | ResolutionStrategy::ParsimonyEm
-                            | ResolutionStrategy::ParsimonyGeneEm => {
-                                counts =
-                                    afutils::extract_counts_mm_uniform(&gene_eqc, config.num_rows);
-                            }
-                            _ => {
-                                counts = vec![0f32; config.num_genes];
-                                warn!(
-                                    log,
-                                    "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode."
-                                );
-                            }
-                        }
-                    } else {
-                        // non USA-mode
-                        counts = vec![0f32; config.num_genes];
-                        for (k, payload) in gene_eqc.iter() {
-                            let v = payload.count();
-                            if k.len() == 1 {
-                                counts[*k.first().unwrap() as usize] += v as f32;
-                            } else {
-                                match config.resolution {
-                                    ResolutionStrategy::CellRangerLikeEm
-                                    | ResolutionStrategy::ParsimonyEm => {
-                                        let contrib = 1.0 / (k.len() as f32);
-                                        for g in k.iter() {
-                                            counts[*g as usize] += contrib;
+                        } else {
+                            // non USA-mode
+                            counts = vec![0f32; config.num_genes];
+                            for (k, payload) in gene_eqc.iter() {
+                                let v = payload.count();
+                                if k.len() == 1 {
+                                    counts[*k.first().unwrap() as usize] += v as f32;
+                                } else {
+                                    match config.resolution {
+                                        ResolutionStrategy::CellRangerLikeEm
+                                        | ResolutionStrategy::ParsimonyEm => {
+                                            let contrib = 1.0 / (k.len() as f32);
+                                            for g in k.iter() {
+                                                counts[*g as usize] += contrib;
+                                            }
                                         }
-                                    }
-                                    _ => {
-                                        // otherwise discard gene multimappers
+                                        _ => {
+                                            // otherwise discard gene multimappers
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    // if the user requested bootstraps
-                    // NOTE: we check that the specified resolution method
-                    // is conceptually compatible with bootstrapping before
-                    // invoking `quant`, so we don't bother checking that
-                    // here.
-                    if config.num_bootstraps > 0 {
-                        // TODO: should issue a warning here,
-                        // bootstrapping doesn't make sense for
-                        // unfiltered data.
-                        if config.summary_stat {
-                            // sample mean = quant
-                            bootstraps.push(counts.clone());
-                            // sample var = 0
-                            bootstraps.push(vec![0f32; config.num_genes]);
-                        } else {
-                            // no variation
-                            for _ in 0..config.num_bootstraps {
+                        // if the user requested bootstraps
+                        // NOTE: we check that the specified resolution method
+                        // is conceptually compatible with bootstrapping before
+                        // invoking `quant`, so we don't bother checking that
+                        // here.
+                        if config.num_bootstraps > 0 {
+                            // TODO: should issue a warning here,
+                            // bootstrapping doesn't make sense for
+                            // unfiltered data.
+                            if config.summary_stat {
+                                // sample mean = quant
                                 bootstraps.push(counts.clone());
+                                // sample var = 0
+                                bootstraps.push(vec![0f32; config.num_genes]);
+                            } else {
+                                // no variation
+                                for _ in 0..config.num_bootstraps {
+                                    bootstraps.push(counts.clone());
+                                }
                             }
-                        }
-                    } // if the user requested bootstraps
-                } // end of else branch for trivial size cells
+                        } // if the user requested bootstraps
+                    } // end of else branch for trivial size cells
                 } // end of else block for non-fast-path cells
 
                 if alt_resolution {
@@ -976,7 +1059,11 @@ where
                     expressed_ind.clear();
 
                     for (gn, c) in counts.iter().enumerate() {
-                        max_umi_local = if *c > max_umi_local { *c } else { max_umi_local };
+                        max_umi_local = if *c > max_umi_local {
+                            *c
+                        } else {
+                            max_umi_local
+                        };
                         sum_umi_local += *c;
                         if *c > 0.0 {
                             num_expr += 1;
@@ -1051,59 +1138,60 @@ where
                     // Scope the lock to minimize hold time — triplet accumulation
                     // happens after the lock is released.
                     {
-                    let writer_deref = shared.bcout.lock();
-                    let writer = &mut *writer_deref.unwrap();
+                        let writer_deref = shared.bcout.lock();
+                        let writer = &mut *writer_deref.unwrap();
 
-                    // get the row index and then increment it
-                    row_index = writer.row_index;
-                    writer.row_index += 1;
+                        // get the row index and then increment it
+                        row_index = writer.row_index;
+                        writer.row_index += 1;
 
-                    // write to barcode file
-                    let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
-                    writeln!(&mut writer.barcode_file, "{}", unsafe {
-                        std::str::from_utf8_unchecked(bc_bytes)
-                    })
-                    .expect("can't write to barcode file.");
+                        // write to barcode file
+                        let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
+                        writeln!(&mut writer.barcode_file, "{}", unsafe {
+                            std::str::from_utf8_unchecked(bc_bytes)
+                        })
+                        .expect("can't write to barcode file.");
 
-                    // write to matrix file
-                    if !config.use_mtx {
-                        // write in eds format
-                        writer
-                            .eds_file
-                            .write_all(&eds_bytes)
-                            .expect("can't write to matrix file.");
-                    }
-                    writeln!(
-                        &mut writer.feature_file,
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                        unsafe { std::str::from_utf8_unchecked(bc_bytes) },
-                        (num_mapped + num_unmapped),
-                        num_mapped,
-                        sum_umi,
-                        mapping_rate,
-                        dedup_rate,
-                        mean_by_max,
-                        num_expr,
-                        num_genes_over_mean
-                    )
-                    .expect("can't write to feature file");
-
-                    if config.num_bootstraps > 0 {
-                        if config.summary_stat {
-                            if let Some((meanf, varf)) = &mut writer.bootstrap_helper.mean_var_files
-                            {
-                                meanf
-                                    .write_all(&eds_mean_bytes)
-                                    .expect("can't write to bootstrap mean file.");
-                                varf.write_all(&eds_var_bytes)
-                                    .expect("can't write to bootstrap var file.");
-                            }
-                        } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                            bsfile
-                                .write_all(&bt_eds_bytes)
-                                .expect("can't write to bootstrap file");
+                        // write to matrix file
+                        if !config.use_mtx {
+                            // write in eds format
+                            writer
+                                .eds_file
+                                .write_all(&eds_bytes)
+                                .expect("can't write to matrix file.");
                         }
-                    } // done bootstrap writing
+                        writeln!(
+                            &mut writer.feature_file,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            unsafe { std::str::from_utf8_unchecked(bc_bytes) },
+                            (num_mapped + num_unmapped),
+                            num_mapped,
+                            sum_umi,
+                            mapping_rate,
+                            dedup_rate,
+                            mean_by_max,
+                            num_expr,
+                            num_genes_over_mean
+                        )
+                        .expect("can't write to feature file");
+
+                        if config.num_bootstraps > 0 {
+                            if config.summary_stat {
+                                if let Some((meanf, varf)) =
+                                    &mut writer.bootstrap_helper.mean_var_files
+                                {
+                                    meanf
+                                        .write_all(&eds_mean_bytes)
+                                        .expect("can't write to bootstrap mean file.");
+                                    varf.write_all(&eds_var_bytes)
+                                        .expect("can't write to bootstrap var file.");
+                                }
+                            } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
+                                bsfile
+                                    .write_all(&bt_eds_bytes)
+                                    .expect("can't write to bootstrap file");
+                            }
+                        } // done bootstrap writing
                     } // lock on bc_writer released here (end of scope)
 
                     // Accumulate MTX triplets in thread-local buffer (no lock held)
@@ -1148,7 +1236,9 @@ where
                 // was the 95% bottleneck when processing millions of tiny cells.
                 if nrec >= SMALL_CELL_FAST_THRESHOLD as u32 {
                     if gene_eqc.capacity() > 256 {
-                        gene_eqc = HashMap::with_hasher(ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64));
+                        gene_eqc = HashMap::with_hasher(ahash::RandomState::with_seeds(
+                            2u64, 7u64, 1u64, 8u64,
+                        ));
                     } else {
                         gene_eqc.clear();
                     }
@@ -1323,7 +1413,8 @@ where
         .get("cblen")
         .or_else(|| {
             // Multi-barcode: try b1len, b0len, etc.
-            file_tag_map.get("b1len")
+            file_tag_map
+                .get("b1len")
                 .or_else(|| file_tag_map.get("b0len"))
         })
         .expect("tag map must contain cblen or bNlen for barcode length");
@@ -1650,8 +1741,10 @@ where
         fs::remove_file(&mat_path)?;
 
         // Build the trimat from all worker-local triplets
-        let mut trimat =
-            sprs::TriMatI::<f32, u32>::with_capacity((num_cells as usize, num_rows), all_triplets.len());
+        let mut trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+            (num_cells as usize, num_rows),
+            all_triplets.len(),
+        );
         for (row, col, val) in all_triplets {
             trimat.add_triplet(row, col, val);
         }
