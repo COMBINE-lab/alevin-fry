@@ -40,6 +40,7 @@ use libradicl::record::{
 use std::fmt;
 //use std::ptr;
 
+
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
@@ -55,7 +56,6 @@ use crate::utils::{
     OptionalAlignmentExtras,
 };
 
-type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
@@ -112,61 +112,31 @@ impl FromStr for ResolutionStrategy {
 }
 
 struct BootstrapHelper {
-    bsfile: Option<BufferedGzFile>,
-    mean_var_files: Option<(BufferedGzFile, BufferedGzFile)>,
+    // TODO: Bootstrap output was previously written in EDS format (.eds.gz).
+    // Now that EDS is removed, bootstrap output needs a new format (e.g. MTX or binary).
+    // For now, bootstrap computation still runs but output is not written to disk.
+    _num_bootstraps: u32,
 }
 
 impl BootstrapHelper {
     fn new(
-        output_path: &std::path::Path,
+        _output_path: &std::path::Path,
         num_bootstraps: u32,
-        summary_stat: bool,
+        _summary_stat: bool,
     ) -> BootstrapHelper {
         if num_bootstraps > 0 {
-            if summary_stat {
-                let bootstrap_mean_path = output_path.join("bootstraps_mean.eds.gz");
-                let bootstrap_var_path = output_path.join("bootstraps_var.eds.gz");
-                let bt_mean_buffered = GzEncoder::new(
-                    fs::File::create(bootstrap_mean_path).unwrap(),
-                    Compression::default(),
-                );
-                let bt_var_buffered = GzEncoder::new(
-                    fs::File::create(bootstrap_var_path).unwrap(),
-                    Compression::default(),
-                );
-                BootstrapHelper {
-                    bsfile: None,
-                    mean_var_files: Some((
-                        BufWriter::new(bt_mean_buffered),
-                        BufWriter::new(bt_var_buffered),
-                    )),
-                }
-            } else {
-                let bootstrap_path = output_path.join("bootstraps.eds.gz");
-                let bt_buffered = GzEncoder::new(
-                    fs::File::create(bootstrap_path).unwrap(),
-                    Compression::default(),
-                );
-                BootstrapHelper {
-                    bsfile: Some(BufWriter::new(bt_buffered)),
-                    mean_var_files: None,
-                }
-            }
-        } else {
-            BootstrapHelper {
-                bsfile: None,
-                mean_var_files: None,
-            }
+            eprintln!("WARNING: Bootstrap output format is being updated. Bootstrap counts are computed but not yet written to disk.");
+        }
+        BootstrapHelper {
+            _num_bootstraps: num_bootstraps,
         }
     }
 }
 
 struct QuantOutputInfo {
     barcode_file: BufWriter<fs::File>,
-    eds_file: BufWriter<GzEncoder<fs::File>>,
     feature_file: BufWriter<fs::File>,
     row_index: usize,
-    bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
 }
 
 struct EqcMap {
@@ -361,7 +331,6 @@ struct WorkerConfig {
     init_uniform: bool,
     summary_stat: bool,
     dump_eq: bool,
-    use_mtx: bool,
     num_genes: usize,
     num_rows: usize,
     barcode_len: u16,
@@ -626,7 +595,6 @@ where
     let mut eq_map = EqMap::new(num_eq_targets, eq_map_type, P::HAS_PROBS);
     let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
     let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
-    let mut eds_bytes = Vec::<u8>::new();
     // Thread-local triplet buffer for MTX output. Accumulating triplets locally
     // avoids holding the global mutex during add_triplet, which was the primary
     // bottleneck serializing all workers.
@@ -634,9 +602,6 @@ where
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
-    let mut bt_eds_bytes: Vec<u8> = Vec::new();
-    let mut eds_mean_bytes: Vec<u8> = Vec::new();
-    let mut eds_var_bytes: Vec<u8> = Vec::new();
 
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
@@ -1106,35 +1071,6 @@ where
                     // writing the files
                     let bc_mer: BitKmer = (bc.into(), config.barcode_len as u8);
 
-                    if !config.use_mtx {
-                        // For fast-path cells, counts is empty — build dense from sparse
-                        if used_fast_path && counts.is_empty() {
-                            counts = vec![0f32; config.num_rows];
-                            for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                                counts[ind] = val;
-                            }
-                        }
-                        eds_bytes = sce::eds::as_bytes(&counts, config.num_rows)
-                            .expect("can't convert vector to eds");
-                    }
-
-                    // write bootstraps
-                    if config.num_bootstraps > 0 {
-                        // flatten the bootstraps
-                        if config.summary_stat {
-                            eds_mean_bytes = sce::eds::as_bytes(&bootstraps[0], config.num_rows)
-                                .expect("can't convert vector to eds");
-                            eds_var_bytes = sce::eds::as_bytes(&bootstraps[1], config.num_rows)
-                                .expect("can't convert vector to eds");
-                        } else {
-                            for i in 0..config.num_bootstraps {
-                                let bt_eds_bytes_slice =
-                                    sce::eds::as_bytes(&bootstraps[i as usize], config.num_rows)
-                                        .expect("can't convert vector to eds");
-                                bt_eds_bytes.append(&mut bt_eds_bytes_slice.clone());
-                            }
-                        }
-                    }
 
                     // Scope the lock to minimize hold time — triplet accumulation
                     // happens after the lock is released.
@@ -1163,15 +1099,6 @@ where
                         }
                         .expect("can't write to barcode file.");
 
-                        // write to matrix file
-                        if !config.use_mtx {
-                            // write in eds format
-                            writer
-                                .eds_file
-                                .write_all(&eds_bytes)
-                                .expect("can't write to matrix file.");
-                        }
-
                         // write to feature dump file
                         if let Some(sn) = sample_name {
                             writeln!(
@@ -1194,30 +1121,11 @@ where
                         }
                         .expect("can't write to feature file");
 
-                        if config.num_bootstraps > 0 {
-                            if config.summary_stat {
-                                if let Some((meanf, varf)) =
-                                    &mut writer.bootstrap_helper.mean_var_files
-                                {
-                                    meanf
-                                        .write_all(&eds_mean_bytes)
-                                        .expect("can't write to bootstrap mean file.");
-                                    varf.write_all(&eds_var_bytes)
-                                        .expect("can't write to bootstrap var file.");
-                                }
-                            } else if let Some(bsfile) = &mut writer.bootstrap_helper.bsfile {
-                                bsfile
-                                    .write_all(&bt_eds_bytes)
-                                    .expect("can't write to bootstrap file");
-                            }
-                        } // done bootstrap writing
                     } // lock on bc_writer released here (end of scope)
 
                     // Accumulate MTX triplets in thread-local buffer (no lock held)
-                    if config.use_mtx {
-                        for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                            local_triplets.push((row_index, ind, val));
-                        }
+                    for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
+                        local_triplets.push((row_index, ind, val));
                     }
                 } // end of cell processing
 
@@ -1289,8 +1197,6 @@ where
     P: EqClassPayload,
 {
     let parent = std::path::Path::new(quant_opts.input_dir);
-    let output_dir = std::path::Path::new(quant_opts.output_dir);
-
     // Load collation manifest if present (multi-barcode data).
     // Build a lookup from cell_num (chunk index) → sample index,
     // plus a list of sample names. This is used to write sample-prefixed
@@ -1319,7 +1225,6 @@ where
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
     let dump_eq = quant_opts.dump_eq;
-    let use_mtx = quant_opts.use_mtx;
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let mut sa_model = quant_opts.sa_model;
@@ -1541,9 +1446,7 @@ where
     let bc_path = output_matrix_path.join("quants_mat_rows.txt");
     let bc_file = fs::File::create(bc_path)?;
 
-    let mat_path = output_matrix_path.join("quants_mat.gz");
-    let boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
-    let buffered = GzEncoder::new(fs::File::create(&mat_path)?, Compression::default());
+    let _boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
 
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
@@ -1561,15 +1464,12 @@ where
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
-    let _tmcap = if use_mtx {
-        // Estimate initial triplet capacity. The 10% density assumption is
-        // far too high for large multiplexed datasets (actual density is often
-        // <0.5%). Cap at 256M entries (~3GB) to avoid massive overallocation
-        // that causes swap thrashing; the triplet vec will grow as needed.
+    // Estimate initial triplet capacity for MTX output. The 10% density assumption
+    // is far too high for large multiplexed datasets (actual density is often <0.5%).
+    // Cap at 256M entries (~3GB) to avoid overallocation; the vec will grow as needed.
+    let _tmcap = {
         let estimate = (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize;
         estimate.min(256_000_000)
-    } else {
-        0usize
     };
 
     // the length of the vector of gene counts we'll use
@@ -1601,10 +1501,8 @@ where
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::new(bc_file),
-        eds_file: BufWriter::new(buffered),
         feature_file: BufWriter::new(ff_file),
         row_index: 0usize,
-        bootstrap_helper: boot_helper,
     }));
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
@@ -1687,7 +1585,6 @@ where
             init_uniform,
             summary_stat,
             dump_eq,
-            use_mtx,
             num_genes,
             num_rows,
             barcode_len,
@@ -1766,9 +1663,7 @@ where
         match h.join() {
             Ok((rc, triplets)) => {
                 total_records += rc;
-                if use_mtx {
-                    all_triplets.extend(triplets);
-                }
+                all_triplets.extend(triplets);
             }
             Err(_e) => {
                 info!(log, "thread panicked");
@@ -1776,31 +1671,23 @@ where
         }
     }
 
-    // write to matrix market if we are using it
-    if use_mtx {
-        info!(
-            log,
-            "building triplet matrix from {} entries",
-            all_triplets.len().to_formatted_string(&Locale::en),
-        );
-        let writer_deref = bc_writer.lock();
-        let writer = &mut *writer_deref.unwrap();
-        writer.eds_file.flush().unwrap();
-        // now remove it
-        fs::remove_file(&mat_path)?;
+    // Write the MTX output
+    info!(
+        log,
+        "building triplet matrix from {} entries",
+        all_triplets.len().to_formatted_string(&Locale::en),
+    );
 
-        // Build the trimat from all worker-local triplets
-        let mut trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-            (num_cells as usize, num_rows),
-            all_triplets.len(),
-        );
-        for (row, col, val) in all_triplets {
-            trimat.add_triplet(row, col, val);
-        }
-
-        let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        sprs::io::write_matrix_market(mtx_path, &trimat)?;
+    let mut trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+        (num_cells as usize, num_rows),
+        all_triplets.len(),
+    );
+    for (row, col, val) in all_triplets {
+        trimat.add_triplet(row, col, val);
     }
+
+    let mtx_path = output_matrix_path.join("quants_mat.mtx");
+    sprs::io::write_matrix_market(mtx_path, &trimat)?;
 
     let pb_msg = format!(
         "finished quantifying {} cells.",
@@ -1914,9 +1801,6 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
             // Run quantification using MultiBarcodeReadRecord.
             // The collation has grouped records by (sample, cell) and each chunk
             // is one cell's data. collate_key() returns the cell barcode.
-            let input_dir = quant_opts.input_dir.clone();
-            let output_dir = quant_opts.output_dir.clone();
-
             do_quantify::<_, u64, MultiBarcodeReadRecord, BasicEqClassPayload>(
                 br,
                 quant_opts,
@@ -1935,4 +1819,3 @@ pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
 }
-

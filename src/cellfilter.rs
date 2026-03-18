@@ -694,8 +694,8 @@ fn do_generate_permit_list_multi_bc(
                                     continue;
                                 }
 
-                                let sample_bc: u64 = read.collation_key_at_level(0).into();
-                                let cell_bc: u64 = read.collate_key().into();
+                                let sample_bc: u64 = read.collation_key_at_level(0);
+                                let cell_bc: u64 = read.collate_key();
 
                                 if let Some(&corrected_sample) = spm.get(&sample_bc) {
                                     if let Some(&sample_idx) = s2i.get(&corrected_sample) {
@@ -752,7 +752,7 @@ fn do_generate_permit_list_multi_bc(
 
     // Unwrap the Arcs (single owner again after threads join)
     let sample_permit_map = std::sync::Arc::into_inner(sample_permit_map).unwrap();
-    let sample_bc_to_idx = std::sync::Arc::into_inner(sample_bc_to_idx).unwrap();
+    let _sample_bc_to_idx = std::sync::Arc::into_inner(sample_bc_to_idx).unwrap();
     let per_sample_cell_hist = std::sync::Arc::into_inner(per_sample_cell_hist).unwrap();
     let per_sample_unmatched = std::sync::Arc::into_inner(per_sample_unmatched).unwrap();
 
@@ -1137,7 +1137,7 @@ fn build_sample_permit_map(
             info!(log, "Sample barcode correction mode: 1-edit distance");
             // Generate 1-edit neighbors for ALL observed rotation barcodes
             let all_observed: Vec<u64> = sample_info.rotation_to_canonical.keys().copied().collect();
-            let bc_len = if let Some(&first) = all_observed.first() {
+            let bc_len = if !all_observed.is_empty() {
                 // Estimate barcode length from packed value
                 // For 8bp barcodes: 2*8 = 16 bits used
                 8usize // TODO: derive from actual barcode length

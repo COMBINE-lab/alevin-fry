@@ -29,7 +29,6 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub init_uniform: bool,
     pub summary_stat: bool,
     pub dump_eq: bool,
-    pub use_mtx: bool,
     pub resolution: ResolutionStrategy,
     pub pug_exact_umi: bool,
     pub sa_model: SplicedAmbiguityModel,

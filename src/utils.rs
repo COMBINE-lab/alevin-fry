@@ -293,21 +293,6 @@ pub(crate) enum KnownRecordType {
     RnaShortMultiBC(u16, u16),
 }
 
-impl KnownRecordType {
-    /// Whether this record type has multiple barcodes.
-    pub(crate) fn is_multi_barcode(&self) -> bool {
-        matches!(self, KnownRecordType::RnaShortMultiBC(_, _))
-    }
-
-    /// Number of barcode levels for this record type.
-    pub(crate) fn num_barcodes(&self) -> u16 {
-        match self {
-            KnownRecordType::RnaShortMultiBC(_, n) => *n,
-            _ => 1,
-        }
-    }
-}
-
 pub(crate) fn get_record_type_from_prelude(
     prelude: &RadPrelude,
     file_tag_map: &TagMap,

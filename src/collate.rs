@@ -1231,10 +1231,10 @@ where
     let mut all_cell_freqs: Vec<(u64, u64, usize)> = Vec::new(); // (corrected_cell_bc, freq, sample_idx)
 
     // Get cell barcode length from file tags
-    let cell_bc_tag = format!("b{}len", prelude.read_tags.tags.len().saturating_sub(2));
+    let _cell_bc_tag = format!("b{}len", prelude.read_tags.tags.len().saturating_sub(2));
     // Try to read from the file_tag_map if available, otherwise use a default
-    let cell_bc_len: u32 = {
-        let ftm = prelude.file_tags.parse_tags_from_bytes(&mut std::io::Cursor::new(Vec::<u8>::new())).ok();
+    let _cell_bc_len: u32 = {
+        let _ftm = prelude.file_tags.parse_tags_from_bytes(&mut std::io::Cursor::new(Vec::<u8>::new())).ok();
         // Use 16 as default cell BC length (standard for 10x)
         16u32
     };
@@ -1250,7 +1250,7 @@ where
             // Read header: version (u64) + bc_len (u64)
             let mut hdr_buf = [0u8; 16];
             freq_reader.read_exact(&mut hdr_buf)?;
-            let bc_len_from_file = hdr_buf.pread::<u64>(8).unwrap_or(16) as u32;
+            let _bc_len_from_file = hdr_buf.pread::<u64>(8).unwrap_or(16) as u32;
             let freq_map: HashMap<u64, u64> =
                 bincode::deserialize_from(freq_reader)
                     .map_err(|e| anyhow!("couldn't deserialize {}: {}", freq_path.display(), e))?;
@@ -1355,7 +1355,7 @@ where
 
     // Build output_cache: composite_key -> TempBucket
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
-    let mut total_allocated_records: u64 = 0;
+    let _total_allocated_records: u64 = 0;
     let mut allocated_records: u64 = 0;
     let mut temp_buckets = vec![(
         0u32,
@@ -1379,7 +1379,6 @@ where
                     0,
                     Arc::new(libradicl::TempBucket::from_id_and_parent(tn, parent)),
                 ));
-                total_allocated_records += allocated_records;
                 allocated_records = 0;
                 num_bucket_chunks = 0;
             }
@@ -1389,7 +1388,6 @@ where
         temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
         temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
     }
-    total_allocated_records += allocated_records;
     info!(log, "Generated {} temporary buckets for multi-barcode collation.", temp_buckets.len());
 
     let nbuckets = temp_buckets.len();
@@ -1408,20 +1406,15 @@ where
     pbar_inner.tick();
 
     // Work queue for scatter phase
-    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
-    let chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
+    let _q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
+    let _chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
 
     // SCATTER PHASE: Read chunks, correct both barcodes, write to temp buckets
-    let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
+    let _thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
 
     let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &rec_context);
-    let loc_buffer_size = std::cmp::min(
-        262_144usize,
-        std::cmp::max(
-            1000,
-            min_rec_len * max_records as usize / (nbuckets * n_workers),
-        ),
-    );
+    let _loc_buffer_size =
+        (min_rec_len * max_records as usize / (nbuckets * n_workers)).clamp(1000, 262_144usize);
 
     let sample_permit_map = Arc::new(sample_permit_map);
     let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
@@ -1488,10 +1481,8 @@ where
     let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
 
     let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &rec_context);
-    let loc_buffer_size = std::cmp::min(
-        262_144usize,
-        std::cmp::max(1000, min_rec_len * max_records as usize / (nbuckets * n_workers)),
-    );
+    let loc_buffer_size =
+        (min_rec_len * max_records as usize / (nbuckets * n_workers)).clamp(1000, 262_144usize);
 
     let sample_permit_map = Arc::new(sample_permit_map);
     let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
@@ -1543,7 +1534,7 @@ where
                         ).expect("could read multi-BC header");
 
                         // Extract sample BC (level 0) and look up correction
-                        let sample_bc: u64 = tup.barcodes[0].into();
+                        let sample_bc: u64 = tup.barcodes[0];
                         let corrected_sample = match sample_map.get(&sample_bc) {
                             Some(&cs) => cs,
                             None => {
@@ -1569,7 +1560,7 @@ where
                         };
 
                         // Look up cell BC correction (tiered: per-sample identity fast path, then 1-edit lookup)
-                        let cell_bc: u64 = tup.collate_key().into();
+                        let cell_bc: u64 = tup.collate_key();
                         let (ref per_sample_identity, ref per_sample_lookup) = *cell_corr;
                         let corrected_cell = if per_sample_identity[sample_idx].contains(&cell_bc) {
                             // Fast path: valid barcode in this sample, corrects to itself
@@ -1608,8 +1599,8 @@ where
                             }
 
                             // Set corrected barcodes
-                            rr.set_collation_key_at_level(0, corrected_sample.into());
-                            rr.set_collate_key(corrected_cell.into());
+                            rr.set_collation_key_at_level(0, corrected_sample);
+                            rr.set_collate_key(corrected_cell);
 
                             let na = tup.naln() as usize;
                             let nb = MultiBarcodeReadRecord::nbytes(na as u32, &ctx);
@@ -1873,7 +1864,7 @@ fn do_collate_multi_bc_two_round<P1, P2, A: Read + Seek>(
     end_header_pos: u64,
     num_threads: u32,
     max_records: u32,
-    total_to_collate: u64,
+    _total_to_collate: u64,
     compress_out: bool,
     cmdline: &str,
     version: &str,
@@ -1929,7 +1920,7 @@ where
     let mut per_sample_nchunks: Vec<u64> = vec![0; num_samples];
     let mut per_sample_nrecs: Vec<u64> = vec![0; num_samples];
 
-    for (idx, name) in sample_names.iter().enumerate() {
+    for name in sample_names.iter() {
         let sample_rad_path = round1_dir.join(format!("sample_{}.rad", name));
         let f = File::create(&sample_rad_path)?;
         let mut writer = BufWriter::with_capacity(1048576, f);
@@ -1948,7 +1939,7 @@ where
         per_sample_writers.push(Some(writer));
     }
 
-    let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation = expected_ori.into();
+    let _expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation = expected_ori.into();
     let hdr = &prelude.hdr;
 
     // Read chunks and scatter to per-sample files
@@ -1969,11 +1960,11 @@ where
             (0..num_samples).map(|_| Vec::new()).collect();
 
         for read in &c.reads {
-            let sample_bc: u64 = read.barcodes[0].into();
-            if let Some(&corrected) = sample_permit_map.get(&sample_bc) {
-                if let Some(&idx) = sample_bc_to_idx.get(&corrected) {
-                    per_sample_records[idx].push(read);
-                }
+            let sample_bc: u64 = read.barcodes[0];
+            if let Some(&corrected) = sample_permit_map.get(&sample_bc)
+                && let Some(&idx) = sample_bc_to_idx.get(&corrected)
+            {
+                per_sample_records[idx].push(read);
             }
         }
 
@@ -2012,7 +2003,7 @@ where
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&sample_rad_path)?;
-            let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+            let _pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
             let chunk_bytes = std::mem::size_of::<u64>() as u64;
             let nc_pos = (end_header_pos - chunk_bytes) as usize;
             f.seek(std::io::SeekFrom::Start(nc_pos as u64))?;
@@ -2040,7 +2031,7 @@ where
     let mut final_writer = BufWriter::with_capacity(1048576, ofile);
 
     // Write the header once (from the first sample's intermediate file, with total num_chunks)
-    let total_cells: u64 = {
+    let _total_cells: u64 = {
         // We'll count cells during per-sample collation
         // For now, write header with placeholder
         let mut rfile = File::open(&input_rad_path)?;
@@ -2109,11 +2100,11 @@ where
         let sample_file = File::open(&sample_rad_path)?;
         let mut sample_br = BufReader::new(sample_file);
         let sample_prelude = RadPrelude::from_bytes(&mut sample_br)?;
-        let sample_ftm = sample_prelude.file_tags.parse_tags_from_bytes(&mut sample_br)?;
+        let _sample_ftm = sample_prelude.file_tags.parse_tags_from_bytes(&mut sample_br)?;
         let sample_ctx = sample_prelude.get_record_context::<MultiBarcodeRecordContext>()?;
 
         // Compute end_header_pos for the sample file
-        let sample_end_hdr_pos = sample_br.get_mut().stream_position().unwrap()
+        let _sample_end_hdr_pos = sample_br.get_mut().stream_position().unwrap()
             - (sample_br.buffer().len() as u64);
 
         info!(
@@ -2170,21 +2161,19 @@ where
         let nbuckets = sample_temp_buckets.len();
 
         // Scatter phase for this sample
-        let expected_ori_mfo2: libradicl::rad_types::MappedFragmentOrientation =
+        let _expected_ori_mfo2: libradicl::rad_types::MappedFragmentOrientation =
             expected_ori.into();
         let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &sample_ctx);
-        let total_sample_recs = per_sample_nrecs[sample_idx];
-        let loc_buffer_size = std::cmp::min(
-            262_144usize,
-            std::cmp::max(1000, min_rec_len * max_records as usize / (nbuckets * n_workers.max(1))),
-        );
+        let _total_sample_recs = per_sample_nrecs[sample_idx];
+        let loc_buffer_size = (min_rec_len * max_records as usize / (nbuckets * n_workers.max(1)))
+            .clamp(1000, 262_144usize);
 
         // Single-threaded scatter for simplicity (per-sample files are smaller)
         for _ in 0..per_sample_nchunks[sample_idx] {
             let mut hdr_buf = [0u8; 8];
             sample_br.read_exact(&mut hdr_buf).unwrap();
             let nbytes_chunk = u32::from_le_bytes([hdr_buf[0], hdr_buf[1], hdr_buf[2], hdr_buf[3]]);
-            let nrec_chunk = u32::from_le_bytes([hdr_buf[4], hdr_buf[5], hdr_buf[6], hdr_buf[7]]);
+            let _nrec_chunk = u32::from_le_bytes([hdr_buf[4], hdr_buf[5], hdr_buf[6], hdr_buf[7]]);
 
             // Read the chunk data and use libradicl's dump function
             let mut buf = vec![0u8; nbytes_chunk as usize];
@@ -2212,7 +2201,7 @@ where
             );
 
             // Flush local buffers
-            for (composite_key, bucket) in sample_output_cache.iter() {
+            for (_composite_key, bucket) in sample_output_cache.iter() {
                 let bid = bucket.bucket_id as usize;
                 if bid < local_buffers.len() {
                     let pos = local_buffers[bid].position() as usize;

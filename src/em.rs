@@ -13,8 +13,7 @@ use crate::multinomial::Multinomial;
 use crate::utils::EqClassPayload;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
-use nalgebra::base::OVector;
-use rand::Rng;
+use rand::RngExt;
 #[allow(unused_imports)]
 use slog::info;
 use std::collections::HashMap;
@@ -470,7 +469,7 @@ pub(crate) fn run_bootstrap_subset(
     let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
+        let resampled_counts = dist.sample_u32(&mut rnd);
         for (idx, (eq_id, _orig_count)) in cell_data.iter().enumerate() {
             bootstrap_counts.push((*eq_id, resampled_counts[idx]));
         }
@@ -626,7 +625,7 @@ pub fn run_bootstrap_old(
     let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
+        let resampled_counts = dist.sample_u32(&mut rnd);
 
         for (eq_id, labels) in &eqclasses_serialize {
             eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id]);

@@ -14,7 +14,7 @@ use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
-use rand::Rng;
+use rand::RngExt;
 use slog::{crit, info, o, warn, Drain};
 use std::path::PathBuf;
 
@@ -177,8 +177,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
+    .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .required(true)
@@ -234,8 +234,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"));
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
+    .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true));
 
     let atac_app = atac_sub_commands();
 
@@ -451,7 +451,9 @@ fn main() -> anyhow::Result<()> {
         let init_uniform = t.get_flag("init-uniform");
         let summary_stat = t.get_flag("summary-stat");
         let dump_eq = t.get_flag("dump-eqclasses");
-        let use_mtx = !t.get_flag("use-eds");
+        if t.get_flag("use-eds") {
+            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+        }
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
@@ -554,7 +556,6 @@ fn main() -> anyhow::Result<()> {
             .init_uniform(init_uniform)
             .summary_stat(summary_stat)
             .dump_eq(dump_eq)
-            .use_mtx(use_mtx)
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
@@ -633,7 +634,9 @@ fn main() -> anyhow::Result<()> {
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
-        let use_mtx = !t.get_flag("use-eds");
+        if t.get_flag("use-eds") {
+            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+        }
         let output_dir = t.get_one("output-dir").unwrap();
         let count_mat = t.get_one("count-mat").unwrap();
         let eq_label_file = t.get_one("eq-labels").unwrap();
@@ -644,7 +647,6 @@ fn main() -> anyhow::Result<()> {
             count_mat,
             eq_label_file,
             usa_mode,
-            use_mtx,
             num_threads,
             filter_list,
             output_dir,

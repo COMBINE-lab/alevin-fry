@@ -5,15 +5,14 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Cursor, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufReader, BufWriter, Write};
+use std::path::Path;
 
 use libradicl::chunk::Chunk;
-use libradicl::collation::CollationManifest;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{RadIntId, RadType, TagDesc, TagMap, TagSection, TagSectionLabel, TagValue};
 use libradicl::record::{
-    MultiBarcodeReadRecord, MultiBarcodeReadRecordT, MultiBarcodeRecordContext, RecordContext,
+    MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext,
 };
 use libradicl::writers::RadFileWriter;
 use smallvec::smallvec;
@@ -36,8 +35,7 @@ fn make_packed_bc(idx: u64, len: u16) -> u64 {
     // Use low bits, masked to the barcode length
     let mask = (1u64 << (2 * len as u64)) - 1;
     // Mix the index a bit so different barcodes don't collide trivially
-    let mixed = idx.wrapping_mul(2654435761) & mask;
-    mixed
+    idx.wrapping_mul(2654435761) & mask
 }
 
 /// Build a multi-barcode RadPrelude and TagMap for test RAD files.
@@ -142,8 +140,7 @@ fn create_synthetic_multi_bc_rad(
     // Generate chunks. Each chunk contains all reads for one cell.
     // We interleave samples so records are NOT pre-sorted by sample.
     for cell_idx in 0..cells_per_sample {
-        for sample_idx in 0..num_samples {
-            let sample_bc = sample_barcodes[sample_idx];
+        for (sample_idx, sample_bc) in sample_barcodes.iter().copied().enumerate().take(num_samples) {
             let cell_bc = make_packed_bc((sample_idx * 1000 + cell_idx) as u64, CELL_BC_LEN);
 
             let mut reads = Vec::with_capacity(reads_per_cell);
@@ -195,16 +192,6 @@ fn packed_to_nuc(packed: u64, len: usize) -> String {
         s.push(bases[code]);
     }
     s
-}
-
-/// Write a transcript-to-gene map file.
-fn write_tg_map(path: &Path) -> anyhow::Result<()> {
-    let mut f = BufWriter::new(File::create(path)?);
-    for i in 0..NUM_REFS {
-        // Each transcript maps to a gene with the same name
-        writeln!(f, "gene_{}\tgene_{}", i, i)?;
-    }
-    Ok(())
 }
 
 // -----------------------------------------------------------------------
@@ -408,7 +395,7 @@ fn test_read_real_flex_rad() {
     let mut reader = std::io::BufReader::new(f);
     
     let prelude = libradicl::header::RadPrelude::from_bytes(&mut reader).unwrap();
-    let ftm = prelude.file_tags.parse_tags_from_bytes(&mut reader).unwrap();
+    let _ftm = prelude.file_tags.parse_tags_from_bytes(&mut reader).unwrap();
     
     let ctx = prelude.get_record_context::<libradicl::record::MultiBarcodeRecordContext>().unwrap();
     eprintln!("Context: {:?}", ctx);
