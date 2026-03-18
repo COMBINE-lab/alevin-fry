@@ -111,24 +111,94 @@ impl FromStr for ResolutionStrategy {
     }
 }
 
+/// Bootstrap output configuration.
+///
+/// Bootstrap summary statistics (mean and variance across replicates) are
+/// written as sparse MTX files: `bootstraps_mean.mtx` and `bootstraps_var.mtx`,
+/// with the same dimensions as the main count matrix (cells × genes).
+///
+/// When `--summary-stat` is NOT set, the full per-replicate counts are computed
+/// but currently only the summary stats are written. Full per-replicate output
+/// will be supported via HDF5/AnnData layers in a future release, which
+/// provides efficient storage for the 3D (cells × genes × replicates) array
+/// via chunked, compressed datasets in `.h5ad` format.
 struct BootstrapHelper {
-    // TODO: Bootstrap output was previously written in EDS format (.eds.gz).
-    // Now that EDS is removed, bootstrap output needs a new format (e.g. MTX or binary).
-    // For now, bootstrap computation still runs but output is not written to disk.
-    _num_bootstraps: u32,
+    num_bootstraps: u32,
+    summary_stat: bool,
+    /// Thread-local bootstrap mean triplets: (row, col, val)
+    mean_triplets: Vec<(usize, usize, f32)>,
+    /// Thread-local bootstrap variance triplets: (row, col, val)
+    var_triplets: Vec<(usize, usize, f32)>,
 }
 
 impl BootstrapHelper {
     fn new(
         _output_path: &std::path::Path,
         num_bootstraps: u32,
-        _summary_stat: bool,
+        summary_stat: bool,
     ) -> BootstrapHelper {
-        if num_bootstraps > 0 {
-            eprintln!("WARNING: Bootstrap output format is being updated. Bootstrap counts are computed but not yet written to disk.");
+        if num_bootstraps > 0 && !summary_stat {
+            eprintln!(
+                "NOTE: Full per-replicate bootstrap output is not yet supported in MTX format. \
+                 Summary statistics (mean, variance) will be written instead. \
+                 Full replicate output will be available in a future release via AnnData/h5ad."
+            );
         }
         BootstrapHelper {
-            _num_bootstraps: num_bootstraps,
+            num_bootstraps,
+            summary_stat,
+            mean_triplets: Vec::new(),
+            var_triplets: Vec::new(),
+        }
+    }
+
+    /// Record bootstrap results for one cell. Computes mean and variance
+    /// across replicates and stores nonzero entries as sparse triplets.
+    fn record_cell(&mut self, row_index: usize, bootstraps: &[Vec<f32>]) {
+        if bootstraps.is_empty() {
+            return;
+        }
+
+        let (mean_vec, var_vec) = if self.summary_stat && bootstraps.len() == 2 {
+            // run_bootstrap already returned [mean, var]
+            (&bootstraps[0], &bootstraps[1])
+        } else {
+            // Shouldn't happen in current flow, but handle gracefully
+            return;
+        };
+
+        for (col, &val) in mean_vec.iter().enumerate() {
+            if val != 0.0 {
+                self.mean_triplets.push((row_index, col, val));
+            }
+        }
+        for (col, &val) in var_vec.iter().enumerate() {
+            if val != 0.0 {
+                self.var_triplets.push((row_index, col, val));
+            }
+        }
+    }
+
+    /// Compute mean and variance from full bootstrap replicates for one cell.
+    fn record_cell_from_replicates(&mut self, row_index: usize, bootstraps: &[Vec<f32>]) {
+        if bootstraps.is_empty() {
+            return;
+        }
+        let n = bootstraps.len() as f32;
+        let num_genes = bootstraps[0].len();
+
+        for col in 0..num_genes {
+            let mean: f32 = bootstraps.iter().map(|b| b[col]).sum::<f32>() / n;
+            if mean != 0.0 {
+                self.mean_triplets.push((row_index, col, mean));
+                let var: f32 = bootstraps.iter().map(|b| {
+                    let d = b[col] - mean;
+                    d * d
+                }).sum::<f32>() / (n - 1.0).max(1.0);
+                if var != 0.0 {
+                    self.var_triplets.push((row_index, col, var));
+                }
+            }
         }
     }
 }
@@ -573,7 +643,7 @@ fn run_worker_thread<B, R, P>(
     log: slog::Logger,
     num_eq_targets: u32,
     eq_map_type: EqMapType,
-) -> (usize, Vec<(usize, usize, f32)>)
+) -> (usize, Vec<(usize, usize, f32)>, BootstrapHelper)
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -599,6 +669,10 @@ where
     // avoids holding the global mutex during add_triplet, which was the primary
     // bottleneck serializing all workers.
     let mut local_triplets: Vec<(usize, usize, f32)> = Vec::new();
+    // Thread-local bootstrap helper for accumulating summary stat triplets
+    let mut boot_helper = BootstrapHelper::new(
+        std::path::Path::new(""), config.num_bootstraps, config.summary_stat,
+    );
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
@@ -1127,6 +1201,15 @@ where
                     for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
                         local_triplets.push((row_index, ind, val));
                     }
+
+                    // Record bootstrap summary stats (mean/var) as sparse triplets
+                    if config.num_bootstraps > 0 && !bootstraps.is_empty() {
+                        if config.summary_stat {
+                            boot_helper.record_cell(row_index, &bootstraps);
+                        } else {
+                            boot_helper.record_cell_from_replicates(row_index, &bootstraps);
+                        }
+                    }
                 } // end of cell processing
 
                 // if we are dumping the equivalence class output, fill in
@@ -1173,7 +1256,7 @@ where
             } // for all cells in this meta chunk
         } // while we can get work
     } // while cells remain
-    (local_nrec, local_triplets)
+    (local_nrec, local_triplets, boot_helper)
 }
 
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
@@ -1507,8 +1590,8 @@ where
 
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
-    type WorkerTriplets = (usize, Vec<(usize, usize, f32)>);
-    let mut thread_handles: Vec<thread::JoinHandle<WorkerTriplets>> = Vec::with_capacity(n_workers);
+    type WorkerResult = (usize, Vec<(usize, usize, f32)>, BootstrapHelper);
+    let mut thread_handles: Vec<thread::JoinHandle<WorkerResult>> = Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
     // (i.e. across all cells) gene-level equivalence
@@ -1659,11 +1742,17 @@ where
 
     let mut total_records = 0usize;
     let mut all_triplets: Vec<(usize, usize, f32)> = Vec::new();
+    let mut all_boot_mean_triplets: Vec<(usize, usize, f32)> = Vec::new();
+    let mut all_boot_var_triplets: Vec<(usize, usize, f32)> = Vec::new();
     for h in thread_handles {
         match h.join() {
-            Ok((rc, triplets)) => {
+            Ok((rc, triplets, boot)) => {
                 total_records += rc;
                 all_triplets.extend(triplets);
+                if boot.num_bootstraps > 0 {
+                    all_boot_mean_triplets.extend(boot.mean_triplets);
+                    all_boot_var_triplets.extend(boot.var_triplets);
+                }
             }
             Err(_e) => {
                 info!(log, "thread panicked");
@@ -1688,6 +1777,36 @@ where
 
     let mtx_path = output_matrix_path.join("quants_mat.mtx");
     sprs::io::write_matrix_market(mtx_path, &trimat)?;
+
+    // Write bootstrap summary stat matrices if bootstraps were computed
+    if num_bootstraps > 0 && !all_boot_mean_triplets.is_empty() {
+        let mut mean_trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+            (num_cells as usize, num_rows),
+            all_boot_mean_triplets.len(),
+        );
+        for (row, col, val) in all_boot_mean_triplets {
+            mean_trimat.add_triplet(row, col, val);
+        }
+        let mean_path = output_matrix_path.join("bootstraps_mean.mtx");
+        sprs::io::write_matrix_market(mean_path, &mean_trimat)?;
+
+        let mut var_trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+            (num_cells as usize, num_rows),
+            all_boot_var_triplets.len(),
+        );
+        for (row, col, val) in all_boot_var_triplets {
+            var_trimat.add_triplet(row, col, val);
+        }
+        let var_path = output_matrix_path.join("bootstraps_var.mtx");
+        sprs::io::write_matrix_market(var_path, &var_trimat)?;
+
+        info!(
+            log,
+            "wrote bootstrap summary statistics: mean ({} entries), variance ({} entries)",
+            mean_trimat.nnz(),
+            var_trimat.nnz(),
+        );
+    }
 
     let pb_msg = format!(
         "finished quantifying {} cells.",
