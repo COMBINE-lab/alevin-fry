@@ -9,6 +9,7 @@ authors = [
 name = "alevin-fry"
 version = "0.11.2"
 edition = "2024"
+
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
 license-file = "LICENSE"
 readme = "README.md"
