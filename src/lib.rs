@@ -18,6 +18,8 @@ pub mod em;
 pub mod eq_class;
 pub mod infer;
 pub mod io_utils;
+pub mod knee_finding;
+pub mod multinomial;
 pub mod prog_opts;
 pub mod pugutils;
 pub mod quant;

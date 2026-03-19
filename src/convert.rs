@@ -31,7 +31,7 @@ use libradicl::{
 };
 
 use needletail::bitkmer::*;
-use rand::Rng;
+use rand::RngExt;
 use std::error::Error;
 use std::path::Path;
 use std::str;
@@ -53,8 +53,8 @@ use std::str;
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
     let nucl = ["A", "T", "G", "C"];
-    let mut rng = rand::thread_rng();
-    let idx = rng.gen_range(0..4);
+    let mut rng = rand::rng();
+    let idx = rng.random_range(0..4);
     nucl[idx]
     // match idx {
     //     0 => {return "A";},
@@ -111,6 +111,9 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
             RadIntId::U128 => {
                 todo!("support for u128-encoded barcodes is not yet available");
             }
+            _ => {
+                todo!("signed values not supported as barcode types");
+            }
         },
         _ => bail!("invalid type!"),
     }
@@ -140,10 +143,32 @@ fn write_list<W: Write>(
     Ok(())
 }
 
+fn get_score(
+    as_val: Option<Result<noodles::sam::alignment::record::data::field::Value<'_>, std::io::Error>>,
+) -> anyhow::Result<i32> {
+    if let Some(Ok(score)) = as_val {
+        match score {
+            SamTagValue::UInt32(v) => Ok(v as i32),
+            SamTagValue::Int32(v) => Ok(v),
+            SamTagValue::UInt16(v) => Ok(v as i32),
+            SamTagValue::Int16(v) => Ok(v as i32),
+            SamTagValue::UInt8(v) => Ok(v as i32),
+            SamTagValue::Int8(v) => Ok(v as i32),
+            _ => {
+                eprintln!("{:?}", score);
+                bail!("NO SCORE")
+            }
+        }
+    } else {
+        bail!("NO SCORE");
+    }
+}
+
 pub fn bam2rad<P1, P2>(
     input_file: P1,
     rad_file: P2,
     num_threads: u32,
+    filter_best: bool,
     log: &slog::Logger,
 ) -> anyhow::Result<()>
 where
@@ -190,7 +215,7 @@ where
                 );
 
                 let decoder: Box<dyn std::io::BufRead> = Box::new(
-                    bgzf::MultithreadedReader::with_worker_count(decomp_threads, file),
+                    bgzf::io::MultithreadedReader::with_worker_count(decomp_threads, file),
                 );
                 Box::new(nbam::io::Reader::from(decoder))
             }
@@ -268,27 +293,27 @@ where
 
         // read-level
         let flag_data = rec.data();
-        let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
+        let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
             match bcs {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into barcode string.");
                 }
             }
-        } else {
+        } _ => {
             panic!("Input record missing CR tag!")
-        };
+        }};
 
-        let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
+        let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
             match umis {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into umi string.");
                 }
             }
-        } else {
+        } _ => {
             panic!("Input record missing UR tag!")
-        };
+        }};
         let bclen = bc_string_in.len() as u16;
         let umilen = umi_string_in.len() as u16;
 
@@ -386,6 +411,9 @@ where
     let mut bc = 0u64;
     let mut umi = 0u64;
     let mut tid_list = Vec::<u32>::new();
+    let mut score_list = Vec::<i32>::new();
+    const AS: SamTag = SamTag::new(b'A', b'S');
+
     //for r in bam.records(){
     loop {
         let rec_res = record_it.next();
@@ -401,6 +429,10 @@ where
 
         let flags = rec.flags()?;
 
+        if flags.is_unmapped() || flags.is_supplementary() {
+            continue;
+        }
+
         let is_reverse = flags.is_reverse_complemented();
         let qname_str = rec.name().expect("valid name").to_string().to_owned();
         let qname = qname_str;
@@ -409,7 +441,14 @@ where
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
             }
+            let flag_data = rec.data();
+            let score = if filter_best {
+                get_score(flag_data.get(&AS))?
+            } else {
+                1
+            };
             tid_list.push(tid);
+            score_list.push(score);
             // local_nrec += 1;
             continue;
         }
@@ -418,7 +457,14 @@ where
         // for the last read, _unless_ this is the very
         // first read, in which case we shall continue
         if !tid_list.is_empty() {
-            write_list(&tid_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            let max_score = score_list.iter().max().expect("max should exist");
+            // filter only transcripts having a score at least equal to the best
+            let flist = tid_list
+                .iter()
+                .zip(score_list.iter())
+                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
+                .collect::<Vec<u32>>();
+            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
         }
 
         // dump if we reach the buf_limit
@@ -446,7 +492,7 @@ where
         // if this is a new read update the old variables
         {
             let flag_data = rec.data();
-            let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
+            let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
                 match bcs {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
@@ -455,11 +501,11 @@ where
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
                 }
-            } else {
+            } _ => {
                 panic!("Input record missing CR tag!")
-            };
+            }};
 
-            let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
+            let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
                 match umis {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
@@ -468,9 +514,9 @@ where
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
                 }
-            } else {
+            } _ => {
                 panic!("Input record missing UR tag!")
-            };
+            }};
 
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);
@@ -487,10 +533,17 @@ where
             umi = cb_string_to_u64(umi_string.as_bytes()).unwrap();
             old_qname.clone_from(&qname);
             tid_list.clear();
+            score_list.clear();
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
             }
+            let score = if filter_best {
+                get_score(flag_data.get(&AS))?
+            } else {
+                1
+            };
             tid_list.push(tid);
+            score_list.push(score);
             local_nrec += 1;
         }
     }
@@ -499,7 +552,14 @@ where
         // println!("In the residual writing part");
         // first fill the buffer with the last remaining read
         if !tid_list.is_empty() {
-            write_list(&tid_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            let max_score = score_list.iter().max().expect("max should exist");
+            // filter only transcripts having a score at least equal to the best
+            let flist = tid_list
+                .iter()
+                .zip(score_list.iter())
+                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
+                .collect::<Vec<u32>>();
+            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
         }
 
         data.set_position(0);
@@ -614,14 +674,16 @@ where
             let num_entries = read.refs.len();
             for i in 0usize..num_entries {
                 let tid = &hdr.ref_names[read.refs[i] as usize];
+                let bc_bitmer = &bitmer_to_bytes(bc_mer)[..];
+                let umi_bitmer = &bitmer_to_bytes(umi_mer)[..];
                 match writeln!(
                     handle,
                     "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}",
                     id,
                     i + 1,
                     num_entries,
-                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(bc_mer)[..]) },
-                    unsafe { std::str::from_utf8_unchecked(&bitmer_to_bytes(umi_mer)[..]) },
+                    unsafe { std::str::from_utf8_unchecked(bc_bitmer) },
+                    unsafe { std::str::from_utf8_unchecked(umi_bitmer) },
                     read.dirs[i],
                     tid,
                 ) {

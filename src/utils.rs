@@ -8,10 +8,16 @@
  */
 use crate::constants as afconst;
 use crate::eq_class::IndexedEqList;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use bstr::io::BufReadExt;
 use core::fmt;
 use dashmap::DashMap;
+use libradicl::header::RadPrelude;
+use libradicl::rad_types::TagMap;
+use libradicl::record::{
+    AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AtacSeqReadRecord,
+    ConvertiblePrimitiveInteger, MultiBarcodeReadRecordT, ScLongReadRecordT,
+};
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
@@ -40,6 +46,313 @@ struct QuantArguments {
     filter_list: String
 }
 */
+
+/// Trait that allows us to paramaterize the payload stored along with
+/// and equivalence class.  The most basic (required) information is a
+/// count.  However, it is also possible to store probabilities, read start
+/// positions, or other information.  The design idea is that the associated
+/// constants allow one to query (at compile time, and based on the specific
+/// concrete type implementing this trait), what the capabilities are. Once
+/// we support more than probabilities, there may be a more elegant way to do
+/// this (e.g. const enums?).
+pub trait EqClassPayload {
+    const HAS_PROBS: bool;
+    fn new(eqc_len: usize) -> Self;
+    fn new_from_count(eqc_len: usize, ct: u32) -> Self;
+    fn new_from_count_and_probs(eqc_len: usize, ct: u32, probs: &[f64]) -> Self;
+    fn count(&self) -> u32;
+    fn inc(&mut self);
+    // a 1D (unrolled) slice of all probabilities associated with this
+    // equivalence class
+    fn probs(&self) -> &ProbMap<f64>;
+    // the i-th row of the probability vector (length of the slice is
+    // equial to the cardinality of the equivalence class label).
+    fn prob_row(&self, i: usize) -> &[f64];
+    fn add_probs(&mut self, p: &[f64]);
+}
+
+/// Most basic equivalence class payload with just a count.
+pub struct BasicEqClassPayload {
+    pub ct: u32,
+}
+
+impl EqClassPayload for BasicEqClassPayload {
+    const HAS_PROBS: bool = false;
+
+    #[inline(always)]
+    fn new(_eqc_len: usize) -> Self {
+        Self { ct: 0 }
+    }
+
+    #[inline(always)]
+    fn new_from_count(_eqc_len: usize, ct: u32) -> Self {
+        Self { ct }
+    }
+
+    fn new_from_count_and_probs(_eqc_len: usize, _ct: u32, _probs: &[f64]) -> Self {
+        unimplemented!("new_from_count_and_probs not implemented for BasicEqClassPayload");
+    }
+
+    #[inline(always)]
+    fn count(&self) -> u32 {
+        self.ct
+    }
+
+    #[inline(always)]
+    fn inc(&mut self) {
+        self.ct += 1;
+    }
+
+    #[inline(always)]
+    fn probs(&self) -> &ProbMap<f64> {
+        unimplemented!();
+    }
+
+    #[inline(always)]
+    fn prob_row(&self, _i: usize) -> &[f64] {
+        unimplemented!();
+    }
+
+    #[inline(always)]
+    fn add_probs(&mut self, _p: &[f64]) {
+        unimplemented!();
+    }
+}
+
+pub struct ProbMap<T: Clone + Copy> {
+    probs: Vec<T>,
+    stride: usize,
+}
+
+impl<T: Clone + Copy> ProbMap<T> {
+    #[inline(always)]
+    fn new(stride: usize) -> Self {
+        Self {
+            probs: Vec::new(),
+            stride,
+        }
+    }
+
+    #[inline(always)]
+    fn new_from_probs(probs: &[T]) -> Self {
+        Self {
+            probs: probs.to_vec(),
+            stride: probs.len(),
+        }
+    }
+
+    #[inline(always)]
+    fn add_probs(&mut self, p: &[T]) {
+        debug_assert_eq!(self.stride, p.len());
+        self.probs.extend_from_slice(p);
+    }
+}
+
+impl<T: Clone + Copy> std::ops::Index<usize> for ProbMap<T> {
+    type Output = [T];
+
+    fn index(&self, i: usize) -> &Self::Output {
+        let s = i * self.stride;
+        &self.probs[s..(s + self.stride)]
+    }
+}
+
+/// Equivalence class payload with a count a probability
+/// vector.
+pub struct LongReadEqClassPayload {
+    pub ct: u32,
+    pub prob_map: ProbMap<f64>,
+}
+
+impl EqClassPayload for LongReadEqClassPayload {
+    const HAS_PROBS: bool = true;
+
+    #[inline(always)]
+    fn new(label_len: usize) -> Self {
+        Self {
+            ct: 0,
+            prob_map: ProbMap::new(label_len),
+        }
+    }
+
+    #[inline(always)]
+    fn new_from_count(label_len: usize, ct: u32) -> Self {
+        Self {
+            ct,
+            prob_map: ProbMap::new(label_len),
+        }
+    }
+
+    #[inline(always)]
+    fn new_from_count_and_probs(label_len: usize, ct: u32, probs: &[f64]) -> Self {
+        debug_assert_eq!(label_len, probs.len());
+        Self {
+            ct,
+            prob_map: ProbMap::new_from_probs(probs),
+        }
+    }
+
+    #[inline(always)]
+    fn count(&self) -> u32 {
+        self.ct
+    }
+
+    #[inline(always)]
+    fn inc(&mut self) {
+        self.ct += 1;
+    }
+
+    #[inline(always)]
+    fn probs(&self) -> &ProbMap<f64> {
+        &self.prob_map
+    }
+
+    #[inline(always)]
+    fn prob_row(&self, i: usize) -> &[f64] {
+        &self.prob_map[i]
+    }
+
+    #[inline(always)]
+    fn add_probs(&mut self, p: &[f64]) {
+        self.prob_map.add_probs(p);
+    }
+}
+
+pub struct AlnExtras<'a> {
+    pub as_scores: &'a [i32],
+    pub ends: &'a [u32],
+    pub tlens: &'a [u32], 
+}
+
+pub trait OptionalAlignmentExtras {
+    fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>>;
+}
+
+macro_rules! impl_optional_alignment_extras {
+    // Generic record type that HAS the fields
+    (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident,
+        Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)
+    ) => {
+        impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                Some(AlnExtras {
+                    as_scores: &self.$scores,
+                    ends: &self.$ends,
+                    tlens: &self.$tlens,
+                })
+            }
+        }
+    };
+
+    // Generic record type that DOES NOT have the fields
+    (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident, None) => {
+        impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                None
+            }
+        }
+    };
+
+    // Non-generic record type that HAS the fields
+    ($ty:ty, Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)) => {
+        impl OptionalAlignmentExtras for $ty {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                Some(AlnExtras {
+                    as_scores: &self.$scores,
+                    ends: &self.$ends,
+                    tlens: &self.$tlens,
+                })
+            }
+        }
+    };
+
+    // Non-generic record type that DOES NOT have the fields
+    ($ty:ty, None) => {
+        impl OptionalAlignmentExtras for $ty {
+            fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
+                None
+            }
+        }
+    };
+}
+
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
+impl_optional_alignment_extras!(AtacSeqReadRecord, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, MultiBarcodeReadRecordT, None);
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, ends = ends, tlens = tlens));
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum KnownRecordType {
+    RnaLong(u16),
+    AtacSeq(u16),
+    RnaShortPos(u16),
+    RnaShort(u16),
+    /// Multi-barcode record (e.g., 10x Flex).
+    /// Fields: (cell_bc_len, num_barcodes)
+    RnaShortMultiBC(u16, u16),
+}
+
+pub(crate) fn get_record_type_from_prelude(
+    prelude: &RadPrelude,
+    file_tag_map: &TagMap,
+) -> KnownRecordType {
+    // Check for multi-barcode first (presence of num_barcodes file-level tag)
+    if let Some(num_bc_val) = file_tag_map.get("num_barcodes") {
+        let num_bc: u16 = num_bc_val
+            .try_into()
+            .expect("should be able to parse \"num_barcodes\" as a u16");
+        if num_bc > 1 {
+            // Multi-barcode: the cell BC length is the last barcode level
+            // (b{N-1}len), or we can use the innermost barcode length.
+            let cell_bc_tag = format!("b{}len", num_bc - 1);
+            let cell_bc_len: u16 = file_tag_map
+                .get(&cell_bc_tag)
+                .unwrap_or_else(|| panic!("multi-barcode RAD file should have a \"{}\" file-level tag", cell_bc_tag))
+                .try_into()
+                .unwrap_or_else(|_| panic!("should be able to parse \"{}\" as a u16", cell_bc_tag));
+            return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc);
+        }
+    }
+
+    let aln_tags = &prelude.aln_tags;
+    if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
+        // long-read single cell
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
+            .expect("lr-scRNA seq RAD file should have a \"cblen\" file-level tag")
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::RnaLong(bc_len)
+    } else if aln_tags.has_tag("pos") {
+        // alevin-fry with positions
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
+            .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::RnaShortPos(bc_len)
+    } else if aln_tags.has_tag("type")
+        && aln_tags.has_tag("start_pos")
+        && aln_tags.has_tag("frag_len")
+    {
+        // ATAC seq
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
+            .expect("scATAC seq RAD file should have a \"cblen\" file-level tag")
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::AtacSeq(bc_len)
+    } else {
+        // classic alevin-fry
+        let bc_len: u16 = file_tag_map
+            .get("cblen")
+            .expect("scRNA seq RAD file should have a \"cblen\" file-level tag")
+            .try_into()
+            .expect("should be able to parse \"cblen\" as a u16");
+        KnownRecordType::RnaShort(bc_len)
+    }
+}
 
 pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
     if fname.exists() {
@@ -335,8 +648,8 @@ pub fn parse_tg_map(
 /// one gene, but only one *spliced* gene, then it is assigned to
 /// the spliced gene, unless there is too much multimapping
 /// (i.e. it is compatible with > 10 different loci).
-pub fn extract_counts(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_counts<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
 ) -> Vec<f32> {
     // the number of genes not considering status
@@ -345,7 +658,8 @@ pub fn extract_counts(
     let ambig_offset = 2 * unspliced_offset;
     let mut counts = vec![0_f32; num_counts];
 
-    for (labels, count) in gene_eqc {
+    for (labels, payload) in gene_eqc {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -358,7 +672,7 @@ pub fn extract_counts(
                     } else {
                         unspliced_offset + (*gid >> 1) as usize
                     };
-                    counts[idx] += *count as f32;
+                    counts[idx] += count as f32;
                 }
             }
             2 => {
@@ -367,15 +681,15 @@ pub fn extract_counts(
                     if same_gene(*g1, *g2, true) {
                         let idx = ambig_offset + (*g1 >> 1) as usize;
                         //eprintln!("ambig count {} at {}!", *count, idx);
-                        counts[idx] += *count as f32;
+                        counts[idx] += count as f32;
                     } else {
                         // report spliced if we can
                         match (is_spliced(*g1), is_spliced(*g2)) {
                             (true, false) => {
-                                counts[(*g1 >> 1) as usize] += *count as f32;
+                                counts[(*g1 >> 1) as usize] += count as f32;
                             }
                             (false, true) => {
-                                counts[(*g2 >> 1) as usize] += *count as f32;
+                                counts[(*g2 >> 1) as usize] += count as f32;
                             }
                             _ => { /* do nothing */ }
                         }
@@ -401,14 +715,14 @@ pub fn extract_counts(
                         // unspliced variant or not.  If so, add it as ambiguous
                         // otherwise, add it as spliced
                         if let Some(sg) = labels.get(sidx) {
-                            if let Some(ng) = labels.get(sidx + 1) {
-                                if same_gene(*sg, *ng, true) {
-                                    let idx = ambig_offset + (*sg >> 1) as usize;
-                                    counts[idx] += *count as f32;
-                                    continue;
-                                }
+                            if let Some(ng) = labels.get(sidx + 1)
+                                && same_gene(*sg, *ng, true)
+                            {
+                                let idx = ambig_offset + (*sg >> 1) as usize;
+                                counts[idx] += count as f32;
+                                continue;
                             }
-                            counts[(*sg >> 1) as usize] += *count as f32;
+                            counts[(*sg >> 1) as usize] += count as f32;
                         }
                     }
                 }
@@ -423,8 +737,8 @@ pub fn extract_counts(
 /// This function is to be used when we are counting UMIs in
 /// USA mode.  Multimappers will be uniformly allocated to the
 /// genes to which they map.
-pub fn extract_counts_mm_uniform(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_counts_mm_uniform<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
 ) -> Vec<f32> {
     // the number of genes not considering status
@@ -434,7 +748,8 @@ pub fn extract_counts_mm_uniform(
     let mut counts = vec![0_f32; num_counts];
     let mut tvec = Vec::<usize>::with_capacity(16);
 
-    for (labels, count) in gene_eqc {
+    for (labels, payload) in gene_eqc {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -447,7 +762,7 @@ pub fn extract_counts_mm_uniform(
                     } else {
                         unspliced_offset + (*gid >> 1) as usize
                     };
-                    counts[idx] += *count as f32;
+                    counts[idx] += count as f32;
                 }
             }
             _ => {
@@ -484,7 +799,7 @@ pub fn extract_counts_mm_uniform(
                     }
                     tvec.push(idx)
                 }
-                let fcount = (*count as f32) / (tvec.len() as f32);
+                let fcount = (count as f32) / (tvec.len() as f32);
                 for g in &tvec {
                     counts[*g] += fcount;
                 }
@@ -502,8 +817,8 @@ pub fn extract_counts_mm_uniform(
 /// spliced, unspliced and ambiguous gene IDs based on UMI mappings,
 /// and `eq_id_count` will enumerate the count of UMIs for each
 /// observed equivalence class.
-pub fn extract_usa_eqmap(
-    gene_eqc: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn extract_usa_eqmap<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
     idx_eq_list: &mut IndexedEqList,
     eq_id_count: &mut Vec<(u32, u32)>,
@@ -525,7 +840,8 @@ pub fn extract_usa_eqmap(
     let ambig_offset = 2 * unspliced_offset;
     let mut tvec = Vec::<u32>::with_capacity(16);
 
-    for (ctr, (labels, count)) in gene_eqc.iter().enumerate() {
+    for (ctr, (labels, payload)) in gene_eqc.iter().enumerate() {
+        let count = payload.count();
         // the length of the label will tell us if this is a
         // splicing-unique, gene-unique (but splicing ambiguous).
         // or gene-ambiguous equivalence class label.
@@ -539,7 +855,7 @@ pub fn extract_usa_eqmap(
                         unspliced_offset + (*gid >> 1) as usize
                     };
                     idx_eq_list.add_single_label(idx as u32);
-                    eq_id_count.push((ctr as u32, *count));
+                    eq_id_count.push((ctr as u32, count));
                 }
             }
             _ => {
@@ -581,7 +897,7 @@ pub fn extract_usa_eqmap(
                 // and the USA mode labels are 1-1, we don't need this
                 // so avoid the sort here.
                 idx_eq_list.add_label_vec(tvec.as_slice());
-                eq_id_count.push((ctr as u32, *count));
+                eq_id_count.push((ctr as u32, count));
             }
         }
     }
@@ -822,12 +1138,13 @@ impl FromStr for InternalVersionInfo {
 
 #[cfg(test)]
 mod tests {
+    use crate::utils::InternalVersionInfo;
+    use crate::utils::ProbMap;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
     use crate::utils::get_all_snps;
     use crate::utils::get_bit_mask;
-    use crate::utils::InternalVersionInfo;
     use std::collections::HashSet;
     use std::str::FromStr;
 
@@ -883,7 +1200,9 @@ mod tests {
 
         assert_eq!(
             output,
-            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+            vec![
+                1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
+            ]
         );
     }
 
@@ -897,7 +1216,29 @@ mod tests {
 
         assert_eq!(
             output,
-            vec![1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55]
+            vec![
+                1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
+            ]
         );
+    }
+
+    #[test]
+    fn prob_map_works() {
+        let probs = vec![0.15, 0.25, 0.10, 0.5];
+        let mut pm = ProbMap::new_from_probs(&probs);
+        pm.add_probs(&[0.2, 0.1, 0.05, 0.65]);
+
+        assert_eq!(&pm[0], &[0.15, 0.25, 0.10, 0.5]);
+        assert_eq!(&pm[1], &[0.2, 0.1, 0.05, 0.65]);
+        assert_eq!(pm[1][2], 0.05);
+    }
+
+    #[test]
+    #[should_panic]
+    fn prob_map_oob_panics() {
+        let probs = vec![0.15, 0.25, 0.10, 0.5];
+        let mut pm = ProbMap::new_from_probs(&probs);
+        pm.add_probs(&[0.2, 0.1, 0.05, 0.65]);
+        std::hint::black_box(&pm[2][2]);
     }
 }

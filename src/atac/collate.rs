@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info};
 //use anyhow::{anyhow, Result};
@@ -73,7 +73,9 @@ where
             }
         },
         None => {
-            return Err(anyhow!("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"));
+            return Err(anyhow!(
+                "The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"
+            ));
         }
     };
 
@@ -83,7 +85,10 @@ where
 
     // if only an *old* version of the permit_freq is present, then complain and exit
     if parent.join("permit_freq.tsv").exists() && !parent.join("permit_freq.bin").exists() {
-        crit!(log, "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command.");
+        crit!(
+            log,
+            "The file permit_freq.bin doesn't exist, please rerun alevin-fry generate-permit-list command."
+        );
         // std::process::exit(1);
         return Err(anyhow!("execution terminated unexpectedly"));
     }
@@ -104,10 +109,12 @@ where
         .context("couldn't read freq file version")?;
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
-        crit!(log,
-               "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
-               freq_file_version, afconst::PERMIT_FILE_VER
-         );
+        crit!(
+            log,
+            "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+            freq_file_version,
+            afconst::PERMIT_FILE_VER
+        );
         return Err(anyhow!("execution terminated unexpectedly"));
     }
 
@@ -173,12 +180,11 @@ pub enum FilterType {
 
 pub fn get_filter_type(mdata: &serde_json::Value, log: &slog::Logger) -> FilterType {
     if let Some(fts) = mdata.get("permit-list-type") {
-        let ft = match fts.as_str() {
+        match fts.as_str() {
             Some("unfiltered") => FilterType::Unfiltered,
             Some("filtered") => FilterType::Filtered,
             _ => FilterType::Filtered,
-        };
-        ft
+        }
     } else {
         info!(
             log,
@@ -196,9 +202,9 @@ pub fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) 
         }
     } else {
         info!(
-          log,
-          "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
-      );
+            log,
+            "max-ambig-record key not present in JSON file; using default of 2,500. Please consider upgrading alevin-fry."
+        );
         2500_usize
     }
 }
