@@ -59,7 +59,7 @@ jobs:
       run: cargo build --release
     - name: sample run
       run: |
-        wget https://umd.box.com/shared/static/z8d0v1xqi1jznlx1o8u1o2hxs1n4z1fl -O toy_set.tar.gz
+        wget https://umd.box.com/shared/static/uctm7oh0f2ef32aa3dmvk6zvbb8764up -O toy_set.tar.gz
         tar xzf toy_set.tar.gz
         fry="target/release/alevin-fry"
         threads=2
