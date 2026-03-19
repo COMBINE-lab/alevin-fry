@@ -190,6 +190,7 @@ else
     echo "Dry-run: would rewrite $ROOT_CARGO"
 fi
 
+run cargo check -q
 run cargo check --locked -q
 run git add "$ROOT_CARGO" "$LOCKFILE"
 run git commit -m "chore(release): bump alevin-fry to v${VERSION}"
