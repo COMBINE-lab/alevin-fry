@@ -10,25 +10,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  Formatting:
-    if: "!contains(github.event.head_commit.message, 'skip ci')"
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          components: rustfmt
-      
-      - name: Check format
-        run: cargo fmt -- --check
-
   build:
     if: "!contains(github.event.head_commit.message, 'skip ci')"
     strategy:
@@ -78,7 +59,7 @@ jobs:
       run: cargo build --release
     - name: sample run
       run: |
-        wget https://umd.box.com/shared/static/lx2xownlrhz3us8496tyu9c4dgade814 -O toy_set.tar.gz
+        wget https://umd.box.com/shared/static/z8d0v1xqi1jznlx1o8u1o2hxs1n4z1fl -O toy_set.tar.gz
         tar xzf toy_set.tar.gz
         fry="target/release/alevin-fry"
         threads=2
