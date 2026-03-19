@@ -59,15 +59,15 @@ jobs:
       run: cargo build --release
     - name: sample run
       run: |
-        wget https://umd.box.com/shared/static/uctm7oh0f2ef32aa3dmvk6zvbb8764up -O toy_set.tar.gz
-        tar xzf toy_set.tar.gz
+        wget https://umd.box.com/shared/static/uctm7oh0f2ef32aa3dmvk6zvbb8764up -O toy_data.tar.gz
+        tar xzf toy_data.tar.gz
         fry="target/release/alevin-fry"
         threads=2
-        map_dir="toy_set/alevin_map"
+        map_dir="toy_data/alevin_map"
         gpl_dir="gpl"
         quant_dir="quant"
-        permitmode="-u toy_set/10x_v3_permit.txt"
-        t2g="toy_set/t2g_3col.tsv"
+        permitmode="-u toy_data/10x_v3_permit.txt"
+        t2g="toy_data/t2g_3col.tsv"
         res="cr-like"
         ### generate permit list
         cmd="$fry generate-permit-list $permitmode -d fw -i $map_dir -o $gpl_dir"
