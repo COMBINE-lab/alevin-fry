@@ -9,11 +9,11 @@
 
 #[allow(unused_imports)]
 use crate::eq_class::IndexedEqList;
+use crate::multinomial::Multinomial;
+use crate::utils::EqClassPayload;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
-use nalgebra::base::OVector;
-use crate::multinomial::Multinomial;
-use rand::Rng;
+use rand::RngExt;
 #[allow(unused_imports)]
 use slog::info;
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ use std::f32;
 //    pub counts: u32,
 //}
 
-const MIN_ALPHA: f32 = 1e-8;
+const _MIN_ALPHA: f32 = 1e-8;
 const MIN_OUTPUT_ALPHA: f32 = 0.01;
 const ALPHA_CHECK_CUTOFF: f32 = 1e-2;
 
@@ -298,13 +298,14 @@ pub fn em_optimize_subset(
     alphas_in
 }
 
-pub fn em_update(
+pub fn em_update<P: EqClassPayload>(
     alphas_in: &[f32],
     alphas_out: &mut [f32],
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
 ) {
     // loop over all the eqclasses
-    for (labels, count) in eqclasses {
+    for (labels, payload) in eqclasses {
+        let count = payload.count();
         if labels.len() > 1 {
             let mut denominator: f32 = 0.0;
             for label in labels {
@@ -312,7 +313,7 @@ pub fn em_update(
             }
 
             if denominator > 0.0 {
-                let inv_denominator = *count as f32 / denominator;
+                let inv_denominator = count as f32 / denominator;
                 for label in labels {
                     let index = *label as usize;
                     let count = alphas_in[index] * inv_denominator;
@@ -321,13 +322,13 @@ pub fn em_update(
             }
         } else {
             let tidx = labels.first().expect("can't extract labels");
-            alphas_out[*tidx as usize] += *count as f32;
+            alphas_out[*tidx as usize] += count as f32;
         }
     }
 }
 
-pub fn em_optimize(
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn em_optimize<P: EqClassPayload>(
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
     unique_evidence: &mut [bool],
     no_ambiguity: &mut [bool],
     init_type: EmInitType,
@@ -338,10 +339,11 @@ pub fn em_optimize(
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
-    for (labels, count) in eqclasses {
+    for (labels, payload) in eqclasses {
+        let count = payload.count();
         if labels.len() == 1 {
             let idx = labels.first().expect("can't extract labels");
-            alphas_in[*idx as usize] += *count as f32;
+            alphas_in[*idx as usize] += count as f32;
             unique_evidence[*idx as usize] = true;
         } else {
             for idx in labels {
@@ -448,10 +450,7 @@ pub(crate) fn run_bootstrap_subset(
     let mut sample_var: Vec<f32> = vec![0.0; num_alphas_us];
 
     // define the sampling weights for our multinomial
-    let eq_counts: Vec<u32> = cell_data
-        .iter()
-        .map(|x| x.1)
-        .collect();
+    let eq_counts: Vec<u32> = cell_data.iter().map(|x| x.1).collect();
     let mut dist = Multinomial::new(eq_counts, total_fragments).unwrap();
 
     // store bootstraps
@@ -470,7 +469,7 @@ pub(crate) fn run_bootstrap_subset(
     let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
+        let resampled_counts = dist.sample_u32(&mut rnd);
         for (idx, (eq_id, _orig_count)) in cell_data.iter().enumerate() {
             bootstrap_counts.push((*eq_id, resampled_counts[idx]));
         }
@@ -521,8 +520,8 @@ pub(crate) fn run_bootstrap_subset(
     bootstraps
 }
 
-pub fn run_bootstrap(
-    eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
+pub fn run_bootstrap<P: EqClassPayload>(
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_bootstraps: u32,
     gene_alpha: &[f32],
     // unique_evidence: &mut Vec<bool>,
@@ -549,7 +548,10 @@ pub fn run_bootstrap(
     let cell_data: Vec<(u32, u32)> = eqclasses
         .iter()
         .enumerate()
-        .map(|(idx, (_labels, count))| (idx as u32, *count))
+        .map(|(idx, (_labels, payload))| {
+            let count = payload.count();
+            (idx as u32, count)
+        })
         .collect();
 
     // now that we have the `IndexedEqList` representation of this data, just
@@ -565,6 +567,7 @@ pub fn run_bootstrap(
     )
 }
 
+/*
 #[allow(dead_code)]
 pub fn run_bootstrap_old(
     eqclasses: &HashMap<Vec<u32>, u32, ahash::RandomState>,
@@ -622,7 +625,7 @@ pub fn run_bootstrap_old(
     let mut rnd = rand::rng();
     for _bs_num in 0..num_bootstraps {
         // resample from multinomial
-        let resampled_counts: OVector<u32, _> = dist.sample_u32(&mut rnd);
+        let resampled_counts = dist.sample_u32(&mut rnd);
 
         for (eq_id, labels) in &eqclasses_serialize {
             eqclass_bootstrap.insert(labels.to_vec(), resampled_counts[*eq_id]);
@@ -706,4 +709,138 @@ pub fn run_bootstrap_old(
     }
 
     bootstraps
+}
+*/
+
+//em tailored for long read dataset
+pub fn em_update_long_read<P: EqClassPayload>(
+    alphas_in: &[f32],
+    alphas_out: &mut [f32],
+    eqclasses_prob: &HashMap<Vec<u32>, P, ahash::RandomState>,
+) {
+    // loop over all the eqclasses
+    for (labels, payload) in eqclasses_prob {
+        let count = payload.count();
+        if labels.len() > 1 {
+            let probs = payload.probs();
+            let mut denominator: f32 = 0.0;
+            let mut avg_probs: Vec<f32> = Vec::with_capacity(labels.len());
+            for (tx_idx, label) in labels.iter().enumerate() {
+                let sum_prob: f64 = (0..count as usize)
+                    .map(|i| probs[i][tx_idx])
+                    .sum();
+                let avg_prob: f32 = sum_prob as f32 / count as f32;
+                avg_probs.push(avg_prob);
+                denominator += alphas_in[*label as usize] * avg_prob;
+            }
+
+            if denominator > 0.0 {
+                let inv_denominator = (count as f32) / denominator;
+                for (tx_idx, label) in labels.iter().enumerate() {
+                    let index = *label as usize;
+                    let count = alphas_in[index] * avg_probs[tx_idx] * inv_denominator;
+                    alphas_out[index] += count;
+                }
+            }
+        } else {
+            let tidx = labels.first().expect("can't extract labels");
+            alphas_out[*tidx as usize] += count as f32;
+        }
+    }
+}
+
+pub fn em_optimize_long_read<P: EqClassPayload>(
+    eqclasses_prob: &HashMap<Vec<u32>, P, ahash::RandomState>,
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
+    init_type: EmInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    _log: &slog::Logger,
+) -> Vec<f32> {
+    let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
+    let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
+
+    for (labels, payload) in eqclasses_prob {
+        if labels.len() == 1 {
+            let idx = labels.first().expect("can't extract labels");
+            alphas_in[*idx as usize] += payload.count() as f32;
+            unique_evidence[*idx as usize] = true;
+        } else {
+            for idx in labels {
+                no_ambiguity[*idx as usize] = false;
+            }
+        }
+    }
+
+    if only_unique {
+        return alphas_in;
+    }
+
+    // fill in the alphas based on the initialization strategy
+    let mut rng = rand::rng();
+    let uni_prior = 1.0 / (num_alphas as f32);
+    for item in alphas_in.iter_mut().take(num_alphas) {
+        match init_type {
+            EmInitType::Uniform => {
+                *item = uni_prior;
+            }
+            EmInitType::Informative => {
+                *item = (*item + 0.5) * 1e-3;
+            }
+            EmInitType::Random => {
+                *item = rng.random::<f32>() + 1e-5;
+            }
+        }
+    }
+
+    // TODO: is it even necessary?
+    //alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+
+    let mut it_num: u32 = 0;
+    let mut converged: bool = true;
+    while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+        // perform one round of em update
+        em_update_long_read(&alphas_in, &mut alphas_out, eqclasses_prob);
+
+        converged = true;
+        let mut max_rel_diff = -f64::INFINITY;
+
+        for index in 0..num_alphas {
+            if alphas_out[index] > ALPHA_CHECK_CUTOFF {
+                let diff = alphas_in[index] - alphas_out[index];
+                let rel_diff = diff.abs();
+
+                max_rel_diff = match rel_diff > max_rel_diff as f32 {
+                    true => rel_diff as f64,
+                    false => max_rel_diff,
+                };
+
+                if rel_diff > REL_DIFF_TOLERANCE {
+                    converged = false;
+                }
+            } // end- in>out if
+
+            alphas_in[index] = alphas_out[index];
+            alphas_out[index] = 0.0_f32;
+        } //end-for
+
+        it_num += 1;
+    }
+
+    // update too small alphas
+    alphas_in.iter_mut().for_each(|alpha| {
+        if *alpha < MIN_OUTPUT_ALPHA {
+            *alpha = 0.0_f32;
+        }
+    });
+    //let alphas_sum: f32 = alphas_in.iter().sum();
+    //assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    /*
+    info!(log,
+    "Total Molecules after EM {}",
+    alphas_sum
+    );
+    */
+    alphas_in
 }

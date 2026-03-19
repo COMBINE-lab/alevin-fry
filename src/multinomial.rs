@@ -3,46 +3,47 @@ use rand_distr::weighted::{Weight, WeightedIndex};
 use rand_distr::Distribution;
 use rand_distr::uniform::{SampleUniform, SampleBorrow};
 use rand::Rng;
-use nalgebra::base::OVector;
-use nalgebra::base::dimension::Dyn;
 
 // TODO: check how many samples are required before WeightedAliasIndex outperforms WeightedIndex
 
 pub struct Multinomial<X: SampleUniform + PartialOrd + std::fmt::Debug> {
     alias_idx: WeightedIndex<X>,
-    nsamp: usize
+    num_classes: usize,
+    nsamp: usize,
 }
 
 impl<X: SampleUniform + PartialOrd + std::fmt::Debug> Multinomial<X> {
-    pub fn new<I>(w: I, n: usize) -> anyhow::Result<Self> 
+    pub fn new<I>(w: I, n: usize) -> anyhow::Result<Self>
     where
         I: IntoIterator,
         <I as IntoIterator>::Item: SampleBorrow<X>,
         X: Weight,
     {
-        let idx = WeightedIndex::new(w)?;
+        let weights: Vec<I::Item> = w.into_iter().collect();
+        let num_classes = weights.len();
+        let idx = WeightedIndex::new(weights)?;
         Ok(Self {
             alias_idx: idx,
-            nsamp:n
+            num_classes,
+            nsamp: n,
         })
     }
 
-    pub fn sample_u64<R: Rng + ?Sized>(&mut self, rnd: &mut R) -> OVector<u64, Dyn> {
-        let mut v: Vec<u64> = Vec::with_capacity(self.nsamp);
+    pub fn sample_u64<R: Rng + ?Sized>(&mut self, rnd: &mut R) -> Vec<u64> {
+        let mut v = vec![0u64; self.num_classes];
         for _ in 0..self.nsamp {
             let idx = self.alias_idx.sample(rnd);
             v[idx] += 1;
         }
-        OVector::<u64, Dyn>::from_vec(v)
+        v
     }
 
-    pub fn sample_u32<R: Rng + ?Sized>(&mut self, rnd: &mut R) -> OVector<u32, Dyn> {
-        let mut v: Vec<u32> = Vec::with_capacity(self.nsamp);
+    pub fn sample_u32<R: Rng + ?Sized>(&mut self, rnd: &mut R) -> Vec<u32> {
+        let mut v = vec![0u32; self.num_classes];
         for _ in 0..self.nsamp {
             let idx = self.alias_idx.sample(rnd);
             v[idx] += 1;
         }
-        OVector::<u32, Dyn>::from_vec(v)
+        v
     }
 }
-

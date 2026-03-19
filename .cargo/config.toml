@@ -1,0 +1,8 @@
+# taken from https://curiouscoding.nl/posts/release-flow/#avx2
+[build]
+# By default, we want maximum performance rather than portability.
+rustflags = ["-C", "target-cpu=native"]
+
+# Dev-only crate overrides should live in `.cargo/config.local.toml`
+# and be passed explicitly, for example:
+# cargo check --config .cargo/config.local.toml

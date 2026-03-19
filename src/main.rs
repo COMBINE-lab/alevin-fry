@@ -14,7 +14,7 @@ use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
-use rand::Rng;
+use rand::RngExt;
 use slog::{crit, info, o, warn, Drain};
 use std::path::PathBuf;
 
@@ -22,7 +22,7 @@ use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
 use alevin_fry::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
-use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
+use alevin_fry::prog_opts::{self, GenPermitListOpts, QuantOpts};
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
 #[global_allocator]
@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
                 .value_parser(value_parser!(u32))
                 .default_value(max_num_threads.clone()),
         )
-        .arg(arg!(-f --filter-best "keep only the highest scoring alignments for each read"))
+        .arg(arg!(-f --filter_best "keep only the highest scoring alignments for each read"))
         .arg(
             arg!(-o --output <RADFILE> "output RAD file")
                 .required(true)
@@ -126,7 +126,23 @@ fn main() -> anyhow::Result<()> {
         .arg(
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .value_parser(value_parser!(usize))
-                .default_value("10"));
+                .default_value("10"))
+        // Multi-barcode options (e.g., 10x Flex)
+        .arg(
+            arg!(--"sample-bc-list" <SAMPLELIST> "file containing known sample/library barcodes (one per line); triggers multi-barcode mode")
+                .value_parser(pathbuf_file_exists_validator)
+        )
+        .arg(
+            arg!(--"sample-names" <SAMPLENAMES> "file mapping sample barcodes to human-readable names (TSV: barcode\\tname)")
+                .value_parser(pathbuf_file_exists_validator)
+                .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"sample-correction-mode" <SCMODE> "correction mode for sample barcodes")
+                .value_parser(["exact", "1-edit"])
+                .default_value("exact")
+                .requires("sample-bc-list")
+        );
 
     let collate_app = Command::new("collate")
     .about("Collate a RAD file by corrected cell barcode")
@@ -142,7 +158,10 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-c --compress "compress the output collated RAD file"))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
          .value_parser(value_parser!(u32))
-         .default_value("30000000"));
+         .default_value("30000000"))
+    .arg(arg!(--"collation-mode" <CMODE> "collation mode for multi-barcode data: two-round (generalizable) or fast (single-pass for 2-level)")
+         .value_parser(["two-round", "fast"])
+         .default_value("two-round"));
 
     let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")
@@ -158,8 +177,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"))
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
+    .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
         .required(true)
@@ -195,7 +214,11 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
         .value_parser(value_parser!(usize))
         .default_value("10")
-        .hide(true));
+        .hide(true))
+    // Multi-sample output option (for multi-barcode RAD files)
+    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "output mode for multi-sample data: separate per-sample matrices, one combined matrix, or both")
+        .value_parser(["separate", "combined", "both"])
+        .default_value("separate"));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -211,8 +234,8 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default)"))
-    .arg(arg!(--"use-eds" "flag for writing output matrix in EDS format").conflicts_with("use-mtx"));
+    .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
+    .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true));
 
     let atac_app = atac_sub_commands();
 
@@ -346,6 +369,19 @@ fn main() -> anyhow::Result<()> {
             .get_one::<u32>("threads")
             .expect("valid integer number of threads") as usize;
 
+        // Parse multi-barcode options
+        let sample_bc_list: Option<PathBuf> =
+            t.get_one::<PathBuf>("sample-bc-list").cloned();
+        let sample_names: Option<PathBuf> =
+            t.get_one::<PathBuf>("sample-names").cloned();
+        let sample_correction_mode = match t
+            .get_one::<String>("sample-correction-mode")
+            .map(|s| s.as_str())
+        {
+            Some("1-edit") => prog_opts::SampleCorrectionMode::OneEdit,
+            _ => prog_opts::SampleCorrectionMode::Exact,
+        };
+
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
             .output_dir(output_dir)
@@ -356,6 +392,9 @@ fn main() -> anyhow::Result<()> {
             .velo_mode(velo_mode)
             .cmdline(&cmdline)
             .log(&log)
+            .sample_bc_list(sample_bc_list)
+            .sample_names(sample_names)
+            .sample_correction_mode(sample_correction_mode)
             .build();
 
         match generate_permit_list(gpl_opts) {
@@ -373,7 +412,7 @@ fn main() -> anyhow::Result<()> {
         let input_file: &PathBuf = t.get_one("bam").unwrap();
         let rad_file: &PathBuf = t.get_one("output").unwrap();
         let num_threads: u32 = *t.get_one("threads").unwrap();
-        let filter: bool = t.get_flag("filter-best");
+        let filter: bool = t.get_flag("filter_best");
         alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, filter, &log)?
     }
 
@@ -412,7 +451,9 @@ fn main() -> anyhow::Result<()> {
         let init_uniform = t.get_flag("init-uniform");
         let summary_stat = t.get_flag("summary-stat");
         let dump_eq = t.get_flag("dump-eqclasses");
-        let use_mtx = !t.get_flag("use-eds");
+        if t.get_flag("use-eds") {
+            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+        }
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
@@ -515,7 +556,6 @@ fn main() -> anyhow::Result<()> {
             .init_uniform(init_uniform)
             .summary_stat(summary_stat)
             .dump_eq(dump_eq)
-            .use_mtx(use_mtx)
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
@@ -594,7 +634,9 @@ fn main() -> anyhow::Result<()> {
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
-        let use_mtx = !t.get_flag("use-eds");
+        if t.get_flag("use-eds") {
+            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+        }
         let output_dir = t.get_one("output-dir").unwrap();
         let count_mat = t.get_one("count-mat").unwrap();
         let eq_label_file = t.get_one("eq-labels").unwrap();
@@ -605,7 +647,6 @@ fn main() -> anyhow::Result<()> {
             count_mat,
             eq_label_file,
             usa_mode,
-            use_mtx,
             num_threads,
             filter_list,
             output_dir,

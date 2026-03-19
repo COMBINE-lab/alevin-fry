@@ -35,7 +35,6 @@ pub fn infer(
     count_mat_file: &PathBuf,
     eq_label_file: &PathBuf,
     usa_mode: bool,
-    _use_mtx: bool,
     num_threads: u32,
     filter_list: Option<&PathBuf>,
     output_dir: &PathBuf,

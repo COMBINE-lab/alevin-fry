@@ -31,7 +31,7 @@ use libradicl::{
 };
 
 use needletail::bitkmer::*;
-use rand::Rng;
+use rand::RngExt;
 use std::error::Error;
 use std::path::Path;
 use std::str;
@@ -215,7 +215,7 @@ where
                 );
 
                 let decoder: Box<dyn std::io::BufRead> = Box::new(
-                    bgzf::MultithreadedReader::with_worker_count(decomp_threads, file),
+                    bgzf::io::MultithreadedReader::with_worker_count(decomp_threads, file),
                 );
                 Box::new(nbam::io::Reader::from(decoder))
             }
