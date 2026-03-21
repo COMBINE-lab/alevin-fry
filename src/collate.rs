@@ -243,6 +243,133 @@ fn get_most_ambiguous_record(mdata: &serde_json::Value, log: &slog::Logger) -> u
     }
 }
 
+/// Multi-barcode-aware version of `collate_temporary_bucket_twopass_generic`.
+///
+/// The generic version groups records by `collate_key()` which returns only
+/// the cell barcode.  When cells from different samples share the same cell
+/// barcode and land in the same temp bucket, they get incorrectly merged into
+/// a single chunk.
+///
+/// This version computes a composite grouping key from ALL barcodes in the
+/// record header (sample + cell), so cells from different samples always
+/// produce separate chunks.
+fn collate_multi_bc_bucket<T: Read + Seek, U: Write>(
+    reader: &mut BufReader<T>,
+    rec_context: &MultiBarcodeRecordContext,
+    nrec: u32,
+    owriter: &std::sync::Mutex<U>,
+    compress: bool,
+    cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
+    cell_bc_bits: u64,
+    cell_bc_mask: u64,
+    sample_bc_to_idx: &HashMap<u64, usize>,
+) -> usize {
+    use libradicl::record::CollatableMappedRecord;
+
+    let mut tbuf = vec![0u8; 65536];
+    let mut total_bytes = 0usize;
+    let chunk_header_size = 2 * std::mem::size_of::<u32>() as u64;
+    let size_of_aln = MultiBarcodeReadRecord::nbytes_aln(rec_context);
+    let calc_record_bytes =
+        |num_aln: usize| -> usize { MultiBarcodeReadRecord::nbytes(num_aln as u32, rec_context) };
+
+    // Compute composite key from corrected barcodes in the record header.
+    // Uses the same encoding as the tsv_map and scatter phase:
+    // (sample_idx << cell_bc_bits) | (corrected_cell_bc & cell_bc_mask).
+    // The sample index is recovered from the corrected sample barcode
+    // stored in barcodes[0].
+    let composite_key = |hdr: &<MultiBarcodeReadRecord as CollatableMappedRecord<u64>>::CollatableRecordHeader| -> u64 {
+        if hdr.barcodes.len() >= 2 {
+            let sample_idx = sample_bc_to_idx
+                .get(&hdr.barcodes[0])
+                .copied()
+                .unwrap_or(0) as u64;
+            (sample_idx << cell_bc_bits) | (hdr.barcodes[1] & cell_bc_mask)
+        } else {
+            hdr.collate_key()
+        }
+    };
+
+    // Pass 1: count bytes per composite key
+    for _ in 0..(nrec as usize) {
+        let tup = <MultiBarcodeReadRecord as CollatableMappedRecord<u64>>::from_bytes_collatable_header(reader, rec_context)
+            .expect("can read header");
+
+        let key = composite_key(&tup);
+        let v = cb_byte_map
+            .entry(key)
+            .or_insert(TempCellInfo {
+                offset: chunk_header_size,
+                nbytes: chunk_header_size as u32,
+                nrec: 0_u32,
+            });
+
+        let na = tup.naln() as usize;
+        let req_size = size_of_aln * na;
+        if tbuf.len() < req_size {
+            tbuf.resize(req_size, 0);
+        }
+        reader.read_exact(&mut tbuf[0..req_size]).unwrap();
+        let nbytes = calc_record_bytes(na);
+        v.offset += nbytes as u64;
+        v.nbytes += nbytes as u32;
+        v.nrec += 1;
+        total_bytes += nbytes;
+    }
+
+    total_bytes += cb_byte_map.len() * chunk_header_size as usize;
+    let mut output_buffer = std::io::Cursor::new(vec![0u8; total_bytes]);
+
+    let mut next_offset = 0u64;
+    for (_, v) in cb_byte_map.iter_mut() {
+        output_buffer.set_position(next_offset);
+        output_buffer.write_all(&v.nbytes.to_le_bytes()).unwrap();
+        output_buffer.write_all(&v.nrec.to_le_bytes()).unwrap();
+        v.offset = output_buffer.position();
+        next_offset += v.nbytes as u64;
+    }
+
+    // Pass 2: write records to correct positions
+    reader.get_mut().seek(std::io::SeekFrom::Start(0)).expect("could not seek");
+
+    for _ in 0..(nrec as usize) {
+        let tup = <MultiBarcodeReadRecord as CollatableMappedRecord<u64>>::from_bytes_collatable_header(reader, rec_context)
+            .expect("can read header");
+
+        let key = composite_key(&tup);
+        if let Some(v) = cb_byte_map.get_mut(&key) {
+            output_buffer.set_position(v.offset);
+            tup.write_fields(&mut output_buffer, rec_context)
+                .expect("could write header");
+
+            let na = tup.naln() as usize;
+            let bytes_for_aln_rec = size_of_aln;
+            reader.read_exact(&mut tbuf[0..(bytes_for_aln_rec * na)]).unwrap();
+            output_buffer.write_all(&tbuf[..(bytes_for_aln_rec * na)]).unwrap();
+
+            v.offset = output_buffer.position();
+        } else {
+            panic!("should not have any barcodes we can't find");
+        }
+    }
+
+    let total_chunks = cb_byte_map.len();
+    let odata = output_buffer.into_inner();
+
+    if compress {
+        let mut compressed = snap::write::FrameEncoder::new(Vec::with_capacity(odata.len() / 2));
+        compressed.write_all(&odata).expect("could not compress");
+        let compressed_data = compressed.into_inner().expect("could not finish compression");
+        let mut oput = owriter.lock().expect("couldn't get output lock");
+        oput.write_all(&compressed_data).expect("couldn't write output");
+    } else {
+        let mut oput = owriter.lock().expect("couldn't get output lock");
+        oput.write_all(&odata).expect("couldn't write output");
+    }
+
+    total_chunks
+}
+
 /// Correct unmapped barcode counts for multi-barcode (Flex) data.
 ///
 /// Reads the raw unmapped_bc_count.bin (self-describing format with per-field barcodes),
@@ -1107,6 +1234,7 @@ where
                     input_dir,
                     &rad_dir,
                     parsing_context,
+                    cell_bc_len as u32,
                     prelude,
                     br,
                     end_header_pos,
@@ -1154,6 +1282,7 @@ fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     input_dir: P1,
     rad_dir: P2,
     rec_context: MultiBarcodeRecordContext,
+    cell_bc_len: u32,
     prelude: RadPrelude,
     mut br: BufReader<A>,
     end_header_pos: u64,
@@ -1178,6 +1307,15 @@ where
         (num_threads - 1) as usize
     } else {
         1
+    };
+
+    // Compute the bit-shift and mask for building composite keys from
+    // (corrected_sample_bc, corrected_cell_bc).  The cell barcode occupies
+    // the low bits; the sample barcode is shifted above it.
+    let cell_bc_bits = (cell_bc_len * 2) as u64; // 2 bits per nucleotide
+    let cell_bc_mask = (1u64 << cell_bc_bits) - 1;
+    let make_composite_key = |sample_bc: u64, cell_bc: u64| -> u64 {
+        (sample_bc << cell_bc_bits) | (cell_bc & cell_bc_mask)
     };
 
     // Read metadata
@@ -1230,14 +1368,7 @@ where
     let mut per_sample_valid_bcs: Vec<Vec<u64>> = Vec::new();
     let mut all_cell_freqs: Vec<(u64, u64, usize)> = Vec::new(); // (corrected_cell_bc, freq, sample_idx)
 
-    // Get cell barcode length from file tags
-    let _cell_bc_tag = format!("b{}len", prelude.read_tags.tags.len().saturating_sub(2));
-    // Try to read from the file_tag_map if available, otherwise use a default
-    let _cell_bc_len: u32 = {
-        let _ftm = prelude.file_tags.parse_tags_from_bytes(&mut std::io::Cursor::new(Vec::<u8>::new())).ok();
-        // Use 16 as default cell BC length (standard for 10x)
-        16u32
-    };
+    // cell_bc_len is passed in from the caller (extracted from the RAD file tags)
 
     for (sample_idx, _entry) in sample_entries.iter().enumerate() {
         let sample_name = &sample_names[sample_idx];
@@ -1280,14 +1411,16 @@ where
             .then(b.1.cmp(&a.1))
     });
 
-    // Build the tsv_map equivalent: (composite_key, freq) pairs
-    // composite_key encodes both sample and cell for ordering
-    // We use (sample_idx << 48) | cell_bc as composite key for bucket ordering
+    // Build the tsv_map equivalent: (composite_key, freq) pairs.
+    // The composite key encodes (sample_idx, corrected_cell_bc).
+    // We use the integer sample index (not the raw barcode) because it's
+    // compact and directly corresponds to the manifest's sample groups.
+    // The gather phase maps barcodes[0] back to sample_idx via
+    // sample_bc_to_idx to compute the same key.
     let tsv_map: Vec<(u64, u64)> = all_cell_freqs
         .iter()
         .map(|(bc, freq, sidx)| {
-            let composite = ((*sidx as u64) << 48) | (*bc & 0x0000_FFFF_FFFF_FFFF);
-            (composite, *freq)
+            (make_composite_key(*sidx as u64, *bc), *freq)
         })
         .collect();
 
@@ -1584,9 +1717,11 @@ where
                             }
                         };
 
-                        // Compute composite key for bucket lookup
+                        // Compute composite key for bucket lookup.
+                        // Uses (sample_idx, corrected_cell_bc) — matching tsv_map
+                        // and gather phase.
                         let composite_key =
-                            ((sample_idx as u64) << 48) | (corrected_cell & 0x0000_FFFF_FFFF_FFFF);
+                            ((sample_idx as u64) << cell_bc_bits) | (corrected_cell & cell_bc_mask);
 
                         if let Some(bucket) = oc.get(&composite_key) {
                             // Read full record (alignments) with orientation filtering
@@ -1719,6 +1854,7 @@ where
         let owriter_clone = owriter.clone();
         let pbar_clone = pbar_gather.clone();
         let ctx = rec_context.clone();
+        let sbc2idx = sample_bc_to_idx.clone();
 
         let handle = thread::spawn(move || {
             let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
@@ -1741,10 +1877,9 @@ where
                     let tfile = File::open(&fname).expect("couldn't open temporary file");
                     let mut treader = BufReader::new(tfile);
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<
-                        u64, _, _, MultiBarcodeReadRecord,
-                    >(
+                    local_chunks += collate_multi_bc_bucket(
                         &mut treader, &ctx, nrec, &owriter_clone, compress_out, &mut cmap,
+                        cell_bc_bits, cell_bc_mask, &sbc2idx,
                     ) as u64;
 
                     drop(treader);
@@ -1782,7 +1917,7 @@ where
     // Group cells by sample from the tsv_map composite keys
     let mut sample_chunk_counts: HashMap<usize, (u64, u64)> = HashMap::new(); // sample_idx -> (num_cells, num_records)
     for (composite_key, freq) in &tsv_map {
-        let sidx = (*composite_key >> 48) as usize;
+        let sidx = (*composite_key >> cell_bc_bits) as usize;
         let entry = sample_chunk_counts.entry(sidx).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += freq;
