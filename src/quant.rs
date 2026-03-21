@@ -417,10 +417,13 @@ struct WorkerSharedState<R: MappedRecord> {
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<libradicl::unmapped::CollatedUnmappedCounts>,
     mmrate: Arc<Mutex<Vec<f64>>>,
-    /// Maps cell_num (chunk index in collated file) → sample index. None for single-barcode.
-    cell_sample_idx: Option<Arc<Vec<u16>>>,
-    /// Sample names indexed by sample index. None for single-barcode.
-    sample_names: Option<Arc<Vec<String>>>,
+    /// Maps canonical sample barcode → sample name. None for single-barcode.
+    /// Used in multi-barcode mode to look up the sample name from the corrected
+    /// sample barcode stored in each record (barcodes[0]), rather than relying
+    /// on positional chunk ordering which can be non-deterministic.
+    sample_bc_to_name: Option<Arc<HashMap<u64, String, ahash::RandomState>>>,
+    /// Extracts the sample barcode from a record. None for single-barcode types.
+    sample_bc_extractor: Option<Arc<dyn Fn(&R) -> u64 + Send + Sync>>,
 }
 
 /// Threshold (in number of records) below which a cell uses the fast path
@@ -724,7 +727,14 @@ where
                 // TODO: Clean up the expect() and merge with the check above
                 // the expect shouldn't happen, but the message is redundant with
                 // the above.  Plus, this would panic if it actually occurred.
-                let bc = c.reads.first().expect("chunk with no reads").collate_key();
+                let first_rec = c.reads.first().expect("chunk with no reads");
+                let bc = first_rec.collate_key();
+                // For multi-barcode records, extract the sample barcode
+                // from the first record so we can look up the sample name
+                // later without depending on chunk ordering.
+                let sample_bc: Option<u64> = shared.sample_bc_extractor
+                    .as_ref()
+                    .map(|ext| ext(first_rec));
 
                 // The structures we'll need to hold our output for this
                 // cell.
@@ -1160,10 +1170,12 @@ where
                         let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
                         let bc_str = unsafe { std::str::from_utf8_unchecked(bc_bytes) };
 
-                        // For multi-barcode data, prefix with sample name
-                        let sample_name = shared.cell_sample_idx.as_ref().and_then(|idx| {
-                            let si = *idx.get(cell_num)? as usize;
-                            shared.sample_names.as_ref()?.get(si).map(|s| s.as_str())
+                        // For multi-barcode data, prefix with sample name.
+                        // The sample barcode was extracted from the first record
+                        // of this chunk (not from chunk position), so sample
+                        // assignment is correct regardless of gather-phase order.
+                        let sample_name = sample_bc.and_then(|sbc| {
+                            shared.sample_bc_to_name.as_ref()?.get(&sbc).map(|s| s.as_str())
                         });
 
                         if let Some(sn) = sample_name {
@@ -1264,6 +1276,7 @@ pub(crate) fn do_quantify<T: BufRead, B, R, P>(
     quant_opts: QuantOpts,
     prelude: RadPrelude,
     file_tag_map: TagMap,
+    sample_bc_extractor: Option<Arc<dyn Fn(&R) -> u64 + Send + Sync>>,
 ) -> anyhow::Result<()>
 where
     B: ConvertiblePrimitiveInteger,
@@ -1286,24 +1299,25 @@ where
     // barcodes and the sample_name column in featureDump.txt directly
     // during quantification, avoiding a non-deterministic post-processing step.
     let manifest_path = parent.join("collation_manifest.bin");
-    let (cell_sample_idx, sample_names) = if manifest_path.exists() {
+    // For multi-barcode data, build a map from canonical sample barcode → sample name.
+    // This is used to look up the sample directly from each record's corrected
+    // sample barcode (barcodes[0]), avoiding dependence on chunk ordering.
+    let sample_bc_to_name = if manifest_path.exists() {
         let manifest = CollationManifest::read_from_file(&manifest_path)?;
-        let mut names = Vec::new();
-        let mut idx_map = Vec::new();
-        for (si, group) in manifest.sample_groups.iter().enumerate() {
-            let default_name = format!("{:x}", group.key);
-            let name = group.name.as_deref().unwrap_or(&default_name).to_string();
-            names.push(name);
-            for _ in 0..group.num_chunks {
-                idx_map.push(si as u16);
-            }
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut map = HashMap::<u64, String, ahash::RandomState>::with_hasher(s);
+        for group in manifest.sample_groups.iter() {
+            let name = group
+                .name
+                .as_deref()
+                .unwrap_or(&format!("{:x}", group.key))
+                .to_string();
+            map.insert(group.key, name);
         }
-        (Some(idx_map), Some(names))
+        Some(Arc::new(map))
     } else {
-        (None, None)
+        None
     };
-    let cell_sample_idx = cell_sample_idx.map(std::sync::Arc::new);
-    let sample_names = sample_names.map(std::sync::Arc::new);
 
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
@@ -1533,7 +1547,7 @@ where
 
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
-    if cell_sample_idx.is_some() {
+    if sample_bc_to_name.is_some() {
         writeln!(
             ff_file,
             "CB\tsample_name\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
@@ -1684,8 +1698,8 @@ where
             empty_resolved_cells,
             unmapped_count,
             mmrate,
-            cell_sample_idx: cell_sample_idx.clone(),
-            sample_names: sample_names.clone(),
+            sample_bc_to_name: sample_bc_to_name.clone(),
+            sample_bc_extractor: sample_bc_extractor.clone(),
         };
 
         // now, make the worker thread
@@ -1879,6 +1893,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 quant_opts,
                 prelude,
                 file_tag_map,
+                None,
             )
         }
         KnownRecordType::AtacSeq(_bc_len) => {
@@ -1895,6 +1910,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 quant_opts,
                 prelude,
                 file_tag_map,
+                None,
             )
         }
         KnownRecordType::RnaShort(_bc_len) => {
@@ -1907,6 +1923,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
                 quant_opts,
                 prelude,
                 file_tag_map,
+                None,
             )
         }
         KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc) => {
@@ -1920,11 +1937,18 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
             // Run quantification using MultiBarcodeReadRecord.
             // The collation has grouped records by (sample, cell) and each chunk
             // is one cell's data. collate_key() returns the cell barcode.
+            // The sample barcode extractor reads barcodes[0] (the corrected
+            // sample barcode) from each record for sample name lookup.
+            let extractor: Arc<dyn Fn(&MultiBarcodeReadRecord) -> u64 + Send + Sync> =
+                Arc::new(|rec: &MultiBarcodeReadRecord| -> u64 {
+                    rec.barcodes[0]
+                });
             do_quantify::<_, u64, MultiBarcodeReadRecord, BasicEqClassPayload>(
                 br,
                 quant_opts,
                 prelude,
                 file_tag_map,
+                Some(extractor),
             )?;
 
             Ok(())
