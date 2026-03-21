@@ -1,21 +1,21 @@
 use crate::atac::prog_opts::GenPermitListOpts;
 use crate::diagnostics;
 use crate::utils as afutils;
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use bstr::io::BufReadExt;
 use dashmap::DashMap;
 use indicatif::{ProgressBar, ProgressDrawTarget};
 use std::num::NonZeroUsize;
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
     Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
 };
 // use indexmap::map::IndexMap;
 use itertools::Itertools;
+use libradicl::BarcodeLookupMap;
 use libradicl::exit_codes;
 use libradicl::rad_types;
 use libradicl::rad_types::TagValue;
-use libradicl::BarcodeLookupMap;
 use libradicl::{chunk, record::AtacSeqReadRecord};
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
@@ -604,9 +604,12 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     valid_thresh,
                 ) {
                     Ok(f) => {
-                        info!(log,
-                        "The percentage of mapped reads not matching a known barcode exactly is {:.3}%, which is < the warning threshold {:.3}%",
-                        f * 100f64, valid_thresh * 100f64);
+                        info!(
+                            log,
+                            "The percentage of mapped reads not matching a known barcode exactly is {:.3}%, which is < the warning threshold {:.3}%",
+                            f * 100f64,
+                            valid_thresh * 100f64
+                        );
                     }
                     Err(e) => {
                         warn!(log, "{:?}", e);

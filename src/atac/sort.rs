@@ -1,7 +1,7 @@
 use crate::constants as afconst;
 use crate::utils as afutils;
 use afutils::InternalVersionInfo;
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info};
@@ -28,8 +28,8 @@ use std::io::{BufReader, Cursor, Read, Seek, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -201,7 +201,9 @@ where
             }
         },
         None => {
-            return Err(anyhow!("The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"));
+            return Err(anyhow!(
+                "The generate_permit_list.json file does not contain a version_str field. Please re-run the generate-permit-list step with a newer version of alevin-fry"
+            ));
         }
     };
 
@@ -241,10 +243,12 @@ where
         .context("couldn't read freq file version")?;
     // make sure versions match
     if freq_file_version > afconst::PERMIT_FILE_VER {
-        crit!(log,
-                "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
-                freq_file_version, afconst::PERMIT_FILE_VER
-            );
+        crit!(
+            log,
+            "The permit_freq.bin file had version {}, but this version of alevin-fry requires version {}",
+            freq_file_version,
+            afconst::PERMIT_FILE_VER
+        );
         return Err(anyhow!("execution terminated unexpectedly"));
     }
 

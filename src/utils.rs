@@ -221,7 +221,7 @@ impl EqClassPayload for LongReadEqClassPayload {
 pub struct AlnExtras<'a> {
     pub as_scores: &'a [i32],
     pub ends: &'a [u32],
-    pub tlens: &'a [u32], 
+    pub tlens: &'a [u32],
 }
 
 pub trait OptionalAlignmentExtras {
@@ -308,7 +308,12 @@ pub(crate) fn get_record_type_from_prelude(
             let cell_bc_tag = format!("b{}len", num_bc - 1);
             let cell_bc_len: u16 = file_tag_map
                 .get(&cell_bc_tag)
-                .unwrap_or_else(|| panic!("multi-barcode RAD file should have a \"{}\" file-level tag", cell_bc_tag))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "multi-barcode RAD file should have a \"{}\" file-level tag",
+                        cell_bc_tag
+                    )
+                })
                 .try_into()
                 .unwrap_or_else(|_| panic!("should be able to parse \"{}\" as a u16", cell_bc_tag));
             return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc);

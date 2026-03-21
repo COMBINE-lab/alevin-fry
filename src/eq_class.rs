@@ -37,11 +37,7 @@ fn score_probabilities(scores: &[i32]) -> Vec<f64> {
     out
 }
 
-
-fn end_probabilities(
-    ends: &[u32],
-    tlens: &[u32],
-) -> Vec<f64> {
+fn end_probabilities(ends: &[u32], tlens: &[u32]) -> Vec<f64> {
     let std_dev: f64 = 100.0;
     let thresh: f64 = 100.0;
     let min_end: f64 = 3.0;
@@ -87,7 +83,6 @@ fn end_probabilities(
 
     out
 }
-
 
 // Modified from https://stackoverflow.com/questions/69764050/how-to-get-the-indices-that-would-sort-a-vec
 // kmdreko
@@ -869,11 +864,15 @@ impl EqMap {
                     // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
                         let scores = extras.as_scores;
-                        let ends   = extras.ends;
-                        let tlens  = extras.tlens;
+                        let ends = extras.ends;
+                        let tlens = extras.tlens;
                         let score_probs = score_probabilities(scores);
                         let end_probs = end_probabilities(ends, tlens);
-                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let mut final_probs: Vec<f64> = score_probs
+                            .iter()
+                            .zip(end_probs.iter())
+                            .map(|(sp, ep)| sp * ep)
+                            .collect();
                         let prob_sum: f64 = final_probs.iter().sum();
                         if prob_sum > 0.0 {
                             for p in final_probs.iter_mut() {
@@ -905,11 +904,15 @@ impl EqMap {
                     // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
                         let scores = extras.as_scores;
-                        let ends   = extras.ends;
-                        let tlens  = extras.tlens;
+                        let ends = extras.ends;
+                        let tlens = extras.tlens;
                         let score_probs = score_probabilities(scores);
                         let end_probs = end_probabilities(ends, tlens);
-                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let mut final_probs: Vec<f64> = score_probs
+                            .iter()
+                            .zip(end_probs.iter())
+                            .map(|(sp, ep)| sp * ep)
+                            .collect();
                         let prob_sum: f64 = final_probs.iter().sum();
                         if prob_sum > 0.0 {
                             for p in final_probs.iter_mut() {

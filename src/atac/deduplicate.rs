@@ -11,7 +11,7 @@ use num_format::ToFormattedString;
 use slog::info;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::{atomic::AtomicU32, atomic::Ordering, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicU32, atomic::Ordering};
 use std::thread;
 
 pub fn write_bed(

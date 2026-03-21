@@ -14,7 +14,7 @@ use slog::{crit, info};
 //use num_format::{Locale};
 use std::fs;
 use std::fs::File;
-use std::io::{stdout, BufReader, BufWriter, Cursor, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Cursor, Seek, SeekFrom, Write, stdout};
 // use std::sync::{Arc, Mutex};
 //
 
@@ -293,27 +293,29 @@ where
 
         // read-level
         let flag_data = rec.data();
-        let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
-            match bcs {
+        let bc_string_in: &str = match flag_data.get(&CR) {
+            Some(Ok(bcs)) => match bcs {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into barcode string.");
                 }
+            },
+            _ => {
+                panic!("Input record missing CR tag!")
             }
-        } _ => {
-            panic!("Input record missing CR tag!")
-        }};
+        };
 
-        let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
-            match umis {
+        let umi_string_in: &str = match flag_data.get(&UR) {
+            Some(Ok(umis)) => match umis {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into umi string.");
                 }
+            },
+            _ => {
+                panic!("Input record missing UR tag!")
             }
-        } _ => {
-            panic!("Input record missing UR tag!")
-        }};
+        };
         let bclen = bc_string_in.len() as u16;
         let umilen = umi_string_in.len() as u16;
 
@@ -492,31 +494,33 @@ where
         // if this is a new read update the old variables
         {
             let flag_data = rec.data();
-            let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
-                match bcs {
+            let bc_string_in: &str = match flag_data.get(&CR) {
+                Some(Ok(bcs)) => match bcs {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                     }
                     _ => {
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
+                },
+                _ => {
+                    panic!("Input record missing CR tag!")
                 }
-            } _ => {
-                panic!("Input record missing CR tag!")
-            }};
+            };
 
-            let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
-                match umis {
+            let umi_string_in: &str = match flag_data.get(&UR) {
+                Some(Ok(umis)) => match umis {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
                     }
                     _ => {
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
+                },
+                _ => {
+                    panic!("Input record missing UR tag!")
                 }
-            } _ => {
-                panic!("Input record missing UR tag!")
-            }};
+            };
 
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);

@@ -10,10 +10,10 @@ use std::path::Path;
 
 use libradicl::chunk::Chunk;
 use libradicl::header::{RadHeader, RadPrelude};
-use libradicl::rad_types::{RadIntId, RadType, TagDesc, TagMap, TagSection, TagSectionLabel, TagValue};
-use libradicl::record::{
-    MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext,
+use libradicl::rad_types::{
+    RadIntId, RadType, TagDesc, TagMap, TagSection, TagSectionLabel, TagValue,
 };
+use libradicl::record::{MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext};
 use libradicl::writers::RadFileWriter;
 use smallvec::smallvec;
 
@@ -23,6 +23,7 @@ use smallvec::smallvec;
 
 /// Number of reference targets in test data
 const NUM_REFS: u64 = 10;
+const TEST_VERSION: &str = "0.12.0";
 /// Sample barcode length (bases)
 const SAMPLE_BC_LEN: u16 = 8;
 /// Cell barcode length (bases)
@@ -106,10 +107,10 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
 
     // File-level tag values
     let mut file_tag_map = TagMap::with_keyset(&prelude.file_tags.tags);
-    file_tag_map.add(TagValue::U16(2));                    // num_barcodes
-    file_tag_map.add(TagValue::U16(SAMPLE_BC_LEN));        // b0len
-    file_tag_map.add(TagValue::U16(CELL_BC_LEN));          // b1len
-    file_tag_map.add(TagValue::U16(UMI_LEN));              // ulen
+    file_tag_map.add(TagValue::U16(2)); // num_barcodes
+    file_tag_map.add(TagValue::U16(SAMPLE_BC_LEN)); // b0len
+    file_tag_map.add(TagValue::U16(CELL_BC_LEN)); // b1len
+    file_tag_map.add(TagValue::U16(UMI_LEN)); // ulen
     file_tag_map.add(TagValue::String("sc_rna_multi_bc".to_string())); // known_rad_type
 
     (prelude, file_tag_map)
@@ -126,6 +127,25 @@ fn create_synthetic_multi_bc_rad(
     reads_per_cell: usize,
     sample_barcodes: &[u64],
 ) -> anyhow::Result<MultiBarcodeRecordContext> {
+    create_synthetic_multi_bc_rad_with_shared_cells(
+        path,
+        num_samples,
+        cells_per_sample,
+        reads_per_cell,
+        sample_barcodes,
+        false,
+    )
+}
+
+/// Create a synthetic multi-barcode RAD file with optional shared cell barcodes across samples.
+fn create_synthetic_multi_bc_rad_with_shared_cells(
+    path: &Path,
+    num_samples: usize,
+    cells_per_sample: usize,
+    reads_per_cell: usize,
+    sample_barcodes: &[u64],
+    share_cell_barcodes_across_samples: bool,
+) -> anyhow::Result<MultiBarcodeRecordContext> {
     let (prelude, file_tag_map) = make_multi_bc_prelude();
 
     let ctx = MultiBarcodeRecordContext::get_context_from_tag_section(
@@ -140,8 +160,18 @@ fn create_synthetic_multi_bc_rad(
     // Generate chunks. Each chunk contains all reads for one cell.
     // We interleave samples so records are NOT pre-sorted by sample.
     for cell_idx in 0..cells_per_sample {
-        for (sample_idx, sample_bc) in sample_barcodes.iter().copied().enumerate().take(num_samples) {
-            let cell_bc = make_packed_bc((sample_idx * 1000 + cell_idx) as u64, CELL_BC_LEN);
+        for (sample_idx, sample_bc) in sample_barcodes
+            .iter()
+            .copied()
+            .enumerate()
+            .take(num_samples)
+        {
+            let cell_seed = if share_cell_barcodes_across_samples {
+                cell_idx as u64
+            } else {
+                (sample_idx * 1000 + cell_idx) as u64
+            };
+            let cell_bc = make_packed_bc(cell_seed, CELL_BC_LEN);
 
             let mut reads = Vec::with_capacity(reads_per_cell);
             for read_idx in 0..reads_per_cell {
@@ -182,6 +212,35 @@ fn write_sample_bc_list(path: &Path, barcodes: &[u64], bc_len: u16) -> anyhow::R
     Ok(())
 }
 
+fn write_named_sample_bc_list(
+    path: &Path,
+    entries: &[(&str, u64)],
+    bc_len: u16,
+) -> anyhow::Result<()> {
+    let mut f = BufWriter::new(File::create(path)?);
+    for (name, bc) in entries {
+        let seq = packed_to_nuc(*bc, bc_len as usize);
+        writeln!(f, "{}\t{}", seq, name)?;
+    }
+    Ok(())
+}
+
+fn write_tg_map(path: &Path) -> anyhow::Result<()> {
+    let mut f = BufWriter::new(File::create(path)?);
+    for i in 0..NUM_REFS {
+        writeln!(f, "gene_{}\tgene_{}", i, i)?;
+    }
+    Ok(())
+}
+
+fn make_test_logger() -> slog::Logger {
+    let decorator = slog_term::PlainDecorator::new(slog_term::TestStdoutWriter);
+    let drain = slog_term::CompactFormat::new(decorator).build();
+    let drain = std::sync::Mutex::new(drain);
+    let drain = slog::Fuse::new(drain);
+    slog::Logger::root(drain, slog::o!())
+}
+
 /// Convert a 2-bit packed barcode to a nucleotide string.
 fn packed_to_nuc(packed: u64, len: usize) -> String {
     let bases = ['A', 'C', 'G', 'T'];
@@ -213,7 +272,11 @@ fn test_synthetic_rad_roundtrip() {
     let reads_per_cell = 5;
 
     let ctx = create_synthetic_multi_bc_rad(
-        &rad_path, num_samples, cells_per_sample, reads_per_cell, &sample_bcs,
+        &rad_path,
+        num_samples,
+        cells_per_sample,
+        reads_per_cell,
+        &sample_bcs,
     )
     .unwrap();
 
@@ -221,7 +284,10 @@ fn test_synthetic_rad_roundtrip() {
     let file = File::open(&rad_path).unwrap();
     let mut reader = BufReader::new(file);
     let prelude = RadPrelude::from_bytes(&mut reader).unwrap();
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut reader).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut reader)
+        .unwrap();
 
     // Verify header
     let expected_chunks = (num_samples * cells_per_sample) as u64;
@@ -229,7 +295,11 @@ fn test_synthetic_rad_roundtrip() {
     assert_eq!(prelude.hdr.ref_count, NUM_REFS);
 
     // Verify file tags
-    let num_bc: u16 = file_tag_map.get("num_barcodes").unwrap().try_into().unwrap();
+    let num_bc: u16 = file_tag_map
+        .get("num_barcodes")
+        .unwrap()
+        .try_into()
+        .unwrap();
     assert_eq!(num_bc, 2);
     let b0len: u16 = file_tag_map.get("b0len").unwrap().try_into().unwrap();
     assert_eq!(b0len, SAMPLE_BC_LEN);
@@ -265,7 +335,7 @@ fn test_synthetic_rad_roundtrip() {
 /// Test the generate-permit-list step for multi-barcode data.
 #[test]
 fn test_multi_bc_generate_permit_list() {
-    use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
     use alevin_fry::prog_opts::{GenPermitListOpts, SampleCorrectionMode};
     use bio_types::strand::Strand;
 
@@ -286,7 +356,11 @@ fn test_multi_bc_generate_permit_list() {
     // Create RAD file
     let rad_path = rad_dir.join("map.rad");
     create_synthetic_multi_bc_rad(
-        &rad_path, num_samples, cells_per_sample, reads_per_cell, &sample_bcs,
+        &rad_path,
+        num_samples,
+        cells_per_sample,
+        reads_per_cell,
+        &sample_bcs,
     )
     .unwrap();
 
@@ -295,11 +369,7 @@ fn test_multi_bc_generate_permit_list() {
     write_sample_bc_list(&sample_list_path, &sample_bcs, SAMPLE_BC_LEN).unwrap();
 
     // Setup logger
-    let decorator = slog_term::PlainDecorator::new(slog_term::TestStdoutWriter);
-    let drain = slog_term::CompactFormat::new(decorator).build();
-    let drain = std::sync::Mutex::new(drain);
-    let drain = slog::Fuse::new(drain);
-    let log = slog::Logger::root(drain, slog::o!());
+    let log = make_test_logger();
 
     // Run generate-permit-list
     let gpl_opts = GenPermitListOpts::builder()
@@ -318,7 +388,10 @@ fn test_multi_bc_generate_permit_list() {
         .build();
 
     let total_cells = generate_permit_list(gpl_opts).unwrap();
-    assert!(total_cells > 0, "expected at least some cells to be retained");
+    assert!(
+        total_cells > 0,
+        "expected at least some cells to be retained"
+    );
 
     // Verify outputs
     assert!(output_dir.join("sample_permit_map.bin").exists());
@@ -339,12 +412,134 @@ fn test_multi_bc_generate_permit_list() {
         let sample_dir = output_dir.join(format!("sample_{}", name));
         // At least one sample should have permit maps
         if entry["num_cells"].as_u64().unwrap() > 0 {
-            assert!(sample_dir.join("permit_map.bin").exists(),
-                "permit_map.bin should exist for sample {} with cells", name);
-            assert!(sample_dir.join("permit_freq.bin").exists(),
-                "permit_freq.bin should exist for sample {} with cells", name);
+            assert!(
+                sample_dir.join("permit_map.bin").exists(),
+                "permit_map.bin should exist for sample {} with cells",
+                name
+            );
+            assert!(
+                sample_dir.join("permit_freq.bin").exists(),
+                "permit_freq.bin should exist for sample {} with cells",
+                name
+            );
         }
     }
+}
+
+#[test]
+fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleCorrectionMode};
+    use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
+    use bio_types::strand::Strand;
+    use std::collections::HashSet;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let quant_dir = tmp.path().join("quant");
+
+    let sample_bcs = vec![
+        make_packed_bc(100, SAMPLE_BC_LEN),
+        make_packed_bc(200, SAMPLE_BC_LEN),
+    ];
+    let sample_entries = [("sample_a", sample_bcs[0]), ("sample_b", sample_bcs[1])];
+    let num_samples = sample_bcs.len();
+    let cells_per_sample = 4;
+    let reads_per_cell = 8;
+
+    let rad_path = rad_dir.join("map.rad");
+    create_synthetic_multi_bc_rad_with_shared_cells(
+        &rad_path,
+        num_samples,
+        cells_per_sample,
+        reads_per_cell,
+        &sample_bcs,
+        true,
+    )
+    .unwrap();
+
+    let sample_list_path = tmp.path().join("sample_barcodes.tsv");
+    write_named_sample_bc_list(&sample_list_path, &sample_entries, SAMPLE_BC_LEN).unwrap();
+
+    let tg_map_path = tmp.path().join("tg_map.tsv");
+    write_tg_map(&tg_map_path).unwrap();
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(cells_per_sample))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list_path))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .build();
+    let total_cells = generate_permit_list(gpl_opts).unwrap();
+    assert_eq!(total_cells, (num_samples * cells_per_sample) as u64);
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        false,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+
+    let collated_path = output_dir.join("map.collated.rad");
+    let collated_file = File::open(&collated_path).unwrap();
+    let mut collated_reader = BufReader::new(collated_file);
+    let collated_prelude = RadPrelude::from_bytes(&mut collated_reader).unwrap();
+    let _collated_ftm = collated_prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut collated_reader)
+        .unwrap();
+    assert_eq!(
+        collated_prelude.hdr.num_chunks,
+        (num_samples * cells_per_sample) as u64
+    );
+
+    let quant_opts = QuantOpts::builder()
+        .input_dir(&output_dir)
+        .tg_map(&tg_map_path)
+        .output_dir(&quant_dir)
+        .num_threads(2)
+        .num_bootstraps(0)
+        .init_uniform(false)
+        .summary_stat(false)
+        .dump_eq(false)
+        .resolution(ResolutionStrategy::Trivial)
+        .pug_exact_umi(false)
+        .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+        .small_thresh(0)
+        .large_graph_thresh(0)
+        .filter_list(None)
+        .cmdline("test")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    quantify(quant_opts).unwrap();
+
+    let rows =
+        std::fs::read_to_string(quant_dir.join("alevin").join("quants_mat_rows.txt")).unwrap();
+    let row_labels: Vec<&str> = rows.lines().collect();
+    let unique_rows: HashSet<&str> = row_labels.iter().copied().collect();
+    assert_eq!(row_labels.len(), num_samples * cells_per_sample);
+    assert_eq!(unique_rows.len(), row_labels.len());
+    assert!(row_labels.iter().any(|r| r.starts_with("sample_a_")));
+    assert!(row_labels.iter().any(|r| r.starts_with("sample_b_")));
 }
 
 /// Test the collation manifest roundtrip.
@@ -390,24 +585,47 @@ fn test_read_real_flex_rad() {
         eprintln!("Skipping test_read_real_flex_rad: RAD file not found");
         return;
     }
-    
+
     let f = std::fs::File::open(rad_path).unwrap();
     let mut reader = std::io::BufReader::new(f);
-    
+
     let prelude = libradicl::header::RadPrelude::from_bytes(&mut reader).unwrap();
-    let _ftm = prelude.file_tags.parse_tags_from_bytes(&mut reader).unwrap();
-    
-    let ctx = prelude.get_record_context::<libradicl::record::MultiBarcodeRecordContext>().unwrap();
+    let _ftm = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut reader)
+        .unwrap();
+
+    let ctx = prelude
+        .get_record_context::<libradicl::record::MultiBarcodeRecordContext>()
+        .unwrap();
     eprintln!("Context: {:?}", ctx);
-    
+
     // Read first chunk
     let chunk = libradicl::chunk::Chunk::<MultiBarcodeReadRecord>::from_bytes(&mut reader, &ctx);
-    eprintln!("Chunk: nbytes={}, nrec={}, reads.len()={}", chunk.nbytes, chunk.nrec, chunk.reads.len());
-    
+    eprintln!(
+        "Chunk: nbytes={}, nrec={}, reads.len()={}",
+        chunk.nbytes,
+        chunk.nrec,
+        chunk.reads.len()
+    );
+
     assert!(chunk.nrec > 0, "First chunk should have records");
-    assert_eq!(chunk.reads.len(), chunk.nrec as usize, "reads.len() should match nrec");
-    
+    assert_eq!(
+        chunk.reads.len(),
+        chunk.nrec as usize,
+        "reads.len() should match nrec"
+    );
+
     let r = &chunk.reads[0];
-    eprintln!("First read: barcodes={:?}, umi={}, refs={:?}", r.barcodes.as_slice(), r.umi, &r.refs);
-    assert_eq!(r.barcodes.len(), 2, "Should have 2 barcodes (sample + cell)");
+    eprintln!(
+        "First read: barcodes={:?}, umi={}, refs={:?}",
+        r.barcodes.as_slice(),
+        r.umi,
+        &r.refs
+    );
+    assert_eq!(
+        r.barcodes.len(),
+        2,
+        "Should have 2 barcodes (sample + cell)"
+    );
 }

@@ -40,7 +40,6 @@ use libradicl::record::{
 use std::fmt;
 //use std::ptr;
 
-
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
@@ -55,7 +54,6 @@ use crate::utils::{
     BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
     OptionalAlignmentExtras,
 };
-
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
@@ -191,10 +189,14 @@ impl BootstrapHelper {
             let mean: f32 = bootstraps.iter().map(|b| b[col]).sum::<f32>() / n;
             if mean != 0.0 {
                 self.mean_triplets.push((row_index, col, mean));
-                let var: f32 = bootstraps.iter().map(|b| {
-                    let d = b[col] - mean;
-                    d * d
-                }).sum::<f32>() / (n - 1.0).max(1.0);
+                let var: f32 = bootstraps
+                    .iter()
+                    .map(|b| {
+                        let d = b[col] - mean;
+                        d * d
+                    })
+                    .sum::<f32>()
+                    / (n - 1.0).max(1.0);
                 if var != 0.0 {
                     self.var_triplets.push((row_index, col, var));
                 }
@@ -533,56 +535,55 @@ fn quantify_small_cell_sparse<B, R>(
     // Commit a resolved UMI to gene_umi_buf. For single-winner UMIs,
     // maps to slot and pushes. For multi-gene ties in USA mode, applies
     // splicing-aware resolution matching extract_counts in utils.rs.
-    let commit_umi =
-        |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
-            match best.len() {
-                0 => {}
-                1 => {
-                    buf.push((to_slot(best[0]), umi));
-                }
-                _ if !usa_mode => {
-                    // Non-USA: multi-gene tie → discard
-                }
-                2 => {
-                    // USA: same logic as extract_counts len==2
-                    let (g1, g2) = (best[0], best[1]);
-                    if afutils::same_gene(g1, g2, true) {
-                        // S+U of same gene → ambiguous slot
-                        buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
-                    } else {
-                        // Different genes: prefer spliced
-                        match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
-                            (true, false) => buf.push(((g1 >> 1), umi)),
-                            (false, true) => buf.push(((g2 >> 1), umi)),
-                            _ => {} // both spliced or both unspliced → discard
-                        }
-                    }
-                }
-                n if n <= 10 => {
-                    // USA: same logic as extract_counts len==3..10
-                    // Find spliced genes
-                    let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
-                    if let Some(&first_spliced) = spliced_iter.next() {
-                        if spliced_iter.next().is_some() {
-                            // 2+ spliced genes → gene-ambiguous, discard
-                        } else {
-                            // Exactly 1 spliced gene. Check if its unspliced
-                            // counterpart is also in the set.
-                            let has_unspliced_partner = best.iter().any(|&g| {
-                                g != first_spliced && afutils::same_gene(first_spliced, g, true)
-                            });
-                            if has_unspliced_partner {
-                                buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
-                            } else {
-                                buf.push(((first_spliced >> 1), umi));
-                            }
-                        }
-                    }
-                    // No spliced genes at all → discard
-                }
-                _ => {} // >10 labels → discard
+    let commit_umi = |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
+        match best.len() {
+            0 => {}
+            1 => {
+                buf.push((to_slot(best[0]), umi));
             }
-        };
+            _ if !usa_mode => {
+                // Non-USA: multi-gene tie → discard
+            }
+            2 => {
+                // USA: same logic as extract_counts len==2
+                let (g1, g2) = (best[0], best[1]);
+                if afutils::same_gene(g1, g2, true) {
+                    // S+U of same gene → ambiguous slot
+                    buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
+                } else {
+                    // Different genes: prefer spliced
+                    match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
+                        (true, false) => buf.push(((g1 >> 1), umi)),
+                        (false, true) => buf.push(((g2 >> 1), umi)),
+                        _ => {} // both spliced or both unspliced → discard
+                    }
+                }
+            }
+            n if n <= 10 => {
+                // USA: same logic as extract_counts len==3..10
+                // Find spliced genes
+                let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
+                if let Some(&first_spliced) = spliced_iter.next() {
+                    if spliced_iter.next().is_some() {
+                        // 2+ spliced genes → gene-ambiguous, discard
+                    } else {
+                        // Exactly 1 spliced gene. Check if its unspliced
+                        // counterpart is also in the set.
+                        let has_unspliced_partner = best.iter().any(|&g| {
+                            g != first_spliced && afutils::same_gene(first_spliced, g, true)
+                        });
+                        if has_unspliced_partner {
+                            buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
+                        } else {
+                            buf.push(((first_spliced >> 1), umi));
+                        }
+                    }
+                }
+                // No spliced genes at all → discard
+            }
+            _ => {} // >10 labels → discard
+        }
+    };
 
     for idx in 0..umi_gene_triplets.len() {
         let (umi, gn, ct) = umi_gene_triplets[idx];
@@ -671,7 +672,9 @@ where
     let mut local_triplets: Vec<(usize, usize, f32)> = Vec::new();
     // Thread-local bootstrap helper for accumulating summary stat triplets
     let mut boot_helper = BootstrapHelper::new(
-        std::path::Path::new(""), config.num_bootstraps, config.summary_stat,
+        std::path::Path::new(""),
+        config.num_bootstraps,
+        config.summary_stat,
     );
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
@@ -729,7 +732,8 @@ where
                 // For multi-barcode records, extract the sample index
                 // from the first record (stored in barcodes[0] by the
                 // scatter phase) for direct Vec lookup of the sample name.
-                let sample_idx_from_rec: Option<usize> = shared.sample_idx_extractor
+                let sample_idx_from_rec: Option<usize> = shared
+                    .sample_idx_extractor
                     .as_ref()
                     .map(|ext| ext(first_rec));
 
@@ -1152,7 +1156,6 @@ where
                     // writing the files
                     let bc_mer: BitKmer = (bc.into(), config.barcode_len as u8);
 
-
                     // Scope the lock to minimize hold time — triplet accumulation
                     // happens after the lock is released.
                     {
@@ -1187,10 +1190,16 @@ where
                             writeln!(
                                 &mut writer.feature_file,
                                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                bc_str, sn,
+                                bc_str,
+                                sn,
                                 (num_mapped + num_unmapped),
-                                num_mapped, sum_umi, mapping_rate,
-                                dedup_rate, mean_by_max, num_expr, num_genes_over_mean
+                                num_mapped,
+                                sum_umi,
+                                mapping_rate,
+                                dedup_rate,
+                                mean_by_max,
+                                num_expr,
+                                num_genes_over_mean
                             )
                         } else {
                             writeln!(
@@ -1198,12 +1207,16 @@ where
                                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                                 bc_str,
                                 (num_mapped + num_unmapped),
-                                num_mapped, sum_umi, mapping_rate,
-                                dedup_rate, mean_by_max, num_expr, num_genes_over_mean
+                                num_mapped,
+                                sum_umi,
+                                mapping_rate,
+                                dedup_rate,
+                                mean_by_max,
+                                num_expr,
+                                num_genes_over_mean
                             )
                         }
                         .expect("can't write to feature file");
-
                     } // lock on bc_writer released here (end of scope)
 
                     // Accumulate MTX triplets in thread-local buffer (no lock held)
@@ -1937,9 +1950,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
             // The sample index extractor reads barcodes[0] (the integer sample
             // index written by the scatter phase) from each record.
             let extractor: Arc<dyn Fn(&MultiBarcodeReadRecord) -> usize + Send + Sync> =
-                Arc::new(|rec: &MultiBarcodeReadRecord| -> usize {
-                    rec.barcodes[0] as usize
-                });
+                Arc::new(|rec: &MultiBarcodeReadRecord| -> usize { rec.barcodes[0] as usize });
             do_quantify::<_, u64, MultiBarcodeReadRecord, BasicEqClassPayload>(
                 br,
                 quant_opts,

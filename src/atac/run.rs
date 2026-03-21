@@ -1,12 +1,12 @@
-use crate::atac::cellfilter::generate_permit_list;
 use crate::atac::cellfilter::CellFilterMethod;
+use crate::atac::cellfilter::generate_permit_list;
 use crate::atac::collate::collate;
 use crate::atac::deduplicate::deduplicate;
 use crate::atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 use crate::atac::sort::sort;
 use anyhow::bail;
 use clap::ArgMatches;
-use slog::{crit, warn, Logger};
+use slog::{Logger, crit, warn};
 use std::path::PathBuf;
 
 pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> anyhow::Result<()> {
@@ -136,10 +136,13 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
                 }
             };
         } else {
-            crit!(log,
+            crit!(
+                log,
                 "The provided input directory lacks a generate_permit_list.json or collate.json file; this should not happen."
             );
-            bail!("The provided input directory lacks a generate_permit_list.json or collate.json file; this should not happen.");
+            bail!(
+                "The provided input directory lacks a generate_permit_list.json or collate.json file; this should not happen."
+            );
         }
     }
     Ok(())

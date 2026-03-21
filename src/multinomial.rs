@@ -1,8 +1,8 @@
 use anyhow;
-use rand_distr::weighted::{Weight, WeightedIndex};
-use rand_distr::Distribution;
-use rand_distr::uniform::{SampleUniform, SampleBorrow};
 use rand::Rng;
+use rand_distr::Distribution;
+use rand_distr::uniform::{SampleBorrow, SampleUniform};
+use rand_distr::weighted::{Weight, WeightedIndex};
 
 // TODO: check how many samples are required before WeightedAliasIndex outperforms WeightedIndex
 

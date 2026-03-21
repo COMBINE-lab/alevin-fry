@@ -9,16 +9,16 @@
 
 use anyhow::{anyhow, bail};
 use bio_types::strand::Strand;
-use clap::{arg, builder::ArgGroup, crate_authors, crate_version, value_parser, Command};
+use clap::{Command, arg, builder::ArgGroup, crate_authors, crate_version, value_parser};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::RngExt;
-use slog::{crit, info, o, warn, Drain};
+use slog::{Drain, crit, info, o, warn};
 use std::path::PathBuf;
 
-use alevin_fry::cellfilter::{generate_permit_list, CellFilterMethod};
+use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
 use alevin_fry::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
@@ -370,10 +370,8 @@ fn main() -> anyhow::Result<()> {
             .expect("valid integer number of threads") as usize;
 
         // Parse multi-barcode options
-        let sample_bc_list: Option<PathBuf> =
-            t.get_one::<PathBuf>("sample-bc-list").cloned();
-        let sample_names: Option<PathBuf> =
-            t.get_one::<PathBuf>("sample-names").cloned();
+        let sample_bc_list: Option<PathBuf> = t.get_one::<PathBuf>("sample-bc-list").cloned();
+        let sample_names: Option<PathBuf> = t.get_one::<PathBuf>("sample-names").cloned();
         let sample_correction_mode = match t
             .get_one::<String>("sample-correction-mode")
             .map(|s| s.as_str())
@@ -452,7 +450,9 @@ fn main() -> anyhow::Result<()> {
         let summary_stat = t.get_flag("summary-stat");
         let dump_eq = t.get_flag("dump-eqclasses");
         if t.get_flag("use-eds") {
-            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+            anyhow::bail!(
+                "--use-eds is no longer supported. EDS output has been removed as of v0.12."
+            );
         }
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
@@ -623,10 +623,13 @@ fn main() -> anyhow::Result<()> {
                 }; //end quant if
             }; // end velo_mode if
         } else {
-            crit!(log,
-            "The provided input directory lacks a generate_permit_list.json file; this should not happen."
-           );
-            bail!("The provided input directory lacks a generate_permit_list.json file; this should not happen.");
+            crit!(
+                log,
+                "The provided input directory lacks a generate_permit_list.json file; this should not happen."
+            );
+            bail!(
+                "The provided input directory lacks a generate_permit_list.json file; this should not happen."
+            );
         }
     } // end quant if
 
@@ -635,7 +638,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
         if t.get_flag("use-eds") {
-            anyhow::bail!("--use-eds is no longer supported. EDS output has been removed as of v0.12.");
+            anyhow::bail!(
+                "--use-eds is no longer supported. EDS output has been removed as of v0.12."
+            );
         }
         let output_dir = t.get_one("output-dir").unwrap();
         let count_mat = t.get_one("count-mat").unwrap();

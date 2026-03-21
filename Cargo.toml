@@ -35,10 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.12" }
-# for local development, look in the libradicl git repository
-# but when published, pull the specified version
-#libradicl = { version = "0.11.0" }
+libradicl = { version = "0.13" }
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = "0.8.12"

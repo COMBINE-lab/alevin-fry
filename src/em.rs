@@ -726,9 +726,7 @@ pub fn em_update_long_read<P: EqClassPayload>(
             let mut denominator: f32 = 0.0;
             let mut avg_probs: Vec<f32> = Vec::with_capacity(labels.len());
             for (tx_idx, label) in labels.iter().enumerate() {
-                let sum_prob: f64 = (0..count as usize)
-                    .map(|i| probs[i][tx_idx])
-                    .sum();
+                let sum_prob: f64 = (0..count as usize).map(|i| probs[i][tx_idx]).sum();
                 let avg_prob: f32 = sum_prob as f32 / count as f32;
                 avg_probs.push(avg_prob);
                 denominator += alphas_in[*label as usize] * avg_prob;

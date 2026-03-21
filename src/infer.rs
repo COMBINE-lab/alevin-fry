@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::em::{em_optimize_subset, EmInitType};
+use crate::em::{EmInitType, em_optimize_subset};
 use crate::utils::read_filter_list;
 
 #[allow(clippy::too_many_arguments)]

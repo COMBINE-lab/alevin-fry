@@ -10,6 +10,7 @@
 use crate::diagnostics;
 use crate::knee_finding;
 use crate::prog_opts::GenPermitListOpts;
+use crate::prog_opts::SampleCorrectionMode;
 use crate::utils as afutils;
 use crate::utils::KnownRecordType;
 #[allow(unused_imports)]
@@ -30,7 +31,6 @@ use libradicl::record::{
     MultiBarcodeRecordContext, RecordContext, ScLongReadRecord,
 };
 use libradicl::{chunk, record::AlevinFryReadRecord};
-use crate::prog_opts::SampleCorrectionMode;
 use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
@@ -547,13 +547,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 num_bc,
                 cell_bc_len,
             );
-            do_generate_permit_list_multi_bc(
-                gpl_opts,
-                ifile,
-                prelude,
-                file_tag_map,
-                num_bc,
-            )
+            do_generate_permit_list_multi_bc(gpl_opts, ifile, prelude, file_tag_map, num_bc)
         }
     }
 }
@@ -587,17 +581,18 @@ fn do_generate_permit_list_multi_bc(
 
     // Parse the record context for multi-barcode records
     let rec_ctx = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
-    info!(log, "Multi-barcode record context: {} barcode levels", rec_ctx.num_barcodes());
+    info!(
+        log,
+        "Multi-barcode record context: {} barcode levels",
+        rec_ctx.num_barcodes()
+    );
 
     // Load known sample barcodes (with rotation → canonical mapping)
     let sample_info = load_sample_barcode_list(sample_bc_list_path, log)?;
 
     // Build sample barcode correction map (rotation → canonical)
-    let (sample_permit_map, sample_bc_to_idx) = build_sample_permit_map(
-        &sample_info,
-        &gpl_opts.sample_correction_mode,
-        log,
-    )?;
+    let (sample_permit_map, sample_bc_to_idx) =
+        build_sample_permit_map(&sample_info, &gpl_opts.sample_correction_mode, log)?;
 
     // Get sample names from the barcode file (uses canonical → name mapping)
     let sample_names = get_sample_names(&sample_info);
@@ -607,12 +602,21 @@ fn do_generate_permit_list_multi_bc(
     // non-matching BCs are collected for 1-edit correction later.
     let (cell_bc_whitelist, min_reads) = match &gpl_opts.fmeth {
         CellFilterMethod::UnfilteredExternalList(wl_path, mr) => {
-            info!(log, "Loading external cell barcode whitelist from {}", wl_path.display());
+            info!(
+                log,
+                "Loading external cell barcode whitelist from {}",
+                wl_path.display()
+            );
             let wl_file = File::open(wl_path)
                 .with_context(|| format!("couldn't open whitelist {}", wl_path.display()))?;
             let mut first_bclen = 0usize;
             let wl = populate_unfiltered_barcode_map(BufReader::new(wl_file), &mut first_bclen);
-            info!(log, "Loaded {} cell barcodes from whitelist (bclen={})", wl.len(), first_bclen);
+            info!(
+                log,
+                "Loaded {} cell barcodes from whitelist (bclen={})",
+                wl.len(),
+                first_bclen
+            );
             (Some(wl), *mr as u64)
         }
         _ => (None, 0u64),
@@ -621,14 +625,18 @@ fn do_generate_permit_list_multi_bc(
     // First pass: read all records in parallel, correct sample BCs, count cell BCs per sample.
     // When a whitelist is present, only count cell BCs that are in the whitelist;
     // collect non-matching BCs per-sample for later 1-edit correction.
-    info!(log, "First pass: counting cell barcodes per sample ({} threads)...", gpl_opts.threads);
+    info!(
+        log,
+        "First pass: counting cell barcodes per sample ({} threads)...", gpl_opts.threads
+    );
     let num_samples = sample_info.canonical_barcodes.len();
     // Per-sample cell barcode frequency (only whitelist-matching BCs) — thread-safe
     let per_sample_cell_hist: Vec<DashMap<u64, u64, ahash::RandomState>> =
         (0..num_samples).map(|_| DashMap::default()).collect();
     // Per-sample unmatched cell barcodes (for 1-edit rescue) — per-worker, merged after
-    let per_sample_unmatched: Vec<std::sync::Mutex<Vec<u64>>> =
-        (0..num_samples).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    let per_sample_unmatched: Vec<std::sync::Mutex<Vec<u64>>> = (0..num_samples)
+        .map(|_| std::sync::Mutex::new(Vec::new()))
+        .collect();
 
     let total_reads = std::sync::atomic::AtomicU64::new(0);
     let matched_reads = std::sync::atomic::AtomicU64::new(0);
@@ -641,10 +649,8 @@ fn do_generate_permit_list_multi_bc(
     );
 
     let num_chunks = prelude.hdr.num_chunks;
-    let pbar = ProgressBar::with_draw_target(
-        Some(num_chunks),
-        ProgressDrawTarget::stderr_with_hz(5),
-    );
+    let pbar =
+        ProgressBar::with_draw_target(Some(num_chunks), ProgressDrawTarget::stderr_with_hz(5));
     pbar.set_style(
         ProgressStyle::with_template(
             "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks (ETA: {eta})",
@@ -766,16 +772,19 @@ fn do_generate_permit_list_multi_bc(
 
     // Create output directory
     let parent = std::path::Path::new(output_dir);
-    std::fs::create_dir_all(parent).with_context(|| {
-        format!("couldn't create output directory {}", parent.display())
-    })?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("couldn't create output directory {}", parent.display()))?;
 
     // Write sample_permit_map.bin
     let sample_map_path = parent.join("sample_permit_map.bin");
     let sample_map_file = File::create(&sample_map_path)?;
     bincode::serialize_into(BufWriter::new(sample_map_file), &sample_permit_map)
         .map_err(|e| anyhow!("failed to serialize sample permit map: {}", e))?;
-    info!(log, "Wrote sample permit map to {}", sample_map_path.display());
+    info!(
+        log,
+        "Wrote sample permit map to {}",
+        sample_map_path.display()
+    );
 
     // Per-sample: generate cell barcode permit lists
     let mut total_cells: u64 = 0;
@@ -795,8 +804,10 @@ fn do_generate_permit_list_multi_bc(
         std::fs::create_dir_all(&sample_dir)?;
 
         // Convert DashMap to HashMap for this sample
-        let cell_hist: HashMap<u64, u64, ahash::RandomState> =
-            per_sample_cell_hist[sample_idx].clone().into_iter().collect();
+        let cell_hist: HashMap<u64, u64, ahash::RandomState> = per_sample_cell_hist[sample_idx]
+            .clone()
+            .into_iter()
+            .collect();
         let num_cells_observed = cell_hist.len();
 
         info!(
@@ -808,7 +819,10 @@ fn do_generate_permit_list_multi_bc(
         );
 
         if cell_hist.is_empty() {
-            warn!(log, "Sample '{}' has no reads — skipping permit list generation", sample_name);
+            warn!(
+                log,
+                "Sample '{}' has no reads — skipping permit list generation", sample_name
+            );
             sample_info_entries.push(serde_json::json!({
                 "name": sample_name,
                 "barcode": format!("0x{:x}", sample_bc),
@@ -843,7 +857,9 @@ fn do_generate_permit_list_multi_bc(
                 info!(
                     log,
                     "  {} whitelist BCs pass min_reads={} for sample '{}'",
-                    kept_bcs.len(), min_reads, sample_name,
+                    kept_bcs.len(),
+                    min_reads,
+                    sample_name,
                 );
 
                 // Build BarcodeLookupMap from kept BCs for 1-edit correction
@@ -881,7 +897,8 @@ fn do_generate_permit_list_multi_bc(
                 info!(
                     log,
                     "  {} unmatched BCs for sample '{}': {} rescued (1-edit), {} ambiguous, {} not found",
-                    unmatched.len(), sample_name,
+                    unmatched.len(),
+                    sample_name,
                     found_approx.to_formatted_string(&Locale::en),
                     ambig_approx.to_formatted_string(&Locale::en),
                     not_found.to_formatted_string(&Locale::en),
@@ -890,9 +907,8 @@ fn do_generate_permit_list_multi_bc(
                 // Write the corrected_list for this sample
                 let corr_path = sample_dir.join("permit_map.bin");
                 // Build the full permit map: identity for kept + correction for rescued
-                let mut full_permit_list: HashMap<u64, u64> = HashMap::with_capacity(
-                    kept_bcs.len() + corrected_list.len(),
-                );
+                let mut full_permit_list: HashMap<u64, u64> =
+                    HashMap::with_capacity(kept_bcs.len() + corrected_list.len());
                 for &bc in &kept_bcs {
                     full_permit_list.insert(bc, bc);
                 }
@@ -908,17 +924,28 @@ fn do_generate_permit_list_multi_bc(
                 freq.sort_unstable();
                 freq.reverse();
                 let knee = knee_finding::get_knee(&freq, 100, log);
-                let threshold = if knee > 0 { freq[knee.saturating_sub(1)] } else { 0 };
+                let threshold = if knee > 0 {
+                    freq[knee.saturating_sub(1)]
+                } else {
+                    0
+                };
                 for (bc, count) in cell_hist.iter() {
                     if *count >= threshold {
                         kept_bcs.push(*bc);
                         sample_freq_map.insert(*bc, *count);
                     }
                 }
-                info!(log, "  Knee at {}, {} cells retained for sample '{}'", knee, kept_bcs.len(), sample_name);
+                info!(
+                    log,
+                    "  Knee at {}, {} cells retained for sample '{}'",
+                    knee,
+                    kept_bcs.len(),
+                    sample_name
+                );
 
-                let full_permit_list = afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
-                    .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list =
+                    afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
@@ -933,22 +960,36 @@ fn do_generate_permit_list_multi_bc(
                     CellFilterMethod::ForceCells(n) => (*n).min(freq.len()),
                     CellFilterMethod::ExpectCells(n) => {
                         let threshold = freq[0] / *n as u64;
-                        let idx = freq.iter().position(|&f| f < threshold).unwrap_or(freq.len());
+                        let idx = freq
+                            .iter()
+                            .position(|&f| f < threshold)
+                            .unwrap_or(freq.len());
                         (idx as f64 * 10.0) as usize
                     }
                     _ => freq.len(),
-                }.min(freq.len());
-                let threshold = if num_cells > 0 { freq[num_cells.saturating_sub(1)] } else { 0 };
+                }
+                .min(freq.len());
+                let threshold = if num_cells > 0 {
+                    freq[num_cells.saturating_sub(1)]
+                } else {
+                    0
+                };
                 for (bc, count) in cell_hist.iter() {
                     if *count >= threshold {
                         kept_bcs.push(*bc);
                         sample_freq_map.insert(*bc, *count);
                     }
                 }
-                info!(log, "  {} cells retained for sample '{}'", kept_bcs.len(), sample_name);
+                info!(
+                    log,
+                    "  {} cells retained for sample '{}'",
+                    kept_bcs.len(),
+                    sample_name
+                );
 
-                let full_permit_list = afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
-                    .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list =
+                    afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
@@ -958,8 +999,15 @@ fn do_generate_permit_list_multi_bc(
 
         // Write per-sample permit_freq.bin
         let freq_path = sample_dir.join("permit_freq.bin");
-        afutils::write_permit_list_freq(&freq_path, cell_bc_len, &sample_freq_map)
-            .map_err(|e| anyhow!("failed to write permit freq for sample '{}': {}", sample_name, e))?;
+        afutils::write_permit_list_freq(&freq_path, cell_bc_len, &sample_freq_map).map_err(
+            |e| {
+                anyhow!(
+                    "failed to write permit freq for sample '{}': {}",
+                    sample_name,
+                    e
+                )
+            },
+        )?;
 
         total_cells += kept_bcs.len() as u64;
 
@@ -1004,7 +1052,8 @@ fn do_generate_permit_list_multi_bc(
     info!(
         log,
         "Multi-barcode permit list generation complete: {} samples, {} total cells",
-        num_samples, total_cells,
+        num_samples,
+        total_cells,
     );
 
     Ok(total_cells)
@@ -1030,7 +1079,10 @@ struct SampleBarcodeInfo {
 ///    has 8 rotation variants.
 ///
 /// Returns `SampleBarcodeInfo` with canonical barcodes and rotation mapping.
-fn load_sample_barcode_list(path: &PathBuf, log: &slog::Logger) -> anyhow::Result<SampleBarcodeInfo> {
+fn load_sample_barcode_list(
+    path: &PathBuf,
+    log: &slog::Logger,
+) -> anyhow::Result<SampleBarcodeInfo> {
     let file = File::open(path)
         .with_context(|| format!("couldn't open sample barcode list: {}", path.display()))?;
     let reader = BufReader::new(file);
@@ -1085,13 +1137,16 @@ fn load_sample_barcode_list(path: &PathBuf, log: &slog::Logger) -> anyhow::Resul
         info!(
             log,
             "Loaded {} rotation barcodes mapping to {} canonical samples from {}",
-            num_rotations, num_canonical, path.display(),
+            num_rotations,
+            num_canonical,
+            path.display(),
         );
     } else {
         info!(
             log,
             "Loaded {} sample barcodes from {}",
-            num_canonical, path.display(),
+            num_canonical,
+            path.display(),
         );
     }
 
@@ -1136,7 +1191,8 @@ fn build_sample_permit_map(
         SampleCorrectionMode::OneEdit => {
             info!(log, "Sample barcode correction mode: 1-edit distance");
             // Generate 1-edit neighbors for ALL observed rotation barcodes
-            let all_observed: Vec<u64> = sample_info.rotation_to_canonical.keys().copied().collect();
+            let all_observed: Vec<u64> =
+                sample_info.rotation_to_canonical.keys().copied().collect();
             let bc_len = if !all_observed.is_empty() {
                 // Estimate barcode length from packed value
                 // For 8bp barcodes: 2*8 = 16 bits used
