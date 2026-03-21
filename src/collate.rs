@@ -1303,12 +1303,12 @@ where
     };
 
     // Compute the bit-shift and mask for building composite keys from
-    // (corrected_sample_bc, corrected_cell_bc).  The cell barcode occupies
-    // the low bits; the sample barcode is shifted above it.
+    // (sample_idx, corrected_cell_bc).  The cell barcode occupies the low
+    // bits; the sample index is shifted above it.
     let cell_bc_bits = (cell_bc_len * 2) as u64; // 2 bits per nucleotide
     let cell_bc_mask = (1u64 << cell_bc_bits) - 1;
-    let make_composite_key = |sample_bc: u64, cell_bc: u64| -> u64 {
-        (sample_bc << cell_bc_bits) | (cell_bc & cell_bc_mask)
+    let make_composite_key = |sample_idx: u64, cell_bc: u64| -> u64 {
+        (sample_idx << cell_bc_bits) | (cell_bc & cell_bc_mask)
     };
 
     // Read metadata
@@ -1331,6 +1331,23 @@ where
         .context("couldn't read samples array from sample_info.json")?;
 
     info!(log, "Loading permit maps for {} samples", num_samples);
+
+    // Verify the composite key (sample_idx << cell_bc_bits) | cell_bc fits
+    // in u64.  We need ceil(log2(num_samples)) + cell_bc_bits <= 64.
+    {
+        let sample_id_bits = if num_samples <= 1 { 0u64 } else {
+            64 - (num_samples as u64 - 1).leading_zeros() as u64
+        };
+        if sample_id_bits + cell_bc_bits > 64 {
+            return Err(anyhow!(
+                "Cannot collate: {} samples requires {} bits for the sample index, \
+                 plus {} bits for {}bp cell barcodes = {} bits total, which exceeds \
+                 the 64-bit composite key capacity.",
+                num_samples, sample_id_bits, cell_bc_bits, cell_bc_len,
+                sample_id_bits + cell_bc_bits
+            ));
+        }
+    }
 
     // Load sample_permit_map.bin
     let sample_map_file = File::open(parent.join("sample_permit_map.bin"))
