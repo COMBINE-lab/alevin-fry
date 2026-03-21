@@ -262,7 +262,6 @@ fn collate_multi_bc_bucket<T: Read + Seek, U: Write>(
     cb_byte_map: &mut HashMap<u64, TempCellInfo, ahash::RandomState>,
     cell_bc_bits: u64,
     cell_bc_mask: u64,
-    sample_bc_to_idx: &HashMap<u64, usize>,
 ) -> usize {
     use libradicl::record::CollatableMappedRecord;
 
@@ -273,18 +272,12 @@ fn collate_multi_bc_bucket<T: Read + Seek, U: Write>(
     let calc_record_bytes =
         |num_aln: usize| -> usize { MultiBarcodeReadRecord::nbytes(num_aln as u32, rec_context) };
 
-    // Compute composite key from corrected barcodes in the record header.
-    // Uses the same encoding as the tsv_map and scatter phase:
-    // (sample_idx << cell_bc_bits) | (corrected_cell_bc & cell_bc_mask).
-    // The sample index is recovered from the corrected sample barcode
-    // stored in barcodes[0].
+    // Compute composite key from the record header.
+    // barcodes[0] is the integer sample index (written by the scatter phase),
+    // barcodes[1] is the corrected cell barcode.
     let composite_key = |hdr: &<MultiBarcodeReadRecord as CollatableMappedRecord<u64>>::CollatableRecordHeader| -> u64 {
         if hdr.barcodes.len() >= 2 {
-            let sample_idx = sample_bc_to_idx
-                .get(&hdr.barcodes[0])
-                .copied()
-                .unwrap_or(0) as u64;
-            (sample_idx << cell_bc_bits) | (hdr.barcodes[1] & cell_bc_mask)
+            (hdr.barcodes[0] << cell_bc_bits) | (hdr.barcodes[1] & cell_bc_mask)
         } else {
             hdr.collate_key()
         }
@@ -1733,8 +1726,11 @@ where
                                 continue;
                             }
 
-                            // Set corrected barcodes
-                            rr.set_collation_key_at_level(0, corrected_sample);
+                            // Set corrected barcodes.  Store the integer sample
+                            // index (not the barcode sequence) in barcodes[0] —
+                            // downstream steps can recover the name or canonical
+                            // barcode from sample_info via this index.
+                            rr.set_collation_key_at_level(0, sample_idx as u64);
                             rr.set_collate_key(corrected_cell);
 
                             let na = tup.naln() as usize;
@@ -1854,8 +1850,6 @@ where
         let owriter_clone = owriter.clone();
         let pbar_clone = pbar_gather.clone();
         let ctx = rec_context.clone();
-        let sbc2idx = sample_bc_to_idx.clone();
-
         let handle = thread::spawn(move || {
             let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
             let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
@@ -1879,7 +1873,7 @@ where
 
                     local_chunks += collate_multi_bc_bucket(
                         &mut treader, &ctx, nrec, &owriter_clone, compress_out, &mut cmap,
-                        cell_bc_bits, cell_bc_mask, &sbc2idx,
+                        cell_bc_bits, cell_bc_mask,
                     ) as u64;
 
                     drop(treader);
