@@ -142,6 +142,12 @@ fn main() -> anyhow::Result<()> {
                 .value_parser(["exact", "1-edit"])
                 .default_value("exact")
                 .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"sample-bc-ori" <SBCORI> "orientation of sample barcodes in the whitelist relative to the read (forward = whitelist matches read as-is; reverse = reverse-complement the whitelist before lookup, e.g. 10x Flex v2)")
+                .value_parser(["forward", "reverse"])
+                .default_value("forward")
+                .requires("sample-bc-list")
         );
 
     let collate_app = Command::new("collate")
@@ -380,6 +386,14 @@ fn main() -> anyhow::Result<()> {
             _ => prog_opts::SampleCorrectionMode::Exact,
         };
 
+        let sample_bc_ori = match t
+            .get_one::<String>("sample-bc-ori")
+            .map(|s| s.as_str())
+        {
+            Some("reverse") => prog_opts::SampleBarcodeOri::Reverse,
+            _ => prog_opts::SampleBarcodeOri::Forward,
+        };
+
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
             .output_dir(output_dir)
@@ -393,6 +407,7 @@ fn main() -> anyhow::Result<()> {
             .sample_bc_list(sample_bc_list)
             .sample_names(sample_names)
             .sample_correction_mode(sample_correction_mode)
+            .sample_bc_ori(sample_bc_ori)
             .build();
 
         match generate_permit_list(gpl_opts) {

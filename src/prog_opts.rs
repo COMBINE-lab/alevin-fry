@@ -50,6 +50,19 @@ pub enum SampleCorrectionMode {
     OneEdit,
 }
 
+/// Orientation of the sample/probe barcodes in the whitelist relative to
+/// how they appear in the read. `Forward` means the whitelist is already in
+/// read-orientation; `Reverse` means each whitelist entry must be
+/// reverse-complemented before lookup (e.g., 10x Flex v2, where the sample
+/// BC on R1 downstream of the TTGCTAGGACCG anchor is the RC of the
+/// vendor-published list).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+pub enum SampleBarcodeOri {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 #[derive(TypedBuilder, Debug, Serialize)]
 pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub input_dir: &'a PathBuf,
@@ -72,4 +85,7 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     /// Correction mode for sample barcodes.
     #[builder(default = SampleCorrectionMode::Exact)]
     pub sample_correction_mode: SampleCorrectionMode,
+    /// Orientation of sample barcodes in the whitelist relative to the read.
+    #[builder(default = SampleBarcodeOri::Forward)]
+    pub sample_bc_ori: SampleBarcodeOri,
 }

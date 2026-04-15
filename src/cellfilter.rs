@@ -10,6 +10,7 @@
 use crate::diagnostics;
 use crate::knee_finding;
 use crate::prog_opts::GenPermitListOpts;
+use crate::prog_opts::SampleBarcodeOri;
 use crate::prog_opts::SampleCorrectionMode;
 use crate::utils as afutils;
 use crate::utils::KnownRecordType;
@@ -588,7 +589,8 @@ fn do_generate_permit_list_multi_bc(
     );
 
     // Load known sample barcodes (with rotation → canonical mapping)
-    let sample_info = load_sample_barcode_list(sample_bc_list_path, log)?;
+    let sample_info =
+        load_sample_barcode_list(sample_bc_list_path, gpl_opts.sample_bc_ori, log)?;
 
     // Build sample barcode correction map (rotation → canonical)
     let (sample_permit_map, sample_bc_to_idx) =
@@ -1029,6 +1031,7 @@ fn do_generate_permit_list_multi_bc(
         "matched_reads": matched_reads,
         "unmatched_reads": unmatched_reads,
         "sample_correction_mode": format!("{:?}", gpl_opts.sample_correction_mode),
+        "sample_bc_ori": format!("{:?}", gpl_opts.sample_bc_ori),
         "samples": sample_info_entries,
     });
     let info_path = parent.join("sample_info.json");
@@ -1081,11 +1084,19 @@ struct SampleBarcodeInfo {
 /// Returns `SampleBarcodeInfo` with canonical barcodes and rotation mapping.
 fn load_sample_barcode_list(
     path: &PathBuf,
+    ori: SampleBarcodeOri,
     log: &slog::Logger,
 ) -> anyhow::Result<SampleBarcodeInfo> {
     let file = File::open(path)
         .with_context(|| format!("couldn't open sample barcode list: {}", path.display()))?;
     let reader = BufReader::new(file);
+
+    if ori == SampleBarcodeOri::Reverse {
+        info!(
+            log,
+            "Sample barcode whitelist orientation: reverse — reverse-complementing entries before lookup"
+        );
+    }
 
     let mut rotation_to_canonical: HashMap<u64, u64> = HashMap::new();
     let mut canonical_to_name: HashMap<u64, String> = HashMap::new();
@@ -1111,6 +1122,33 @@ fn load_sample_barcode_list(
         } else {
             // Single column: barcode only (each is its own sample)
             (parts[0], parts[0], parts[0].to_string())
+        };
+
+        let rc = |seq: &str| -> String {
+            seq.bytes()
+                .rev()
+                .map(|b| match b {
+                    b'A' => b'T',
+                    b'T' => b'A',
+                    b'C' => b'G',
+                    b'G' => b'C',
+                    b'a' => b't',
+                    b't' => b'a',
+                    b'c' => b'g',
+                    b'g' => b'c',
+                    other => other,
+                })
+                .map(|b| b as char)
+                .collect()
+        };
+
+        let (observed_owned, canonical_owned);
+        let (observed_seq, canonical_seq) = if ori == SampleBarcodeOri::Reverse {
+            observed_owned = rc(observed_seq);
+            canonical_owned = rc(canonical_seq);
+            (observed_owned.as_str(), canonical_owned.as_str())
+        } else {
+            (observed_seq, canonical_seq)
         };
 
         let pack = |seq: &str| -> anyhow::Result<u64> {

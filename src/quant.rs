@@ -48,6 +48,9 @@ use crate::em::{
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
+
+/// Shared closure that extracts a sample index from a record.
+type SampleIdxExtractor<R> = Arc<dyn Fn(&R) -> usize + Send + Sync>;
 use crate::pugutils;
 use crate::utils as afutils;
 use crate::utils::{
@@ -422,7 +425,7 @@ struct WorkerSharedState<R: MappedRecord> {
     /// Sample names indexed by sample index. None for single-barcode.
     sample_names: Option<Arc<Vec<String>>>,
     /// Extracts the sample index from a record. None for single-barcode types.
-    sample_idx_extractor: Option<Arc<dyn Fn(&R) -> usize + Send + Sync>>,
+    sample_idx_extractor: Option<SampleIdxExtractor<R>>,
 }
 
 /// Threshold (in number of records) below which a cell uses the fast path
@@ -1286,7 +1289,7 @@ pub(crate) fn do_quantify<T: BufRead, B, R, P>(
     quant_opts: QuantOpts,
     prelude: RadPrelude,
     file_tag_map: TagMap,
-    sample_bc_extractor: Option<Arc<dyn Fn(&R) -> usize + Send + Sync>>,
+    sample_bc_extractor: Option<SampleIdxExtractor<R>>,
 ) -> anyhow::Result<()>
 where
     B: ConvertiblePrimitiveInteger,
