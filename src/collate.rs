@@ -1309,12 +1309,40 @@ where
     // Sort cell frequencies: group by sample_idx first, then by frequency descending
     all_cell_freqs.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)));
 
+    // Build a sparse-plate-sidx -> manifest-ordinal map.  `sample_idx` so far
+    // is a position in `sample_entries` (the full chemistry plate, e.g. 384
+    // wells for 10x Flex v2), so it is sparse: only the wells actually used
+    // in this run end up in `all_cell_freqs`.  The collation manifest and
+    // quant's `sample_names` Vec are densely packed (one entry per present
+    // sample, sorted by sidx), and quant.rs indexes that Vec directly with
+    // the value stored in barcodes[0].  We must therefore write the
+    // *manifest ordinal*, not the sparse plate sidx, into barcodes[0].
+    // See: https://github.com/COMBINE-lab/simpleaf/issues/195
+    //
+    // Implementation: direct-addressed Vec<usize> indexed by plate sidx.
+    // The key space is dense, small, and known (0..num_samples), so a Vec
+    // is strictly better than a HashMap (~1.5 KB, single L1-resident load,
+    // no hash per record across 10^8-10^9 scatter records).  Sentinel
+    // `usize::MAX` flags unused plate positions; the scatter loop only ever
+    // looks up sidxs that appeared in `all_cell_freqs`, so the sentinel
+    // exists for defensive debugging only.
+    let mut sidx_to_ord: Vec<usize> = vec![usize::MAX; num_samples];
+    {
+        let mut present: Vec<usize> = all_cell_freqs.iter().map(|(_, _, s)| *s).collect();
+        present.sort_unstable();
+        present.dedup();
+        for (ord, sidx) in present.into_iter().enumerate() {
+            sidx_to_ord[sidx] = ord;
+        }
+    }
+    let sidx_to_ord = Arc::new(sidx_to_ord);
+
     // Build the tsv_map equivalent: (composite_key, freq) pairs.
-    // The composite key encodes (sample_idx, corrected_cell_bc).
-    // We use the integer sample index (not the raw barcode) because it's
-    // compact and directly corresponds to the manifest's sample groups.
-    // The gather phase maps barcodes[0] back to sample_idx via
-    // sample_bc_to_idx to compute the same key.
+    // The composite key encodes (sample_idx, corrected_cell_bc).  Note:
+    // composite_key uses the sparse plate sidx (matching `all_cell_freqs`
+    // and the bucket index in the scatter phase), NOT the manifest ordinal.
+    // The ordinal is only used when writing barcodes[0] into the output
+    // record — see the scatter loop below.
     let tsv_map: Vec<(u64, u64)> = all_cell_freqs
         .iter()
         .map(|(bc, freq, sidx)| (make_composite_key(*sidx as u64, *bc), *freq))
@@ -1533,6 +1561,7 @@ where
         let cell_corr = cell_correction.clone();
         let ctx = rec_context.clone();
         let loc_temp_buckets = temp_buckets.clone();
+        let sidx_to_ord = sidx_to_ord.clone();
         let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation = expected_ori.into();
 
         let handle = thread::spawn(move || {
@@ -1653,11 +1682,23 @@ where
                                 continue;
                             }
 
-                            // Set corrected barcodes.  Store the integer sample
-                            // index (not the barcode sequence) in barcodes[0] —
-                            // downstream steps can recover the name or canonical
-                            // barcode from sample_info via this index.
-                            rr.set_collation_key_at_level(0, sample_idx as u64);
+                            // Set corrected barcodes.  Store the MANIFEST ORDINAL
+                            // (dense position 0..num_present_samples-1) in
+                            // barcodes[0], NOT the sparse plate sidx — quant.rs
+                            // indexes its sample_names Vec by this ordinal
+                            // directly.  Writing the plate sidx here is unsafe
+                            // when present samples don't occupy plate positions
+                            // 0..n contiguously, because the manifest is densely
+                            // packed by present-sample order.
+                            // See COMBINE-lab/simpleaf#195.
+                            let ordinal = sidx_to_ord[sample_idx];
+                            debug_assert_ne!(
+                                ordinal,
+                                usize::MAX,
+                                "scatter encountered sample_idx={} with no manifest ordinal",
+                                sample_idx
+                            );
+                            rr.set_collation_key_at_level(0, ordinal as u64);
                             rr.set_collate_key(corrected_cell);
 
                             let na = tup.naln() as usize;

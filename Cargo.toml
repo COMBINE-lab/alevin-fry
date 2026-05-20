@@ -87,6 +87,8 @@ rand_distr = "0.6"
 [dev-dependencies]
 tempfile = "3"
 slog-term = "2.9.2"
+polars = { version = "0.45.1", features = ["polars-io", "dtype-categorical"] }
+polars-io = { version = "0.45.1", features = ["csv"] }
 
 [profile.release]
 #debug = true

@@ -542,6 +542,477 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
     assert!(row_labels.iter().any(|r| r.starts_with("sample_b_")));
 }
 
+/// Regression test for COMBINE-lab/simpleaf#195.
+///
+/// The bug: collate.rs used to write the *sparse plate index* `sample_idx`
+/// (a position in the chemistry's full sample-BC list, e.g. 0..384 for 10x
+/// Flex v2) into each record's `barcodes[0]`.  But quant.rs builds a
+/// *densely packed* `sample_names: Vec<String>` of length = number of
+/// present samples and indexes that Vec directly with `barcodes[0]`.  When
+/// the wells actually used in a run don't occupy contiguous positions
+/// 0..N, the high sidxs miss the dense Vec, `sample_name` becomes None,
+/// the row is written with 9 fields instead of 10, and downstream Polars
+/// parsing in af-anndata infers `sample_name` as Int64 and crashes on
+/// the first real string value.
+///
+/// This test wires up a sample BC list with **8 entries** but generates
+/// reads for only positions **{0, 3, 7}** (non-contiguous), then runs the
+/// full generate_permit_list → collate → quantify pipeline and asserts
+/// three invariant families:
+///
+/// 1. Field-shape:   every row of featureDump.txt has exactly 10 fields.
+/// 2. Identity:      all three expected sample names appear in
+///                   quants_mat_rows.txt.
+/// 3. Polars-shape:  the file parses with af-anndata's CSV schema
+///                   (CB+sample_name as String) without error, and the
+///                   sample_name column dtype is String with exactly the
+///                   three expected values.
+#[test]
+fn test_multi_bc_quant_handles_sparse_sample_positions() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleCorrectionMode};
+    use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
+    use bio_types::strand::Strand;
+    use polars::prelude::{DataType, Field, Schema};
+    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
+    use polars_io::SerReader;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let quant_dir = tmp.path().join("quant");
+
+    // 8-entry "plate" — only positions {0, 3, 7} will actually have reads,
+    // mimicking a user-multiplexed run on a small subset of chemistry wells.
+    let all_bcs: Vec<u64> = (0..8u64)
+        .map(|i| make_packed_bc(100 + i * 37, SAMPLE_BC_LEN))
+        .collect();
+    let names: Vec<String> = (0..8).map(|i| format!("sample_{:02}", i)).collect();
+    let sample_entries: Vec<(&str, u64)> = names
+        .iter()
+        .map(|s| s.as_str())
+        .zip(all_bcs.iter().copied())
+        .collect();
+
+    // Positions used for the synthetic reads.  These MUST be non-contiguous
+    // and include at least one value > num_present_samples - 1 (here, > 2)
+    // to actually trigger the bug.
+    let used_positions: [usize; 3] = [0, 3, 7];
+    let used_bcs: Vec<u64> = used_positions.iter().map(|&p| all_bcs[p]).collect();
+    let expected_sample_names: HashSet<String> = used_positions
+        .iter()
+        .map(|&p| names[p].clone())
+        .collect();
+    let num_used = used_bcs.len();
+    let cells_per_sample = 4;
+    let reads_per_cell = 8;
+
+    // RAD records exist only for the used positions' BCs.
+    let rad_path = rad_dir.join("map.rad");
+    create_synthetic_multi_bc_rad_with_shared_cells(
+        &rad_path,
+        num_used,
+        cells_per_sample,
+        reads_per_cell,
+        &used_bcs,
+        true,
+    )
+    .unwrap();
+
+    // Sample BC list includes ALL 8 entries — generate_permit_list will
+    // iterate over the full plate, find reads only for positions 0/3/7,
+    // and emit sample_info.json with sparse coverage.
+    let sample_list_path = tmp.path().join("sample_barcodes.tsv");
+    write_named_sample_bc_list(&sample_list_path, &sample_entries, SAMPLE_BC_LEN).unwrap();
+
+    let tg_map_path = tmp.path().join("tg_map.tsv");
+    write_tg_map(&tg_map_path).unwrap();
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(cells_per_sample))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list_path))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .build();
+    let total_cells = generate_permit_list(gpl_opts).unwrap();
+    assert_eq!(total_cells, (num_used * cells_per_sample) as u64);
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        false,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+
+    let quant_opts = QuantOpts::builder()
+        .input_dir(&output_dir)
+        .tg_map(&tg_map_path)
+        .output_dir(&quant_dir)
+        .num_threads(2)
+        .num_bootstraps(0)
+        .init_uniform(false)
+        .summary_stat(false)
+        .dump_eq(false)
+        .resolution(ResolutionStrategy::Trivial)
+        .pug_exact_umi(false)
+        .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+        .small_thresh(0)
+        .large_graph_thresh(0)
+        .filter_list(None)
+        .cmdline("test")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    quantify(quant_opts).unwrap();
+
+    // ---- Assertion family 1: field-shape ----
+    // Every featureDump.txt row (including header) must have 10 tab-separated
+    // fields.  Pre-fix, ~2/3 of rows had 9 fields.
+    let feat_dump_path = quant_dir.join("featureDump.txt");
+    let feat_dump_text = std::fs::read_to_string(&feat_dump_path).unwrap();
+    let mut field_counts: HashSet<usize> = HashSet::new();
+    let mut total_data_rows = 0usize;
+    for (i, line) in feat_dump_text.lines().enumerate() {
+        let nf = line.split('\t').count();
+        field_counts.insert(nf);
+        if i > 0 {
+            total_data_rows += 1;
+        }
+    }
+    assert_eq!(
+        field_counts,
+        HashSet::from([10]),
+        "featureDump.txt has rows with non-10 field counts (field counts seen: {:?})",
+        field_counts
+    );
+    assert_eq!(
+        total_data_rows,
+        num_used * cells_per_sample,
+        "expected {} featureDump rows, found {}",
+        num_used * cells_per_sample,
+        total_data_rows
+    );
+
+    // ---- Assertion family 2: identity (row labels match expected samples) ----
+    let rows =
+        std::fs::read_to_string(quant_dir.join("alevin").join("quants_mat_rows.txt")).unwrap();
+    let row_labels: Vec<&str> = rows.lines().collect();
+    assert_eq!(row_labels.len(), num_used * cells_per_sample);
+    for n in &expected_sample_names {
+        let prefix = format!("{}_", n);
+        assert!(
+            row_labels.iter().any(|r| r.starts_with(&prefix)),
+            "no rows in quants_mat_rows.txt prefixed with {:?} (rows: {:?})",
+            prefix,
+            row_labels
+        );
+    }
+
+    // ---- Assertion family 3: polars-shape ----
+    // Parse featureDump.txt with af-anndata's schema (CB+sample_name as
+    // String) — pre-fix this used to crash with a dtype-inference error.
+    let feat_dump_schema = Arc::new(Schema::from_iter([
+        Field::new("CB".into(), DataType::String),
+        Field::new("sample_name".into(), DataType::String),
+        Field::new("CorrectedReads".into(), DataType::Int64),
+        Field::new("MappedReads".into(), DataType::Int64),
+        Field::new("DeduplicatedReads".into(), DataType::Float64),
+        Field::new("MappingRate".into(), DataType::Float64),
+        Field::new("DedupRate".into(), DataType::Float64),
+        Field::new("MeanByMax".into(), DataType::Float64),
+        Field::new("NumGenesExpressed".into(), DataType::Int64),
+        Field::new("NumGenesOverMean".into(), DataType::Int64),
+    ]));
+    let parse_options = CsvParseOptions::default().with_separator(b'\t');
+    let df = CsvReadOptions::default()
+        .with_parse_options(parse_options)
+        .with_has_header(true)
+        .with_schema_overwrite(Some(feat_dump_schema))
+        .with_raise_if_empty(true)
+        .try_into_reader_with_file_path(Some(feat_dump_path.clone()))
+        .unwrap()
+        .finish()
+        .expect("polars CSV read of featureDump.txt must succeed");
+
+    assert_eq!(df.width(), 10, "expected 10 columns, got {}", df.width());
+
+    let sample_name_col = df.column("sample_name").expect("sample_name column");
+    assert_eq!(
+        sample_name_col.dtype(),
+        &DataType::String,
+        "sample_name dtype should be String, got {:?}",
+        sample_name_col.dtype()
+    );
+
+    let observed_names: HashSet<String> = sample_name_col
+        .str()
+        .expect("sample_name should be a string series")
+        .into_iter()
+        .filter_map(|opt| opt.map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        observed_names, expected_sample_names,
+        "sample_name values mismatch — expected {:?}, got {:?}",
+        expected_sample_names, observed_names
+    );
+}
+
+/// End-to-end Flex v2 smoke test for issue #195 against real subset data.
+///
+/// This test is `#[ignore]` by default — it requires pre-staged inputs
+/// (a mapped multi-barcode RAD directory, the cached Flex v2 sample BC
+/// list, and a t2g map).  Run it with:
+///
+/// ```text
+/// AF_TEST_FLEXV2_RAD=/path/to/rad_dir \
+/// AF_TEST_FLEXV2_SAMPLE_BC_LIST=/path/to/737K-flex-v2.txt \
+/// AF_TEST_FLEXV2_TG_MAP=/path/to/t2g.tsv \
+/// cargo test -p alevin-fry --test multi_barcode_integration -- \
+///     --ignored flexv2_real_data --nocapture
+/// ```
+///
+/// Staging the RAD directory (one-time, outside this test):
+/// 1. Subset the Flex v2 FASTQs (e.g. with `zcat | head -n 4000000`) so
+///    only reads from a small number of wells appear.  The fastest way is
+///    to use a sample of `/scratch2/rob/read_data/10x_flexv2/`.
+/// 2. Run `simpleaf workflow` (or piscem directly) to produce a
+///    multi-barcode `map.rad` against a Flex v2 index.
+/// 3. Point AF_TEST_FLEXV2_RAD at the directory containing that map.rad.
+///
+/// The test does NOT hard-code which wells are present — it reads
+/// sample_info.json after generate_permit_list to learn which wells got
+/// non-zero reads, then asserts those wells all appear as sample_name
+/// values in featureDump.txt.  Bug pre-fix: only the *first* such well
+/// appears; this test fails with a "missing sample names" assertion.
+#[test]
+#[ignore]
+fn test_multi_bc_quant_flexv2_real_data() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleBarcodeOri, SampleCorrectionMode};
+    use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
+    use bio_types::strand::Strand;
+    use polars::prelude::{DataType, Field, Schema};
+    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
+    use polars_io::SerReader;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    let rad_dir = match std::env::var("AF_TEST_FLEXV2_RAD") {
+        Ok(v) => PathBuf::from(v),
+        Err(_) => {
+            eprintln!(
+                "Skipping flexv2_real_data: AF_TEST_FLEXV2_RAD unset \
+                 (point it at a pre-staged Flex v2 map.rad directory)"
+            );
+            return;
+        }
+    };
+    let sample_bc_list = match std::env::var("AF_TEST_FLEXV2_SAMPLE_BC_LIST") {
+        Ok(v) => PathBuf::from(v),
+        Err(_) => {
+            eprintln!("Skipping flexv2_real_data: AF_TEST_FLEXV2_SAMPLE_BC_LIST unset");
+            return;
+        }
+    };
+    let tg_map_path = match std::env::var("AF_TEST_FLEXV2_TG_MAP") {
+        Ok(v) => PathBuf::from(v),
+        Err(_) => {
+            eprintln!("Skipping flexv2_real_data: AF_TEST_FLEXV2_TG_MAP unset");
+            return;
+        }
+    };
+    if !rad_dir.join("map.rad").exists() {
+        eprintln!(
+            "Skipping flexv2_real_data: {} does not contain map.rad",
+            rad_dir.display()
+        );
+        return;
+    }
+    // 10x Flex v2 sample barcodes appear reverse-complemented relative to the
+    // published whitelist, so the orientation must be "reverse" for that
+    // chemistry.  Controlled by an env var (default "forward") so the test
+    // also works for forward-orientation chemistries.
+    let sample_bc_ori = match std::env::var("AF_TEST_FLEXV2_SAMPLE_BC_ORI")
+        .unwrap_or_else(|_| "forward".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "reverse" | "rc" => SampleBarcodeOri::Reverse,
+        _ => SampleBarcodeOri::Forward,
+    };
+
+    let tmp = tempfile::tempdir().unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let quant_dir = tmp.path().join("quant");
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        // ForceCells with a generous cap — the data drives the actual count.
+        .fmeth(CellFilterMethod::ForceCells(10_000))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(4)
+        .velo_mode(false)
+        .cmdline("test_flexv2_real_data")
+        .log(&log)
+        .sample_bc_list(Some(sample_bc_list))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .sample_bc_ori(sample_bc_ori)
+        .build();
+    generate_permit_list(gpl_opts).expect("generate_permit_list failed");
+
+    // Discover the wells that actually have reads from sample_info.json.
+    // For #195 to manifest, the cached BC list must contain entries for
+    // wells the data does NOT use — typical for the 384-entry Flex v2 file.
+    let sample_info: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(output_dir.join("sample_info.json")).unwrap())
+            .unwrap();
+    let expected_sample_names: HashSet<String> = sample_info["samples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["num_reads"].as_u64().unwrap_or(0) > 0)
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    eprintln!(
+        "Flexv2 real-data test: {} wells have reads ({:?})",
+        expected_sample_names.len(),
+        expected_sample_names
+    );
+    assert!(
+        !expected_sample_names.is_empty(),
+        "no wells with reads — the input RAD likely has no sample matches",
+    );
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        4,
+        100_000,
+        false,
+        "test_flexv2_real_data",
+        TEST_VERSION,
+        &log,
+    )
+    .expect("collate failed");
+
+    let quant_opts = QuantOpts::builder()
+        .input_dir(&output_dir)
+        .tg_map(&tg_map_path)
+        .output_dir(&quant_dir)
+        .num_threads(4)
+        .num_bootstraps(0)
+        .init_uniform(false)
+        .summary_stat(false)
+        .dump_eq(false)
+        .resolution(ResolutionStrategy::CellRangerLike)
+        .pug_exact_umi(false)
+        .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+        .small_thresh(0)
+        .large_graph_thresh(0)
+        .filter_list(None)
+        .cmdline("test_flexv2_real_data")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    quantify(quant_opts).expect("quantify failed");
+
+    // ---- Assertion family 1: field-shape ----
+    let feat_dump_path = quant_dir.join("featureDump.txt");
+    let feat_dump_text = std::fs::read_to_string(&feat_dump_path).unwrap();
+    let mut field_counts: HashSet<usize> = HashSet::new();
+    for line in feat_dump_text.lines() {
+        field_counts.insert(line.split('\t').count());
+    }
+    assert_eq!(
+        field_counts,
+        HashSet::from([10]),
+        "featureDump.txt has mixed-width rows (field counts: {:?})",
+        field_counts
+    );
+
+    // ---- Assertion family 2: identity ----
+    // Every well that had reads in sample_info.json should appear as a
+    // row prefix in quants_mat_rows.txt (multi-sample naming is
+    // "{sample_name}_{cell_barcode}").
+    let rows =
+        std::fs::read_to_string(quant_dir.join("alevin").join("quants_mat_rows.txt")).unwrap();
+    let row_labels: Vec<&str> = rows.lines().collect();
+    for n in &expected_sample_names {
+        let prefix = format!("{}_", n);
+        assert!(
+            row_labels.iter().any(|r| r.starts_with(&prefix)),
+            "no rows in quants_mat_rows.txt prefixed with {:?} \
+             (sample present in sample_info.json with non-zero reads)",
+            prefix
+        );
+    }
+
+    // ---- Assertion family 3: polars-shape ----
+    let feat_dump_schema = Arc::new(Schema::from_iter([
+        Field::new("CB".into(), DataType::String),
+        Field::new("sample_name".into(), DataType::String),
+        Field::new("CorrectedReads".into(), DataType::Int64),
+        Field::new("MappedReads".into(), DataType::Int64),
+        Field::new("DeduplicatedReads".into(), DataType::Float64),
+        Field::new("MappingRate".into(), DataType::Float64),
+        Field::new("DedupRate".into(), DataType::Float64),
+        Field::new("MeanByMax".into(), DataType::Float64),
+        Field::new("NumGenesExpressed".into(), DataType::Int64),
+        Field::new("NumGenesOverMean".into(), DataType::Int64),
+    ]));
+    let parse_options = CsvParseOptions::default().with_separator(b'\t');
+    let df = CsvReadOptions::default()
+        .with_parse_options(parse_options)
+        .with_has_header(true)
+        .with_schema_overwrite(Some(feat_dump_schema))
+        .with_raise_if_empty(true)
+        .try_into_reader_with_file_path(Some(feat_dump_path))
+        .unwrap()
+        .finish()
+        .expect("polars CSV read of featureDump.txt must succeed");
+
+    assert_eq!(df.width(), 10);
+    let sample_name_col = df.column("sample_name").unwrap();
+    assert_eq!(sample_name_col.dtype(), &DataType::String);
+
+    let observed: HashSet<String> = sample_name_col
+        .str()
+        .unwrap()
+        .into_iter()
+        .filter_map(|opt| opt.map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        observed, expected_sample_names,
+        "featureDump.txt sample_name values do not match sample_info.json non-zero wells"
+    );
+}
+
 /// Test the collation manifest roundtrip.
 #[test]
 fn test_collation_manifest_roundtrip() {
