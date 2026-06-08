@@ -77,6 +77,11 @@ fn main() -> anyhow::Result<()> {
             arg!(-o --output <RADFILE> "output RAD file")
                 .required(true)
                 .value_parser(value_parser!(PathBuf)),
+        )
+        .arg(
+            arg!(--"score-threshold" <SCORETHRESH> "fraction of the best alignment score to retain for each read")
+                .value_parser(value_parser!(f64))
+                .default_value("0.95"),
         );
 
     let view_app = Command::new("view")
@@ -195,7 +200,13 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than these many reads will be resolved using a custom approach")
         .value_parser(value_parser!(usize))
         .default_value("10")
-        .hide(true));
+        .hide(true))
+    .arg(arg!(--"lambda-size" <LAMBDASIZE> "reward for including a vertex in DP subtree selection")
+        .value_parser(value_parser!(f64))
+        .default_value("0.0"))
+    .arg(arg!(--"tau-delta" <TAUDELTA> "minimum delta(v,t) = score(v,t) - best_alt(v) for transcript admissibility")
+        .value_parser(value_parser!(f64))
+        .default_value("0.0"));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -374,7 +385,16 @@ fn main() -> anyhow::Result<()> {
         let rad_file: &PathBuf = t.get_one("output").unwrap();
         let num_threads: u32 = *t.get_one("threads").unwrap();
         let filter: bool = t.get_flag("filter_best");
-        alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, filter, &log)?
+        let score_threshold: f64 = *t.get_one("score-threshold").unwrap();
+        
+        alevin_fry::convert::bam2rad(
+            input_file,
+            rad_file,
+            num_threads,
+            filter,
+            score_threshold,
+            &log,
+        )?
     }
 
     // convert a rad file to a textual representation and write to stdout
@@ -419,6 +439,8 @@ fn main() -> anyhow::Result<()> {
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
         let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
+        let lambda_size: f64 = *t.get_one("lambda-size").unwrap();
+        let tau_delta: f64 = *t.get_one("tau-delta").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
@@ -519,6 +541,8 @@ fn main() -> anyhow::Result<()> {
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
+            .lambda_size(lambda_size)
+            .tau_delta(tau_delta)
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)

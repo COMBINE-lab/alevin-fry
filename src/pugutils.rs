@@ -32,6 +32,17 @@ use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
 
+use needletail::bitkmer::bitmer_to_bytes;
+use triple_accel::levenshtein::levenshtein;
+
+#[inline]
+fn umi_edit_distance_from_packed(x: u64, y: u64, umi_len: u8) -> usize {
+    let xb = bitmer_to_bytes((x, umi_len));
+    let yb = bitmer_to_bytes((y, umi_len));
+    levenshtein(&xb, &yb) as usize
+}
+
+
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
 #[derive(Debug)]
@@ -73,10 +84,12 @@ pub fn extract_graph(
 
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
+    let umi_len: u8 = 12;
     let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
         let hdist = if pug_exact_umi {
             if x.0 == y.0 { 0 } else { usize::MAX }
         } else {
+            //umi_edit_distance_from_packed(x.0, y.0, umi_len)
             afutils::count_diff_2_bit_packed(x.0, y.0)
         };
 
@@ -85,13 +98,14 @@ pub fn extract_graph(
             return PugEdgeType::BiDirected;
         }
 
-        if hdist < 2 {
+        if hdist < 3 {
             one_edit += 1;
             return if x.1 > (2 * y.1 - 1) {
                 PugEdgeType::XToY
             } else if y.1 > (2 * x.1 - 1) {
                 PugEdgeType::YToX
             } else {
+                //PugEdgeType::NoEdge
                 PugEdgeType::BiDirected
             };
         }
@@ -305,7 +319,7 @@ where
 /// is monochromatic if every vertex can be "covered" by a single
 /// transcript (i.e. there exists a transcript that appears in the
 /// equivalence class labels of all vertices in the arboresence).
-fn collapse_vertices(
+pub fn collapse_vertices(
     v: u32,
     uncovered_vertices: &HashSet<u32, ahash::RandomState>, // the set of vertices already covered
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
@@ -390,6 +404,1111 @@ fn collapse_vertices(
     (largest_mcc, chosen_txp)
 }
 
+//new model?!
+#[derive(Debug, Clone)]
+struct CandidateComponent {
+    vertices: Vec<u32>,
+    score: f64,
+    tx_weights: Vec<(u32, f64)>,
+    tx_ids: Vec<u32>,
+}
+
+#[inline]
+fn candidate_txps_from_root_with_gap(
+    v: u32,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    root_tx_gap: f64,
+) -> Vec<u32> {
+    let vert = g.from_index(v as usize);
+    let labels = eqmap.refs_for_eqc(vert.0);
+
+    let mut tx_scores: Vec<(u32, f64)> = Vec::with_capacity(labels.len());
+    for (tx_index, txp) in labels.iter().enumerate() {
+        let ll = vertex_loglik_for_tx(vert.0, vert.1, tx_index, eqmap);
+        tx_scores.push((*txp, ll));
+    }
+
+    if tx_scores.is_empty() {
+        return Vec::new();
+    }
+
+    let best_score = tx_scores
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let mut kept: Vec<u32> = tx_scores
+        .into_iter()
+        .filter(|(_, s)| *s >= best_score - root_tx_gap)
+        .map(|(t, _)| t)
+        .collect();
+
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
+#[inline]
+fn component_soft_objective_with_filter(
+    component: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+    tx_score_gap: f64,
+) -> (f64, Vec<(u32, f64)>, Vec<u32>) {
+    let tx_scores = component_tx_log_scores(component, g, eqmap, hasher_state);
+
+    if tx_scores.is_empty() {
+        return (f64::NEG_INFINITY, Vec::new(), Vec::new());
+    }
+
+    let best_score = tx_scores
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let filtered: Vec<(u32, f64)> = tx_scores
+        .into_iter()
+        .filter(|(_, s)| *s >= best_score - tx_score_gap)
+        .collect();
+
+    if filtered.is_empty() {
+        return (f64::NEG_INFINITY, Vec::new(), Vec::new());
+    }
+
+    let vals: Vec<f64> = filtered.iter().map(|(_, s)| *s).collect();
+    let obj = logsumexp(&vals) - lambda;
+    let tx_weights = softmax_log_scores(&filtered);
+    let tx_ids = filtered.iter().map(|(t, _)| *t).collect();
+
+    (obj, tx_weights, tx_ids)
+}
+
+#[inline]
+fn objective_gain_of_adding(
+    current_component: &[u32],
+    candidate_vertex: u32,
+    txp_seed: u32,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+    tx_score_gap: f64,
+) -> Option<(f64, f64, Vec<(u32, f64)>, Vec<u32>)> {
+    let vert = g.from_index(candidate_vertex as usize);
+    let labels = eqmap.refs_for_eqc(vert.0);
+
+    if labels.binary_search(&txp_seed).is_err() {
+        return None;
+    }
+
+    let (curr_score, _, _) = component_soft_objective_with_filter(
+        current_component,
+        g,
+        eqmap,
+        hasher_state,
+        lambda,
+        tx_score_gap,
+    );
+
+    let mut trial = current_component.to_vec();
+    trial.push(candidate_vertex);
+
+    let (trial_score, trial_tx_weights, trial_tx_ids) = component_soft_objective_with_filter(
+        &trial,
+        g,
+        eqmap,
+        hasher_state,
+        lambda,
+        tx_score_gap,
+    );
+
+    Some((trial_score - curr_score, trial_score, trial_tx_weights, trial_tx_ids))
+}
+
+#[inline]
+fn posthoc_prune_component(
+    component: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+    tx_score_gap: f64,
+) -> CandidateComponent {
+    let mut best_vertices = component.to_vec();
+
+    loop {
+        let (curr_score, curr_tx_weights, curr_tx_ids) = component_soft_objective_with_filter(
+            &best_vertices,
+            g,
+            eqmap,
+            hasher_state,
+            lambda,
+            tx_score_gap,
+        );
+
+        if best_vertices.len() <= 1 {
+            return CandidateComponent {
+                vertices: best_vertices,
+                score: curr_score,
+                tx_weights: curr_tx_weights,
+                tx_ids: curr_tx_ids,
+            };
+        }
+
+        let mut improved = false;
+        let mut best_trial_vertices = best_vertices.clone();
+        let mut best_trial_score = curr_score;
+        let mut best_trial_tx_weights = curr_tx_weights.clone();
+        let mut best_trial_tx_ids = curr_tx_ids.clone();
+
+        for idx in 0..best_vertices.len() {
+            let mut trial = best_vertices.clone();
+            trial.remove(idx);
+
+            let (trial_score, trial_tx_weights, trial_tx_ids) = component_soft_objective_with_filter(
+                &trial,
+                g,
+                eqmap,
+                hasher_state,
+                lambda,
+                tx_score_gap,
+            );
+
+            if trial_score > best_trial_score {
+                improved = true;
+                best_trial_vertices = trial;
+                best_trial_score = trial_score;
+                best_trial_tx_weights = trial_tx_weights;
+                best_trial_tx_ids = trial_tx_ids;
+            }
+        }
+
+        if improved {
+            best_vertices = best_trial_vertices;
+        } else {
+            return CandidateComponent {
+                vertices: best_vertices,
+                score: best_trial_score,
+                tx_weights: best_trial_tx_weights,
+                tx_ids: best_trial_tx_ids,
+            };
+        }
+    }
+}
+
+fn collapse_vertices_log_weighted_greedy(
+    v: u32,
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+) -> (Vec<u32>, f64, Vec<(u32, f64)>, Vec<u32>) {
+    const ROOT_TX_GAP: f64 = 5.0;
+    const TX_SCORE_GAP: f64 = 5.0;
+    const MIN_GAIN_ADD: f64 = 1e-8;
+
+    type VertexSet = HashSet<u32, ahash::RandomState>;
+    let get_set =
+        |cap: u32| VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone());
+
+    let mut best_component = vec![v];
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best_tx_weights = Vec::new();
+    let mut best_tx_ids = Vec::new();
+
+    let root_txps = candidate_txps_from_root_with_gap(v, g, eqmap, ROOT_TX_GAP);
+
+    if root_txps.is_empty() {
+        let (score, tx_weights, tx_ids) = component_soft_objective_with_filter(
+            &[v],
+            g,
+            eqmap,
+            hasher_state,
+            lambda,
+            TX_SCORE_GAP,
+        );
+        return (vec![v], score, tx_weights, tx_ids);
+    }
+
+    for txp in root_txps.iter() {
+        let mut current_component = vec![v];
+        let (mut current_score, mut current_tx_weights, _) = component_soft_objective_with_filter(
+            &current_component,
+            g,
+            eqmap,
+            hasher_state,
+            lambda,
+            TX_SCORE_GAP,
+        );
+
+        let mut in_component = get_set(uncovered_vertices.len() as u32 + 1);
+        in_component.insert(v);
+
+        let mut frontier = get_set(uncovered_vertices.len() as u32 + 1);
+        for nv in g.neighbors_directed(g.from_index(v as usize), Outgoing) {
+            let n = g.to_index(nv) as u32;
+            if uncovered_vertices.contains(&n) && !in_component.contains(&n) {
+                frontier.insert(n);
+            }
+        }
+
+        loop {
+            let frontier_list: Vec<u32> = frontier.iter().cloned().collect();
+
+            let mut best_neighbor = None;
+            let mut best_gain = f64::NEG_INFINITY;
+            let mut best_neighbor_score = f64::NEG_INFINITY;
+            let mut best_neighbor_tx_weights = Vec::new();
+
+            for n in frontier_list.iter() {
+                if let Some((gain, trial_score, trial_tx_weights, _)) = objective_gain_of_adding(
+                    &current_component,
+                    *n,
+                    *txp,
+                    g,
+                    eqmap,
+                    hasher_state,
+                    lambda,
+                    TX_SCORE_GAP,
+                ) {
+                    if gain > best_gain {
+                        best_gain = gain;
+                        best_neighbor = Some(*n);
+                        best_neighbor_score = trial_score;
+                        best_neighbor_tx_weights = trial_tx_weights;
+                    }
+                }
+            }
+
+            if best_neighbor.is_none() || best_gain <= MIN_GAIN_ADD {
+                break;
+            }
+
+            let n = best_neighbor.expect("checked above");
+            frontier.remove(&n);
+            in_component.insert(n);
+            current_component.push(n);
+            current_score = best_neighbor_score;
+            current_tx_weights = best_neighbor_tx_weights;
+
+            for nv in g.neighbors_directed(g.from_index(n as usize), Outgoing) {
+                let m = g.to_index(nv) as u32;
+                if uncovered_vertices.contains(&m) && !in_component.contains(&m) {
+                    frontier.insert(m);
+                }
+            }
+        }
+
+        let pruned = posthoc_prune_component(
+            &current_component,
+            g,
+            eqmap,
+            hasher_state,
+            lambda,
+            TX_SCORE_GAP,
+        );
+
+        if pruned.score > best_score {
+            best_component = pruned.vertices;
+            best_score = pruned.score;
+            best_tx_weights = pruned.tx_weights;
+            best_tx_ids = pruned.tx_ids;
+        } else if current_score > best_score {
+            best_component = current_component;
+            best_score = current_score;
+            best_tx_weights = current_tx_weights;
+            best_tx_ids = component_soft_objective_with_filter(
+                &best_component,
+                g,
+                eqmap,
+                hasher_state,
+                lambda,
+                TX_SCORE_GAP,
+            ).2;
+        }
+    }
+
+    (best_component, best_score, best_tx_weights, best_tx_ids)
+}
+
+pub fn get_num_molecules_log_greedy<P: EqClassPayload>(
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    tid_to_gid: &[u32],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    hasher_state: &ahash::RandomState,
+    large_graph_thresh: usize,
+    lambda: f64,
+    log: &slog::Logger,
+) -> PugResolutionStatistics {
+    type U32Set = HashSet<u32, ahash::RandomState>;
+    let get_set = |cap: u32| {
+        U32Set::with_capacity_and_hasher(cap as usize, hasher_state.clone())
+    };
+
+    let gene_level_eq_map = match eqmap.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
+    };
+
+    let comps = weakly_connected_components(g);
+
+    let mut pug_stats = PugResolutionStatistics {
+        used_alternative_strategy: false,
+        total_mccs: 0u64,
+        ambiguous_mccs: 0u64,
+        trivial_mccs: 0u64,
+    };
+
+    for (_comp_label, comp_verts) in comps.iter() {
+        if comp_verts.len() > 1 {
+            if comp_verts.len() > large_graph_thresh {
+                get_num_molecules_large_component(
+                    g,
+                    eqmap,
+                    comp_verts,
+                    tid_to_gid,
+                    hasher_state,
+                    gene_eqclass_hash,
+                    log,
+                );
+                warn!(
+                    log,
+                    "found connected component with {} vertices; resolved with cr-like resolution.",
+                    comp_verts.len(),
+                );
+                pug_stats.used_alternative_strategy = true;
+                continue;
+            }
+
+            let mut uncovered_vertices = get_set(comp_verts.len() as u32);
+            for v in comp_verts.iter() {
+                uncovered_vertices.insert(*v);
+            }
+
+            while !uncovered_vertices.is_empty() {
+                let num_remaining = uncovered_vertices.len();
+
+                let mut best_mcc: Vec<u32> = Vec::new();
+                let mut best_mcc_score: f64 = f64::NEG_INFINITY;
+                let mut best_mcc_txp_weights: Vec<(u32, f64)> = Vec::new();
+                let mut best_mcc_tx_ids: Vec<u32> = Vec::new();
+                let mut best_covering_txp = u32::MAX;
+
+                for v in uncovered_vertices.iter() {
+                    let (cand_mcc, cand_score, cand_tx_weights, cand_tx_ids) =
+                        if P::HAS_PROBS {
+                            collapse_vertices_log_weighted_greedy(
+                                *v,
+                                &uncovered_vertices,
+                                g,
+                                eqmap,
+                                hasher_state,
+                                lambda,
+                            )
+                        } else {
+                            let (new_mcc, covering_txp) =
+                                collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
+                            (new_mcc, 0.0, vec![(covering_txp, 1.0)], vec![covering_txp])
+                        };
+
+                    let mcc_len = cand_mcc.len();
+
+                    if P::HAS_PROBS {
+                        if cand_score > best_mcc_score {
+                            best_mcc = cand_mcc;
+                            best_mcc_score = cand_score;
+                            best_mcc_txp_weights = cand_tx_weights;
+                            best_mcc_tx_ids = cand_tx_ids;
+
+                            if let Some((top_txp, _)) = best_mcc_txp_weights
+                                .iter()
+                                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal))
+                            {
+                                best_covering_txp = *top_txp;
+                            }
+                        }
+                    } else {
+                        if best_mcc.len() < mcc_len {
+                            best_mcc = cand_mcc;
+                            best_covering_txp = cand_tx_ids[0];
+                            best_mcc_tx_ids = cand_tx_ids;
+                            best_mcc_txp_weights = vec![(best_covering_txp, 1.0)];
+                        }
+                    }
+
+                    if mcc_len == num_remaining {
+                        break;
+                    }
+                }
+
+                if best_mcc.is_empty() {
+                    crit!(log, "Could not find a valid component");
+                    std::process::exit(1);
+                }
+
+                let mut global_txps = best_mcc_tx_ids.clone();
+                global_txps.sort_unstable();
+                global_txps.dedup();
+
+                if global_txps.is_empty() {
+                    crit!(log, "Selected component had no supported transcripts");
+                    std::process::exit(1);
+                }
+
+                let mut global_txp_prob: Vec<f64> = Vec::new();
+                if P::HAS_PROBS {
+                    let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_weights
+                        .iter()
+                        .filter(|(t, _)| global_txps.binary_search(t).is_ok())
+                        .cloned()
+                        .collect();
+
+                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
+
+                    if txp_prob_temp.is_empty() {
+                        crit!(log, "Selected component had no transcript weights");
+                        std::process::exit(1);
+                    }
+
+                    global_txp_prob = if txp_prob_temp.len() == 1 {
+                        vec![1.0]
+                    } else {
+                        let sum_p: f64 = txp_prob_temp.iter().map(|(_, p)| *p).sum();
+                        if !sum_p.is_finite() || sum_p <= 0.0 {
+                            panic!("invalid transcript probability normalization");
+                        }
+                        txp_prob_temp.iter().map(|(_, p)| *p / sum_p).collect()
+                    };
+                }
+
+                let mut global_genes: Vec<u32> = if gene_level_eq_map {
+                    global_txps.clone()
+                } else {
+                    global_txps
+                        .iter()
+                        .cloned()
+                        .map(|i| tid_to_gid[i as usize])
+                        .collect()
+                };
+
+                global_genes.sort_unstable();
+                global_genes.dedup();
+
+                pug_stats.total_mccs += 1;
+                if global_genes.len() > 1 {
+                    pug_stats.ambiguous_mccs += 1;
+                }
+
+                if best_covering_txp != u32::MAX {
+                    let best_covering_gene = if gene_level_eq_map {
+                        best_covering_txp
+                    } else {
+                        tid_to_gid[best_covering_txp as usize]
+                    };
+
+                    assert!(
+                        global_genes.contains(&best_covering_gene),
+                        "best gene {} not in covering set",
+                        best_covering_gene
+                    );
+                }
+
+                assert!(!global_genes.is_empty(), "can't find representative gene(s) for a molecule");
+
+                let eq_label_len = global_genes.len();
+                let payload = gene_eqclass_hash
+                    .entry(global_genes)
+                    .or_insert(P::new(eq_label_len));
+                payload.inc();
+
+                if P::HAS_PROBS {
+                    assert_eq!(global_txps.len(), global_txp_prob.len());
+                    payload.add_probs(&global_txp_prob);
+                }
+
+                for rv in best_mcc.iter() {
+                    uncovered_vertices.remove(rv);
+                }
+            }
+        } else {
+            let tv = comp_verts.first().expect("can't extract first vertex");
+            let (eq_id, umi_id) = g.from_index(*tv as usize);
+            let tl = eqmap.refs_for_eqc(eq_id);
+
+            let mut tx_scores: Vec<(u32, f64)> = Vec::with_capacity(tl.len());
+            for (i, t) in tl.iter().enumerate() {
+                let ll = vertex_loglik_for_tx(eq_id, umi_id, i, eqmap);
+                tx_scores.push((*t, ll));
+            }
+
+            tx_scores.sort_unstable_by_key(|(t, _)| *t);
+
+            let global_txps: Vec<u32> = tx_scores.iter().map(|(t, _)| *t).collect();
+            let global_txp_prob: Vec<f64> = if P::HAS_PROBS {
+                if tx_scores.len() == 1 {
+                    vec![1.0]
+                } else {
+                    let tx_weights = softmax_log_scores(&tx_scores);
+                    tx_weights.iter().map(|(_, p)| *p).collect()
+                }
+            } else {
+                Vec::new()
+            };
+
+            let mut global_genes: Vec<u32> = if gene_level_eq_map {
+                global_txps.clone()
+            } else {
+                global_txps
+                    .iter()
+                    .map(|i| tid_to_gid[*i as usize])
+                    .collect()
+            };
+            global_genes.sort_unstable();
+            global_genes.dedup();
+
+            assert!(!global_genes.is_empty(), "can't find representative gene(s) for a molecule");
+
+            pug_stats.total_mccs += 1;
+            pug_stats.trivial_mccs += 1;
+            if global_genes.len() > 1 {
+                pug_stats.ambiguous_mccs += 1;
+            }
+
+            let eq_label_len = global_genes.len();
+            let payload = gene_eqclass_hash
+                .entry(global_genes)
+                .or_insert(P::new(eq_label_len));
+            payload.inc();
+
+            if P::HAS_PROBS {
+                payload.add_probs(&global_txp_prob);
+            }
+        }
+    }
+
+    pug_stats
+}
+
+//new model based on the log-likelihood model
+#[inline]
+fn safe_ln_prob(p: f64) -> f64 {
+    // avoid -inf from exact zero
+    p.max(1e-12_f64).ln()
+}
+
+#[inline]
+pub fn vertex_loglik_for_tx(
+    eqid: u32,
+    umi_idx: u32,
+    tx_index: usize,
+    eqmap: &EqMap,
+) -> f64 {
+    let prob_vec = eqmap
+        .probs_for_eq_umi_tx(eqid, umi_idx, tx_index)
+        .expect("eq and umi should be valid");
+
+    if prob_vec.is_empty() {
+        panic!(
+            "empty prob_vec for eqid={}, umi_idx={}, tx_index={}",
+            eqid, umi_idx, tx_index
+        );
+    }
+
+    if let Some((_k, &_p)) = prob_vec.iter().enumerate().find(|(_, p)| !p.is_finite()) {
+        panic!(
+            "NON-FINITE prob_vec entry in vertex_loglik_for_tx for eqid={}, umi_idx={}, tx_index={}",
+            eqid, umi_idx, tx_index
+        );
+    }
+
+    prob_vec.iter().map(|p| safe_ln_prob(*p)).sum()
+}
+
+#[inline]
+fn logsumexp(vals: &[f64]) -> f64 {
+    if vals.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+
+    let max_val = vals
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    if !max_val.is_finite() {
+        return max_val;
+    }
+
+    let sum_exp: f64 = vals.iter().map(|v| (*v - max_val).exp()).sum();
+    max_val + sum_exp.ln()
+}
+
+#[inline]
+pub fn softmax_log_scores(tx_scores: &[(u32, f64)]) -> Vec<(u32, f64)> {
+    if tx_scores.is_empty() {
+        return Vec::new();
+    }
+
+    let max_score = tx_scores
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let denom: f64 = tx_scores.iter().map(|(_, s)| (*s - max_score).exp()).sum();
+
+    tx_scores
+        .iter()
+        .map(|(t, s)| (*t, (*s - max_score).exp() / denom))
+        .collect()
+}
+
+#[inline]
+fn intersect_txps_for_component(
+    component: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+) -> HashSet<u32, ahash::RandomState> {
+    let mut global_txps =
+        HashSet::<u32, ahash::RandomState>::with_hasher(hasher_state.clone());
+
+    for (idx, vertex) in component.iter().enumerate() {
+        let vert = g.from_index(*vertex as usize);
+        let txps_for_vert = eqmap.refs_for_eqc(vert.0);
+
+        if idx == 0 {
+            for t in txps_for_vert {
+                global_txps.insert(*t);
+            }
+        } else {
+            global_txps.retain(|t| txps_for_vert.binary_search(t).is_ok());
+        }
+    }
+
+    global_txps
+}
+
+#[inline]
+pub fn component_tx_log_scores(
+    component: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+) -> Vec<(u32, f64)> {
+    let global_txps = intersect_txps_for_component(component, g, eqmap, hasher_state);
+
+    let mut tx_scores: Vec<(u32, f64)> = Vec::with_capacity(global_txps.len());
+
+    for txp in global_txps.iter() {
+        let mut score_t = 0.0_f64;
+
+        for vertex in component.iter() {
+            let vert = g.from_index(*vertex as usize);
+            let labels = eqmap.refs_for_eqc(vert.0);
+            let tx_index = labels
+                .binary_search(txp)
+                .expect("transcript should exist in every vertex of the component");
+            score_t += vertex_loglik_for_tx(vert.0, vert.1, tx_index, eqmap);
+        }
+
+        tx_scores.push((*txp, score_t));
+    }
+
+    tx_scores.sort_unstable_by_key(|(t, _)| *t);
+    tx_scores
+}
+
+#[inline]
+fn component_soft_objective(
+    component: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+) -> (f64, Vec<(u32, f64)>) {
+    let tx_scores = component_tx_log_scores(component, g, eqmap, hasher_state);
+
+    if tx_scores.is_empty() {
+        return (f64::NEG_INFINITY, Vec::new());
+    }
+
+    let score_vals: Vec<f64> = tx_scores.iter().map(|(_, s)| *s).collect();
+    let obj = logsumexp(&score_vals) - lambda;
+    let tx_weights = softmax_log_scores(&tx_scores);
+
+    (obj, tx_weights)
+}
+
+
+/// Find a transcript-compatible candidate component starting from vertex `v`,
+/// and score it using the soft probabilistic objective:
+///
+///   Phi(C) = log sum_t exp( Score(C,t) ) - lambda
+///
+/// where
+///
+///   Score(C,t) = sum_{vertex in C} sum_{reads in vertex} log p(read | t)
+fn collapse_vertices_log_weighted(
+    v: u32,
+    uncovered_vertices: &HashSet<u32, ahash::RandomState>,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    hasher_state: &ahash::RandomState,
+    lambda: f64,
+) -> (Vec<u32>, f64, Vec<(u32, f64)>) {
+    type VertexSet = HashSet<u32, ahash::RandomState>;
+    let get_set =
+        |cap: u32| VertexSet::with_capacity_and_hasher(cap as usize, hasher_state.clone());
+
+    let vert = g.from_index(v as usize);
+    let nvert = g.node_count();
+
+    let mut best_component: Vec<u32> = Vec::new();
+    let mut best_component_score: f64 = f64::NEG_INFINITY;
+    let mut best_tx_weights: Vec<(u32, f64)> = Vec::new();
+
+    // For each transcript in the root node, grow a transcript-compatible BFS component.
+    for txp in eqmap.refs_for_eqc(vert.0).iter() {
+        let mut bfs_list = VecDeque::new();
+        bfs_list.push_back(v);
+
+        let mut visited_set = get_set(nvert as u32);
+        visited_set.insert(v);
+
+        let mut current_component: Vec<u32> = Vec::new();
+
+        while let Some(cv) = bfs_list.pop_front() {
+            current_component.push(cv);
+
+            for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
+                let n = g.to_index(nv) as u32;
+
+                if !uncovered_vertices.contains(&n) {
+                    continue;
+                }
+
+                if !visited_set.insert(n) {
+                    continue;
+                }
+
+                let n_labels = eqmap.refs_for_eqc(nv.0);
+                if n_labels.binary_search(txp).is_ok() {
+                    bfs_list.push_back(n);
+                }
+            }
+        }
+
+        if current_component.is_empty() {
+            continue;
+        }
+
+        let (cand_score, cand_tx_weights) =
+            component_soft_objective(&current_component, g, eqmap, hasher_state, lambda);
+
+        if cand_score > best_component_score {
+            best_component = current_component;
+            best_component_score = cand_score;
+            best_tx_weights = cand_tx_weights;
+        }
+    }
+
+    (best_component, best_component_score, best_tx_weights)
+}
+
+
+
+pub fn get_num_molecules_log<P: EqClassPayload>(
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    tid_to_gid: &[u32],
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    hasher_state: &ahash::RandomState,
+    large_graph_thresh: usize,
+    lambda: f64,
+    log: &slog::Logger,
+) -> PugResolutionStatistics {
+    type U32Set = HashSet<u32, ahash::RandomState>;
+    let get_set = |cap: u32| {
+        U32Set::with_capacity_and_hasher(cap as usize, hasher_state.clone())
+    };
+
+    let gene_level_eq_map = match eqmap.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
+    };
+
+    let comps = weakly_connected_components(g);
+
+    let mut one_vertex_components: Vec<usize> = vec![0, 0];
+
+    let mut pug_stats = PugResolutionStatistics {
+        used_alternative_strategy: false,
+        total_mccs: 0u64,
+        ambiguous_mccs: 0u64,
+        trivial_mccs: 0u64,
+    };
+
+    for (_comp_label, comp_verts) in comps.iter() {
+        if comp_verts.len() > 1 {
+            if comp_verts.len() > large_graph_thresh {
+                get_num_molecules_large_component(
+                    g,
+                    eqmap,
+                    comp_verts,
+                    tid_to_gid,
+                    hasher_state,
+                    gene_eqclass_hash,
+                    log,
+                );
+                warn!(
+                    log,
+                    "found connected component with {} vertices; resolved with cr-like resolution.",
+                    comp_verts.len(),
+                );
+                pug_stats.used_alternative_strategy = true;
+                continue;
+            }
+
+            let mut uncovered_vertices = get_set(comp_verts.len() as u32);
+            for v in comp_verts.iter() {
+                uncovered_vertices.insert(*v);
+            }
+
+            while !uncovered_vertices.is_empty() {
+                let num_remaining = uncovered_vertices.len();
+
+                let mut best_mcc: Vec<u32> = Vec::new();
+                let mut best_mcc_score: f64 = f64::NEG_INFINITY;
+                let mut best_mcc_txp_weights: Vec<(u32, f64)> = Vec::new();
+
+                // optional: for sanity/debug only
+                let mut best_covering_txp = u32::MAX;
+
+                for v in uncovered_vertices.iter() {
+                    if P::HAS_PROBS {
+                        let (cand_mcc, cand_score, cand_tx_weights) =
+                            collapse_vertices_log_weighted(
+                                *v,
+                                &uncovered_vertices,
+                                g,
+                                eqmap,
+                                hasher_state,
+                                lambda,
+                            );
+
+                        let mcc_len = cand_mcc.len();
+
+                        if cand_score > best_mcc_score {
+                            best_mcc = cand_mcc;
+                            best_mcc_score = cand_score;
+                            best_mcc_txp_weights = cand_tx_weights;
+
+                            if let Some((top_txp, _)) = best_mcc_txp_weights
+                                .iter()
+                                .max_by(|a, b| {
+                                    a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal)
+                                })
+                            {
+                                best_covering_txp = *top_txp;
+                            }
+                        }
+
+                        if mcc_len == num_remaining {
+                            break;
+                        }
+                    } else {
+                        let (cand_mcc, cand_txp) =
+                            collapse_vertices(*v, &uncovered_vertices, g, eqmap, hasher_state);
+
+                        let mcc_len = cand_mcc.len();
+
+                        if best_mcc.len() < mcc_len {
+                            best_mcc = cand_mcc;
+                            best_covering_txp = cand_txp;
+                        }
+
+                        if mcc_len == num_remaining {
+                            break;
+                        }
+                    }
+                }
+
+                if best_mcc.is_empty() {
+                    crit!(log, "Could not find a valid component / covering transcript");
+                    std::process::exit(1);
+                }
+
+                // Intersect transcripts across the selected component
+                let global_txps_set =
+                    intersect_txps_for_component(&best_mcc, g, eqmap, hasher_state);
+
+                let mut global_txps: Vec<u32> = global_txps_set.iter().cloned().collect();
+                global_txps.sort_unstable();
+
+                if global_txps.is_empty() {
+                    crit!(log, "Selected component had no common transcripts");
+                    std::process::exit(1);
+                }
+
+                // Transcript probabilities to pass to EM
+                let mut global_txp_prob: Vec<f64> = Vec::new();
+
+                if P::HAS_PROBS {
+                    let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_weights
+                        .iter()
+                        .filter(|(t, _)| global_txps.binary_search(t).is_ok())
+                        .cloned()
+                        .collect();
+
+                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
+
+                    if txp_prob_temp.is_empty() {
+                        crit!(log, "Selected component had no transcript weights");
+                        std::process::exit(1);
+                    }
+
+                    global_txp_prob = if txp_prob_temp.len() == 1 {
+                        vec![1.0]
+                    } else {
+                        let sum_p: f64 = txp_prob_temp.iter().map(|(_, p)| *p).sum();
+                        if !sum_p.is_finite() || sum_p <= 0.0 {
+                            panic!("invalid transcript probability normalization");
+                        }
+                        txp_prob_temp.iter().map(|(_, p)| *p / sum_p).collect()
+                    };
+                }
+
+                // Project transcripts to genes
+                let mut global_genes: Vec<u32> = if gene_level_eq_map {
+                    global_txps.clone()
+                } else {
+                    global_txps
+                        .iter()
+                        .cloned()
+                        .map(|i| tid_to_gid[i as usize])
+                        .collect()
+                };
+
+                global_genes.sort_unstable();
+                global_genes.dedup();
+
+                pug_stats.total_mccs += 1;
+                if global_genes.len() > 1 {
+                    pug_stats.ambiguous_mccs += 1;
+                }
+
+                if best_covering_txp != u32::MAX {
+                    let best_covering_gene = if gene_level_eq_map {
+                        best_covering_txp
+                    } else {
+                        tid_to_gid[best_covering_txp as usize]
+                    };
+
+                    assert!(
+                        global_genes.contains(&best_covering_gene),
+                        "best gene {} not in covering set, shouldn't be possible",
+                        best_covering_gene
+                    );
+                }
+
+                assert!(
+                    !global_genes.is_empty(),
+                    "can't find representative gene(s) for a molecule"
+                );
+
+                let eq_label_len = global_genes.len();
+                let payload = gene_eqclass_hash
+                    .entry(global_genes)
+                    .or_insert(P::new(eq_label_len));
+                payload.inc();
+
+                if P::HAS_PROBS {
+                    assert_eq!(
+                        global_txps.len(),
+                        global_txp_prob.len(),
+                        "length of global_txps and global_txp_prob should match"
+                    );
+                    payload.add_probs(&global_txp_prob);
+                }
+
+                for rv in best_mcc.iter() {
+                    uncovered_vertices.remove(rv);
+                }
+            }
+        } else {
+            // Single-vertex connected component
+            let tv = comp_verts.first().expect("can't extract first vertex");
+            let (eq_id, umi_id) = g.from_index(*tv as usize);
+            let tl = eqmap.refs_for_eqc(eq_id);
+
+            let vcindex: usize = if tl.len() == 1 { 0 } else { 1 };
+            one_vertex_components[vcindex] += 1;
+
+            let mut global_txps = tl.to_vec();
+            global_txps.sort_unstable();
+
+            let mut global_txp_prob: Vec<f64> = Vec::new();
+
+            if P::HAS_PROBS {
+                let mut tx_scores: Vec<(u32, f64)> = Vec::with_capacity(tl.len());
+
+                for (i, t) in tl.iter().enumerate() {
+                    let ll = vertex_loglik_for_tx(eq_id, umi_id, i, eqmap);
+                    tx_scores.push((*t, ll));
+                }
+
+                tx_scores.sort_unstable_by_key(|(t, _)| *t);
+
+                global_txp_prob = if tx_scores.len() == 1 {
+                    vec![1.0]
+                } else {
+                    let tx_weights = softmax_log_scores(&tx_scores);
+                    tx_weights.iter().map(|(_, p)| *p).collect()
+                };
+            }
+
+            let mut global_genes: Vec<u32>;
+
+            if gene_level_eq_map {
+                global_genes = global_txps.clone();
+            } else {
+                global_genes = global_txps.iter().map(|i| tid_to_gid[*i as usize]).collect();
+                global_genes.sort_unstable();
+                global_genes.dedup();
+            }
+
+            assert!(
+                !global_genes.is_empty(),
+                "can't find representative gene(s) for a molecule"
+            );
+
+            pug_stats.total_mccs += 1;
+            pug_stats.trivial_mccs += 1;
+            if global_genes.len() > 1 {
+                pug_stats.ambiguous_mccs += 1;
+            }
+
+            let eq_label_len = global_genes.len();
+            let payload = gene_eqclass_hash
+                .entry(global_genes)
+                .or_insert(P::new(eq_label_len));
+            payload.inc();
+
+            if P::HAS_PROBS {
+                payload.add_probs(&global_txp_prob);
+            }
+        }
+    }
+
+    pug_stats
+}
+
+
 /// Find the largest monochromatic spanning arboresence
 /// in the graph `g` starting at vertex `v`.  The arboresence
 /// is monochromatic if every vertex can be "covered" by a single
@@ -433,23 +1552,43 @@ fn collapse_vertices_weighted(
         // are constructing
         let mut current_mcc = Vec::new();
         let mut current_prob = Vec::new();
+        let mut avg_prob_by_vertex: HashMap<u32, f64> = HashMap::new();
 
         //obtain the average probabilities for this UMI
         let prob_vec = eqmap
             .probs_for_eq_umi_tx(vert.0, vert.1, tx_index)
             .expect("eq and umi should be valid");
+
+        if let Some((k, &p)) = prob_vec.iter().enumerate().find(|(_, p)| !p.is_finite()) {
+            panic!(
+                "NON-FINITE prob_vec entry - 1"
+            );
+        }
+
+        if prob_vec.is_empty() {
+            panic!("empty prob_vec for eqid={}, umi_idx={}, tx_index={}", vert.0, vert.1, tx_index);
+        }
+
         let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
         current_prob.push(avg_prob);
+
+        avg_prob_by_vertex.insert(v, avg_prob);
 
         // get the next vertex in the BFS
         while let Some(cv) = bfs_list.pop_front() {
             // add it to the arboresence
             current_mcc.push(cv);
 
+            //fetch avg prob of current vertex
+            let cv_avg = *avg_prob_by_vertex
+                .get(&cv)
+                .expect("missing avg prob for current vertex");
+
             // for all of the neighboring vertices that we can
             // reach (those with outgoing, or bidirected edges)
             for nv in g.neighbors_directed(g.from_index(cv as usize), Outgoing) {
                 let n = g.to_index(nv) as u32;
+
 
                 // check if we should add this vertex or not:
                 // uncovered_vertices contains the the current set of
@@ -464,24 +1603,59 @@ fn collapse_vertices_weighted(
                 // yet. The `insert()` method returns true
                 // if the set didn't have the element, false
                 // otherwise.
-                if !uncovered_vertices.contains(&n) || !visited_set.insert(n) {
+                if !uncovered_vertices.contains(&n) {
                     continue;
                 }
 
                 // get the set of transcripts present in the
                 // label of the current node.
                 let n_labels = eqmap.refs_for_eqc(nv.0);
-                if let Ok(_n) = n_labels.binary_search(txp) {
-                    bfs_list.push_back(n);
+                if let Ok(tx_index_nv) = n_labels.binary_search(txp) {
+                    //bfs_list.push_back(n);
 
                     //obtain the average probabilities for this UMI
                     let prob_vec = eqmap
-                        .probs_for_eq_umi_tx(nv.0, nv.1, tx_index)
+                        .probs_for_eq_umi_tx(nv.0, nv.1, tx_index_nv)
                         .expect("eq and umi should be valid");
+
+                    if let Some((k, &p)) = prob_vec.iter().enumerate().find(|(_, p)| !p.is_finite()) {
+                        panic!(
+                            "NON-FINITE prob_vec entry - 2");
+                    }
+
+                    if prob_vec.is_empty() {
+                        panic!("empty prob_vec for eqid={}, umi_idx={}, tx_index={}", nv.0, nv.1, tx_index_nv);
+                    }
+
                     let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
+
+                    if !avg_prob.is_finite() {
+                        panic!("the avg_prob is not finite in the collapse_vertices_weighted function: {:?}", prob_vec);
+                    }
+
+                    // only treat as connected if |cv_avg - avg_prob| < 0.5**
+                    if (cv_avg - avg_prob).abs() >= 0.5 {
+                        continue; 
+                    }
+
+                    // skip if already visited
+                    if !visited_set.insert(n) {
+                        continue;
+                    }
+
+                    // push only after passing threshold**
+                    bfs_list.push_back(n);
+
                     current_prob.push(avg_prob);
+
+                    // store neighbor avg prob**
+                    avg_prob_by_vertex.insert(n, avg_prob);
                 }
             }
+        }
+
+        if current_prob.len() == 0 {
+            panic!("current_prob is zero in the collapse_vertices_weighted function");
         }
 
         //compute the average probabilities of the current prob
@@ -497,6 +1671,8 @@ fn collapse_vertices_weighted(
         eq_txps_prob.push((*txp, average_current_prob));
     }
     //}// unsafe
+
+    assert_eq!(eq_txps_prob.len(), eqmap.refs_for_eqc(vert.0).len(), "weigheted_collapsed_txp, length of eq_txps_prob should be the same as the number of transcripts in the equivalence class");
 
     (highest_prob_mcc, chosen_txp, highest_prob, eq_txps_prob)
 }
@@ -913,7 +2089,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
 /// given the connected component (subgraph) of `g` defined by the
 /// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
 /// within this subgraph.
-fn get_num_molecules_large_component<P: EqClassPayload>(
+pub fn get_num_molecules_large_component<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eq_map: &EqMap,
     vertex_ids: &[u32],
@@ -1187,14 +2363,32 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     }
                 }
 
+                //eprintln!("@@@@@@@@@@@@@ global txp = {:?}", global_txps);
+                //eprintln!("############# best_mcc_txp_probs = {:?}", best_mcc_txp_probs);
+
                 // for long reads obtain the probabiltiy for the global txps
                 let mut global_txp_prob: Vec<f64> = vec![];
                 if P::HAS_PROBS {
+
+                    if let Some((k, &p)) = best_mcc_txp_probs.iter().enumerate().find(|(_, p)| !p.1.is_finite()) {
+                        panic!(
+                            "NON-FINITE prob_vec entry -- 1 -- best_mcc_txp_prob"
+                        );
+                    }
+
                     let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_probs
                         .iter()
                         .filter(|(t, _)| global_txps.contains(t))
                         .cloned()
                         .collect();
+
+                    if global_txps.len() != txp_prob_temp.len() {
+                        eprintln!("global_txp = {:?}, global_txp_len = {}, best_mcc = {:?}, best_mcc_len = {:?}, txp_prob_temp: {:?}, txp_prob_temp_len = {:?}, best_mcc_txp_probs = {:?}, best_mcc_txp_probs_len = {:?}", 
+                        global_txps, global_txps.len(), best_mcc, best_mcc.len(), txp_prob_temp, txp_prob_temp.len(), best_mcc_txp_probs, best_mcc_txp_probs.len());
+                        std::process::exit(1);
+                    }
+                    //assert_eq!(global_txps.len(), txp_prob_temp.len(), "after - length of global txps and their corresponding probs should be the same");
+
                     txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
                     global_txp_prob = if txp_prob_temp.len() == 1 {
                         vec![1.0]
@@ -1250,6 +2444,12 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 payload.inc();
 
                 if P::HAS_PROBS {
+                    if let Some((k, &p)) = global_txp_prob.iter().enumerate().find(|(_, p)| !p.is_finite()) {
+                        panic!(
+                            "NON-FINITE prob_vec entry -- 1 -- at the end"
+                        );
+                    }
+                    assert_eq!(global_txps.len(), global_txp_prob.len(), "length of global txps and their corresponding probs should be the same -- 2 -- at the end");
                     payload.add_probs(&global_txp_prob);
                 }
 
@@ -1317,6 +2517,11 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 .or_insert(P::new(eq_label_len));
             payload.inc();
             if P::HAS_PROBS {
+                if let Some((k, &p)) = global_txp_prob.iter().enumerate().find(|(_, p)| !p.is_finite()) {
+                        panic!(
+                            "NON-FINITE prob_vec entry -- 2 -- at the end"
+                        );
+                    }
                 payload.add_probs(&global_txp_prob);
             }
         }

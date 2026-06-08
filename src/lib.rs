@@ -22,5 +22,8 @@ pub mod knee_finding;
 pub mod multinomial;
 pub mod prog_opts;
 pub mod pugutils;
+//pub mod pugutils_dp;
+pub mod pugutils_dp_new;
 pub mod quant;
 pub mod utils;
+pub mod graph_dump;

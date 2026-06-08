@@ -19,6 +19,7 @@ use rand::Rng;
 use slog::info;
 use std::collections::HashMap;
 use std::f32;
+use num_format::{Locale, ToFormattedString};
 
 //#[derive(Clone, Debug)]
 //pub struct SalmonEQClass {
@@ -758,6 +759,7 @@ pub fn em_optimize_long_read<P: EqClassPayload>(
     num_alphas: usize,
     only_unique: bool,
     _log: &slog::Logger,
+    cell_num_ok: bool,
 ) -> Vec<f32> {
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
@@ -781,22 +783,48 @@ pub fn em_optimize_long_read<P: EqClassPayload>(
     // fill in the alphas based on the initialization strategy
     let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
+    let total_weight: f32 = eqclasses_prob.values().map(|p| p.count() as f32).sum();
+    if cell_num_ok { 
+        eprintln!("Total weight: {}", total_weight);
+    }
+
     for item in alphas_in.iter_mut().take(num_alphas) {
-        match init_type {
-            EmInitType::Uniform => {
-                *item = uni_prior;
-            }
-            EmInitType::Informative => {
-                *item = (*item + 0.5) * 1e-3;
-            }
-            EmInitType::Random => {
-                *item = rng.random::<f32>() + 1e-5;
-            }
-        }
+
+        *item = total_weight / (num_alphas as f32);
+
+        //match init_type {
+        //    EmInitType::Uniform => {
+        //        *item = uni_prior;
+        //    }
+        //    EmInitType::Informative => {
+        //        *item = (*item + 0.5) * 1e-3;
+        //    }
+        //    EmInitType::Random => {
+        //        *item = rng.random::<f32>() + 1e-5;
+        //    }
+        //}
     }
 
     // TODO: is it even necessary?
     //alphas_in.iter_mut().for_each(|alpha| *alpha *= 1e-3);
+
+    if cell_num_ok { 
+        //if it_num.is_multiple_of(100) {
+        info!(_log,
+            "iteration {}; rel diff --; 
+            NR_002819.4-(102858p): {}; 
+            NR_144567.1-(102859p): {}; 
+            NR_144568.1-(102860p): {};
+            NR_145459.1-(102861p): {};
+            NR_144569.1-(102862p): {};",
+            0,
+            alphas_in[102858],
+            alphas_in[102859],
+            alphas_in[102860],
+            alphas_in[102861],
+            alphas_in[102862],
+        );
+    }
 
     let mut it_num: u32 = 0;
     let mut converged: bool = true;
@@ -827,6 +855,29 @@ pub fn em_optimize_long_read<P: EqClassPayload>(
         } //end-for
 
         it_num += 1;
+
+        if cell_num_ok { 
+            //if it_num.is_multiple_of(100) {
+            if it_num <= 10 {
+                info!(_log,
+                    "iteration {}; rel diff {}; 
+                    NR_002819.4-(102858p): {}; 
+                    NR_144567.1-(102859p): {}; 
+                    NR_144568.1-(102860p): {};
+                    NR_145459.1-(102861p): {};
+                    NR_144569.1-(102862p): {};",
+                    it_num.to_formatted_string(&Locale::en),
+                    max_rel_diff,
+                    alphas_in[102858],
+                    alphas_in[102859],
+                    alphas_in[102860],
+                    alphas_in[102861],
+                    alphas_in[102862],
+                );
+            }
+        }
+
+        
     }
 
     // update too small alphas

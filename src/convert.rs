@@ -27,7 +27,7 @@ use libradicl::utils::MASK_LOWER_31_U32;
 use libradicl::{
     chunk,
     header::{RadHeader, RadPrelude},
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+    record::{ScLongReadRecord, ScLongReadRecordContext},
 };
 
 use needletail::bitkmer::*;
@@ -35,6 +35,62 @@ use rand::Rng;
 use std::error::Error;
 use std::path::Path;
 use std::str;
+use std::collections::HashSet;
+
+use std::collections::HashMap;
+
+//fn dedup_keep_best_as(
+//    tid_list: &mut Vec<u32>,
+//    score_list: &mut Vec<i32>,
+//    start_list: &mut Vec<u32>,
+//    end_list: &mut Vec<u32>,
+//    tlen_list: &mut Vec<u32>,
+//) {
+//    assert_eq!(tid_list.len(), score_list.len());
+//    assert_eq!(tid_list.len(), start_list.len());
+//    assert_eq!(tid_list.len(), end_list.len());
+//    assert_eq!(tid_list.len(), tlen_list.len());
+//
+//    let mut best_scores: HashMap<u32, (i32, usize)> = HashMap::new();
+//
+//    // Iterate over the lists and store the best scores
+//    for (i, &tid) in tid_list.iter().enumerate() {
+//        let score = score_list[i];
+//        
+//        best_scores
+//            .entry(tid)
+//            .and_modify(|(best_score, best_idx)| {
+//                if score > *best_score {
+//                    *best_score = score;
+//                    *best_idx = i;
+//                }
+//            })
+//            .or_insert((score, i));
+//    }
+//
+//    // Collect the results
+//    let mut new_tid = Vec::with_capacity(best_scores.len());
+//    let mut new_score = Vec::with_capacity(best_scores.len());
+//    let mut new_start = Vec::with_capacity(best_scores.len());
+//    let mut new_end = Vec::with_capacity(best_scores.len());
+//    let mut new_tlen = Vec::with_capacity(best_scores.len());
+//
+//    for (&tid, &(best_score, index)) in best_scores.iter() {
+//        new_tid.push(tid);
+//        new_score.push(best_score);
+//        new_start.push(start_list[index]);
+//        new_end.push(end_list[index]);
+//        new_tlen.push(tlen_list[index]);
+//    }
+//
+//    // Update original lists
+//    *tid_list = new_tid;
+//    *score_list = new_score;
+//    *start_list = new_start;
+//    *end_list = new_end;
+//    *tlen_list = new_tlen;
+//}
+
 
 // pub fn reset_signal_pipe_handler() -> Result<()> {
 //     #[cfg(target_family = "unix")]
@@ -53,8 +109,8 @@ use std::str;
 #[allow(dead_code)]
 fn get_random_nucl() -> &'static str {
     let nucl = ["A", "T", "G", "C"];
-    let mut rng = rand::rng();
-    let idx = rng.random_range(0..4);
+    let mut rng = rand::thread_rng();
+    let idx = rng.gen_range(0..4);
     nucl[idx]
     // match idx {
     //     0 => {return "A";},
@@ -112,7 +168,7 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
                 todo!("support for u128-encoded barcodes is not yet available");
             }
             _ => {
-                todo!("signed values not supported as barcode types");
+                bail!("signed integer types not supported for barcodes");
             }
         },
         _ => bail!("invalid type!"),
@@ -122,7 +178,11 @@ fn write_barcode<W: Write>(barcode_t: &RadType, barcode: u64, w: &mut W) -> anyh
 
 #[inline]
 fn write_list<W: Write>(
-    tid_list: &[u32],
+    tid_list: &Vec<(u32, usize)>,
+    score_list: &[i32],
+    start_list: &[u32],
+    end_list: &[u32],
+    tlen_list: &[u32],
     bct: &RadType,
     bc: u64,
     umit: &RadType,
@@ -130,15 +190,34 @@ fn write_list<W: Write>(
     w: &mut W,
 ) -> anyhow::Result<()> {
     assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
-    let na = tid_list.len() as u32;
-    w.write_all(&na.to_le_bytes()).unwrap();
-    //bc
+    let na: usize = tid_list.len();
+    //assert_eq!(na, score_list.len());
+    //assert_eq!(na, start_list.len());
+    //assert_eq!(na, end_list.len());
+    //assert_eq!(na, tlen_list.len());
+
+    // write na as u32 to the file
+    let na_u32: u32 = na as u32;
+    w.write_all(&na_u32.to_le_bytes())?;
+    // bc
     write_barcode(bct, bc, w)?;
-    //umi
+    // umi
     write_barcode(umit, umi, w)?;
-    //write tid list
-    for t in tid_list.iter() {
-        w.write_all(&t.to_le_bytes()).unwrap();
+
+    // write per-alignment fields
+    for i in 0..na {
+        let tid = tid_list[i].0;
+        let idx = tid_list[i].1;
+        let as_val = score_list[idx];
+        let start = start_list[idx];
+        let end = end_list[idx];
+        let tlen = tlen_list[idx];
+
+        w.write_all(&tid.to_le_bytes())?;
+        w.write_all(&as_val.to_le_bytes())?;
+        w.write_all(&start.to_le_bytes())?;
+        w.write_all(&end.to_le_bytes())?;
+        w.write_all(&tlen.to_le_bytes())?;
     }
     Ok(())
 }
@@ -169,6 +248,7 @@ pub fn bam2rad<P1, P2>(
     rad_file: P2,
     num_threads: u32,
     filter_best: bool,
+    score_threshold: f64,
     log: &slog::Logger,
 ) -> anyhow::Result<()>
 where
@@ -230,6 +310,14 @@ where
 
     let hdrv = reader.read_alignment_header()?;
     let mut data = Cursor::new(vec![]);
+    
+    let ref_seqs = hdrv.reference_sequences();
+    let mut txp_lengths: Vec<u32> = Vec::with_capacity(ref_seqs.len());
+
+    for (_name, ref_seq) in ref_seqs.iter() {
+        let len = ref_seq.length().get() as u32;
+        txp_lengths.push(len);
+    }
 
     // intermediate buffer
     let mut owriter = BufWriter::with_capacity(1_048_576, ofile);
@@ -293,27 +381,27 @@ where
 
         // read-level
         let flag_data = rec.data();
-        let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
+        let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
             match bcs {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into barcode string.");
                 }
             }
-        } _ => {
+        } else {
             panic!("Input record missing CR tag!")
-        }};
+        };
 
-        let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
+        let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
             match umis {
                 SamTagValue::String(bstr) => str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?,
                 _ => {
                     bail!("cannot convert non-string (Z) tag into umi string.");
                 }
             }
-        } _ => {
+        } else {
             panic!("Input record missing UR tag!")
-        }};
+        };
         let bclen = bc_string_in.len() as u16;
         let umilen = umi_string_in.len() as u16;
 
@@ -331,8 +419,9 @@ where
 
         umi_typeid = match umilen {
             1..=4 => RadType::Int(rad_types::RadIntId::U8),
-            5..=8 => RadType::Int(rad_types::RadIntId::U16),
-            9..=16 => RadType::Int(rad_types::RadIntId::U32),
+            //5..=8 => RadType::Int(rad_types::RadIntId::U16),
+            //9..=16 => RadType::Int(rad_types::RadIntId::U32),
+            5..=16 => RadType::Int(rad_types::RadIntId::U32),
             17..=32 => RadType::Int(rad_types::RadIntId::U64),
             l => {
                 crit!(log, "cannot encode umi of length {} > 32", l);
@@ -357,6 +446,31 @@ where
             name: "compressed_ori_refid".to_owned(),
             typeid: RadType::Int(RadIntId::U32),
         });
+
+        // new AS tag (alignment score)
+        aln_tags.add_tag_desc(TagDesc {
+            name: "as".to_owned(),
+            typeid: RadType::Int(RadIntId::I32),
+        });
+
+        // new start position 
+        aln_tags.add_tag_desc(TagDesc {
+            name: "start".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
+        // new end position
+        aln_tags.add_tag_desc(TagDesc {
+            name: "end".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
+        // new transcript length (tlen)
+        aln_tags.add_tag_desc(TagDesc {
+            name: "tlen".to_owned(),
+            typeid: RadType::Int(RadIntId::U32),
+        });
+
         aln_tags.write(&mut data)?;
 
         // done with tag descriptions
@@ -407,12 +521,22 @@ where
 
     // history for records that is
     // first seen
+    //let score_threshold = 0.95;
+    eprintln!("score threshold: {}", score_threshold);
+    if !(0.0..=1.0).contains(&score_threshold) {
+        bail!("--score-threshold must be in the inclusive range [0.0, 1.0]");
+    }
+    
     let mut old_qname = String::from("");
     let mut bc = 0u64;
     let mut umi = 0u64;
     let mut tid_list = Vec::<u32>::new();
     let mut score_list = Vec::<i32>::new();
     const AS: SamTag = SamTag::new(b'A', b'S');
+
+    let mut start_list = Vec::<u32>::new();
+    let mut end_list = Vec::<u32>::new();
+    let mut tlen_list = Vec::<u32>::new();
 
     //for r in bam.records(){
     loop {
@@ -437,9 +561,26 @@ where
         let qname_str = rec.name().expect("valid name").to_string().to_owned();
         let qname = qname_str;
         let mut tid = rec.reference_sequence_id(&hdrv).unwrap().unwrap() as u32;
+
+        //obtain the start of the alignment
+        let start_aln: u32 = rec.alignment_start()          
+            .map(|p| p.expect("REASON").get() as u32)                     
+            .unwrap_or(u32::MAX); 
+
+        //obtain the end of the alignment
+        let end_aln: u32 = rec.alignment_end()          
+            .map(|p| p.expect("REASON").get() as u32)                     
+            .unwrap_or(u32::MAX); 
+
+        //obtain the trascript length
+        let tlen: u32 = txp_lengths[tid as usize];
+
         if qname == old_qname {
             if !is_reverse {
+                //eprintln!("before: tid dec={} hex={:#010x}", tid, tid);
                 tid |= MASK_LOWER_31_U32;
+                //eprintln!("after: tid dec={} hex={:#010x}", tid, tid);
+                //std::process::exit(1);
             }
             let flag_data = rec.data();
             let score = if filter_best {
@@ -449,6 +590,9 @@ where
             };
             tid_list.push(tid);
             score_list.push(score);
+            start_list.push(start_aln);
+            end_list.push(end_aln);
+            tlen_list.push(tlen);
             // local_nrec += 1;
             continue;
         }
@@ -458,13 +602,51 @@ where
         // first read, in which case we shall continue
         if !tid_list.is_empty() {
             let max_score = score_list.iter().max().expect("max should exist");
-            // filter only transcripts having a score at least equal to the best
+            //// filter only transcripts having a score at least equal to the best
             let flist = tid_list
                 .iter()
                 .zip(score_list.iter())
-                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
-                .collect::<Vec<u32>>();
-            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                .enumerate()
+                .filter_map(|(idx, (t, s))| {
+                    if *s as f64 >= (*max_score as f64) * score_threshold {
+                        Some((*t, idx))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<(u32, usize)>>();
+
+            if flist.is_empty() {
+                //eprintln!("flist is empty for read {}, tid_list: {:?}, score_list: {:?}, ", old_qname, tid_list, score_list);
+                local_nrec -= 1;
+                //std::process::exit(1);
+            } else {
+                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                
+            }
+            //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            //dedup_keep_best_as(&mut tid_list, &mut score_list, &mut start_list, &mut end_list, &mut tlen_list);
+            //let mut seen = HashSet::new();
+            //let mut has_dup = false;
+//
+            //for &tid in &tid_list {
+            //    let base_tid = tid & !MASK_LOWER_31_U32;  // strip direction bit
+            //
+            //    if !seen.insert(base_tid) {
+            //        has_dup = true;
+            //    }
+            //}
+//
+            //if has_dup {
+            //    eprintln!("DUP DETECTED!");
+            //    eprintln!("raw tids: {:?}", 
+            //        tid_list.iter()
+            //            .map(|t| format!("{:#010x}", t))
+            //            .collect::<Vec<_>>()
+            //    );
+            //    std::process::exit(1);
+            //}
+            
         }
 
         // dump if we reach the buf_limit
@@ -492,7 +674,7 @@ where
         // if this is a new read update the old variables
         {
             let flag_data = rec.data();
-            let bc_string_in: &str = match flag_data.get(&CR) { Some(Ok(bcs)) => {
+            let bc_string_in: &str = if let Some(Ok(bcs)) = flag_data.get(&CR) {
                 match bcs {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
@@ -501,11 +683,11 @@ where
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
                 }
-            } _ => {
+            } else {
                 panic!("Input record missing CR tag!")
-            }};
+            };
 
-            let umi_string_in: &str = match flag_data.get(&UR) { Some(Ok(umis)) => {
+            let umi_string_in: &str = if let Some(Ok(umis)) = flag_data.get(&UR) {
                 match umis {
                     SamTagValue::String(bstr) => {
                         str::from_utf8(<BStr as AsRef<[u8]>>::as_ref(bstr))?
@@ -514,9 +696,9 @@ where
                         bail!("cannot convert non-string (Z) tag into umi string.");
                     }
                 }
-            } _ => {
+            } else {
                 panic!("Input record missing UR tag!")
-            }};
+            };
 
             let bc_string = bc_string_in.replacen('N', "A", 1);
             let umi_string = umi_string_in.replacen('N', "A", 1);
@@ -534,6 +716,9 @@ where
             old_qname.clone_from(&qname);
             tid_list.clear();
             score_list.clear();
+            start_list.clear();
+            end_list.clear();
+            tlen_list.clear();
             if !is_reverse {
                 tid |= MASK_LOWER_31_U32;
             }
@@ -544,6 +729,9 @@ where
             };
             tid_list.push(tid);
             score_list.push(score);
+            start_list.push(start_aln);
+            end_list.push(end_aln);
+            tlen_list.push(tlen);
             local_nrec += 1;
         }
     }
@@ -553,14 +741,35 @@ where
         // first fill the buffer with the last remaining read
         if !tid_list.is_empty() {
             let max_score = score_list.iter().max().expect("max should exist");
-            // filter only transcripts having a score at least equal to the best
+            //// filter only transcripts having a score at least equal to the best
             let flist = tid_list
                 .iter()
                 .zip(score_list.iter())
-                .filter_map(|(t, s)| if s >= max_score { Some(*t) } else { None })
-                .collect::<Vec<u32>>();
-            write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                .enumerate()
+                .filter_map(|(idx, (t, s))| {
+                    if *s as f64 >= (*max_score as f64) * score_threshold {
+                        Some((*t, idx))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<(u32, usize)>>();
+
+            if flist.is_empty() {
+                //eprintln!("flist is empty for read {}, tid_list: {:?}, score_list: {:?}", old_qname, tid_list, score_list);
+                local_nrec -= 1;
+                //std::process::exit(1);
+            } else {
+                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                
+            }
+            //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+            //dedup_keep_best_as(&mut tid_list, &mut score_list, &mut start_list, &mut end_list, &mut tlen_list);
+            
         }
+    }
+
+    if local_nrec > 0 {
 
         data.set_position(0);
         let nbytes = (data.get_ref().len()) as u32;
@@ -646,7 +855,7 @@ where
     let umi_len: u16 = umi_tag.try_into()?;
 
     let mut num_reads: u64 = 0;
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+    let record_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();
@@ -665,7 +874,7 @@ where
 
     let mut id = 0usize;
     for _ in 0..(hdr.num_chunks as usize) {
-        let c = chunk::Chunk::<AlevinFryReadRecord>::from_bytes(&mut br, &record_context);
+        let c = chunk::Chunk::<ScLongReadRecord>::from_bytes(&mut br, &record_context);
         for read in c.reads.iter() {
             let bc_mer: BitKmer = (read.bc, barcode_len as u8);
             let umi_mer: BitKmer = (read.umi, umi_len as u8);
@@ -674,18 +883,31 @@ where
             let num_entries = read.refs.len();
             for i in 0usize..num_entries {
                 let tid = &hdr.ref_names[read.refs[i] as usize];
-                let bc_bitmer = &bitmer_to_bytes(bc_mer)[..];
-                let umi_bitmer = &bitmer_to_bytes(umi_mer)[..];
+                let as_val = read.as_scores[i];
+                let start = read.starts[i];
+                let end = read.ends[i];
+                let tlen = read.tlens[i];
+
+                let bc_bytes = bitmer_to_bytes(bc_mer);
+                let umi_bytes = bitmer_to_bytes(umi_mer);
+
+                let bc_str = unsafe { std::str::from_utf8_unchecked(&bc_bytes) };
+                let umi_str = unsafe { std::str::from_utf8_unchecked(&umi_bytes) };
+                
                 match writeln!(
                     handle,
-                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}",
+                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}\tAS:{}\tSTART:{}\tEND:{}\tTLEN:{}",
                     id,
                     i + 1,
                     num_entries,
-                    unsafe { std::str::from_utf8_unchecked(bc_bitmer) },
-                    unsafe { std::str::from_utf8_unchecked(umi_bitmer) },
+                    bc_str,
+                    umi_str,
                     read.dirs[i],
                     tid,
+                    as_val,
+                    start,
+                    end,
+                    tlen,
                 ) {
                     Ok(_) => {
                         num_reads += 1;

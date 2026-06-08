@@ -34,6 +34,8 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub pug_exact_umi: bool,
     pub sa_model: SplicedAmbiguityModel,
     pub small_thresh: usize,
+    pub lambda_size: f64,
+    pub tau_delta: f64,
     pub large_graph_thresh: usize,
     pub filter_list: Option<&'d PathBuf>,
     pub cmdline: &'e str,

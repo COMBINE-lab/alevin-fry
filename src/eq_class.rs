@@ -17,6 +17,207 @@ use libradicl::record::{MappedRecord, UmiTaggedRecord};
 use crate::utils::{EqClassPayload, OptionalAlignmentExtras};
 use statrs::distribution::{Normal, Continuous};
 use std::f64::consts::LN_10;
+//use anyhow::bail;
+
+/// Minimal per-transcript coverage state needed for the per-cell model.
+/// Mirrors TranscriptInfo from oarfish but lives here to avoid a crate dep.
+#[derive(Debug, Clone)]
+pub struct CellTxpCoverage {
+    pub len: u32,           // transcript length (bp)
+    pub bin_width: u32,
+    pub coverage_bins: Vec<f64>,
+    pub coverage_prob: Vec<f64>,
+    pub total_weight: f64,
+}
+
+impl CellTxpCoverage {
+    pub fn new(len: u32, bin_width: u32) -> Self {
+        assert!(bin_width > 0);
+        let n_bins = ((len as f64) / (bin_width as f64)).ceil() as usize;
+        Self {
+            len,
+            bin_width,
+            coverage_bins: vec![0.0; n_bins],
+            coverage_prob: Vec::new(),
+            total_weight: 0.0,
+        }
+    }
+
+    /// A zero-length placeholder; `init_if_needed` fills it on first use.
+    pub fn uninitialized() -> Self {
+        Self {
+            len: 0,
+            bin_width: 0,
+            coverage_bins: vec![],
+            coverage_prob: vec![],
+            total_weight: 0.0,
+        }
+    }
+
+    /// Initialise from the tlen carried by the alignment record,
+    /// but only once (idempotent after the first call).
+    #[inline]
+    pub fn init_if_needed(&mut self, len: u32, bin_width: u32) {
+        if self.len == 0 && len > 0 && bin_width > 0 {
+            *self = Self::new(len, bin_width);
+        }
+    }
+
+    /// Add one alignment interval [start, end) with the given weight.
+    #[inline]
+    pub fn add_interval(&mut self, start: u32, end: u32, weight: f64) {
+        if self.coverage_bins.is_empty() {
+            return;
+        }
+        let bw = self.bin_width as f64;
+        let tlen = self.len as f64;
+        let n = self.coverage_bins.len();
+
+        let s = start as f64;
+        let e = end as f64;
+        let s_bin = ((s / bw) as usize).min(n - 1);
+        let e_bin = ((e / bw) as usize).min(n - 1);
+
+        for b in s_bin..=e_bin {
+            let bin_s = (b as f64) * bw;
+            let bin_e = ((b as f64 + 1.0) * bw).min(tlen);
+            let olap = (e.min(bin_e) - s.max(bin_s)).max(0.0);
+            let frac = olap / (bin_e - bin_s);
+            self.coverage_bins[b] += frac * weight;
+        }
+        self.total_weight += weight;
+    }
+
+    /// Reset between cells.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.coverage_bins.fill(0.0);
+        self.coverage_prob.clear();
+        self.total_weight = 0.0;
+    }
+}
+
+// ── logistic helpers (mirror of oarfish's coverage.rs) ─────────────────────
+fn logistic_clamp(x: f64, k: f64) -> f64 {
+    (1.0 / (1.0 + (-k * x).exp())).clamp(1e-8, 0.99999)
+}
+
+/// Compute per-bin logistic coverage probabilities for every transcript
+/// that has been seen in this cell.  Call this *once* after all reads have
+/// been accumulated, before building the final probability map.
+const MIN_ALIGNMENTS_FOR_COVERAGE: f64 = 10.0;
+
+pub fn compute_cell_coverage_probs(txp_cov: &mut [CellTxpCoverage], growth_rate: f64) {
+    for t in txp_cov.iter_mut() {
+        // Use coverage model only when transcript has > 10 alignments;
+        // otherwise every bin gets probability 1.0 (neutral weight).
+        if t.coverage_bins.is_empty() || t.total_weight <= MIN_ALIGNMENTS_FOR_COVERAGE {
+            t.coverage_prob = vec![1.0; t.coverage_bins.len()];
+            continue;
+        }
+        let floor = t.total_weight / 100.0;
+        t.coverage_bins.iter_mut().for_each(|b| *b += floor);
+
+        let n = t.coverage_bins.len() as f64;
+        let expected = t.coverage_bins.iter().sum::<f64>() / n;
+
+        t.coverage_prob = t
+            .coverage_bins
+            .iter()
+            .map(|&c| {
+                let diff = (expected - c) / expected;
+                logistic_clamp(diff, growth_rate)
+            })
+            .collect();
+    }
+}
+
+/// Compute the combined (score × coverage) probability vector for one read,
+/// normalised to sum to 1.
+///
+/// Accepts raw slices so it has no dependency on the `OptionalAlignmentExtras`
+/// trait and carries no mutable borrows — safe to call from inside the main loop.
+fn build_final_probs_inner(
+    as_scores: &[i32],
+    starts: &[u32],
+    ends: &[u32],
+    refs: &[u32],
+    tcov: Option<&[CellTxpCoverage]>,
+) -> Vec<f64> {
+    let score_probs = score_probabilities(as_scores);
+
+    let cov_probs: Vec<f64> = match tcov {
+        Some(tc) => {
+            let raw: Vec<f64> = refs
+                .iter()
+                .zip(starts.iter().zip(ends.iter()))
+                .map(|(&rid, (&s, &e))| aln_coverage_prob(&tc[rid as usize], s, e))
+                .collect();
+
+            // ── normalize coverage probs across alignments of this read ──
+            // mirrors oarfish's normalize_read_probs
+            let sum: f64 = raw.iter().sum();
+            if sum > 0.0 {
+                raw.iter().map(|&p| p / sum).collect()
+            } else {
+                vec![1.0 / raw.len() as f64; raw.len()]
+            }
+        }
+        None => vec![1.0_f64; score_probs.len()],
+    };
+
+    // elementwise product — both vectors already sum to 1 individually,
+    // so this product still needs a final renormalization
+    let mut final_probs: Vec<f64> = score_probs
+        .iter()
+        .zip(cov_probs.iter())
+        .map(|(s, c)| s * c)
+        .collect();
+
+    let prob_sum: f64 = final_probs.iter().sum();
+    if prob_sum.is_nan() || prob_sum.is_infinite() {
+        panic!("Non-finite prob_sum: {prob_sum}");
+    }
+    if prob_sum > 0.0 {
+        final_probs.iter_mut().for_each(|p| *p /= prob_sum);
+    }
+    if final_probs.iter().any(|p| !p.is_finite()) {
+        panic!("NaN/inf in final_probs: {:?}", final_probs);
+    }
+    assert!(!final_probs.is_empty(), "Empty final_probs");
+    final_probs
+}
+
+/// Expected coverage probability for a single alignment [start, end)
+/// on a transcript whose per-bin probabilities are already in `txp`.
+fn aln_coverage_prob(txp: &CellTxpCoverage, start: u32, end: u32) -> f64 {
+    let cov = &txp.coverage_prob;
+    if cov.is_empty() {
+        return 1.0;
+    }
+    let bw = txp.bin_width as f64;
+    let tlen = txp.len as f64;
+    let n = cov.len();
+    let s = start as f64;
+    let e = end as f64;
+
+    let s_bin = ((s / bw) as usize).min(n - 1);
+    let e_bin = ((e / bw) as usize).min(n - 1);
+
+    if s_bin == e_bin {
+        return cov[s_bin];   // single bin: just return that bin's prob
+    }
+
+    let (total_w, prob_w) = (s_bin..=e_bin).fold((0f64, 0f64), |acc, b| {
+        let bin_s = (b as f64) * bw;
+        let bin_e = ((b as f64 + 1.0) * bw).min(tlen);
+        let olap  = (e.min(bin_e) - s.max(bin_s)).max(0.0);
+        let w     = olap / (bin_e - bin_s);
+        (acc.0 + w, acc.1 + w * cov[b])
+    });
+
+    if total_w > 0.0 { (prob_w / total_w).max(1e-8) } else { 1.0 }
+}
 
 fn score_probabilities(scores: &[i32]) -> Vec<f64> {
     const DENOM: f64 = 5.0;
@@ -35,6 +236,53 @@ fn score_probabilities(scores: &[i32]) -> Vec<f64> {
     //} else {
     //    // raise some error!
     //}
+    out
+}
+
+fn start_probabilities(
+    starts: &[u32],
+) -> Vec<f64> {
+    let std_dev: f64 = 100.0;
+    let thresh: f64 = 100.0;
+    let min_end: f64 = 3.0;
+    assert!(std_dev > 0.0);
+
+    // This is μ=0, σ=std_dev
+    let dist = Normal::new(0.0, std_dev)
+        .expect("should be able to construct a normal distribution");
+
+    // Precompute ln_pdf(0) once (normalization to make weight(0)=1)
+    let ln_pdf0 = dist.ln_pdf(0.0);
+    let ln_floor = -min_end * LN_10;
+
+    // Compute unnormalized weights
+    let mut out: Vec<f64> = starts
+        .iter()
+        .map(|&start| {
+            // 5' model distance from sequenced start:
+            // dist_from_end = start
+            let dist_from_end = start as f64;
+
+            // extra_dist = max(dist_from_end - thresh, 0)
+            let extra_dist = (dist_from_end - thresh).max(0.0);
+
+            // ln w = ln_pdf(extra_dist) - ln_pdf(0)
+            let ln_w = dist.ln_pdf(extra_dist) - ln_pdf0;
+
+            let final_value = ln_w.max(ln_floor);
+
+            final_value.exp()
+        })
+        .collect();
+
+    // Normalize to sum to 1
+    //let sum: f64 = out.iter().sum();
+    //if sum > 0.0 {
+    //    for p in out.iter_mut() {
+    //        *p /= sum;
+    //    }
+    //}
+
     out
 }
 
@@ -843,13 +1091,30 @@ impl EqMap {
         self.eqid_map.clear();
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
-            // Take what we need from r up-front
-            let refs = r.refs();
-            let _umi = r.umi();
 
+            r.dedup_refs_keep_best_as();
             // if the underlying record type provides scores, then we
             // get some.
             let maybe_aln_extras = r.maybe_aln_extras();
+
+            let refs = r.refs();
+            let _umi = r.umi();
+
+            //==========================================================
+            // DEBUG: check for duplicate transcript IDs inside ONE read
+            let mut tmp = refs.to_vec();
+            let tmp_umi = r.umi();
+            tmp.sort_unstable();
+            let before = tmp.len();
+            tmp.dedup();
+            if before != tmp.len() {
+                eprintln!(
+                    "DUP refs in record: before={}, after={}, refs={:?}, tmp_umi={:?}",
+                    before, tmp.len(), refs, tmp_umi
+                );
+                std::process::exit(1);
+            }
+            //==========================================================
 
             match self.eqid_map.get_mut(refs) {
                 // if we've seen this equivalence class before, just add the new
@@ -859,17 +1124,38 @@ impl EqMap {
                     // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
                         let scores = extras.as_scores;
+                        let starts   = extras.starts;
                         let ends   = extras.ends;
                         let tlens  = extras.tlens;
                         let score_probs = score_probabilities(scores);
-                        let end_probs = end_probabilities(ends, tlens);
-                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        //let start_probs = start_probabilities(starts);
+                        //let end_probs = end_probabilities(ends, tlens);
+                        //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let mut final_probs: Vec<f64> = score_probs;
                         let prob_sum: f64 = final_probs.iter().sum();
+
+                        if prob_sum.is_infinite() {
+                            panic!("Non-finite prob SUM in: sum={prob_sum}");
+                        }
+
+                        if prob_sum.is_nan() {
+                            panic!("Non-finite prob SUM in: sum={prob_sum}");
+                        }
+
                         if prob_sum > 0.0 {
                             for p in final_probs.iter_mut() {
                                 *p /= prob_sum;
                             }
                         }
+
+                        if final_probs.iter().any(|p| !p.is_finite()) {
+                            panic!("Found NaN or infinite probability: {:?}", final_probs);
+                        }
+
+                        if final_probs.is_empty() {
+                            panic!("No probabilities computed for alignment extras: {:?}", extras);
+                        }
+
                         // push score probs with associated eq_id of *v
                         temp_prob_map.push(*v, &final_probs);
                     };
@@ -879,33 +1165,54 @@ impl EqMap {
                     // each reference in this equivalence class label
                     // will have to point to this equivalence class id
                     let eq_num = self.eqc_info.len() as u32;
-                    self.label_list_size += r.refs().len();
-                    for r in r.refs().iter() {
+                    self.label_list_size += refs.len();
+                    for r in refs.iter() {
                         let ridx = *r as usize;
                         self.label_counts[ridx] += 1;
                         //ref_to_eqid[*r as usize].push(eq_num);
                     }
                     self.eq_label_starts.push(self.eq_labels.len() as u32);
-                    self.eq_labels.extend(r.refs());
+                    self.eq_labels.extend(refs);
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
                     });
-                    self.eqid_map.insert(r.refs().to_vec(), eq_num);
+                    self.eqid_map.insert(refs.to_vec(), eq_num);
                     // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
                         let scores = extras.as_scores;
+                        let starts   = extras.starts;
                         let ends   = extras.ends;
                         let tlens  = extras.tlens;
                         let score_probs = score_probabilities(scores);
-                        let end_probs = end_probabilities(ends, tlens);
-                        let mut final_probs: Vec<f64> = score_probs.iter().zip(end_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        //let start_probs = start_probabilities(starts);
+                        //let end_probs = end_probabilities(ends, tlens);
+                        //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
+                        let mut final_probs: Vec<f64> = score_probs;
                         let prob_sum: f64 = final_probs.iter().sum();
+
+                        if prob_sum.is_infinite() {
+                            panic!("Non-finite prob SUM in: sum={prob_sum}");
+                        }
+
+                        if prob_sum.is_nan() {
+                            panic!("Non-finite prob SUM in: sum={prob_sum}");
+                        }
+                        
                         if prob_sum > 0.0 {
                             for p in final_probs.iter_mut() {
                                 *p /= prob_sum;
                             }
                         }
+
+                        if final_probs.iter().any(|p| !p.is_finite()) {
+                            panic!("Found NaN or infinite probability: {:?}", final_probs);
+                        }
+
+                        if final_probs.is_empty() {
+                            panic!("No probabilities computed for alignment extras: {:?}", extras);
+                        }
+                        
                         // push score probs with associated eq_id of *v
                         temp_prob_map.push(eq_num, &final_probs);
                     }
@@ -1022,6 +1329,212 @@ impl EqMap {
         }
     }
 
+
+    /// `txp_cov` – one `CellTxpCoverage` per reference target, already
+    ///             initialised with the correct lengths/bin-widths and
+    ///             *cleared* by the caller before each cell.
+    /// Pass `None` to skip the coverage model entirely (same behaviour
+    /// as the current code-path).
+    pub fn init_from_chunk_with_coverage<R>(
+    &mut self,
+    cell_chunk: &mut chunk::Chunk<R>,
+    txp_cov: Option<(&mut Vec<CellTxpCoverage>, f64, u32)>,
+    ) where
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+    {
+        // ── Destructure up-front so each piece can be reborrowed independently ─
+        // tcov_opt: Option<&mut Vec<CellTxpCoverage>> is reborrow-able via as_deref_mut()
+        let (mut tcov_opt, growth_rate, bin_width): (Option<&mut [CellTxpCoverage]>, f64, u32) =
+            match txp_cov {
+                Some((tc, gr, bw)) => (Some(tc.as_mut_slice()), gr, bw),
+                None               => (None, 0.0, 0u32),
+            };
+    
+        // ── Step 1: coverage pre-pass ─────────────────────────────────────────
+        // Walk every read once to accumulate alignment intervals so the logistic
+        // model sees the full cell before probabilities are assigned.
+        // dedup_refs_keep_best_as() is called HERE and NOT repeated in step 3.
+        // Step 1a: Always dedup — regardless of whether coverage model is enabled
+        for r in cell_chunk.reads.iter_mut() {
+            r.dedup_refs_keep_best_as();
+        }
+
+        // Step 1b: Coverage accumulation — only when enabled
+        if let Some(tcov) = tcov_opt.as_deref_mut() {
+            for r in cell_chunk.reads.iter_mut() {
+                // dedup_refs_keep_best_as already called above; don't call again
+                if let Some(extras) = r.maybe_aln_extras() {
+                    for (i, &ref_id) in r.refs().iter().enumerate() {
+                        if i < extras.tlens.len()
+                            && i < extras.starts.len()
+                            && i < extras.ends.len()
+                        {
+                            let t = &mut tcov[ref_id as usize];
+                            t.init_if_needed(extras.tlens[i], bin_width);
+                            t.add_interval(extras.starts[i], extras.ends[i], 1.0);
+                        }
+                    }
+                }
+            }
+        } // ← reborrow of tcov_opt released here
+    
+        // ── Step 2: compute per-transcript coverage probabilities ─────────────
+        if let Some(tcov) = tcov_opt.as_deref_mut() {
+            compute_cell_coverage_probs(tcov, growth_rate);
+        } // ← reborrow released here
+    
+        // ── Step 3: main eq-class + probability loop ──────────────────────────
+        let mut temp_prob_map = TempProbMap::new();
+        self.eqid_map.clear();
+    
+        for r in &mut cell_chunk.reads {
+            // dedup_refs_keep_best_as already called in the pre-pass; do NOT call again
+            let maybe_aln_extras = r.maybe_aln_extras();
+            let refs = r.refs();
+            let _umi = r.umi();
+        
+            // DEBUG: check for duplicate transcript IDs inside ONE read
+            let mut tmp = refs.to_vec();
+            let tmp_umi = r.umi();
+            tmp.sort_unstable();
+            let before = tmp.len();
+            tmp.dedup();
+            if before != tmp.len() {
+                eprintln!(
+                    "DUP refs in record: before={}, after={}, refs={:?}, tmp_umi={:?}",
+                    before,
+                    tmp.len(),
+                    refs,
+                    tmp_umi
+                );
+                std::process::exit(1);
+            }
+        
+            // Immutable reborrow — safe to take repeatedly inside the loop
+            let tcov_slice: Option<&[CellTxpCoverage]> = tcov_opt.as_deref();
+        
+            match self.eqid_map.get_mut(refs) {
+                Some(v) => {
+                    self.eqc_info[*v as usize].umis.push((r.umi(), 1));
+                    if let Some(extras) = maybe_aln_extras {
+                        let fp = build_final_probs_inner(
+                            extras.as_scores,
+                            extras.starts,
+                            extras.ends,
+                            refs,
+                            tcov_slice,
+                        );
+                        temp_prob_map.push(*v, &fp);
+                    }
+                }
+                None => {
+                    let eq_num = self.eqc_info.len() as u32;
+                    self.label_list_size += refs.len();
+                    for rid in refs.iter() {
+                        self.label_counts[*rid as usize] += 1;
+                    }
+                    self.eq_label_starts.push(self.eq_labels.len() as u32);
+                    self.eq_labels.extend(refs);
+                    self.eqc_info.push(EqMapEntry {
+                        umis: vec![(r.umi(), 1)],
+                        eq_num,
+                    });
+                    self.eqid_map.insert(refs.to_vec(), eq_num);
+                    if let Some(extras) = maybe_aln_extras {
+                        let fp = build_final_probs_inner(
+                            extras.as_scores,
+                            extras.starts,
+                            extras.ends,
+                            refs,
+                            tcov_slice,
+                        );
+                        temp_prob_map.push(eq_num, &fp);
+                    }
+                }
+            }
+        }
+    
+        // ── Step 4: finalise eq-class index structures ────────────────────────
+        // Final sentinel to avoid special-casing the last class
+        self.eq_label_starts.push(self.eq_labels.len() as u32);
+        self.fill_ref_offsets();
+        self.fill_label_sizes();
+    
+        // Sort the temporary probability map by equivalence class id so that
+        // the second loop below can consume it in order
+        let have_probs = !temp_prob_map.is_empty();
+        if have_probs {
+            temp_prob_map.order_by_eq_id();
+        }
+        let mut aln_view_iter = temp_prob_map.eq_class_aln_view_iter();
+    
+        // ── Step 5: fill ref_labels, collapse duplicate UMIs, populate prob_map ─
+        for idx in 0..self.num_eq_classes() {
+            // For each reference in this eq-class label, record which eq-class
+            // it belongs to in the inverted ref_labels array
+            let label = self.refs_for_eqc(idx as u32).to_vec();
+            for r in label {
+                self.ref_offsets[r as usize] -= 1;
+                self.ref_labels[self.ref_offsets[r as usize] as usize] =
+                    self.eqc_info[idx].eq_num;
+            }
+        
+            let v = &mut self.eqc_info[idx];
+        
+            // Permutation that sorts UMIs by value so duplicates are adjacent
+            let perm = argsort_by(&v.umis, |a, b| a.0.cmp(&b.0));
+        
+            if have_probs {
+                let prob_map = self.prob_map.as_mut().expect("prob map should be present");
+            
+                if let Some(aln_view) = aln_view_iter.next() {
+                    let mut curr_umi = v.umis[perm[0]].0;
+                
+                    for p in perm.iter() {
+                        // When the UMI changes, mark the boundary in umi_offsets
+                        if v.umis[*p].0 != curr_umi {
+                            curr_umi = v.umis[*p].0;
+                            prob_map.mark_umi_end();
+                        }
+                        let probs = aln_view
+                            .get_probs_for_read_rank(*p)
+                            .expect("read rank should be present");
+                        prob_map.probs.extend_from_slice(probs);
+                    }
+                    // Sentinel for the last UMI of this eq-class
+                    prob_map.mark_umi_end();
+                    // Sentinel for the eq-class itself
+                    prob_map.mark_eq_class_end();
+                } else {
+                    eprintln!(
+                        "Number of probability vectors should equal total number of equivalence classes"
+                    );
+                }
+            }
+        
+            // Apply the sort permutation to the UMI list in-place
+            reorder_in_place(&mut v.umis, &perm);
+        
+            // Collapse consecutive identical UMIs into (umi_value, count) pairs
+            let cv = v.umis.clone();
+            v.umis.clear();
+            let mut count = 1u32;
+            let mut cur_elem = cv.first().unwrap().0;
+            for e in cv.iter().skip(1) {
+                if e.0 == cur_elem {
+                    count += 1;
+                } else {
+                    v.umis.push((cur_elem, count));
+                    cur_elem = e.0;
+                    count = 1;
+                }
+            }
+            // Push the final run
+            v.umis.push((cur_elem, count));
+        }
+    }
+    
+
     /// Returns the probability row (length = label_len) for a specific graph node (eqid, umi_idx).
     pub fn probs_for_eq_umi_tx(
         &self,
@@ -1039,7 +1552,17 @@ impl EqMap {
                 .step_by(label_len)
                 .copied()
                 .collect();
+
+            if probs.is_empty() {
+                eprintln!(
+                    "No probabilities found for eqid {}, umi_idx {}, tx_index {}",
+                    eqid, umi_idx, tx_index
+                );
+                panic!("label_len: {}, umi_probs: {:?}", label_len, umi_probs);
+            }
+
             Some(probs)
+
         } else {
             None
         }

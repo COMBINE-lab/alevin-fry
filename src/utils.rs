@@ -119,14 +119,15 @@ impl EqClassPayload for BasicEqClassPayload {
     }
 }
 
+#[derive(Debug)]
 pub struct ProbMap<T: Clone + Copy> {
-    probs: Vec<T>,
-    stride: usize,
+    pub probs: Vec<T>,
+    pub stride: usize,
 }
 
 impl<T: Clone + Copy> ProbMap<T> {
     #[inline(always)]
-    fn new(stride: usize) -> Self {
+    pub fn new(stride: usize) -> Self {
         Self {
             probs: Vec::new(),
             stride,
@@ -134,7 +135,7 @@ impl<T: Clone + Copy> ProbMap<T> {
     }
 
     #[inline(always)]
-    fn new_from_probs(probs: &[T]) -> Self {
+    pub fn new_from_probs(probs: &[T]) -> Self {
         Self {
             probs: probs.to_vec(),
             stride: probs.len(),
@@ -142,9 +143,26 @@ impl<T: Clone + Copy> ProbMap<T> {
     }
 
     #[inline(always)]
-    fn add_probs(&mut self, p: &[T]) {
+    pub fn add_probs(&mut self, p: &[T]) {
         debug_assert_eq!(self.stride, p.len());
+
+        assert_eq!(self.stride, p.len(),
+        "ProbMap row length mismatch: stride={} row_len={}", self.stride, p.len());
+
         self.probs.extend_from_slice(p);
+
+        assert_eq!(self.probs.len() % self.stride, 0,
+        "ProbMap buffer misaligned: len={} stride={}", self.probs.len(), self.stride);
+    }
+
+    #[inline(always)]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    #[inline(always)]
+    pub fn nrows(&self) -> usize {
+        if self.stride == 0 { 0 } else { self.probs.len() / self.stride }
     }
 }
 
@@ -218,29 +236,92 @@ impl EqClassPayload for LongReadEqClassPayload {
     }
 }
 
+#[derive(Debug)]
 pub struct AlnExtras<'a> {
     pub as_scores: &'a [i32],
+    pub starts: &'a [u32],
     pub ends: &'a [u32],
     pub tlens: &'a [u32], 
 }
 
 pub trait OptionalAlignmentExtras {
     fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>>;
+
+    fn dedup_refs_keep_best_as(&mut self) {}
 }
 
 macro_rules! impl_optional_alignment_extras {
     // Generic record type that HAS the fields
     (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident,
-        Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)
+        Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident)
     ) => {
         impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
             fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
                 Some(AlnExtras {
                     as_scores: &self.$scores,
+                    starts: &self.$starts,
                     ends: &self.$ends,
                     tlens: &self.$tlens,
                 })
             }
+
+            /// Deduplicate alignments by `ref_id`, keeping the entry with the highest AS score.
+            /// Assumes `self.refs` is sorted (as in from_bytes_with_header()) so duplicates are adjacent.
+            fn dedup_refs_keep_best_as(&mut self) {
+                let n = self.refs.len();
+                if n <= 1 {
+                    return;
+                }
+            
+                assert_eq!(self.dirs.len(), n);
+                assert_eq!(self.as_scores.len(), n);
+                assert_eq!(self.starts.len(), n);
+                assert_eq!(self.ends.len(), n);
+                assert_eq!(self.tlens.len(), n);
+            
+                // sanity check sortedness in debug builds
+                assert!(
+                    self.refs.windows(2).all(|w| w[0] <= w[1]),
+                    "ScLongReadRecordT::dedup_refs_keep_best_as: refs are not sorted!"
+                );
+
+                let mut write = 0usize;
+                let mut i = 0usize;
+
+                while i < n {
+                    let ref_id = self.refs[i];
+                
+                    // pick best index among all entries with same ref_id
+                    let mut best = i;
+                    let mut j = i + 1;
+                    while j < n && self.refs[j] == ref_id {
+                        // tie-breakers: keep first on tie; change if you want different behavior
+                        if self.as_scores[j] > self.as_scores[best] {
+                            best = j;
+                        }
+                        j += 1;
+                    }
+                
+                    // write the winner to the next slot
+                    self.refs[write] = self.refs[best];
+                    self.dirs[write] = self.dirs[best];
+                    self.as_scores[write] = self.as_scores[best];
+                    self.starts[write] = self.starts[best];
+                    self.ends[write] = self.ends[best];
+                    self.tlens[write] = self.tlens[best];
+                    write += 1;
+                
+                    i = j; // advance to next group
+                }
+            
+                // truncate to new length
+                self.refs.truncate(write);
+                self.dirs.truncate(write);
+                self.as_scores.truncate(write);
+                self.starts.truncate(write);
+                self.ends.truncate(write);
+                self.tlens.truncate(write);
+            }       
         }
     };
 
@@ -254,15 +335,74 @@ macro_rules! impl_optional_alignment_extras {
     };
 
     // Non-generic record type that HAS the fields
-    ($ty:ty, Some(as_scores = $scores:ident, ends = $ends:ident, tlens = $tlens:ident)) => {
+    ($ty:ty, Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident)) => {
         impl OptionalAlignmentExtras for $ty {
             fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
                 Some(AlnExtras {
                     as_scores: &self.$scores,
+                    starts: &self.$starts,
                     ends: &self.$ends,
                     tlens: &self.$tlens,
                 })
             }
+
+            /// Deduplicate alignments by `ref_id`, keeping the entry with the highest AS score.
+            /// Assumes `self.refs` is sorted (as in from_bytes_with_header()) so duplicates are adjacent.
+            fn dedup_refs_keep_best_as(&mut self) {
+                let n = self.refs.len();
+                if n <= 1 {
+                    return;
+                }
+            
+                assert_eq!(self.dirs.len(), n);
+                assert_eq!(self.as_scores.len(), n);
+                assert_eq!(self.starts.len(), n);
+                assert_eq!(self.ends.len(), n);
+                assert_eq!(self.tlens.len(), n);
+            
+                // sanity check sortedness in debug builds
+                assert!(
+                    self.refs.windows(2).all(|w| w[0] <= w[1]),
+                    "ScLongReadRecordT::dedup_refs_keep_best_as: refs are not sorted!"
+                );
+
+                let mut write = 0usize;
+                let mut i = 0usize;
+
+                while i < n {
+                    let ref_id = self.refs[i];
+                
+                    // pick best index among all entries with same ref_id
+                    let mut best = i;
+                    let mut j = i + 1;
+                    while j < n && self.refs[j] == ref_id {
+                        // tie-breakers: keep first on tie; change if you want different behavior
+                        if self.as_scores[j] > self.as_scores[best] {
+                            best = j;
+                        }
+                        j += 1;
+                    }
+                
+                    // write the winner to the next slot
+                    self.refs[write] = self.refs[best];
+                    self.dirs[write] = self.dirs[best];
+                    self.as_scores[write] = self.as_scores[best];
+                    self.starts[write] = self.starts[best];
+                    self.ends[write] = self.ends[best];
+                    self.tlens[write] = self.tlens[best];
+                    write += 1;
+                
+                    i = j; // advance to next group
+                }
+            
+                // truncate to new length
+                self.refs.truncate(write);
+                self.dirs.truncate(write);
+                self.as_scores.truncate(write);
+                self.starts.truncate(write);
+                self.ends.truncate(write);
+                self.tlens.truncate(write);
+            } 
         }
     };
 
@@ -279,7 +419,7 @@ macro_rules! impl_optional_alignment_extras {
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
 impl_optional_alignment_extras!(AtacSeqReadRecord, None);
-impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, ends = ends, tlens = tlens));
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, starts = starts, ends = ends, tlens = tlens));
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {

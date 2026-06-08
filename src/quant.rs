@@ -45,9 +45,13 @@ use flate2::write::GzEncoder;
 use crate::em::{
     EmInitType, em_optimize, em_optimize_long_read, em_optimize_subset, run_bootstrap,
 };
-use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
+use crate::eq_class::{CellTxpCoverage, EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
+//use crate::pugutils_dp;
+//use crate::pugutils_dp::{get_num_molecules_log_dp, DpConfig};
+use crate::pugutils_dp_new::{get_num_molecules_log_dp_new, DpConfig};
+use crate::graph_dump;
 use crate::utils as afutils;
 use crate::utils::{
     BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
@@ -175,6 +179,9 @@ struct EqcMap {
     // the list of equivalence classes (and corresponding umi count)
     // that occurs in each cell.
     cell_level_count: Vec<(u64, u32)>,
+    // the list of equivalence classes (and corresponding probabilities)
+    // that occurs in each cell.
+    cell_level_prob: Vec<(u64, Vec<f64>)>,
     // a vector of tuples that contains pairs of the form
     // (row offset, number of equivalence classes in this cell)
     cell_offset: Vec<(usize, usize)>,
@@ -305,6 +312,63 @@ fn write_eqc_counts(
                 .context("could not write to gene_eqclass.txt.gz")?;
         }
     }
+
+    //==============================================================
+    // write geqc probabilities (cell, eqid, probs...)
+    let probs_path = output_path.join("geqc_probs.txt.gz");
+    let mut probs_writer = BufWriter::new(GzEncoder::new(
+        fs::File::create(probs_path).context("could not create geqc_probs.txt.gz")?,
+        Compression::default(),
+    ));
+
+    // Optional header (commented) — helpful for humans, safe for parsers that skip '#'
+    writeln!(&mut probs_writer, "#cell\tgeqc_id\tp0\tp1\t...").ok();
+
+    // We must slice cell_level_prob using the same offsets used for cell_level_count
+    let mut global_offset = 0usize;
+    for (row_index, num_cell_eqs) in geqmap.cell_offset.iter() {
+        let slice = global_offset..(global_offset + num_cell_eqs);
+
+        // Sanity: ensure we have as many prob entries as count entries
+        // (you can keep or remove this check)
+        if geqmap.cell_level_prob.len() < global_offset + num_cell_eqs {
+            anyhow::bail!(
+                "cell_level_prob is shorter than expected: need >= {}, have {}",
+                global_offset + num_cell_eqs,
+                geqmap.cell_level_prob.len()
+            );
+        }
+
+        // Iterate in lockstep: counts and probs should correspond entry-wise
+        for ((eqid_c, _umi_count), (eqid_p, probs)) in geqmap.cell_level_count[slice.clone()]
+            .iter()
+            .zip(geqmap.cell_level_prob[slice].iter())
+        {
+            // Another sanity check: eqids should match
+            if eqid_c != eqid_p {
+                anyhow::bail!(
+                    "Mismatch between cell_level_count eqid={} and cell_level_prob eqid={} at cell {}",
+                    eqid_c,
+                    eqid_p,
+                    row_index
+                );
+            }
+
+            // Write: cell \t eqid \t p0 \t p1 ...
+            write!(&mut probs_writer, "{}\t{}", row_index, eqid_p)
+                .context("could not write geqc_probs.txt.gz")?;
+            for p in probs.iter() {
+                write!(&mut probs_writer, "\t{}", p)
+                    .context("could not write geqc_probs.txt.gz")?;
+            }
+            writeln!(&mut probs_writer)
+                .context("could not write geqc_probs.txt.gz")?;
+        }
+
+        global_offset += num_cell_eqs;
+    }
+
+
     Ok(true)
 }
 
@@ -355,6 +419,8 @@ struct WorkerConfig {
     usa_offsets: Option<(usize, usize)>,
     em_init_type: EmInitType,
     small_thresh: usize,
+    lambda_size: f64,
+    tau_delta: f64,
     large_graph_thresh: usize,
     pug_exact_umi: bool,
     sa_model: SplicedAmbiguityModel,
@@ -415,6 +481,8 @@ where
     let mut eds_mean_bytes: Vec<u8> = Vec::new();
     let mut eds_var_bytes: Vec<u8> = Vec::new();
 
+    let mut txp_cov: Vec<CellTxpCoverage> = (0..num_eq_targets as usize).map(|_| CellTxpCoverage::uninitialized()).collect();
+
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
     // Make gene-level eqclasses.
@@ -444,6 +512,12 @@ where
             for (cn, mut c) in meta_chunk.iter().enumerate() {
                 shared.cells_remaining.fetch_sub(1, Ordering::SeqCst);
                 let cell_num = first_cell_in_chunk + cn;
+
+                let mut cell_num_ok = false;
+                if cell_num == 647 {
+                    info!(log, "debug breakpoint cell_num = 647");
+                    cell_num_ok = true;
+                }
 
                 let nbytes = c.nbytes;
                 let nrec = c.nrec;
@@ -571,21 +645,85 @@ where
                                 //eprintln!("before the init from chunk");
                                 eq_map.init_from_chunk(&mut c);
                                 //eprintln!("after the init from chunk");
+
+                                //let coverage_bin_width: u32 = 100;
+                                //let coverage_growth_rate: f64 = 2.0;
+//
+                                //let coverage_opts = if coverage_bin_width > 0 {
+                                //    // Reset per-transcript coverage state for this cell.
+                                //    // Only reset transcripts that were actually initialised
+                                //    // (avoids touching the huge tail of never-seen transcripts).
+                                //    txp_cov.iter_mut().for_each(|t| t.clear());
+//
+                                //    Some((&mut txp_cov, coverage_growth_rate, coverage_bin_width))
+                                //} else {
+                                //    None  // pass None to get the old score-only behaviour
+                                //};
+//
+                                //eq_map.init_from_chunk_with_coverage(&mut c, coverage_opts);
+
                             }
 
                             let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
+
                             // for the PUG resolution algorithm, set the hasher
                             // that will be used based on the cell barcode.
                             let s = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
-                            let pug_stats = pugutils::get_num_molecules::<P>(
+                            //let pug_stats = pugutils::get_num_molecules::<P>(
+                            //    &g,
+                            //    &eq_map,
+                            //    &shared.tid_to_gid,
+                            //    &mut gene_eqc,
+                            //    &s,
+                            //    config.large_graph_thresh,
+                            //    &log,
+                            //);
+                            //let lambda = 0.0;
+                            //let pug_stats = pugutils::get_num_molecules_log::<P>(
+                            //    &g,
+                            //    &eq_map,
+                            //    &shared.tid_to_gid,
+                            //    &mut gene_eqc,
+                            //    &s,
+                            //    config.large_graph_thresh,
+                            //    lambda,
+                            //    &log,
+                            //);
+
+                            //let pug_stats = pugutils::get_num_molecules_log_greedy::<P>(
+                            //    &g,
+                            //    &eq_map,
+                            //    &shared.tid_to_gid,
+                            //    &mut gene_eqc,
+                            //    &s,
+                            //    config.large_graph_thresh,
+                            //    lambda,
+                            //    &log,
+                            //);
+
+
+                            let dp_cfg = DpConfig {
+                                log_prior_odds: config.lambda_size,
+                                tau_delta: config.tau_delta,
+                            };
+
+                            if let Some(target) = graph_dump::dump_cell_target() {
+                                if cell_num == target {
+                                    graph_dump::dump_cell_graph(cell_num, &g, &eq_map);
+                                }
+                            }
+
+                            let pug_stats = get_num_molecules_log_dp_new(
                                 &g,
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 &mut gene_eqc,
                                 &s,
                                 config.large_graph_thresh,
+                                dp_cfg,
                                 &log,
                             );
+
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                             eq_map.clear();
 
@@ -641,6 +779,7 @@ where
                                         config.num_genes,
                                         only_unique,
                                         &log,
+                                        cell_num_ok,
                                     );
                                 }
                             }
@@ -897,14 +1036,73 @@ where
                     let mut next_id = geqmap.global_eqc.len() as u64;
                     for (labels, payload) in gene_eqc.iter() {
                         let count = payload.count();
+
+                        //=====================================================
+                        let mut avg_probs = vec![0.0f64; labels.len()];
+
+                        if P::HAS_PROBS && labels.len() > 1 && count > 0 {
+                            let probs = payload.probs(); 
+                            //################sanity check##############
+                            if probs.stride() != labels.len() {
+                                panic!(
+                                    "BAD STRIDE: cell={} eqc_labels_len={} stride={}",
+                                    row_index, labels.len(), probs.stride()
+                                );
+                            }
+                            if probs.nrows() != count as usize {
+                                // don't keep going; your averaging loop assumes count rows exist
+                                panic!(
+                                    "BAD NROWS: cell={} labels.len()={} count={} nrows={}, probs={:?}, probs_len={:?}",
+                                    row_index, labels.len(), count, probs.nrows(), probs, probs.probs.len()
+                                );
+                            }
+
+                            // Find the first non-finite probability and crash with coordinates
+                            for i in 0..(count as usize) {
+                                let row = &probs[i];
+                                for (j, &p) in row.iter().enumerate() {
+                                    if !p.is_finite() {
+                                        panic!(
+                                            "NON-FINITE INPUT PROB: cell={} eqc_labels_len={} count={} i={} j={} p={}",
+                                            row_index,
+                                            labels.len(),
+                                            count,
+                                            i,
+                                            j,
+                                            p
+                                        );
+                                    }
+                                }
+                            }
+
+
+
+                            for tx_idx in 0..labels.len() {
+                                let sum: f64 = (0..count as usize).map(|i| probs[i][tx_idx] as f64).sum();
+                                avg_probs[tx_idx] = sum / (count as f64);
+                                if !avg_probs[tx_idx].is_finite() {
+                                    panic!("Non-finite average probability encountered for cell {}, tx_idx {}", row_index, tx_idx);
+                                }
+                            }
+                        } else {
+                            if labels.len() == 1 {
+                                avg_probs[0] = 1.0;
+                            }
+                        }
+
+
+                        //=====================================================
+
                         let mut found = true;
                         match geqmap.global_eqc.get(labels) {
                             Some(eqid) => {
                                 geqmap.cell_level_count.push((*eqid, count));
+                                geqmap.cell_level_prob.push((*eqid, avg_probs));
                             }
                             None => {
                                 found = false;
                                 geqmap.cell_level_count.push((next_id, count));
+                                geqmap.cell_level_prob.push((next_id, avg_probs));
                             }
                         }
                         if !found {
@@ -954,6 +1152,8 @@ where
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let mut sa_model = quant_opts.sa_model;
     let small_thresh = quant_opts.small_thresh;
+    let lambda_size = quant_opts.lambda_size;
+    let tau_delta = quant_opts.tau_delta;
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
     let log = quant_opts.log;
@@ -975,6 +1175,10 @@ where
         hdr.num_chunks.to_formatted_string(&Locale::en)
     );
 
+    if graph_dump::dump_cell_target().is_some() {
+        graph_dump::dump_ref_names(&hdr.ref_names);
+    }
+    
     // now that we have the header, parse and convert the
     // tgmap.
 
@@ -1228,6 +1432,7 @@ where
     let eqid_map_lock = Arc::new(Mutex::new(EqcMap {
         global_eqc: HashMap::with_hasher(so),
         cell_level_count: Vec::new(),
+        cell_level_prob: Vec::new(),
         cell_offset: Vec::new(),
     }));
 
@@ -1287,6 +1492,8 @@ where
                 EmInitType::Informative
             },
             small_thresh,
+            lambda_size,
+            tau_delta,
             large_graph_thresh,
             pug_exact_umi,
             sa_model,
