@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.13" }
+libradicl = { version = "0.14" }
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = "0.8.12"
@@ -80,7 +80,7 @@ clap = { version = "4.6.0", features = [
   "error-context",
 ] }
 
-noodles = { version = "0.108.0", features = ["bam", "bgzf", "sam"] }
+noodles = { version = "0.111.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 rand_distr = "0.6"
 

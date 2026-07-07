@@ -473,10 +473,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     {
         info!(log, "reading reference lengths from file-level tag map");
         let file_tag_map = &rad_reader.file_tag_map;
+        // The `ref_lengths` file-level tag is written as an unsigned integer array.
+        // The original C++ piscem wrote it as an array of u64, while the Rust
+        // piscem-rs rewrite writes it as an array of u32. Accept any unsigned
+        // integer array width and widen to u64 so we can read RAD files produced
+        // by either implementation without requiring upstream re-processing.
         ref_lens = match file_tag_map.get("ref_lengths") {
             Some(TagValue::ArrayU64(v)) => v.clone(),
+            Some(TagValue::ArrayU32(v)) => v.iter().map(|&x| x as u64).collect(),
+            Some(TagValue::ArrayU16(v)) => v.iter().map(|&x| x as u64).collect(),
+            Some(TagValue::ArrayU8(v)) => v.iter().map(|&x| x as u64).collect(),
             _ => bail!(
-                "expected the \"ref_lengths\" tag value to exist and to be an ArrayU64, but didn't find that; cannot proceed."
+                "expected the \"ref_lengths\" tag value to exist and to be an unsigned integer array, but didn't find that; cannot proceed."
             ),
         };
     }
