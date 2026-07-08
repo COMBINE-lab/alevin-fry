@@ -31,16 +31,17 @@ use slog::{crit, info, warn};
 use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
+use crate::umi_general_distance::umi_edit_distance_from_packed_shifted;
 
 use needletail::bitkmer::bitmer_to_bytes;
 use triple_accel::levenshtein::levenshtein;
 
-#[inline]
-fn umi_edit_distance_from_packed(x: u64, y: u64, umi_len: u8) -> usize {
-    let xb = bitmer_to_bytes((x, umi_len));
-    let yb = bitmer_to_bytes((y, umi_len));
-    levenshtein(&xb, &yb) as usize
-}
+//#[inline]
+//fn umi_edit_distance_from_packed(x: u64, y: u64, umi_len: u8) -> usize {
+//    let xb = bitmer_to_bytes((x, umi_len));
+//    let yb = bitmer_to_bytes((y, umi_len));
+//    levenshtein(&xb, &yb) as usize
+//}
 
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
@@ -89,8 +90,9 @@ pub fn extract_graph(
         let hdist = if pug_exact_umi {
             if x.0 == y.0 { 0 } else { usize::MAX }
         } else {
+            umi_edit_distance_from_packed_shifted(x.0, y.0, umi_len)
             //umi_edit_distance_from_packed(x.0, y.0, umi_len)
-            afutils::count_diff_2_bit_packed(x.0, y.0)
+            //afutils::count_diff_2_bit_packed(x.0, y.0)
         };
 
         if hdist == 0 {
@@ -98,7 +100,7 @@ pub fn extract_graph(
             return PugEdgeType::BiDirected;
         }
 
-        if hdist < 3 {
+        if hdist < 2 {
             one_edit += 1;
             return if x.1 > (2 * y.1 - 1) {
                 PugEdgeType::XToY

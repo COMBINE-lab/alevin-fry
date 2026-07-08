@@ -47,6 +47,37 @@ struct QuantArguments {
 }
 */
 
+// Helper trait to optionally extract qname
+pub trait MaybeQName {
+    fn maybe_qname(&self) -> Option<&str>;
+}
+
+// Implement for ScLongReadRecordT — has qname field
+impl<B: ConvertiblePrimitiveInteger> MaybeQName for ScLongReadRecordT<B> {
+    fn maybe_qname(&self) -> Option<&str> {
+        Some(&self.qname)
+    }
+}
+
+// Implement for short-read types — no qname
+impl<B: ConvertiblePrimitiveInteger> MaybeQName for AlevinFryReadRecordT<B> {
+    fn maybe_qname(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl<B: ConvertiblePrimitiveInteger> MaybeQName for AlevinFryReadRecordWithPositionT<B> {
+    fn maybe_qname(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl MaybeQName for AtacSeqReadRecord {
+    fn maybe_qname(&self) -> Option<&str> {
+        None
+    }
+}
+
 /// Trait that allows us to paramaterize the payload stored along with
 /// and equivalence class.  The most basic (required) information is a
 /// count.  However, it is also possible to store probabilities, read start

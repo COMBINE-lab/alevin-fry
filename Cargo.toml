@@ -36,8 +36,8 @@ categories = ["command-line-utilities", "science"]
 [dependencies]
 # for local development, look in the libradicl git repository
 # but when published, pull the specified version
-libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.11.0" }
-#libradicl = { path = "../libradicl/libradicl" }
+#libradicl = { git = "https://github.com/COMBINE-lab/libradicl", branch = "develop", version = "0.11.0" }
+libradicl = { path = "../libradicl/libradicl" }
 anyhow = "1.0.100"
 arrayvec = "0.7.6"
 ahash = "0.8.12"
@@ -85,7 +85,7 @@ clap = { version = "4.5.53", features = [
 ] }
 triple_accel = "*"
 
-noodles = { version = "0.104.0", features = ["bam", "bgzf", "sam"] }
+noodles = { version = "0.108.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 nalgebra = "0.34.1"
 rand_distr = "0.5.1"

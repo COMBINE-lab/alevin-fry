@@ -55,7 +55,7 @@ use crate::graph_dump;
 use crate::utils as afutils;
 use crate::utils::{
     BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
-    OptionalAlignmentExtras,
+    OptionalAlignmentExtras, MaybeQName,
 };
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
@@ -463,6 +463,7 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
+        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -643,8 +644,34 @@ where
                                 eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
                             } else {
                                 //eprintln!("before the init from chunk");
+
+                                // step 1: collect umi -> qnames BEFORE init_from_chunk destroys ordering
+                                let mut umi_to_qnames: HashMap<u64, Vec<String>> = HashMap::new();
+                                for r in c.reads.iter() {
+                                    if let Some(qname) = r.maybe_qname() {
+                                        umi_to_qnames
+                                            .entry(r.umi())
+                                            .or_default()
+                                            .push(qname.to_string());
+                                    }
+                                }
+
                                 eq_map.init_from_chunk(&mut c);
                                 //eprintln!("after the init from chunk");
+
+                                // step 3: populate qnames using the umi lookup
+                                // after init_from_chunk, eqc_info[i].umis contains deduplicated (umi_val, count) pairs
+                                for entry in eq_map.eqc_info.iter_mut() {
+                                    entry.qnames = entry.umis
+                                        .iter()
+                                        .map(|(umi_val, _count)| {
+                                            umi_to_qnames
+                                                .get(umi_val)
+                                                .cloned()
+                                                .unwrap_or_default()
+                                        })
+                                        .collect();
+                                }
 
                                 //let coverage_bin_width: u32 = 100;
                                 //let coverage_growth_rate: f64 = 2.0;
@@ -1135,6 +1162,7 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
+        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,

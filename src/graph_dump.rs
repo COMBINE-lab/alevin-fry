@@ -11,27 +11,6 @@
 //   cell_647_nodes.tsv     one row per UMI vertex
 //   cell_647_edges.tsv     one row per directed edge
 //   cell_647_comps.tsv     one row per weakly connected component
-//
-// Python — filter for any transcript and colour-code the graph:
-//
-//   import pandas as pd, networkx as nx, matplotlib.pyplot as plt
-//
-//   txmap = pd.read_csv("ref_names.tsv",        sep="\t")
-//   nodes = pd.read_csv("cell_647_nodes.tsv",   sep="\t")
-//   edges = pd.read_csv("cell_647_edges.tsv",   sep="\t")
-//
-//   tx_id = txmap.loc[txmap["tx_name"] == "NM_006013", "tx_id"].iloc[0]
-//
-//   # vertices that contain the target transcript
-//   has_tx = nodes["transcripts"].str.split(",").apply(lambda ts: str(tx_id) in ts)
-//
-//   # vertices whose best_tx IS the target transcript (chose it)
-//   chose_tx = nodes["best_tx"] == tx_id
-//
-//   # build graph and colour-code:
-//   #   red   = contains AND chose target tx
-//   #   orange= contains but didn't choose target tx
-//   #   grey  = doesn't contain target tx
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -41,18 +20,12 @@ use petgraph::visit::NodeIndexable;
 use crate::eq_class::EqMap;
 use crate::pugutils::{weakly_connected_components, vertex_loglik_for_tx};
 
-// ── public helpers called from quant.rs ───────────────────────────────────
-
-/// Returns the cell number to dump, or None if DUMP_CELL_NUM is not set.
 pub fn dump_cell_target() -> Option<usize> {
     std::env::var("DUMP_CELL_NUM")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
 }
 
-/// Write ref_names.tsv once from do_quantify before workers start.
-/// Maps integer transcript id -> name so Python can resolve any transcript.
-/// Only written when DUMP_CELL_NUM is set.
 pub fn dump_ref_names(ref_names: &[String]) {
     let path = "ref_names.tsv";
     let mut f = std::fs::File::create(path)
@@ -64,12 +37,6 @@ pub fn dump_ref_names(ref_names: &[String]) {
     eprintln!("Wrote {} ({} transcripts)", path, ref_names.len());
 }
 
-// ── internal helpers ───────────────────────────────────────────────────────
-
-/// log BF for absorbing vertex (eq_id, umi_idx) into transcript txp.
-///   log_BF = LL(txp) - LL(best_alt)
-/// NEG_INFINITY when txp absent from eq class.
-/// INFINITY     when txp is the only transcript.
 fn compute_log_bf(eq_id: u32, umi_idx: u32, txp: u32, eqmap: &EqMap) -> f64 {
     let labels = eqmap.refs_for_eqc(eq_id);
     let tx_index = match labels.binary_search(&txp) {
@@ -86,14 +53,12 @@ fn compute_log_bf(eq_id: u32, umi_idx: u32, txp: u32, eqmap: &EqMap) -> f64 {
     if best_alt == f64::NEG_INFINITY { f64::INFINITY } else { target_ll - best_alt }
 }
 
-/// Format ±inf as finite sentinels so pandas/R parse cleanly.
 fn fmt_f(x: f64) -> String {
     if x == f64::NEG_INFINITY  { "-999.0".to_owned() }
     else if x == f64::INFINITY {  "999.0".to_owned() }
     else                       { format!("{:.6}", x) }
 }
 
-/// vertex-index → comp_id lookup.
 fn build_v2c(comps: &HashMap<u32, Vec<u32>, ahash::RandomState>) -> HashMap<u32, u32> {
     let mut v2c = HashMap::new();
     for (comp_id, verts) in comps.iter() {
@@ -102,11 +67,6 @@ fn build_v2c(comps: &HashMap<u32, Vec<u32>, ahash::RandomState>) -> HashMap<u32,
     v2c
 }
 
-// ── main entry point ───────────────────────────────────────────────────────
-
-/// Dump the raw PUG for `cell_num` to three TSV files.
-/// Call from run_worker_thread when cell_num == dump_cell_target().
-/// No model parameters needed.
 pub fn dump_cell_graph(
     cell_num: usize,
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
@@ -118,32 +78,11 @@ pub fn dump_cell_graph(
     let v2c       = build_v2c(&comps);
 
     // ── nodes ──────────────────────────────────────────────────────────────
-    // Columns:
-    //   vertex_id     integer graph index
-    //   comp_id       weakly connected component
-    //   eq_id         equivalence class id
-    //   umi_idx       UMI index within eq class
-    //   n_reads       reads at this UMI
-    //   n_transcripts transcripts in this eq class
-    //   transcripts   comma-separated tx ids sorted by LL descending
-    //   best_tx       tx id with highest LL  ← the one this vertex "chose"
-    //   best_ll       its log-likelihood
-    //   second_ll     second-best LL  (-999 sentinel if only one tx)
-    //   delta         best_ll - second_ll  (999 sentinel if only one tx)
-    //   mean_ll_best  mean per-read LL for best transcript
-    //
-    // Python colour coding:
-    //   has_tx  = transcripts column contains target tx id
-    //   chose   = best_tx == target tx id
-    //   colour:   red   = chose   (node strongly assigned to target)
-    //             orange= has_tx but not chose  (ambiguous, target competing)
-    //             grey  = no target tx at all
-
     let node_path = format!("{}_nodes.tsv", prefix);
     let mut nf = std::fs::File::create(&node_path).expect("could not create node file");
     writeln!(nf,
         "vertex_id\tcomp_id\teq_id\tumi_idx\tn_reads\tn_transcripts\t\
-         transcripts\tbest_tx\tbest_ll\tsecond_ll\tdelta\tmean_ll_best"
+         transcripts\tbest_tx\tbest_ll\tsecond_ll\tdelta\tmean_ll_best\tqnames"
     ).unwrap();
 
     for v in 0..num_nodes {
@@ -175,29 +114,31 @@ pub fn dump_cell_graph(
                 None => (0, 0.0),
             };
 
-        let tx_str  = tx_lls.iter().map(|(t, _)| t.to_string()).collect::<Vec<_>>().join(",");
+        let tx_str  = tx_lls.iter()
+            .map(|(t, _)| t.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let comp_id = v2c.get(&(v as u32)).cloned().unwrap_or(u32::MAX);
 
+        // get all qnames for this (eq_id, umi_idx) node
+        let qnames = eqmap.qnames_for_eq_umi(eq_id, umi_idx as usize);
+        let qnames_str = if qnames.is_empty() {
+            "NA".to_string()
+        } else {
+            qnames.join(";")
+        };
+
         writeln!(nf,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{:.6}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{:.6}\t{}",
             v, comp_id, eq_id, umi_idx, n_reads, labels.len(),
             tx_str, best_tx, best_ll,
-            fmt_f(second_ll), fmt_f(delta), mean_ll_best
+            fmt_f(second_ll), fmt_f(delta), mean_ll_best,
+            qnames_str
         ).unwrap();
     }
     eprintln!("Wrote {}", node_path);
 
     // ── edges ──────────────────────────────────────────────────────────────
-    // Columns:
-    //   from_vertex   source vertex id
-    //   to_vertex     target vertex id
-    //   same_comp     1 if same component
-    //   share_tx      1 if they share at least one transcript
-    //   bf_from_to    log BF for absorbing to_vertex using from_vertex's best_tx
-    //   bf_to_from    log BF for absorbing from_vertex using to_vertex's best_tx
-    //
-    // Python: apply any threshold — e.g. edges[edges["bf_from_to"] >= 0]
-
     let edge_path = format!("{}_edges.tsv", prefix);
     let mut ef = std::fs::File::create(&edge_path).expect("could not create edge file");
     writeln!(ef,
@@ -209,7 +150,6 @@ pub fn dump_cell_graph(
         let labels_v = eqmap.refs_for_eqc(eq_id_v);
         let comp_v   = v2c.get(&(v as u32)).cloned().unwrap_or(u32::MAX);
 
-        // best transcript of this source vertex
         let best_tx_v = labels_v.iter()
             .enumerate()
             .map(|(i, t)| (*t, vertex_loglik_for_tx(eq_id_v, umi_idx_v, i, eqmap)))
@@ -224,7 +164,8 @@ pub fn dump_cell_graph(
             let comp_n               = v2c.get(&(n as u32)).cloned().unwrap_or(u32::MAX);
 
             let same_comp = (comp_v == comp_n) as u8;
-            let share_tx  = labels_v.iter().any(|t| labels_n.binary_search(t).is_ok()) as u8;
+            let share_tx  = labels_v.iter()
+                .any(|t| labels_n.binary_search(t).is_ok()) as u8;
 
             let bf_from_to = compute_log_bf(eq_id_n, umi_idx_n, best_tx_v, eqmap);
 
@@ -246,19 +187,15 @@ pub fn dump_cell_graph(
     eprintln!("Wrote {}", edge_path);
 
     // ── components ─────────────────────────────────────────────────────────
-    // Columns:
-    //   comp_id       component label
-    //   size          number of vertices
-    //   vertices      comma-separated vertex ids
-    //   n_shared_tx   transcripts shared by ALL vertices in component
-    //   ambiguous     1 if vertices disagree on best_tx
-
     let comp_path = format!("{}_comps.tsv", prefix);
     let mut cf = std::fs::File::create(&comp_path).expect("could not create comp file");
     writeln!(cf, "comp_id\tsize\tvertices\tn_shared_tx\tambiguous").unwrap();
 
     for (comp_id, verts) in comps.iter() {
-        let vert_str = verts.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",");
+        let vert_str = verts.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let mut shared: Option<std::collections::HashSet<u32>> = None;
         let mut best_txs: Vec<u32> = Vec::new();
 
@@ -273,7 +210,8 @@ pub fn dump_cell_graph(
             let best = labels.iter()
                 .enumerate()
                 .map(|(i, t)| (*t, vertex_loglik_for_tx(eq_id, umi_idx, i, eqmap)))
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| a.1.partial_cmp(&b.1)
+                    .unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(t, _)| t)
                 .unwrap_or(0);
             best_txs.push(best);

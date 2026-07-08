@@ -401,6 +401,7 @@ pub enum EqMapType {
 pub struct EqMapEntry {
     pub umis: Vec<(u64, u32)>,
     pub eq_num: u32,
+    pub qnames: Vec<Vec<String>>,
 }
 // NOTE: this is _clearly_ redundant with the EqMap below.
 // we should re-factor so that EqMap makes use of this class
@@ -848,6 +849,14 @@ impl EqMap {
         self.eqc_info.len()
     }
 
+    pub fn qnames_for_eq_umi(&self, eqid: u32, umi_rank: usize) -> &[String] {
+        self.eqc_info
+            .get(eqid as usize)
+            .and_then(|e| e.qnames.get(umi_rank))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.eqc_info.clear();
@@ -952,6 +961,7 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(cumi, 1)],
                         eq_num: eq_num as u32,
+                        qnames: vec![],
                     });
                     prev_hash = chash;
                 }
@@ -1013,6 +1023,7 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
+                        qnames: vec![],
                     });
                     self.eqid_map.insert(gvec.clone(), eq_num);
                 }
@@ -1176,6 +1187,7 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
+                        qnames: vec![],
                     });
                     self.eqid_map.insert(refs.to_vec(), eq_num);
                     // if we have scores, add them labeled with this equivalence class
@@ -1438,6 +1450,7 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
+                        qnames: vec![],
                     });
                     self.eqid_map.insert(refs.to_vec(), eq_num);
                     if let Some(extras) = maybe_aln_extras {

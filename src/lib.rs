@@ -27,3 +27,4 @@ pub mod pugutils_dp_new;
 pub mod quant;
 pub mod utils;
 pub mod graph_dump;
+pub mod umi_general_distance;

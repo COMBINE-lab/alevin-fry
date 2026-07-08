@@ -187,6 +187,7 @@ fn write_list<W: Write>(
     bc: u64,
     umit: &RadType,
     umi: u64,
+    qname: &str,
     w: &mut W,
 ) -> anyhow::Result<()> {
     assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
@@ -203,6 +204,13 @@ fn write_list<W: Write>(
     write_barcode(bct, bc, w)?;
     // umi
     write_barcode(umit, umi, w)?;
+
+    // NEW: write qname as u8-length-prefixed string
+    let qname_bytes = qname.as_bytes();
+    let qname_len = qname_bytes.len();
+    assert!(qname_len <= 255, "qname too long: {} chars", qname_len);
+    w.write_all(&[qname_len as u8])?;   // 1 byte: the length
+    w.write_all(qname_bytes)?;           // N bytes: the actual string
 
     // write per-alignment fields
     for i in 0..na {
@@ -621,7 +629,7 @@ where
                 local_nrec -= 1;
                 //std::process::exit(1);
             } else {
-                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &old_qname, &mut data)?;
                 
             }
             //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
@@ -760,7 +768,7 @@ where
                 local_nrec -= 1;
                 //std::process::exit(1);
             } else {
-                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
+                write_list(&flist, &score_list, &start_list, &end_list, &tlen_list, &bc_typeid, bc, &umi_typeid, umi, &old_qname, &mut data)?;
                 
             }
             //write_list(&flist, &bc_typeid, bc, &umi_typeid, umi, &mut data)?;
@@ -896,8 +904,9 @@ where
                 
                 match writeln!(
                     handle,
-                    "ID:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}\tAS:{}\tSTART:{}\tEND:{}\tTLEN:{}",
+                    "ID:{}\tQNAME:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}\tAS:{}\tSTART:{}\tEND:{}\tTLEN:{}",
                     id,
+                    read.qname,
                     i + 1,
                     num_entries,
                     bc_str,
