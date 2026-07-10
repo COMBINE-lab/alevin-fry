@@ -1,8 +1,27 @@
-# taken from https://curiouscoding.nl/posts/release-flow/#avx2
-[build]
-# By default, we want maximum performance rather than portability.
-rustflags = ["-C", "target-cpu=native"]
+# inspired by https://curiouscoding.nl/posts/release-flow/#avx2
+#
+# Portable-by-default build settings. Source-based packagers (e.g. Bioconda,
+# `cargo install` from a git/source tarball) honor this file, so it must NOT
+# use `target-cpu=native`: that tunes the binary to the build host and can
+# fault with SIGILL on machines with fewer CPU features. These per-target
+# baselines match the binaries produced by our release workflow.
+#
+# For a maximum-performance build tuned to your own CPU, create a local
+# `.cargo/config.local.toml` containing:
+#
+#     [build]
+#     rustflags = ["-C", "target-cpu=native"]
+#
+# and pass it explicitly, e.g. `cargo build --config .cargo/config.local.toml`.
 
-# Dev-only crate overrides should live in `.cargo/config.local.toml`
-# and be passed explicitly, for example:
-# cargo check --config .cargo/config.local.toml
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "target-feature=+avx2"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=neoverse-n1"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=apple-a14"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "target-feature=+avx2"]
