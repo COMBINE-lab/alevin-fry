@@ -51,13 +51,31 @@ pub fn infer(
         .parent()
         .unwrap_or_else(|| panic!("cannot get parent path of {:?}", count_mat_path));
 
-    // read the file and convert it to csr (rows are *cells*)
-    let count_mat: sprs::CsMatBase<i32, u32, Vec<u32>, Vec<u32>, Vec<i32>, _> =
-        match sprs::io::read_matrix_market::<i32, u32, &std::path::Path>(count_mat_path) {
+    // Read the file and convert it to csr (rows are *cells*).
+    //
+    // `quant` builds this matrix as `f32`, so the MatrixMarket header it writes
+    // says `real`. sprs's reader is strict in *both* directions — a `real` file
+    // cannot be read as an integer type and an `integer` file cannot be read as
+    // a float one — so asking only for integers made `infer` reject the output
+    // of the `quant` it ships alongside (issue #150). Ask for `real` first,
+    // then fall back to `integer` so a matrix from an older release or another
+    // tool still loads.
+    let count_mat: sprs::CsMatI<f32, u32> =
+        match sprs::io::read_matrix_market::<f32, u32, &std::path::Path>(count_mat_path) {
             Ok(t) => t.to_csr(),
-            Err(e) => {
-                warn!(log, "error reading mtx file{:?}", e);
-                return Err(anyhow!("error reading mtx format matrix : {}", e));
+            Err(float_err) => {
+                match sprs::io::read_matrix_market::<i32, u32, &std::path::Path>(count_mat_path) {
+                    Ok(t) => t.to_csr().map(|&v| v as f32),
+                    Err(int_err) => {
+                        warn!(
+                            log,
+                            "error reading mtx file as real ({:?}) or as integer ({:?})",
+                            float_err,
+                            int_err
+                        );
+                        return Err(anyhow!("error reading mtx format matrix : {}", float_err));
+                    }
+                }
             }
         };
 
@@ -358,11 +376,15 @@ pub fn infer(
 
             // gather the data from the row's iterator into a vector of
             // (eq_id, count) tuples.
-            // NOTE: because of the matrix market format requirements (and the compatible
-            // implmentation in sprs), we have read the matrix in with i32 instead of u32 entries.
-            // Here we convert the i32 counts (the second element of the tuple here) to u32.
-            let cell_data: Vec<(u32, u32)> =
-                row_vec.iter().map(|e| (e.0 as u32, *e.1 as u32)).collect();
+            // NOTE: the matrix market format (and sprs' implementation of it)
+            // does not carry an unsigned integer type, so the matrix is read as
+            // `f32` and the counts are converted here. These are whole UMI
+            // counts held in a float, so round rather than truncate: a value
+            // that round-tripped as 4.999999 should become 5, not 4.
+            let cell_data: Vec<(u32, u32)> = row_vec
+                .iter()
+                .map(|e| (e.0 as u32, e.1.round() as u32))
+                .collect();
             // keep pushing this data onto our work queue while we can.
             // launch off these cells on the queue
             let mut cd_clone = (processed_ind, cell_data.clone());
