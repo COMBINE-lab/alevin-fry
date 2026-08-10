@@ -589,8 +589,7 @@ fn do_generate_permit_list_multi_bc(
     );
 
     // Load known sample barcodes (with rotation → canonical mapping)
-    let sample_info =
-        load_sample_barcode_list(sample_bc_list_path, gpl_opts.sample_bc_ori, log)?;
+    let sample_info = load_sample_barcode_list(sample_bc_list_path, gpl_opts.sample_bc_ori, log)?;
 
     // Build sample barcode correction map (rotation → canonical)
     let (sample_permit_map, sample_bc_to_idx) =
@@ -675,8 +674,7 @@ fn do_generate_permit_list_multi_bc(
         // Spawn worker threads
         let mut handles = Vec::new();
         for _ in 0..nworkers {
-            let q = chunk_reader.get_queue();
-            let done = chunk_reader.is_done();
+            let chunks = chunk_reader.chunk_iter();
             let hist = per_sample_cell_hist.clone();
             let unmatched = per_sample_unmatched.clone();
             let spm = sample_permit_map.clone();
@@ -692,35 +690,33 @@ fn do_generate_permit_list_multi_bc(
                 let mut local_unmatched_bufs: Vec<Vec<u64>> =
                     (0..num_s).map(|_| Vec::new()).collect();
 
-                while !done.load(Ordering::SeqCst) || !q.is_empty() {
-                    while let Some(meta_chunk) = q.pop() {
-                        for c in meta_chunk.iter() {
-                            for read in &c.reads {
-                                local_total += 1;
+                for meta_chunk in chunks {
+                    for c in meta_chunk.iter() {
+                        for read in &c.reads {
+                            local_total += 1;
 
-                                if !read.has_alignment_on_strand(expected_ori) {
-                                    continue;
-                                }
+                            if !read.has_alignment_on_strand(expected_ori) {
+                                continue;
+                            }
 
-                                let sample_bc: u64 = read.collation_key_at_level(0);
-                                let cell_bc: u64 = read.collate_key();
+                            let sample_bc: u64 = read.collation_key_at_level(0);
+                            let cell_bc: u64 = read.collate_key();
 
-                                if let Some(&corrected_sample) = spm.get(&sample_bc) {
-                                    if let Some(&sample_idx) = s2i.get(&corrected_sample) {
-                                        local_matched += 1;
-                                        if let Some(ref wl_map) = *wl {
-                                            if wl_map.contains_key(&cell_bc) {
-                                                *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
-                                            } else {
-                                                local_unmatched_bufs[sample_idx].push(cell_bc);
-                                            }
-                                        } else {
+                            if let Some(&corrected_sample) = spm.get(&sample_bc) {
+                                if let Some(&sample_idx) = s2i.get(&corrected_sample) {
+                                    local_matched += 1;
+                                    if let Some(ref wl_map) = *wl {
+                                        if wl_map.contains_key(&cell_bc) {
                                             *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                                        } else {
+                                            local_unmatched_bufs[sample_idx].push(cell_bc);
                                         }
+                                    } else {
+                                        *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
                                     }
-                                } else {
-                                    local_unmatched_sample += 1;
                                 }
+                            } else {
+                                local_unmatched_sample += 1;
                             }
                         }
                     }
@@ -1776,8 +1772,7 @@ where
         let mut handles = Vec::new();
 
         for _ in 0..nworkers {
-            let rd = rad_reader.is_done();
-            let q = rad_reader.get_queue();
+            let chunks = rad_reader.chunk_iter();
             let hmu = hmu.clone();
 
             let handle = s.spawn(move || {
@@ -1786,18 +1781,16 @@ where
                 let mut num_reads = 0;
                 let mut num_orientation_compat_reads = 0;
 
-                while !rd.load(Ordering::SeqCst) || !q.is_empty() {
-                    while let Some(meta_chunk) = q.pop() {
-                        for c in meta_chunk.iter() {
-                            num_orientation_compat_reads += update_barcode_hist_unfiltered(
-                                &hmu,
-                                &mut unmatched_bc,
-                                &mut max_ambiguity_read,
-                                &c,
-                                expected_ori,
-                            );
-                            num_reads += c.reads.len();
-                        }
+                for meta_chunk in chunks {
+                    for c in meta_chunk.iter() {
+                        num_orientation_compat_reads += update_barcode_hist_unfiltered(
+                            &hmu,
+                            &mut unmatched_bc,
+                            &mut max_ambiguity_read,
+                            &c,
+                            expected_ori,
+                        );
+                        num_reads += c.reads.len();
                     }
                 }
                 (
@@ -1847,8 +1840,7 @@ where
         let mut handles = Vec::new();
 
         for _ in 0..nworkers {
-            let rd = rad_reader.is_done();
-            let q = rad_reader.get_queue();
+            let chunks = rad_reader.chunk_iter();
             let hm = hm.clone();
 
             let handle = s.spawn(move || {
@@ -1856,13 +1848,11 @@ where
                 let mut num_reads = 0;
                 let mut num_orientation_compat_reads = 0;
 
-                while !rd.load(Ordering::SeqCst) || !q.is_empty() {
-                    while let Some(meta_chunk) = q.pop() {
-                        for c in meta_chunk.iter() {
-                            num_orientation_compat_reads +=
-                                update_barcode_hist(&hm, &mut max_ambiguity_read, &c, expected_ori);
-                            num_reads += c.reads.len();
-                        }
+                for meta_chunk in chunks {
+                    for c in meta_chunk.iter() {
+                        num_orientation_compat_reads +=
+                            update_barcode_hist(&hm, &mut max_ambiguity_read, &c, expected_ori);
+                        num_reads += c.reads.len();
                     }
                 }
                 (num_reads, num_orientation_compat_reads, max_ambiguity_read)
