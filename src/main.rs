@@ -386,10 +386,7 @@ fn main() -> anyhow::Result<()> {
             _ => prog_opts::SampleCorrectionMode::Exact,
         };
 
-        let sample_bc_ori = match t
-            .get_one::<String>("sample-bc-ori")
-            .map(|s| s.as_str())
-        {
+        let sample_bc_ori = match t.get_one::<String>("sample-bc-ori").map(|s| s.as_str()) {
             Some("reverse") => prog_opts::SampleBarcodeOri::Reverse,
             _ => prog_opts::SampleBarcodeOri::Forward,
         };

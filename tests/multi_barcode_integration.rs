@@ -575,8 +575,8 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
     use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
     use bio_types::strand::Strand;
     use polars::prelude::{DataType, Field, Schema};
-    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use polars_io::SerReader;
+    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -604,10 +604,8 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
     // to actually trigger the bug.
     let used_positions: [usize; 3] = [0, 3, 7];
     let used_bcs: Vec<u64> = used_positions.iter().map(|&p| all_bcs[p]).collect();
-    let expected_sample_names: HashSet<String> = used_positions
-        .iter()
-        .map(|&p| names[p].clone())
-        .collect();
+    let expected_sample_names: HashSet<String> =
+        used_positions.iter().map(|&p| names[p].clone()).collect();
     let num_used = used_bcs.len();
     let cells_per_sample = 4;
     let reads_per_cell = 8;
@@ -808,12 +806,14 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
 fn test_multi_bc_quant_flexv2_real_data() {
     use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
     use alevin_fry::collate::collate;
-    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleBarcodeOri, SampleCorrectionMode};
+    use alevin_fry::prog_opts::{
+        GenPermitListOpts, QuantOpts, SampleBarcodeOri, SampleCorrectionMode,
+    };
     use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
     use bio_types::strand::Strand;
     use polars::prelude::{DataType, Field, Schema};
-    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use polars_io::SerReader;
+    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::Arc;
