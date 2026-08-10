@@ -157,14 +157,13 @@ pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> any
     let bed_writer = Arc::new(Mutex::new(File::create(bed_path).unwrap()));
     let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
 
-    let chunk_reader = libradicl::readers::ParallelChunkReader::<AtacSeqReadRecord>::new(
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<AtacSeqReadRecord>::new(
         &prelude,
         std::num::NonZeroUsize::new(n_workers).unwrap(),
     );
 
     for _worker in 0..n_workers {
-        let rd = chunk_reader.is_done();
-        let q = chunk_reader.get_queue();
+        let chunks = chunk_reader.chunk_iter();
         let bd = bed_writer.clone();
         let refs = refs.clone();
         let num_multimappings = num_multimappings.clone();
@@ -174,70 +173,67 @@ pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> any
 
         let handle = std::thread::spawn(move || {
             let mut nrec_processed = 0_usize;
-            while !rd.load(Ordering::SeqCst) || !q.is_empty() {
-                while let Some(meta_chunk) = q.pop() {
-                    for c in meta_chunk.iter() {
-                        nrec_processed += c.nrec as usize;
-                        let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(c.nrec as usize);
-                        // println!("Chunk :: nbytes: {}, nrecs: {}", c.nbytes, c.nrec);
-                        assert_eq!(c.nrec as usize, c.reads.len());
-                        for r in c.reads.iter() {
-                            let na = r.refs.len();
-                            // add a field tracking such counts
-                            if na == 1 && r.map_type[0] == 4 {
-                                hit_info_vec.push(HitInfo {
-                                    chr: r.refs[0],
-                                    start: r.start_pos[0],
-                                    frag_len: r.frag_lengths[0],
-                                    barcode: r.bc,
-                                    count: 0,
-                                })
-                            } else if na > 1 {
-                                num_multimappings.fetch_add(1, Ordering::SeqCst);
-                                continue;
-                            } else {
-                                num_non_mapped_pair.fetch_add(1, Ordering::SeqCst);
-                            }
+            for meta_chunk in chunks {
+                for c in meta_chunk.iter() {
+                    nrec_processed += c.nrec as usize;
+                    let mut hit_info_vec: Vec<HitInfo> = Vec::with_capacity(c.nrec as usize);
+                    assert_eq!(c.nrec as usize, c.reads.len());
+                    for r in c.reads.iter() {
+                        let na = r.refs.len();
+                        // add a field tracking such counts
+                        if na == 1 && r.map_type[0] == 4 {
+                            hit_info_vec.push(HitInfo {
+                                chr: r.refs[0],
+                                start: r.start_pos[0],
+                                frag_len: r.frag_lengths[0],
+                                barcode: r.bc,
+                                count: 0,
+                            })
+                        } else if na > 1 {
+                            num_multimappings.fetch_add(1, Ordering::SeqCst);
+                            continue;
+                        } else {
+                            num_non_mapped_pair.fetch_add(1, Ordering::SeqCst);
                         }
-                        hit_info_vec.sort_unstable();
-                        let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
-                        for (count, hv) in hit_info_vec.iter_mut().dedup_with_count() {
-                            hv.count = count as u16;
-                            h_updated.push(*hv);
-                            if count > 1 {
-                                num_dedup.fetch_add(1, Ordering::SeqCst);
-                            }
-                        }
-                        drop(hit_info_vec);
-                        write_bed(
-                            &bd,
-                            &h_updated,
-                            &refs,
-                            dedup_opts.rev,
-                            barcode_len as u8,
-                            &num_frag_counts,
-                        );
                     }
+                    hit_info_vec.sort_unstable();
+                    let mut h_updated: Vec<HitInfo> = Vec::with_capacity(hit_info_vec.len());
+                    for (count, hv) in hit_info_vec.iter_mut().dedup_with_count() {
+                        hv.count = count as u16;
+                        h_updated.push(*hv);
+                        if count > 1 {
+                            num_dedup.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                    drop(hit_info_vec);
+                    write_bed(
+                        &bd,
+                        &h_updated,
+                        &refs,
+                        dedup_opts.rev,
+                        barcode_len as u8,
+                        &num_frag_counts,
+                    );
                 }
             }
             nrec_processed
         });
         thread_handles.push(handle);
     }
-    // let header_offset = rad_reader.get_byte_offset();
-    // let pbar = ProgressBar::new(file_len - header_offset);
-    // pbar.set_style(
-    //     ProgressStyle::with_template(
-    //         "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    //     )
-    //     .unwrap()
-    //     .progress_chars("##-"),
-    // );
     pbar.set_draw_target(ProgressDrawTarget::stderr_with_hz(5));
-    // let cb = |new_bytes: u64, _new_rec: u64| {
-    //     pbar.inc(new_bytes);
-    // };
-    // let _ = rad_reader.start_chunk_parsing(Some(cb)); //libradicl::readers::EMPTY_METACHUNK_CALLBACK);
+
+    // Run the producer. Without this the done-flag is never set and every
+    // worker above waits forever on a queue nothing will ever fill, so the
+    // joins below never return. The workers already hold their iterators, so
+    // starting here rather than before the spawn loop is what keeps the bounded
+    // queue from deadlocking against a producer with no consumers.
+    let cb = |new_bytes: u64, _new_rec: u64| {
+        pbar.inc(new_bytes);
+    };
+    chunk_reader
+        .start(&mut br, Some(cb))
+        .context("failed to parse chunks of the collated RAD file")?;
+
     let mut total_processed = 0;
     for handle in thread_handles {
         total_processed += handle.join().expect("The parsing thread panicked");
