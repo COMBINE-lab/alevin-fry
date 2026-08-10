@@ -7,6 +7,26 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+//! Barcode-collation of a scATAC-seq RAD file.
+//!
+//! **Provisional, and not part of the supported scATAC-seq pipeline.** The
+//! `atac collate` subcommand is hidden from `--help` for that reason. The
+//! pipeline `simpleaf atac process` drives — and the one this project
+//! supports — is `generate-permit-list` followed by [`crate::atac::sort`],
+//! which bins records by genomic position, deduplicates them, and writes the
+//! BED itself. Nothing in that path calls this module.
+//!
+//! It is kept because collating by barcode is a plausible thing to want later
+//! (it is what the scRNA pipeline does, and it is the input
+//! [`crate::atac::deduplicate`] expects), not because anything uses it today.
+//!
+//! Treat it accordingly: it went from the commit that introduced the ATAC
+//! module until 2026-08 aborting on any input containing unmapped or
+//! multi-mapping reads, and separately writing a header that overstated its
+//! chunk count, because no pipeline and no test exercised it. Both are fixed
+//! and covered by `tests/atac_integration.rs`, but coverage here is thinner
+//! than on the supported path — measure twice before relying on it.
+
 use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info, warn};

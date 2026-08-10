@@ -713,8 +713,11 @@ fn atac_sub_commands() -> Command {
              .default_value("rc")
              .value_parser(["fw", "rc"]));
 
+    // Hidden: provisional, and not part of the supported scATAC-seq pipeline.
+    // See the module comment on `atac::collate`.
     let collate_app = Command::new("collate")
         .about("Collate a RAD file with corrected cell barcode")
+        .hide(true)
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --"input-dir" <INPUTDIR> "output directory made by generate-permit-list")
@@ -745,8 +748,11 @@ fn atac_sub_commands() -> Command {
             .value_parser(value_parser!(u32))
             .default_value("30000000"));
 
+    // Hidden: provisional, and not part of the supported scATAC-seq pipeline.
+    // See the module comment on `atac::deduplicate`.
     let deduplicate_app = Command::new("deduplicate")
         .about("Deduplicate the RAD file and output a BED file")
+        .hide(true)
         .version(version)
         .author(crate_authors)
         .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")

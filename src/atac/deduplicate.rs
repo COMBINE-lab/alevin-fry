@@ -1,3 +1,23 @@
+//! Deduplication of a barcode-collated scATAC-seq RAD file into a BED file.
+//!
+//! **Provisional, and not part of the supported scATAC-seq pipeline.** The
+//! `atac deduplicate` subcommand is hidden from `--help` for that reason. The
+//! supported path is `generate-permit-list` followed by
+//! [`crate::atac::sort`], which deduplicates as it goes and emits the BED
+//! itself — which is what `simpleaf atac process` runs. This module duplicates
+//! that end result from the barcode-collated file [`crate::atac::collate`]
+//! produces, and nothing in the supported path calls it.
+//!
+//! It is kept because deduplicating in barcode order (rather than genomic
+//! order) may be useful later, not because anything uses it today.
+//!
+//! Treat it accordingly: from the commit that introduced the ATAC module until
+//! 2026-08 it never ran at all. It built its reader, spawned consumers, and
+//! never started the producer, so every worker span on a queue nothing would
+//! fill and the command hung indefinitely. That is fixed, and
+//! `tests/atac_integration.rs` now drives this path under a deadline, but
+//! coverage here is thinner than on the supported path.
+
 use crate::atac::prog_opts::DeduplicateOpts;
 use crate::atac::sort::HitInfo;
 use crate::atac::utils as atac_utils;
