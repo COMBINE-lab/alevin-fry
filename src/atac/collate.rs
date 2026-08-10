@@ -842,6 +842,29 @@ where
     }
 
     owriter.lock().unwrap().flush()?;
+
+    // The header was written before the gather phase, when the only number
+    // available was one chunk per retained barcode. Correct it to what was
+    // actually written, exactly as the scRNA path does: `deduplicate` and every
+    // other reader trust this field to decide how many chunks to parse, so a
+    // header that overstates it walks them off the end of the file.
+    //
+    // Snappy output is a stream, so there is nothing to seek back into; in that
+    // case the count written up front is all we have.
+    if !compress_out && num_output_chunks != expected_output_chunks {
+        let chunk_bytes = std::mem::size_of::<u64>() as u64;
+        let nc_pos = end_header_pos - chunk_bytes;
+        let mut ofile = std::fs::OpenOptions::new().write(true).open(&oname)?;
+        ofile.seek(std::io::SeekFrom::Start(nc_pos))?;
+        ofile.write_all(&num_output_chunks.to_le_bytes())?;
+        ofile.flush()?;
+        info!(
+            log,
+            "backpatched num_chunks to {} in the collated output",
+            num_output_chunks.to_formatted_string(&Locale::en)
+        );
+    }
+
     info!(
         log,
         "finished collating input rad file {:?}.",
