@@ -9,7 +9,7 @@
 
 use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use slog::{crit, info};
+use slog::{crit, info, warn};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
@@ -656,7 +656,7 @@ where
     // phase of collating the temporary files and merging
     // them into the final output file.
 
-    for (i, temp_bucket) in temp_buckets.iter().enumerate() {
+    for (i, temp_bucket) in temp_buckets.iter_mut().enumerate() {
         // make sure we flush each temp bucket
         temp_bucket
             .2
@@ -665,11 +665,26 @@ where
             .unwrap()
             .flush()
             .context("could not flush temporary output file!")?;
-        // a sanity check that we have the correct number of records
-        // and the expected number of bytes in each file
-        let expected = temp_bucket.1;
-        let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-        assert_eq!(expected, observed);
+
+        // `temp_bucket.1` was budgeted from the permit-list frequency map,
+        // which counts *every* read for a retained barcode. The scatter phase
+        // is more selective: `dump_corrected_cb_chunk_to_temp_file_atac` skips
+        // records that are unmapped or that have more than one alignment, so
+        // the bucket legitimately holds fewer records than were budgeted.
+        //
+        // This number is not just a sanity check — it is the loop bound the
+        // gather phase reads the temp file with. Reconcile it with what was
+        // actually written, or the gather reads past the end of the file.
+        //
+        // (The RNA path does not need this: there the histogram and the dump
+        // apply the same orientation filter, so the two counts agree.)
+        let budgeted = temp_bucket.1;
+        let written = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
+        assert!(
+            written <= budgeted,
+            "temp bucket {i} holds more records ({written}) than were budgeted for it ({budgeted})"
+        );
+        temp_bucket.1 = written;
 
         let md = std::fs::metadata(parent.join(format!("bucket_{}.tmp", i)))?;
         let expected_bytes = temp_bucket.2.num_bytes_written.load(Ordering::SeqCst);
@@ -764,6 +779,8 @@ where
             // no point trying to push if the queue is full
             while fq.is_full() {}
         }
+        // `temp_bucket.1` was reconciled against the records actually written
+        // before the buckets were queued, so these must now agree.
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         assert_eq!(expected, observed);
@@ -799,13 +816,30 @@ where
         expected_output_chunks.to_formatted_string(&Locale::en)
     );
 
-    assert_eq!(
-        expected_output_chunks,
-        num_output_chunks,
-        "expected to write {} chunks but wrote {}",
-        expected_output_chunks.to_formatted_string(&Locale::en),
+    // One chunk is budgeted per retained barcode, but the scatter phase drops
+    // unmapped and multi-alignment records, so a barcode whose reads were all
+    // dropped contributes no chunk at all. Writing fewer chunks than barcodes
+    // is therefore legitimate rather than a bug — the header is backpatched
+    // with the count actually written, so the file stays self-consistent — but
+    // it does mean cells silently vanish, which is worth saying out loud.
+    //
+    // Writing *more* chunks than there are retained barcodes would be a real
+    // invariant violation, so that still aborts.
+    assert!(
+        num_output_chunks <= expected_output_chunks,
+        "wrote {} chunks but only {} barcodes were retained",
         num_output_chunks.to_formatted_string(&Locale::en),
+        expected_output_chunks.to_formatted_string(&Locale::en),
     );
+    if num_output_chunks < expected_output_chunks {
+        warn!(
+            log,
+            "{} of {} retained barcodes produced no collated records (every read was unmapped or \
+             multi-mapping) and are absent from the output.",
+            (expected_output_chunks - num_output_chunks).to_formatted_string(&Locale::en),
+            expected_output_chunks.to_formatted_string(&Locale::en)
+        );
+    }
 
     owriter.lock().unwrap().flush()?;
     info!(
