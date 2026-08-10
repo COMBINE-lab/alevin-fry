@@ -14,6 +14,12 @@
 #
 # and pass it explicitly, e.g. `cargo build --config .cargo/config.local.toml`.
 
+[env]
+# libdeflate 1.25 can generate AVX-VNNI assembly that older system assemblers
+# cannot parse. Its CMake build probes this, but libdeflate-sys builds through
+# cc-rs, so set the same compatibility define for Cargo builds.
+CFLAGS = { value = "-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_AVX_VNNI", force = false }
+
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-cpu=x86-64-v3", "-C", "target-feature=+avx2"]
 
