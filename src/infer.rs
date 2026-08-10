@@ -121,7 +121,7 @@ pub fn infer(
         let mut first_line = String::new();
         let file = match fs::File::open(&bc_path) {
             Ok(file) => file,
-            Err(_) => panic!("Unable to read first barcode from {:?}", &bc_path),
+            Err(_) => panic!("Unable to read first barcode from {:?}", bc_path),
         };
         let mut rdr = BufReader::new(file);
         rdr.read_line(&mut first_line).expect("Unable to read line");

@@ -1045,7 +1045,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
         trivial_mccs: 0u64,
     };
 
-    for (_comp_label, comp_verts) in comps.iter() {
+    for comp_verts in comps.values() {
         if comp_verts.len() > 1 {
             // the current parsimony resolution algorithm
             // can become slow for connected components that

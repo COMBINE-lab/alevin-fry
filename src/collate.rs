@@ -2224,7 +2224,7 @@ where
 
         // Sort by frequency descending (same as standard collate)
         let mut tsv_map: Vec<(u64, u64)> = cell_freq_map.into_iter().collect();
-        tsv_map.sort_by(|a, b| b.1.cmp(&a.1));
+        tsv_map.sort_by_key(|a| std::cmp::Reverse(a.1));
 
         let sample_total_cells = tsv_map.len() as u64;
         let sample_total_records: u64 = tsv_map.iter().map(|x| x.1).sum();
@@ -2345,7 +2345,7 @@ where
             );
 
             // Flush local buffers
-            for (_composite_key, bucket) in sample_output_cache.iter() {
+            for bucket in sample_output_cache.values() {
                 let bid = bucket.bucket_id as usize;
                 if bid < local_buffers.len() {
                     let pos = local_buffers[bid].position() as usize;

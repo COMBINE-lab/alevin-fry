@@ -560,13 +560,12 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
 /// full generate_permit_list → collate → quantify pipeline and asserts
 /// three invariant families:
 ///
-/// 1. Field-shape:   every row of featureDump.txt has exactly 10 fields.
-/// 2. Identity:      all three expected sample names appear in
-///                   quants_mat_rows.txt.
-/// 3. Polars-shape:  the file parses with af-anndata's CSV schema
-///                   (CB+sample_name as String) without error, and the
-///                   sample_name column dtype is String with exactly the
-///                   three expected values.
+/// 1. Field-shape: every row of featureDump.txt has exactly 10 fields.
+/// 2. Identity: all three expected sample names appear in
+///    quants_mat_rows.txt.
+/// 3. Polars-shape: the file parses with af-anndata's CSV schema
+///    (CB+sample_name as String) without error, and the sample_name column
+///    dtype is String with exactly the three expected values.
 #[test]
 fn test_multi_bc_quant_handles_sparse_sample_positions() {
     use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
@@ -1092,7 +1091,7 @@ fn test_read_real_flex_rad() {
         "First read: barcodes={:?}, umi={}, refs={:?}",
         r.barcodes.as_slice(),
         r.umi,
-        &r.refs
+        r.refs
     );
     assert_eq!(
         r.barcodes.len(),

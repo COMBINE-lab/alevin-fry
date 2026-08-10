@@ -231,7 +231,7 @@ impl IndexedEqList {
         let mut eq_label_starts = Vec::<u32>::with_capacity(num_eqc + 1);
 
         eq_label_starts.push(0);
-        for (labels, _count) in eqclasses.iter() {
+        for labels in eqclasses.keys() {
             label_list_size += labels.len();
             eq_labels.extend(labels.clone());
             eq_label_starts.push(eq_labels.len() as u32);

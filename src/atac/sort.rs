@@ -74,7 +74,7 @@ pub fn write_bed_string<W: ?Sized + Write>(
             writeln!(
                 writer,
                 "{}\t{}\t{}\t{}\t{}",
-                &ref_names[hinfo.chr as usize],
+                ref_names[hinfo.chr as usize],
                 hinfo.start,
                 (hinfo.start + hinfo.frag_len as u32),
                 atac_utils::get_bc_string(&hinfo.barcode, rev, bc_len),
