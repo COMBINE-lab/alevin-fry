@@ -1100,3 +1100,218 @@ fn test_read_real_flex_rad() {
         "Should have 2 barcodes (sample + cell)"
     );
 }
+
+/// Build a RAD in which every cell is *tiny* and every UMI is gene-ambiguous.
+///
+/// Each read carries two references belonging to different genes, so no UMI in
+/// the file can ever be assigned to a single gene. `cr-like` must therefore
+/// discard all of them, while an EM strategy must spread the mass fractionally.
+/// That difference is the whole point of the test, and it only shows up if the
+/// requested resolution strategy is actually the one that runs.
+fn create_ambiguous_tiny_cell_rad(
+    path: &Path,
+    num_cells: usize,
+    reads_per_cell: usize,
+    sample_bc: u64,
+) -> anyhow::Result<MultiBarcodeRecordContext> {
+    let (prelude, file_tag_map) = make_multi_bc_prelude();
+    let ctx = MultiBarcodeRecordContext::get_context_from_tag_section(
+        &prelude.file_tags,
+        &prelude.read_tags,
+        &prelude.aln_tags,
+    )?;
+
+    let file = File::create(path)?;
+    let mut fw = RadFileWriter::new(file, &prelude, &file_tag_map)?;
+
+    for cell_idx in 0..num_cells {
+        let cell_bc = make_packed_bc(cell_idx as u64, CELL_BC_LEN);
+        let mut reads = Vec::with_capacity(reads_per_cell);
+        for read_idx in 0..reads_per_cell {
+            let umi = make_packed_bc((cell_idx * 100 + read_idx) as u64, UMI_LEN);
+            // two distinct genes per read => permanently gene-ambiguous UMI
+            let r1 = (read_idx % NUM_REFS as usize) as u32;
+            let r2 = ((read_idx + 1) % NUM_REFS as usize) as u32;
+            reads.push(MultiBarcodeReadRecord {
+                barcodes: smallvec![sample_bc, cell_bc],
+                umi,
+                dirs: vec![true, true],
+                refs: vec![r1, r2],
+            });
+        }
+        let chunk = Chunk::<MultiBarcodeReadRecord> {
+            nbytes: 0,
+            nrec: reads.len() as u32,
+            reads,
+        };
+        fw.write_chunk(&chunk, &ctx)?;
+    }
+    fw.finalize()?;
+    Ok(ctx)
+}
+
+/// The tiny-cell fast path must only ever stand in for `cr-like`.
+///
+/// Regression test for the case where cells below `--small-thresh` were
+/// resolved by the fast path regardless of `--resolution`, so `parsimony-em`
+/// silently produced `cr-like` output for them and gene-ambiguous UMIs were
+/// discarded instead of being spread by EM.
+///
+/// Asserts three things, on cells small enough to take the fast path:
+///   1. the fast path is actually taken by default, and says so in quant.json;
+///   2. `--small-thresh 0` turns it off;
+///   3. with it off, `parsimony-em` recovers UMI mass that the fast path drops
+///      -- i.e. the strategy the user asked for is the one that ran.
+#[test]
+fn tiny_cell_fast_path_does_not_override_requested_resolution() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleCorrectionMode};
+    use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let sample_bc = make_packed_bc(100, SAMPLE_BC_LEN);
+    let sample_entries = [("sample_a", sample_bc)];
+    let num_cells = 4;
+    // Comfortably below the default --small-thresh of 100.
+    let reads_per_cell = 8;
+
+    create_ambiguous_tiny_cell_rad(
+        &rad_dir.join("map.rad"),
+        num_cells,
+        reads_per_cell,
+        sample_bc,
+    )
+    .unwrap();
+
+    let sample_list_path = tmp.path().join("sample_barcodes.tsv");
+    write_named_sample_bc_list(&sample_list_path, &sample_entries, SAMPLE_BC_LEN).unwrap();
+    let tg_map_path = tmp.path().join("tg_map.tsv");
+    write_tg_map(&tg_map_path).unwrap();
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(num_cells))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list_path))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .build();
+    generate_permit_list(gpl_opts).unwrap();
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        false,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+
+    // Run quant once per (resolution, small_thresh) combination and return
+    // (total UMI mass, number of cells that took the tiny-cell path).
+    let run = |name: &str, res: ResolutionStrategy, small_thresh: usize| -> (f64, usize) {
+        let quant_dir = tmp.path().join(name);
+        let quant_opts = QuantOpts::builder()
+            .input_dir(&output_dir)
+            .tg_map(&tg_map_path)
+            .output_dir(&quant_dir)
+            .num_threads(2)
+            .num_bootstraps(0)
+            .init_uniform(false)
+            .summary_stat(false)
+            .dump_eq(false)
+            .resolution(res)
+            .pug_exact_umi(false)
+            .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+            .small_thresh(small_thresh)
+            .large_graph_thresh(0)
+            .filter_list(None)
+            .cmdline("test")
+            .version(TEST_VERSION)
+            .log(&log)
+            .build();
+        quantify(quant_opts).unwrap();
+
+        let mtx = std::fs::read_to_string(quant_dir.join("alevin").join("quants_mat.mtx")).unwrap();
+        let mass: f64 = mtx
+            .lines()
+            .filter(|l| !l.starts_with('%'))
+            .skip(1) // dimension line
+            .filter_map(|l| l.split_whitespace().nth(2))
+            .filter_map(|v| v.parse::<f64>().ok())
+            .sum();
+
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(quant_dir.join("quant.json")).unwrap())
+                .unwrap();
+        let tiny = meta["num_tiny_cell_resolved"].as_u64().unwrap() as usize;
+        assert_eq!(
+            meta["tiny_cell_resolved_cell_numbers"]
+                .as_array()
+                .unwrap()
+                .len(),
+            tiny,
+            "the cell-number list and the count must agree"
+        );
+        assert_eq!(
+            meta["quant_options"]["small_thresh"].as_u64().unwrap() as usize,
+            small_thresh,
+            "quant.json must record the threshold that was actually used"
+        );
+        (mass, tiny)
+    };
+
+    let (crlike_mass, crlike_tiny) = run("q_crlike", ResolutionStrategy::CellRangerLike, 100);
+    let (em_fast_mass, em_fast_tiny) = run("q_em_fast", ResolutionStrategy::ParsimonyEm, 100);
+    let (em_full_mass, em_full_tiny) = run("q_em_full", ResolutionStrategy::ParsimonyEm, 0);
+
+    // 1. the fast path is taken by default, for every one of these tiny cells
+    assert_eq!(
+        crlike_tiny, num_cells,
+        "all cells are below the threshold, so all should take the fast path"
+    );
+    assert_eq!(em_fast_tiny, num_cells);
+
+    // 2. --small-thresh 0 disables it
+    assert_eq!(
+        em_full_tiny, 0,
+        "--small-thresh 0 must resolve every cell with the requested strategy"
+    );
+
+    // 3. every UMI here is gene-ambiguous, so cr-like discards them all while
+    //    EM spreads them -- but only when EM is the code that actually runs.
+    assert_eq!(
+        crlike_mass, 0.0,
+        "cr-like must discard gene-ambiguous UMIs entirely"
+    );
+    assert!(
+        em_full_mass > 0.0,
+        "parsimony-em must assign fractional mass to ambiguous UMIs, got {}",
+        em_full_mass
+    );
+    assert!(
+        em_full_mass > em_fast_mass,
+        "the fast path drops mass that the requested strategy would keep \
+         (fast={}, full={}); if these are equal the fast path has silently \
+         substituted cr-like for the requested strategy",
+        em_fast_mass,
+        em_full_mass
+    );
+}

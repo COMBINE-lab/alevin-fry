@@ -409,6 +409,9 @@ struct WorkerConfig {
     num_genes: usize,
     num_rows: usize,
     barcode_len: u16,
+    /// Cells with fewer than this many records take the tiny-cell fast path.
+    /// Set from `--small-thresh`; 0 disables the fast path entirely.
+    tiny_cell_thresh: usize,
 }
 
 struct WorkerSharedState<R: MappedRecord> {
@@ -422,6 +425,10 @@ struct WorkerSharedState<R: MappedRecord> {
     eqid_map_lock: Arc<Mutex<EqcMap>>,
     alt_res_cells: Arc<Mutex<Vec<u64>>>,
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
+    /// Cells resolved by the tiny-cell fast path. Recorded because that path
+    /// applies `cr-like` semantics regardless of the requested `-r`, so which
+    /// cells took it is part of how the output should be interpreted.
+    tiny_cell_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<libradicl::unmapped::CollatedUnmappedCounts>,
     mmrate: Arc<Mutex<Vec<f64>>>,
     /// Sample names indexed by sample index. None for single-barcode.
@@ -430,9 +437,14 @@ struct WorkerSharedState<R: MappedRecord> {
     sample_idx_extractor: Option<SampleIdxExtractor<R>>,
 }
 
-/// Threshold (in number of records) below which a cell uses the fast path
-/// that avoids HashMap-based equivalence class construction entirely.
-const SMALL_CELL_FAST_THRESHOLD: usize = 100;
+/// Default threshold (in number of records) below which a cell uses the fast
+/// path that avoids HashMap-based equivalence class construction entirely.
+///
+/// This is the default for `--small-thresh`, not a hard-coded limit; see
+/// [`QuantConfig::tiny_cell_thresh`]. The fast path implements `cr-like`
+/// winner-take-all semantics, so it is only taken when those semantics are
+/// what was asked for.
+pub const DEFAULT_SMALL_CELL_FAST_THRESHOLD: usize = 100;
 
 /// Sparse fast path for quantifying small cells without any HashMap or dense
 /// vector overhead.
@@ -759,8 +771,21 @@ where
             // (expressed_vec/expressed_ind) directly — avoiding both the
             // O(num_genes) dense counts vector allocation AND the
             // O(num_genes) scan to extract non-zero entries.
+            // The fast path resolves UMIs with winner-take-all semantics and
+            // mirrors `extract_counts`. That is exactly the `cr-like` policy,
+            // and it is applied to tiny cells regardless of the requested `-r`
+            // -- a deliberate optimization, since cells this small carry almost
+            // no information and their ambiguous UMIs are noise either way.
+            // Which cells took it is recorded in quant.json so the choice is
+            // visible rather than implicit.
+            //
+            // The one combination it cannot stand in for is the
+            // prefer-ambiguity splicing model, which resolves splicing-
+            // ambiguous UMIs differently; there we fall through to the
+            // general path rather than silently substituting a policy.
+            let tiny_cell_eligible = config.sa_model == SplicedAmbiguityModel::WinnerTakeAll;
             let used_fast_path;
-            if c.reads.len() < SMALL_CELL_FAST_THRESHOLD {
+            if tiny_cell_eligible && c.reads.len() < config.tiny_cell_thresh {
                 used_fast_path = true;
                 quantify_small_cell_sparse::<B, R>(
                     &mut c,
@@ -814,7 +839,7 @@ where
             // Original path for larger cells
             {
                 used_fast_path = false;
-                let non_trivial = true; // all cells here have >= SMALL_CELL_FAST_THRESHOLD reads
+                let non_trivial = true; // all cells here bypassed the tiny-cell fast path
                 if non_trivial {
                     // TODO: some testing was done, but see if there is a better way to set this value.
                     let small_cell = c.reads.len() <= 250;
@@ -1096,6 +1121,14 @@ where
                 shared.alt_res_cells.lock().unwrap().push(cell_num as u64);
             }
 
+            if used_fast_path {
+                shared
+                    .tiny_cell_resolved_cells
+                    .lock()
+                    .unwrap()
+                    .push(cell_num as u64);
+            }
+
             //
             // featuresStream << "\t" << numRawReads
             //   << "\t" << numMappedReads
@@ -1262,10 +1295,11 @@ where
                 geqmap.cell_offset.push((row_index, gene_eqc.len()));
             }
             // Reset the gene eqc map only if it was used (i.e., NOT the fast path).
-            // For fast-path cells (nrec < SMALL_CELL_FAST_THRESHOLD), gene_eqc was
-            // never touched, so clearing it is pure waste — and the O(capacity) clear
-            // was the 95% bottleneck when processing millions of tiny cells.
-            if nrec >= SMALL_CELL_FAST_THRESHOLD as u32 {
+            // Fast-path cells never touch gene_eqc, so clearing it is pure waste —
+            // and the O(capacity) clear was the 95% bottleneck when processing
+            // millions of tiny cells. Keyed off `used_fast_path` rather than
+            // re-deriving it from the threshold, so the two can never disagree.
+            if !used_fast_path {
                 if gene_eqc.capacity() > 256 {
                     gene_eqc = HashMap::with_hasher(ahash::RandomState::with_seeds(
                         2u64, 7u64, 1u64, 8u64,
@@ -1333,7 +1367,7 @@ where
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let mut sa_model = quant_opts.sa_model;
-    let _small_thresh = quant_opts.small_thresh;
+    let tiny_cell_thresh = quant_opts.small_thresh;
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
     let log = quant_opts.log;
@@ -1568,6 +1602,7 @@ where
     }
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let tiny_cell_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
     // Estimate initial triplet capacity for MTX output. The 10% density assumption
     // is far too high for large multiplexed datasets (actual density is often <0.5%).
@@ -1646,6 +1681,7 @@ where
         // and will need to know the barcode length
         let alt_res_cells = alt_res_cells.clone();
         let empty_resolved_cells = empty_resolved_cells.clone();
+        let tiny_cell_resolved_cells = tiny_cell_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
 
@@ -1691,6 +1727,7 @@ where
             num_genes,
             num_rows,
             barcode_len,
+            tiny_cell_thresh,
         };
 
         let shared = WorkerSharedState {
@@ -1701,6 +1738,7 @@ where
             eqid_map_lock: eqid_map_lockc,
             alt_res_cells,
             empty_resolved_cells,
+            tiny_cell_resolved_cells,
             unmapped_count,
             mmrate,
             sample_names: sample_names.clone(),
@@ -1843,6 +1881,24 @@ where
         write_eqc_counts(&eqid_map_lock, num_rows, usa_mode, &output_matrix_path, log)?;
     }
 
+    // Snapshot the tiny-cell list once: it goes into quant.json both as a
+    // count and as the cell numbers themselves.
+    let tiny_cell_resolved = tiny_cell_resolved_cells.lock().unwrap().clone();
+    if !tiny_cell_resolved.is_empty() {
+        info!(
+            log,
+            "{} of {} cells had fewer than {} records and were resolved with the \
+             tiny-cell fast path (cr-like winner-take-all semantics) rather than \
+             the requested `{}` strategy; they are listed in quant.json under \
+             `tiny_cell_resolved_cell_numbers`. Pass `--small-thresh 0` to disable \
+             this and resolve every cell with the requested strategy.",
+            tiny_cell_resolved.len(),
+            num_cells,
+            tiny_cell_thresh,
+            resolution
+        );
+    }
+
     let meta_info = json!({
     "cmd" : quant_opts.cmdline,
     "version_str": quant_opts.version,
@@ -1853,6 +1909,8 @@ where
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
     "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap(),
+    "num_tiny_cell_resolved" : tiny_cell_resolved.len(),
+    "tiny_cell_resolved_cell_numbers" : tiny_cell_resolved,
     "quant_options" : quant_opts
     });
 
