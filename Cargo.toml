@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.14.3" }
+libradicl = { version = "0.17.0" }
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = "0.8.12"
@@ -49,7 +49,10 @@ needletail = "0.6.3"
 petgraph = "0.8.3"
 libdeflater = "1.25.2"
 niffler = { version = "3.0.0", default-features = false, features = ["gz"] }
-flate2 = { version = "1.1.9", default-features = false, features = ["zlib-ng"] }
+# zlib-rs is the pure-Rust backend: no cmake or C toolchain, and it is what
+# piscem-rs and noodles-bgzf already pull in, so this collapses what used to be
+# two zlib implementations in one binary down to one.
+flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 scroll = "0.13.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
@@ -66,7 +69,7 @@ mimalloc = { version = "0.1.48", default-features = false }
 num-format = "0.4.4"
 num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
-itertools = "0.14.0"
+itertools = "0.15.0"
 thiserror = "2.0.18"
 # no shenanigans; clap makes breaking "fixes" too often to allow variability
 # in the version different from what we tested with
@@ -80,7 +83,10 @@ clap = { version = "4.6.0", features = [
   "error-context",
 ] }
 
-noodles = { version = "0.111.0", features = ["bam", "bgzf", "sam"] }
+# libradicl 0.17 depends on noodles 0.115; a mismatch here yields two
+# incompatible `sam::Header` types at the `RadHeader::from_bam_header` call in
+# src/convert.rs. Keep these in lockstep.
+noodles = { version = "0.115.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 rand_distr = "0.6"
 
