@@ -9,6 +9,9 @@ authors = [
 name = "alevin-fry"
 version = "0.17.1"
 edition = "2024"
+# divan supplies its own harness; `benches/common/` is a shared module rather
+# than a target, so autodiscovery is off and every bench is listed explicitly.
+autobenches = false
 
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
 license-file = "LICENSE"
@@ -91,10 +94,23 @@ dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 rand_distr = "0.6"
 
 [dev-dependencies]
+divan = "0.1.21"
 tempfile = "3"
 slog-term = "2.9.2"
 polars = { version = "0.45.1", features = ["polars-io", "dtype-categorical"] }
 polars-io = { version = "0.45.1", features = ["csv"] }
+
+[[bench]]
+name = "em"
+harness = false
+
+[[bench]]
+name = "barcode"
+harness = false
+
+[[bench]]
+name = "collate_io"
+harness = false
 
 [profile.release]
 #debug = true
