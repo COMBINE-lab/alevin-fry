@@ -118,6 +118,7 @@ fn main() -> anyhow::Result<()> {
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .value_parser(pathbuf_file_exists_validator)
+            .required_if_eq("cell-bc-correction", "frequency")
         )
         .group(ArgGroup::new("filter-method")
                .args(["knee-distance", "expect-cells", "force-cells", "valid-bc", "unfiltered-pl"])
@@ -142,6 +143,11 @@ fn main() -> anyhow::Result<()> {
                 .value_parser(["exact", "1-edit"])
                 .default_value("exact")
                 .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"cell-bc-correction" <STRATEGY> "cell-barcode correction strategy for --unfiltered-pl: `unique` accepts only a unique retained neighbour (the default); `frequency` applies a Cell Ranger-inspired, uniform-quality rule and accepts the most frequent retained neighbour when it has at least 97.5% of the total Laplace-smoothed weight")
+                .value_parser(["unique", "frequency"])
+                .default_value("unique")
         )
         .arg(
             arg!(--"sample-bc-ori" <SBCORI> "orientation of sample barcodes in the whitelist relative to the read (forward = whitelist matches read as-is; reverse = reverse-complement the whitelist before lookup, e.g. 10x Flex v2)")
@@ -385,6 +391,14 @@ fn main() -> anyhow::Result<()> {
             _ => prog_opts::SampleCorrectionMode::Exact,
         };
 
+        let cell_bc_correction = match t
+            .get_one::<String>("cell-bc-correction")
+            .map(|s| s.as_str())
+        {
+            Some("frequency") => prog_opts::CellBarcodeCorrectionStrategy::Frequency,
+            _ => prog_opts::CellBarcodeCorrectionStrategy::Unique,
+        };
+
         let sample_bc_ori = match t.get_one::<String>("sample-bc-ori").map(|s| s.as_str()) {
             Some("reverse") => prog_opts::SampleBarcodeOri::Reverse,
             _ => prog_opts::SampleBarcodeOri::Forward,
@@ -404,6 +418,7 @@ fn main() -> anyhow::Result<()> {
             .sample_names(sample_names)
             .sample_correction_mode(sample_correction_mode)
             .sample_bc_ori(sample_bc_ori)
+            .cell_bc_correction(cell_bc_correction)
             .build();
 
         match generate_permit_list(gpl_opts) {
