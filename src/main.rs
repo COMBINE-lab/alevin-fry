@@ -144,6 +144,11 @@ fn main() -> anyhow::Result<()> {
                 .requires("sample-bc-list")
         )
         .arg(
+            arg!(--"bc-correction-mode" <BCMODE> "how to resolve an unmatched cell barcode that is one substitution away from more than one retained barcode: `unique` drops it (the historical behaviour), `posterior` applies Cell Ranger's rule and corrects to the best candidate when it holds at least 97.5% of the likelihood")
+                .value_parser(["unique", "posterior"])
+                .default_value("unique")
+        )
+        .arg(
             arg!(--"sample-bc-ori" <SBCORI> "orientation of sample barcodes in the whitelist relative to the read (forward = whitelist matches read as-is; reverse = reverse-complement the whitelist before lookup, e.g. 10x Flex v2)")
                 .value_parser(["forward", "reverse"])
                 .default_value("forward")
@@ -385,6 +390,14 @@ fn main() -> anyhow::Result<()> {
             _ => prog_opts::SampleCorrectionMode::Exact,
         };
 
+        let bc_correction_mode = match t
+            .get_one::<String>("bc-correction-mode")
+            .map(|s| s.as_str())
+        {
+            Some("posterior") => prog_opts::BarcodeCorrectionMode::Posterior,
+            _ => prog_opts::BarcodeCorrectionMode::Unique,
+        };
+
         let sample_bc_ori = match t.get_one::<String>("sample-bc-ori").map(|s| s.as_str()) {
             Some("reverse") => prog_opts::SampleBarcodeOri::Reverse,
             _ => prog_opts::SampleBarcodeOri::Forward,
@@ -404,6 +417,7 @@ fn main() -> anyhow::Result<()> {
             .sample_names(sample_names)
             .sample_correction_mode(sample_correction_mode)
             .sample_bc_ori(sample_bc_ori)
+            .bc_correction_mode(bc_correction_mode)
             .build();
 
         match generate_permit_list(gpl_opts) {

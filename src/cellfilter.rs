@@ -9,6 +9,7 @@
 
 use crate::diagnostics;
 use crate::knee_finding;
+use crate::prog_opts::BarcodeCorrectionMode;
 use crate::prog_opts::GenPermitListOpts;
 use crate::prog_opts::SampleBarcodeOri;
 use crate::prog_opts::SampleCorrectionMode;
@@ -99,6 +100,89 @@ fn populate_unfiltered_barcode_map<T: Read>(
         }
     }
     hm
+}
+
+/// What happened to one unmatched barcode.
+enum CorrectionOutcome {
+    /// Correct it to this retained barcode.
+    Corrected(u64),
+    /// It has neighbours in the retained list, but none of them wins.
+    Ambiguous,
+    /// It has no neighbour in the retained list at all.
+    NotFound,
+}
+
+/// The minimum share of the total likelihood the best candidate must hold for
+/// the correction to be accepted. This is Cell Ranger's
+/// `BARCODE_CONFIDENCE_THRESHOLD` (`lib/rust/barcode/src/corrector.rs`).
+const BARCODE_CONFIDENCE_THRESHOLD: f64 = 0.975;
+
+/// Resolve an unmatched barcode the way Cell Ranger does.
+///
+/// Cell Ranger walks every single-substitution neighbour of the observed
+/// barcode, keeps the ones on the whitelist, and scores each candidate by
+///
+/// ```text
+/// likelihood = P(sequencing error at this position | base quality)
+///              * (1 + observed count of the candidate)
+/// ```
+///
+/// then corrects to the best candidate when its share of the summed likelihood
+/// reaches `BARCODE_CONFIDENCE_THRESHOLD`. The `1 +` is Laplace smoothing, so a
+/// candidate that was never observed is still reachable.
+///
+/// **The quality term is absent here, and cannot be recovered.** A RAD file
+/// stores the barcode 2-bit packed and does not carry the base qualities that
+/// produced it. Cell Ranger itself uses a flat `BC_MAX_QV` for every position
+/// when no qualities are supplied, and a flat quality makes `P(error)` the same
+/// constant for every candidate, so it cancels out of the ratio: what is left
+/// is exactly the count prior. This function therefore reproduces Cell Ranger's
+/// decision rule under uniform qualities, not under the real ones.
+///
+/// The candidate set also differs: Cell Ranger scores against the whole
+/// whitelist, this scores against the barcodes alevin-fry has retained. Keeping
+/// alevin-fry's candidate set is deliberate; widening it is a different change
+/// with a much larger blast radius.
+fn posterior_correct(
+    ubc: u64,
+    barcode_len: usize,
+    bcmap2: &BarcodeLookupMap,
+    hm: &DashMap<u64, u64, ahash::RandomState>,
+) -> CorrectionOutcome {
+    let mut best: Option<(f64, u64)> = None;
+    let mut total = 0.0f64;
+    let mut num_candidates = 0usize;
+
+    for cand in afutils::get_all_snps(ubc, barcode_len) {
+        let Some(idx) = bcmap2.find_exact(cand) else {
+            continue;
+        };
+        let cbc = bcmap2.barcodes[idx];
+        if cbc == ubc {
+            continue;
+        }
+        num_candidates += 1;
+        // Laplace-smoothed count; a retained barcode always has a count, but
+        // the `+ 1` keeps the arithmetic identical to Cell Ranger's.
+        let likelihood = 1.0 + hm.get(&cbc).map_or(0, |c| *c) as f64;
+        total += likelihood;
+        // ties go to the larger packed barcode, matching Cell Ranger's
+        // `max` over `(likelihood, barcode)` pairs.
+        match best {
+            Some((bl, bb)) if (bl, bb) >= (likelihood, cbc) => {}
+            _ => best = Some((likelihood, cbc)),
+        }
+    }
+
+    if num_candidates == 0 {
+        return CorrectionOutcome::NotFound;
+    }
+    match best {
+        Some((bl, bb)) if bl / total >= BARCODE_CONFIDENCE_THRESHOLD => {
+            CorrectionOutcome::Corrected(bb)
+        }
+        _ => CorrectionOutcome::Ambiguous,
+    }
 }
 
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
@@ -196,36 +280,54 @@ fn process_unfiltered(
     let mut corrected_list = Vec::<(u64, u64)>::with_capacity(1_000_000);
 
     for (count, ubc) in unmatched_bc.iter().dedup_with_count() {
-        // try to find the unmatched barcode, but
-        // look up to 1 edit away
-        match bcmap2.find_neighbors(*ubc, false) {
-            // if we have a match
-            (Some(x), n) => {
-                let cbc = bcmap2.barcodes[x];
-                // if the uncorrected barcode had a
-                // single, unique retained neighbor
-                if cbc != *ubc && n == 1 {
-                    // then increment the count of this
-                    // barcode by 1 (because we'll correct to it)
-                    if let Some(mut c) = hm.get_mut(&cbc) {
-                        *c += count as u64;
-                        corrected_list.push((*ubc, cbc));
+        let resolved = match gpl_opts.bc_correction_mode {
+            BarcodeCorrectionMode::Unique => {
+                // try to find the unmatched barcode, but
+                // look up to 1 edit away
+                match bcmap2.find_neighbors(*ubc, false) {
+                    // if we have a match
+                    (Some(x), n) => {
+                        let cbc = bcmap2.barcodes[x];
+                        // if the uncorrected barcode had a
+                        // single, unique retained neighbor
+                        if cbc != *ubc && n == 1 {
+                            CorrectionOutcome::Corrected(cbc)
+                        } else if n > 1 {
+                            // if we had > 1 single-mismatch neighbor
+                            // then don't keep the barcode, but remember
+                            // the count of such events
+                            CorrectionOutcome::Ambiguous
+                        } else {
+                            CorrectionOutcome::NotFound
+                        }
                     }
-                    // this counts as an approximate find
-                    found_approx += count;
-                    distinct_recoverable_bc += 1;
-                }
-                // if we had > 1 single-mismatch neighbor
-                // then don't keep the barcode, but remember
-                // the count of such events
-                if n > 1 {
-                    ambig_approx += count;
+                    // if we had no single-mismatch neighbor
+                    // then this barcode is not_found and gets
+                    // dropped.
+                    (None, _) => CorrectionOutcome::NotFound,
                 }
             }
-            // if we had no single-mismatch neighbor
-            // then this barcode is not_found and gets
-            // dropped.
-            (None, _) => {
+            BarcodeCorrectionMode::Posterior => {
+                posterior_correct(*ubc, barcode_len as usize, &bcmap2, &hm)
+            }
+        };
+
+        match resolved {
+            CorrectionOutcome::Corrected(cbc) => {
+                // then increment the count of this
+                // barcode by 1 (because we'll correct to it)
+                if let Some(mut c) = hm.get_mut(&cbc) {
+                    *c += count as u64;
+                    corrected_list.push((*ubc, cbc));
+                }
+                // this counts as an approximate find
+                found_approx += count;
+                distinct_recoverable_bc += 1;
+            }
+            CorrectionOutcome::Ambiguous => {
+                ambig_approx += count;
+            }
+            CorrectionOutcome::NotFound => {
                 not_found += count;
             }
         }

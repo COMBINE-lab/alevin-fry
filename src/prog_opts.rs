@@ -88,4 +88,29 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     /// Orientation of sample barcodes in the whitelist relative to the read.
     #[builder(default = SampleBarcodeOri::Forward)]
     pub sample_bc_ori: SampleBarcodeOri,
+    /// How an unmatched barcode with more than one neighbour in the retained
+    /// list is resolved.
+    #[builder(default = BarcodeCorrectionMode::Unique)]
+    pub bc_correction_mode: BarcodeCorrectionMode,
+}
+
+/// How to resolve an unmatched barcode that is one substitution away from more
+/// than one retained barcode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum BarcodeCorrectionMode {
+    /// Correct only when there is exactly one such neighbour, and drop the
+    /// barcode otherwise. This is what alevin-fry has always done.
+    Unique,
+    /// Rank the neighbours by Cell Ranger's posterior and correct to the best
+    /// one when it carries at least 97.5% of the total likelihood.
+    Posterior,
+}
+
+impl std::fmt::Display for BarcodeCorrectionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BarcodeCorrectionMode::Unique => write!(f, "unique"),
+            BarcodeCorrectionMode::Posterior => write!(f, "posterior"),
+        }
+    }
 }
