@@ -22,4 +22,5 @@ pub mod multinomial;
 pub mod prog_opts;
 pub mod pugutils;
 pub mod quant;
+pub mod spatial;
 pub mod utils;
