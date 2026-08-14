@@ -63,6 +63,24 @@ pub enum SampleBarcodeOri {
     Reverse,
 }
 
+/// Resolves a raw cell barcode that is one edit away from multiple retained
+/// cell barcodes in a filtered RNA permit list.
+///
+/// This policy does not affect exact matches, unfiltered RNA workflows, sample
+/// barcodes, or ATAC barcode correction.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
+pub enum BarcodeCollisionPolicy {
+    /// Do not correct a barcode when more than one retained barcode is a
+    /// one-edit neighbor. This is the conservative default.
+    #[default]
+    DropAmbiguous,
+    /// Correct to the retained neighbor with the largest observed count. Ties
+    /// are resolved by choosing the lowest packed-barcode value.
+    PreferMostFrequent,
+    /// Correct to the lowest packed-barcode neighbor.
+    AcceptFirstNeighbor,
+}
+
 #[derive(TypedBuilder, Debug, Serialize)]
 pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub input_dir: &'a PathBuf,
@@ -75,6 +93,10 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub version: &'d str,
     #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
+    /// Policy for ambiguous one-edit cell-barcode corrections in filtered RNA
+    /// permit-list workflows. This is serialized into the run metadata.
+    #[builder(default)]
+    pub cell_barcode_collision_policy: BarcodeCollisionPolicy,
     /// Path to known sample barcode list (one per line). When present,
     /// triggers multi-barcode mode (e.g., 10x Flex).
     #[builder(default)]

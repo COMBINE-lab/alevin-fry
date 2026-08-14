@@ -405,8 +405,13 @@ fn process_filtered(
 
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
-    let full_permit_list =
-        afutils::generate_permitlist_map(&valid_bc, barcode_len as usize).unwrap();
+    let full_permit_list = afutils::generate_permitlist_map_with_policy(
+        &valid_bc,
+        barcode_len as usize,
+        &hm,
+        gpl_opts.cell_barcode_collision_policy,
+    )
+    .map_err(|error| anyhow!("failed to generate permit list map: {}", error))?;
 
     let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
@@ -941,9 +946,13 @@ fn do_generate_permit_list_multi_bc(
                     sample_name
                 );
 
-                let full_permit_list =
-                    afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
-                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list = afutils::generate_permitlist_map_with_policy(
+                    &kept_bcs,
+                    cell_bc_len as usize,
+                    &cell_hist,
+                    gpl_opts.cell_barcode_collision_policy,
+                )
+                .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
@@ -985,9 +994,13 @@ fn do_generate_permit_list_multi_bc(
                     sample_name
                 );
 
-                let full_permit_list =
-                    afutils::generate_permitlist_map(&kept_bcs, cell_bc_len as usize)
-                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list = afutils::generate_permitlist_map_with_policy(
+                    &kept_bcs,
+                    cell_bc_len as usize,
+                    &cell_hist,
+                    gpl_opts.cell_barcode_collision_policy,
+                )
+                .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
