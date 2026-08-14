@@ -45,7 +45,11 @@ crossbeam-channel = "0.5.15"
 crossbeam-queue = "0.3.12"
 typed-builder = "0.23.2"
 indicatif = "0.18.4"
-needletail = "0.6.3"
+# only `needletail::bitkmer` is used, for 2-bit packing barcodes and UMIs. The
+# default `compression` feature exists for reading compressed FASTX, which this
+# crate never does, and it pulls bzip2 and liblzma (both of which build C code)
+# plus a second zstd and flate2 into the tree.
+needletail = { version = "0.6.3", default-features = false }
 petgraph = "0.8.3"
 libdeflater = "1.25.2"
 niffler = { version = "3.0.0", default-features = false, features = ["gz"] }
