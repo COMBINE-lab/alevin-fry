@@ -40,6 +40,79 @@ pub enum EmInitType {
     Random,
 }
 
+/// Reusable storage for [`em_optimize_subset_with_scratch`].
+///
+/// Create one value per worker thread and reuse it across cells. The
+/// bit-packed membership vector lets support construction append each alpha
+/// index at most once without first collecting and sorting duplicate labels.
+/// Dense alpha workspaces deliberately remain invocation-local so idle workers
+/// do not retain a full gene-axis allocation.
+#[derive(Debug, Default)]
+pub(crate) struct EmSubsetScratch {
+    support: Vec<u32>,
+    support_membership: Vec<bool>,
+}
+
+impl EmSubsetScratch {
+    fn new(num_alphas: usize) -> Self {
+        Self {
+            support: Vec::new(),
+            support_membership: vec![false; num_alphas],
+        }
+    }
+
+    fn clear_support(&mut self) {
+        for &index in &self.support {
+            self.support_membership[index as usize] = false;
+        }
+        self.support.clear();
+    }
+
+    #[inline]
+    fn mark_supported(&mut self, index: usize, num_alphas: usize) {
+        assert!(
+            index < num_alphas,
+            "equivalence-class label {index} is outside {num_alphas} alphas"
+        );
+        if !self.support_membership[index] {
+            self.support_membership[index] = true;
+            self.support
+                .push(u32::try_from(index).expect("alpha index does not fit in u32"));
+        }
+    }
+
+    /// Populate the possible support for a cell. Counts are intentionally not
+    /// consulted: the resulting superset can be reused when bootstrap
+    /// replicates assign zero observations to some equivalence classes.
+    fn prepare_support(
+        &mut self,
+        eqclasses: &IndexedEqList,
+        cell_data: &[(u32, u32)],
+        num_alphas: usize,
+        usa_offsets: Option<(usize, usize)>,
+    ) {
+        self.clear_support();
+        self.support_membership.resize(num_alphas, false);
+
+        for (eq_id, _) in cell_data {
+            for &label in eqclasses.refs_for_eqc(*eq_id) {
+                let index = label as usize;
+                self.mark_supported(index, num_alphas);
+                if let Some((unspliced_offset, ambig_offset)) = usa_offsets {
+                    if index >= ambig_offset {
+                        self.mark_supported(index - unspliced_offset, num_alphas);
+                        self.mark_supported(index - ambig_offset, num_alphas);
+                    } else if index >= unspliced_offset {
+                        self.mark_supported(index + unspliced_offset, num_alphas);
+                    } else {
+                        self.mark_supported(index + ambig_offset, num_alphas);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn mean(data: &[f64]) -> Option<f64> {
     let sum = data.iter().sum::<f64>();
@@ -174,57 +247,6 @@ pub(crate) fn em_update_subset_usa(
     }
 }
 
-/// Returns the alpha indices that can affect this cell. Random initialization
-/// deliberately retains the dense index set: bootstrap callers use it, and
-/// changing which random values are assigned to which genes changes their
-/// statistical semantics.
-fn em_support(
-    eqclasses: &IndexedEqList,
-    cell_data: &[(u32, u32)],
-    num_alphas: usize,
-    usa_offsets: Option<(usize, usize)>,
-    init_type: EmInitType,
-) -> Vec<u32> {
-    if matches!(init_type, EmInitType::Random) {
-        return (0..num_alphas)
-            .map(|index| u32::try_from(index).expect("alpha index does not fit in u32"))
-            .collect();
-    }
-
-    // Size the allocation from this cell, not from the global equivalence-list
-    // storage. The latter can contain hundreds of thousands of labels and
-    // caused every concurrent cell to reserve a needlessly large vector.
-    let labels_in_cell: usize = cell_data
-        .iter()
-        .map(|(eq_id, _)| eqclasses.refs_for_eqc(*eq_id).len())
-        .sum();
-    let support_capacity = if usa_offsets.is_some() {
-        labels_in_cell.saturating_mul(3)
-    } else {
-        labels_in_cell
-    };
-    let mut support = Vec::with_capacity(support_capacity);
-    for (eq_id, _) in cell_data {
-        for &label in eqclasses.refs_for_eqc(*eq_id) {
-            support.push(label);
-            if let Some((unspliced_offset, ambig_offset)) = usa_offsets {
-                let index = label as usize;
-                if index >= ambig_offset {
-                    support.push((index - unspliced_offset) as u32);
-                    support.push((index - ambig_offset) as u32);
-                } else if index >= unspliced_offset {
-                    support.push((index + unspliced_offset) as u32);
-                } else {
-                    support.push((index + ambig_offset) as u32);
-                }
-            }
-        }
-    }
-    support.sort_unstable();
-    support.dedup();
-    support
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
@@ -236,6 +258,62 @@ pub fn em_optimize_subset(
     only_unique: bool,
     usa_offsets: Option<(usize, usize)>,
     _log: &slog::Logger,
+) -> Vec<f32> {
+    let mut scratch = EmSubsetScratch::new(num_alphas);
+    em_optimize_subset_with_scratch(
+        eqclasses,
+        cell_data,
+        unique_evidence,
+        no_ambiguity,
+        init_type,
+        num_alphas,
+        only_unique,
+        usa_offsets,
+        _log,
+        &mut scratch,
+    )
+}
+
+/// Optimize one cell while reusing worker-local allocation buffers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn em_optimize_subset_with_scratch(
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)],
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
+    init_type: EmInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    usa_offsets: Option<(usize, usize)>,
+    _log: &slog::Logger,
+    scratch: &mut EmSubsetScratch,
+) -> Vec<f32> {
+    em_optimize_subset_impl(
+        eqclasses,
+        cell_data,
+        unique_evidence,
+        no_ambiguity,
+        init_type,
+        num_alphas,
+        only_unique,
+        usa_offsets,
+        scratch,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn em_optimize_subset_impl(
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)],
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
+    init_type: EmInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    usa_offsets: Option<(usize, usize)>,
+    scratch: &mut EmSubsetScratch,
+    support_is_prepared: bool,
 ) -> Vec<f32> {
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
     let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
@@ -276,17 +354,20 @@ pub fn em_optimize_subset(
     // each label, so those are collected too: an index that is read but never
     // written still has to be reset each iteration for the result to be
     // identical to the dense version.
-    let support = em_support(eqclasses, cell_data, num_alphas, usa_offsets, init_type);
+    if !support_is_prepared {
+        scratch.prepare_support(eqclasses, cell_data, num_alphas, usa_offsets);
+    }
+    let support = &scratch.support;
 
     // fill in the alphas based on the initialization strategy
     //
-    // Uniform and informative initialization only need the sparse support:
-    // entries outside it are not read before the first update resets them to
-    // zero. Random initialization uses dense support to preserve bootstrap
-    // behavior exactly.
+    // All initialization modes need only the possible support. In particular,
+    // random values outside this set cannot occur in an update denominator or
+    // receive output mass, so omitting those independent draws does not change
+    // bootstrap semantics.
     let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for &index in &support {
+    for &index in support {
         let item = &mut alphas_in[index as usize];
         match init_type {
             EmInitType::Uniform => {
@@ -321,7 +402,7 @@ pub fn em_optimize_subset(
         converged = true;
         let mut max_rel_diff = -f64::INFINITY;
 
-        for &index in &support {
+        for &index in support {
             let index = index as usize;
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
@@ -351,7 +432,7 @@ pub fn em_optimize_subset(
         // then do one last round after filtering
         // very small values.
         if it_num >= MIN_ITER && converged {
-            for &index in &support {
+            for &index in support {
                 let alpha = &mut alphas_in[index as usize];
                 if *alpha < MIN_OUTPUT_ALPHA {
                     *alpha = 0.0_f32;
@@ -362,7 +443,7 @@ pub fn em_optimize_subset(
     }
 
     // update too small alphas; entries outside the support are still zero
-    for &index in &support {
+    for &index in support {
         let alpha = &mut alphas_in[index as usize];
         if *alpha < MIN_OUTPUT_ALPHA {
             *alpha = 0.0_f32;
@@ -500,14 +581,16 @@ pub fn em_optimize<P: EqClassPayload>(
     alphas_in
 }
 
-pub(crate) fn run_bootstrap_subset(
+#[allow(clippy::too_many_arguments)]
+fn run_bootstrap_subset_with_scratch(
     eqclasses: &IndexedEqList,
-    cell_data: &[(u32, u32)], // (eq_id, count) vec for classes relevant for this cell
-    num_alphas: u32,          // number of genes
-    num_bootstraps: u32,      // number of bootstraps to draw
+    cell_data: &[(u32, u32)],
+    num_alphas: u32,
+    num_bootstraps: u32,
     _init_uniform: bool,
-    summary_stat: bool, // if true, the output will simply be a vector of means and variances
+    summary_stat: bool,
     _log: &slog::Logger,
+    scratch: &mut EmSubsetScratch,
 ) -> Vec<Vec<f32>> {
     // the population sample size
     let total_fragments: usize = cell_data.iter().map(|x| x.1 as usize).sum();
@@ -540,6 +623,12 @@ pub(crate) fn run_bootstrap_subset(
     };
     let mut bootstraps = Vec::with_capacity(num_output_bs);
 
+    // A bootstrap changes equivalence-class counts, not the classes or their
+    // labels. Compute the cell's possible support once and reuse that safe
+    // superset even when a replicate assigns zero observations to every class
+    // containing a particular gene.
+    scratch.prepare_support(eqclasses, cell_data, num_alphas_us, None);
+
     // bootstrap loop starts
     // let mut old_resampled_counts = Vec::new();
     let mut rnd = rand::rng();
@@ -550,7 +639,7 @@ pub(crate) fn run_bootstrap_subset(
             bootstrap_counts.push((*eq_id, resampled_counts[idx]));
         }
 
-        let alphas = em_optimize_subset(
+        let alphas = em_optimize_subset_impl(
             eqclasses,
             &bootstrap_counts[..], // indices into eqclasses relevant for this cell
             &mut unique_evidence,
@@ -559,7 +648,8 @@ pub(crate) fn run_bootstrap_subset(
             num_alphas_us,
             false, // only unique
             None,
-            _log,
+            scratch,
+            true,
         );
 
         // clear out for the next iteration.
@@ -608,6 +698,28 @@ pub fn run_bootstrap<P: EqClassPayload>(
     summary_stat: bool,
     _log: &slog::Logger,
 ) -> Vec<Vec<f32>> {
+    let mut scratch = EmSubsetScratch::new(gene_alpha.len());
+    run_bootstrap_with_scratch(
+        eqclasses,
+        num_bootstraps,
+        gene_alpha,
+        _init_uniform,
+        summary_stat,
+        _log,
+        &mut scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_bootstrap_with_scratch<P: EqClassPayload>(
+    eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
+    num_bootstraps: u32,
+    gene_alpha: &[f32],
+    _init_uniform: bool,
+    summary_stat: bool,
+    _log: &slog::Logger,
+    scratch: &mut EmSubsetScratch,
+) -> Vec<Vec<f32>> {
     // This function is just a thin wrapper around run_bootstrap_subset.
     // Here, we convert the hashmap to an `IndexedEqList`, we map the
     // counts to a `Vec<(u32, u32)>` representing the equivalence class
@@ -632,7 +744,7 @@ pub fn run_bootstrap<P: EqClassPayload>(
 
     // now that we have the `IndexedEqList` representation of this data, just
     // run that version of the bootstrap function and return the result.
-    run_bootstrap_subset(
+    run_bootstrap_subset_with_scratch(
         &eql,
         &cell_data[..],
         gene_alpha.len() as u32,
@@ -640,6 +752,7 @@ pub fn run_bootstrap<P: EqClassPayload>(
         _init_uniform,
         summary_stat,
         _log,
+        scratch,
     )
 }
 
@@ -1102,9 +1215,69 @@ mod tests {
     }
 
     #[test]
-    fn random_initialization_keeps_dense_bootstrap_support() {
-        let eqclasses = eq_list(8, &[&[1, 2]]);
-        let support = em_support(&eqclasses, &[(0, 4)], 8, None, EmInitType::Random);
-        assert_eq!(support, (0..8).collect::<Vec<_>>());
+    fn random_initialization_uses_only_possible_cell_support() {
+        let eqclasses = eq_list(8, &[&[1, 2], &[2, 3]]);
+        let mut scratch = EmSubsetScratch::new(8);
+        scratch.prepare_support(&eqclasses, &[(0, 4), (1, 0)], 8, None);
+        assert_eq!(scratch.support, vec![1, 2, 3]);
+
+        let mut unique = vec![false; 8];
+        let mut no_ambiguity = vec![true; 8];
+        let output = em_optimize_subset_impl(
+            &eqclasses,
+            &[(0, 4), (1, 0)],
+            &mut unique,
+            &mut no_ambiguity,
+            EmInitType::Random,
+            8,
+            false,
+            None,
+            &mut scratch,
+            true,
+        );
+        assert!(output[1] + output[2] > 0.0);
+        assert_eq!(output[0], 0.0);
+        assert_eq!(output[3..], [0.0; 5]);
+    }
+
+    #[test]
+    fn bootstrap_reuses_possible_support_and_never_emits_outside_it() {
+        let eqclasses = eq_list(8, &[&[1, 2], &[2, 3], &[3]]);
+        let cell_data = [(0, 5), (1, 3), (2, 2)];
+        let mut scratch = EmSubsetScratch::new(8);
+        let bootstraps = run_bootstrap_subset_with_scratch(
+            &eqclasses,
+            &cell_data,
+            8,
+            8,
+            false,
+            false,
+            &slog::Logger::root(slog::Discard, slog::o!()),
+            &mut scratch,
+        );
+
+        assert_eq!(scratch.support, vec![1, 2, 3]);
+        assert_eq!(bootstraps.len(), 8);
+        for output in bootstraps {
+            assert!(output[1] + output[2] + output[3] > 0.0);
+            assert_eq!(output[0], 0.0);
+            assert_eq!(output[4..], [0.0; 4]);
+        }
+    }
+
+    #[test]
+    fn scratch_support_deduplicates_clears_and_reuses_membership() {
+        let eqclasses = eq_list(5, &[&[0, 1, 1], &[1, 2], &[3, 4]]);
+        let mut scratch = EmSubsetScratch::new(5);
+        let membership_capacity = scratch.support_membership.capacity();
+
+        scratch.prepare_support(&eqclasses, &[(0, 2), (1, 3)], 5, None);
+        assert_eq!(scratch.support, vec![0, 1, 2]);
+        scratch.prepare_support(&eqclasses, &[(2, 1)], 5, None);
+        assert_eq!(scratch.support, vec![3, 4]);
+        assert!(!scratch.support_membership[0]);
+        assert!(!scratch.support_membership[1]);
+        assert!(!scratch.support_membership[2]);
+        assert_eq!(scratch.support_membership.capacity(), membership_capacity);
     }
 }
