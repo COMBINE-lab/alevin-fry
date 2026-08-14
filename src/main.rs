@@ -44,10 +44,23 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
+/// The number of threads to offer as the default and the maximum.
+///
+/// `std::thread::available_parallelism` is what `num_cpus::get` was here for:
+/// on Linux it accounts for the CPU affinity mask and for cgroup v1 and v2
+/// quotas, which is what matters when alevin-fry runs inside a container or
+/// under a scheduler. It returns an error only on platforms where the count
+/// cannot be determined at all, where one thread is the safe answer.
+fn available_parallelism() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
+}
+
 #[allow(clippy::manual_clamp)]
 fn main() -> anyhow::Result<()> {
-    let num_hardware_threads = num_cpus::get() as u32;
-    let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let num_hardware_threads = available_parallelism();
+    let max_num_threads: String = num_hardware_threads.to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
@@ -674,8 +687,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn atac_sub_commands() -> Command {
-    let num_hardware_threads = num_cpus::get() as u32;
-    let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let num_hardware_threads = available_parallelism();
+    let max_num_threads: String = num_hardware_threads.to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_sort_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
