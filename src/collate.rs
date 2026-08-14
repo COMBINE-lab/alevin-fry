@@ -27,11 +27,14 @@ use libradicl::multi_collation::{
 };
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
-    AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AlevinFryRecordContext,
-    CollatableMappedRecord, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
-    MultiBarcodeRecordContext, ScLongReadRecordContext, ScLongReadRecordT,
+    AlevinFryReadRecordWithPositionT, AlevinFryRecordContext, CollatableMappedRecord,
+    ConvertiblePrimitiveInteger, KnownSize, MappedRecord, MultiBarcodeRecordContext,
+    ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::schema::TempCellInfo;
+use libradicl::single_collation::{
+    SingleBarcodeCollationOptions, SingleBarcodeCollationPlan, collate_single_barcode,
+};
 
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
@@ -389,7 +392,7 @@ fn correct_unmapped_counts_multi_bc(
 /// Reads unmapped_bc_count.bin (self-describing format), applies cell BC
 /// correction, writes unmapped_bc_count_collated.bin.
 fn correct_unmapped_counts(
-    correct_map: &Arc<HashMap<u64, u64>>,
+    correct_map: &HashMap<u64, u64>,
     unmapped_file: &std::path::Path,
     parent: &std::path::Path,
 ) {
@@ -437,6 +440,172 @@ fn correct_unmapped_counts(
     collated
         .write_to_file(&s_path)
         .expect("could not write collated unmapped bc count.");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn do_collate_single_barcode<P1, P2, A>(
+    input_dir: P1,
+    rad_dir: P2,
+    rec_context: AlevinFryRecordContext,
+    prelude: RadPrelude,
+    mut br: BufReader<A>,
+    end_header_pos: u64,
+    num_threads: u32,
+    max_records: u32,
+    memory_budget_bytes: u64,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    compress_out: bool,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+    A: Read + Seek,
+{
+    let input_dir = input_dir.into();
+    let parent = input_dir.as_path();
+    let rad_parent = rad_dir.as_ref();
+    let input_rad_path = rad_parent.join("map.rad");
+    let expected_output_chunks = tsv_map.len() as u64;
+
+    let meta_data_file = File::open(parent.join("generate_permit_list.json"))
+        .context("could not open generate_permit_list.json")?;
+    let metadata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let expected_orientation =
+        get_orientation(&metadata).map_err(|error| anyhow!("could not read strand: {error}"))?;
+    let velo_mode = metadata["velo_mode"]
+        .as_bool()
+        .context("could not read velo_mode from generate-permit-list metadata")?;
+
+    let output_name = if velo_mode {
+        "velo.map.collated.rad"
+    } else if compress_out {
+        "map.collated.rad.sz"
+    } else {
+        "map.collated.rad"
+    };
+    let output_path = parent.join(output_name);
+    if output_path.exists() {
+        std::fs::remove_file(&output_path)?;
+    }
+    let output = Arc::new(Mutex::new(BufWriter::with_capacity(
+        1024 * 1024,
+        File::create(&output_path)?,
+    )));
+
+    let correction_file =
+        File::open(parent.join("permit_map.bin")).context("could not open permit_map.bin")?;
+    let correction_map: HashMap<u64, u64> = bincode::deserialize_from(correction_file)
+        .context("could not deserialize permit_map.bin")?;
+    correct_unmapped_counts(
+        &correction_map,
+        &rad_parent.join("unmapped_bc_count.bin"),
+        parent,
+    );
+
+    let header_end = br.get_mut().stream_position()? - br.buffer().len() as u64;
+    let mut header = vec![0_u8; header_end as usize];
+    File::open(&input_rad_path)?.read_exact(&mut header)?;
+    let chunk_count_offset = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
+    header[chunk_count_offset..chunk_count_offset + 8]
+        .copy_from_slice(&expected_output_chunks.to_le_bytes());
+    if compress_out {
+        let mut encoder = snap::write::FrameEncoder::new(Vec::with_capacity(header.len()));
+        encoder.write_all(&header)?;
+        header = encoder.into_inner()?;
+    }
+    output
+        .lock()
+        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
+        .write_all(&header)?;
+
+    let num_workers = (num_threads as usize).saturating_sub(1).max(1);
+    let max_records_per_bucket = u64::from(max_records / num_workers as u32 + 1);
+    let mut group_to_bucket = AHashMap::with_capacity(tsv_map.len());
+    let mut bucket_records = Vec::<u64>::new();
+    let mut current_records = 0_u64;
+    for (barcode, frequency) in tsv_map {
+        if current_records >= max_records_per_bucket {
+            bucket_records.push(current_records);
+            current_records = 0;
+        }
+        group_to_bucket.insert(barcode, bucket_records.len() as u32);
+        current_records += frequency;
+    }
+    if current_records > 0 {
+        bucket_records.push(current_records);
+    }
+    if bucket_records.is_empty() {
+        return Err(anyhow!(
+            "single-barcode permit list contains no output cells"
+        ));
+    }
+
+    let correction_map = correction_map.into_iter().collect::<AHashMap<_, _>>();
+    let plan = Arc::new(SingleBarcodeCollationPlan::new(
+        correction_map,
+        group_to_bucket,
+        bucket_records.len(),
+    )?);
+
+    {
+        let collate_metadata = json!({
+            "cmd": cmdline,
+            "version_str": version,
+            "compressed_output": compress_out,
+            "collation_mode": "optimized",
+            "memory_budget_bytes": memory_budget_bytes,
+        });
+        let mut metadata_file = File::create(parent.join("collate.json"))?;
+        serde_json::to_writer_pretty(&mut metadata_file, &collate_metadata)?;
+    }
+
+    let stats = collate_single_barcode(
+        &mut br,
+        prelude.hdr.num_chunks,
+        rec_context,
+        plan,
+        output.clone(),
+        parent,
+        expected_orientation.into(),
+        SingleBarcodeCollationOptions {
+            num_threads: num_threads as usize,
+            memory_budget_bytes,
+            compress_output: compress_out,
+        },
+    )?;
+
+    if stats.records_scattered != total_to_collate {
+        return Err(anyhow!(
+            "expected to collate {total_to_collate} records but retained {}",
+            stats.records_scattered
+        ));
+    }
+    if stats.output_chunks != expected_output_chunks {
+        return Err(anyhow!(
+            "expected {expected_output_chunks} output chunks but wrote {}",
+            stats.output_chunks
+        ));
+    }
+    output
+        .lock()
+        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
+        .flush()?;
+    info!(
+        log,
+        "Optimized single-barcode collation: {} records in {:.2}s scatter, {} chunks in {:.2}s gather ({} spool files, {} gather workers, {} KiB flush threshold)",
+        stats.records_scattered.to_formatted_string(&Locale::en),
+        stats.scatter_duration.as_secs_f64(),
+        stats.output_chunks.to_formatted_string(&Locale::en),
+        stats.gather_duration.as_secs_f64(),
+        stats.num_scatter_workers,
+        stats.num_gather_workers,
+        stats.spool_flush_limit / 1024,
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments, clippy::manual_clamp)]
@@ -1151,7 +1320,7 @@ where
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
-                    do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordT<u64>>(
+                    do_collate_single_barcode(
                         input_dir,
                         &rad_dir,
                         parsing_context,
@@ -1160,6 +1329,7 @@ where
                         end_header_pos,
                         num_threads,
                         max_records,
+                        memory_budget_bytes,
                         tsv_map.clone(),
                         total_to_collate,
                         compress_out,

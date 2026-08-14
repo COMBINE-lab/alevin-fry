@@ -1279,7 +1279,7 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=34e37f57195b41fff1e78af2b78926b4646e2d8c#34e37f57195b41fff1e78af2b78926b4646e2d8c"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=194d127105f22acbc1d9731c68022d610cc5ca86#194d127105f22acbc1d9731c68022d610cc5ca86"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1305,7 +1305,7 @@ dependencies = [
 [[package]]
 name = "libradicl-macros"
 version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=34e37f57195b41fff1e78af2b78926b4646e2d8c#34e37f57195b41fff1e78af2b78926b4646e2d8c"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=194d127105f22acbc1d9731c68022d610cc5ca86#194d127105f22acbc1d9731c68022d610cc5ca86"
 dependencies = [
  "proc-macro2",
  "quote",
