@@ -241,6 +241,81 @@ fn make_test_logger() -> slog::Logger {
     slog::Logger::root(drain, slog::o!())
 }
 
+/// Parse `featureDump.txt` using its downstream-facing ten-column schema.
+///
+/// This deliberately checks both row width and numeric field types. A missing
+/// `sample_name` field would shift the remaining columns and fail this parser,
+/// matching the compatibility guarantee that these integration tests need to
+/// enforce without depending on a particular dataframe implementation.
+fn parse_feature_dump_with_typed_schema(path: &Path) -> std::collections::HashSet<String> {
+    const EXPECTED_HEADER: [&str; 10] = [
+        "CB",
+        "sample_name",
+        "CorrectedReads",
+        "MappedReads",
+        "DeduplicatedReads",
+        "MappingRate",
+        "DedupRate",
+        "MeanByMax",
+        "NumGenesExpressed",
+        "NumGenesOverMean",
+    ];
+
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(true)
+        .flexible(false)
+        .from_path(path)
+        .expect("featureDump.txt must open as tab-separated data");
+
+    let header = reader
+        .headers()
+        .expect("featureDump.txt must contain a valid header");
+    assert_eq!(
+        header.iter().collect::<Vec<_>>(),
+        EXPECTED_HEADER,
+        "featureDump.txt header does not match the downstream schema"
+    );
+
+    let mut sample_names = std::collections::HashSet::new();
+    for result in reader.records() {
+        let record = result.expect("featureDump.txt rows must have exactly ten fields");
+        assert_eq!(record.len(), EXPECTED_HEADER.len());
+        assert!(!record[0].is_empty(), "CB must be a non-empty string");
+        assert!(
+            !record[1].is_empty(),
+            "sample_name must be a non-empty string"
+        );
+
+        record[2]
+            .parse::<u64>()
+            .expect("CorrectedReads must be an unsigned integer");
+        record[3]
+            .parse::<u64>()
+            .expect("MappedReads must be an unsigned integer");
+        for (index, name) in [
+            (4, "DeduplicatedReads"),
+            (5, "MappingRate"),
+            (6, "DedupRate"),
+            (7, "MeanByMax"),
+        ] {
+            record[index]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("{name} must be numeric"));
+        }
+        record[8]
+            .parse::<u64>()
+            .expect("NumGenesExpressed must be an unsigned integer");
+        record[9]
+            .parse::<u64>()
+            .expect("NumGenesOverMean must be an unsigned integer");
+
+        sample_names.insert(record[1].to_owned());
+    }
+
+    sample_names
+}
+
 /// Convert a 2-bit packed barcode to a nucleotide string.
 fn packed_to_nuc(packed: u64, len: usize) -> String {
     let bases = ['A', 'C', 'G', 'T'];
@@ -563,9 +638,9 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
 /// 1. Field-shape: every row of featureDump.txt has exactly 10 fields.
 /// 2. Identity: all three expected sample names appear in
 ///    quants_mat_rows.txt.
-/// 3. Polars-shape: the file parses with af-anndata's CSV schema
-///    (CB+sample_name as String) without error, and the sample_name column
-///    dtype is String with exactly the three expected values.
+/// 3. Typed-schema compatibility: all ten columns parse with their downstream
+///    string and numeric types, and `sample_name` contains exactly the three
+///    expected values.
 #[test]
 fn test_multi_bc_quant_handles_sparse_sample_positions() {
     use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
@@ -573,11 +648,7 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
     use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleCorrectionMode};
     use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
     use bio_types::strand::Strand;
-    use polars::prelude::{DataType, Field, Schema};
-    use polars_io::SerReader;
-    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use std::collections::HashSet;
-    use std::sync::Arc;
 
     let tmp = tempfile::tempdir().unwrap();
     let rad_dir = tmp.path().join("rad");
@@ -724,48 +795,8 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
         );
     }
 
-    // ---- Assertion family 3: polars-shape ----
-    // Parse featureDump.txt with af-anndata's schema (CB+sample_name as
-    // String) — pre-fix this used to crash with a dtype-inference error.
-    let feat_dump_schema = Arc::new(Schema::from_iter([
-        Field::new("CB".into(), DataType::String),
-        Field::new("sample_name".into(), DataType::String),
-        Field::new("CorrectedReads".into(), DataType::Int64),
-        Field::new("MappedReads".into(), DataType::Int64),
-        Field::new("DeduplicatedReads".into(), DataType::Float64),
-        Field::new("MappingRate".into(), DataType::Float64),
-        Field::new("DedupRate".into(), DataType::Float64),
-        Field::new("MeanByMax".into(), DataType::Float64),
-        Field::new("NumGenesExpressed".into(), DataType::Int64),
-        Field::new("NumGenesOverMean".into(), DataType::Int64),
-    ]));
-    let parse_options = CsvParseOptions::default().with_separator(b'\t');
-    let df = CsvReadOptions::default()
-        .with_parse_options(parse_options)
-        .with_has_header(true)
-        .with_schema_overwrite(Some(feat_dump_schema))
-        .with_raise_if_empty(true)
-        .try_into_reader_with_file_path(Some(feat_dump_path.clone()))
-        .unwrap()
-        .finish()
-        .expect("polars CSV read of featureDump.txt must succeed");
-
-    assert_eq!(df.width(), 10, "expected 10 columns, got {}", df.width());
-
-    let sample_name_col = df.column("sample_name").expect("sample_name column");
-    assert_eq!(
-        sample_name_col.dtype(),
-        &DataType::String,
-        "sample_name dtype should be String, got {:?}",
-        sample_name_col.dtype()
-    );
-
-    let observed_names: HashSet<String> = sample_name_col
-        .str()
-        .expect("sample_name should be a string series")
-        .into_iter()
-        .filter_map(|opt| opt.map(|s| s.to_string()))
-        .collect();
+    // ---- Assertion family 3: typed downstream-schema compatibility ----
+    let observed_names = parse_feature_dump_with_typed_schema(&feat_dump_path);
     assert_eq!(
         observed_names, expected_sample_names,
         "sample_name values mismatch — expected {:?}, got {:?}",
@@ -810,12 +841,8 @@ fn test_multi_bc_quant_flexv2_real_data() {
     };
     use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
     use bio_types::strand::Strand;
-    use polars::prelude::{DataType, Field, Schema};
-    use polars_io::SerReader;
-    use polars_io::csv::read::{CsvParseOptions, CsvReadOptions};
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     let rad_dir = match std::env::var("AF_TEST_FLEXV2_RAD") {
         Ok(v) => PathBuf::from(v),
@@ -972,40 +999,8 @@ fn test_multi_bc_quant_flexv2_real_data() {
         );
     }
 
-    // ---- Assertion family 3: polars-shape ----
-    let feat_dump_schema = Arc::new(Schema::from_iter([
-        Field::new("CB".into(), DataType::String),
-        Field::new("sample_name".into(), DataType::String),
-        Field::new("CorrectedReads".into(), DataType::Int64),
-        Field::new("MappedReads".into(), DataType::Int64),
-        Field::new("DeduplicatedReads".into(), DataType::Float64),
-        Field::new("MappingRate".into(), DataType::Float64),
-        Field::new("DedupRate".into(), DataType::Float64),
-        Field::new("MeanByMax".into(), DataType::Float64),
-        Field::new("NumGenesExpressed".into(), DataType::Int64),
-        Field::new("NumGenesOverMean".into(), DataType::Int64),
-    ]));
-    let parse_options = CsvParseOptions::default().with_separator(b'\t');
-    let df = CsvReadOptions::default()
-        .with_parse_options(parse_options)
-        .with_has_header(true)
-        .with_schema_overwrite(Some(feat_dump_schema))
-        .with_raise_if_empty(true)
-        .try_into_reader_with_file_path(Some(feat_dump_path))
-        .unwrap()
-        .finish()
-        .expect("polars CSV read of featureDump.txt must succeed");
-
-    assert_eq!(df.width(), 10);
-    let sample_name_col = df.column("sample_name").unwrap();
-    assert_eq!(sample_name_col.dtype(), &DataType::String);
-
-    let observed: HashSet<String> = sample_name_col
-        .str()
-        .unwrap()
-        .into_iter()
-        .filter_map(|opt| opt.map(|s| s.to_string()))
-        .collect();
+    // ---- Assertion family 3: typed downstream-schema compatibility ----
+    let observed = parse_feature_dump_with_typed_schema(&feat_dump_path);
     assert_eq!(
         observed, expected_sample_names,
         "featureDump.txt sample_name values do not match sample_info.json non-zero wells"
