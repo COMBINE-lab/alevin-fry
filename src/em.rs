@@ -191,7 +191,19 @@ fn em_support(
             .collect();
     }
 
-    let mut support = Vec::with_capacity(eqclasses.label_list_size.min(num_alphas));
+    // Size the allocation from this cell, not from the global equivalence-list
+    // storage. The latter can contain hundreds of thousands of labels and
+    // caused every concurrent cell to reserve a needlessly large vector.
+    let labels_in_cell: usize = cell_data
+        .iter()
+        .map(|(eq_id, _)| eqclasses.refs_for_eqc(*eq_id).len())
+        .sum();
+    let support_capacity = if usa_offsets.is_some() {
+        labels_in_cell.saturating_mul(3)
+    } else {
+        labels_in_cell
+    };
+    let mut support = Vec::with_capacity(support_capacity);
     for (eq_id, _) in cell_data {
         for &label in eqclasses.refs_for_eqc(*eq_id) {
             support.push(label);
