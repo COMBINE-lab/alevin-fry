@@ -1417,10 +1417,18 @@ pub fn permit_list_from_threshold(
     hist: &HashMap<u64, u64, ahash::RandomState>,
     min_freq: u64,
 ) -> Vec<u64> {
-    let valid_bc: Vec<u64> = hist
+    let mut valid_bc: Vec<u64> = hist
         .iter()
         .filter_map(|(k, v)| if v >= &min_freq { Some(*k) } else { None })
         .collect();
+    // `hist` is a `HashMap` built by draining a `DashMap` that the parsing
+    // threads filled concurrently, so its iteration order depends on the order
+    // the threads happened to insert. That order used to reach the output:
+    // `generate_permitlist_map` gives an ambiguous one-edit neighbour to
+    // whichever permitted barcode claims it first, so two runs of the same
+    // binary on the same input corrected some barcodes differently. Sorting
+    // pins the winner to the lowest packed barcode.
+    valid_bc.sort_unstable();
     valid_bc
 }
 
