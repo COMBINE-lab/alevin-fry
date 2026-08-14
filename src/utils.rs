@@ -980,10 +980,22 @@ pub fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
     indels
 }
 
+/// The hasher used by the one-edit barcode maps below.
+///
+/// These maps are keyed by 2-bit packed barcodes, so every hash is over eight
+/// bytes of integer. SipHash, which `HashMap::new` selects, is built to resist
+/// collision attacks on attacker-chosen byte strings, and on these keys it is
+/// about twice as slow as the ahash the rest of the crate already uses. The
+/// seeds match the ones used elsewhere in the crate, so iteration order stays
+/// fixed between runs.
+fn barcode_hasher() -> ahash::RandomState {
+    ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64)
+}
+
 pub fn get_all_one_edit_neighbors(
     bc: u64,
     bc_length: usize,
-    neighbors: &mut HashSet<u64>,
+    neighbors: &mut HashSet<u64, ahash::RandomState>,
 ) -> Result<(), Box<dyn Error>> {
     neighbors.clear();
 
@@ -999,11 +1011,11 @@ pub fn get_all_one_edit_neighbors(
 pub fn generate_whitelist_set(
     whitelist_bcs: &[u64],
     bc_length: usize,
-) -> Result<HashSet<u64>, Box<dyn Error>> {
+) -> Result<HashSet<u64, ahash::RandomState>, Box<dyn Error>> {
     let num_bcs = whitelist_bcs.len();
 
-    let mut one_edit_barcode_hash: HashSet<u64> = HashSet::new();
-    let mut neighbors: HashSet<u64> = HashSet::new();
+    let mut one_edit_barcode_hash: HashSet<u64, ahash::RandomState> = HashSet::default();
+    let mut neighbors: HashSet<u64, ahash::RandomState> = HashSet::default();
     one_edit_barcode_hash.reserve(10 * num_bcs);
     // reserved space for 3*length SNP
     // + 4 * (length -1) insertion
@@ -1026,10 +1038,11 @@ pub fn generate_whitelist_set(
 pub fn generate_permitlist_map(
     permit_bcs: &[u64],
     bc_length: usize,
-) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
+) -> Result<HashMap<u64, u64, ahash::RandomState>, Box<dyn Error>> {
     let num_bcs = permit_bcs.len();
 
-    let mut one_edit_barcode_map: HashMap<u64, u64> = HashMap::with_capacity(10 * num_bcs);
+    let mut one_edit_barcode_map: HashMap<u64, u64, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(10 * num_bcs, barcode_hasher());
     // first insert everything already in the explicit permitlist
     for bc in permit_bcs {
         one_edit_barcode_map.insert(*bc, *bc);
@@ -1038,7 +1051,8 @@ pub fn generate_permitlist_map(
     // reserved space for 3*length SNP
     // + 4 * (length -1) insertion
     // + 4 * (length -1) deletion
-    let mut neighbors: HashSet<u64> = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
+    let mut neighbors: HashSet<u64, ahash::RandomState> =
+        HashSet::with_capacity_and_hasher(3 * bc_length + 8 * (bc_length - 1), barcode_hasher());
 
     for bc in permit_bcs {
         get_all_one_edit_neighbors(*bc, bc_length, &mut neighbors)?;
@@ -1195,7 +1209,7 @@ mod tests {
 
     #[test]
     fn test_get_all_one_edit_neighbors() {
-        let mut neighbors: HashSet<u64> = HashSet::new();
+        let mut neighbors: HashSet<u64, ahash::RandomState> = HashSet::default();
         get_all_one_edit_neighbors(7, 3, &mut neighbors).unwrap();
 
         let mut output: Vec<u64> = neighbors.into_iter().collect();
@@ -1213,7 +1227,7 @@ mod tests {
 
     #[test]
     fn test_generate_whitelist_hash() {
-        let neighbors: HashSet<u64> = generate_whitelist_set(&[7], 3).unwrap();
+        let neighbors = generate_whitelist_set(&[7], 3).unwrap();
         let mut output: Vec<u64> = neighbors.into_iter().collect();
 
         output.sort_unstable();
