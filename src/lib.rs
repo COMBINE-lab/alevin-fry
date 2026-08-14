@@ -8,6 +8,7 @@
  */
 
 pub mod atac;
+pub mod call_cells;
 pub mod cellfilter;
 pub mod cmd_parse_utils;
 pub mod collate;

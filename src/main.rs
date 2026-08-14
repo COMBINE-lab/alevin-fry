@@ -236,11 +236,39 @@ fn main() -> anyhow::Result<()> {
         .required(true)
         .value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(&max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
     .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true));
+
+    let call_cells_app = Command::new("call-cells")
+    .about("Call cells from a quant count matrix using Cell Ranger's ordmag and EmptyDrops")
+    .version(version)
+    .author(crate_authors)
+    .arg(arg!(-i --"input-dir" <INPUTDIR> "a quant output directory, holding alevin/quants_mat.mtx and alevin/quants_mat_rows.txt")
+        .required(true)
+        .value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory for the filtered barcode list and metrics")
+        .required(true)
+        .value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for the Monte Carlo")
+        .value_parser(value_parser!(usize))
+        .default_value(max_num_threads.clone()))
+    .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "skip estimating the recovered cell count and use this value")
+        .value_parser(value_parser!(usize)))
+    .arg(arg!(--"n-partitions" <NPART> "number of GEM partitions the chemistry produces; sets the barcode rank range taken to be empty (Cell Ranger uses 90,000 for 3' v3, 160,000 for v4/HT)")
+        .value_parser(value_parser!(usize))
+        .default_value("90000"))
+    .arg(arg!(--"num-sims" <NUMSIMS> "Monte Carlo replicates for the EmptyDrops p-values; Cell Ranger uses 100,000")
+        .value_parser(value_parser!(usize))
+        .default_value("10000"))
+    .arg(arg!(--fdr <FDR> "adjusted p-value below which a candidate barcode is called non-ambient; Cell Ranger uses 0.01, or 0.001 for v3/v4/HT/5' chemistries")
+        .value_parser(value_parser!(f64))
+        .default_value("0.01"))
+    .arg(arg!(--"min-umis" <MINUMIS> "minimum UMI count for a barcode to be considered by EmptyDrops")
+        .value_parser(value_parser!(usize))
+        .default_value("500"));
 
     let atac_app = atac_sub_commands();
 
@@ -254,6 +282,7 @@ fn main() -> anyhow::Result<()> {
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(infer_app)
+        .subcommand(call_cells_app)
         .subcommand(convert_app)
         .subcommand(view_app)
         .subcommand(atac_app)
@@ -646,6 +675,24 @@ fn main() -> anyhow::Result<()> {
 
     // Given an input of equivalence class counts, perform inference
     // and output a target-by-cell count matrix.
+    if let Some(t) = opts.subcommand_matches("call-cells") {
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
+        let builder = alevin_fry::prog_opts::CallCellsOpts::builder()
+            .input_dir(input_dir)
+            .output_dir(output_dir)
+            .n_partitions(*t.get_one("n-partitions").unwrap())
+            .num_sims(*t.get_one("num-sims").unwrap())
+            .fdr(*t.get_one("fdr").unwrap())
+            .min_umis(*t.get_one("min-umis").unwrap())
+            .threads(*t.get_one("threads").unwrap())
+            .expect_cells(t.get_one::<usize>("expect-cells").copied())
+            .cmdline(&cmdline)
+            .version(VERSION)
+            .log(&log);
+        alevin_fry::call_cells::call_cells(builder.build())?;
+    }
+
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
         if t.get_flag("use-eds") {

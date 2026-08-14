@@ -41,6 +41,39 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub log: &'g slog::Logger,
 }
 
+/// Options for the `call-cells` subcommand.
+#[derive(TypedBuilder, Debug, Serialize)]
+pub struct CallCellsOpts<'a, 'b, 'c, 'd, 'e> {
+    /// A `quant` output directory, holding `alevin/quants_mat.mtx` and
+    /// `alevin/quants_mat_rows.txt`.
+    pub input_dir: &'a PathBuf,
+    /// Where the filtered barcode list and metrics are written.
+    pub output_dir: &'b PathBuf,
+    /// Skip estimating the recovered-cell count and use this instead.
+    #[builder(default = None)]
+    pub expect_cells: Option<usize>,
+    /// Number of GEM partitions the chemistry is expected to produce. Sets
+    /// the barcode rank range taken to be empty.
+    #[builder(default = 90_000)]
+    pub n_partitions: usize,
+    /// Monte Carlo replicates used for the EmptyDrops p-values.
+    #[builder(default = 10_000)]
+    pub num_sims: usize,
+    /// Adjusted p-value below which a candidate barcode is called non-ambient.
+    #[builder(default = 0.01)]
+    pub fdr: f64,
+    /// Minimum UMI count for a barcode to be considered by EmptyDrops.
+    #[builder(default = 500)]
+    pub min_umis: usize,
+    /// Threads used for the Monte Carlo.
+    #[builder(default = 1)]
+    pub threads: usize,
+    pub cmdline: &'c str,
+    pub version: &'d str,
+    #[serde(skip_serializing)]
+    pub log: &'e slog::Logger,
+}
+
 /// Correction mode for sample barcodes in multi-barcode protocols.
 #[derive(Debug, Clone, Serialize)]
 pub enum SampleCorrectionMode {
