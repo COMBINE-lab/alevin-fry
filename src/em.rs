@@ -211,10 +211,52 @@ pub fn em_optimize_subset(
         return alphas_in;
     }
 
+    // The alpha vectors are dense over every gene (or every gene x status in
+    // USA mode), but a single cell only ever touches the handful of them that
+    // appear in its own equivalence classes. Walking all `num_alphas` entries
+    // once per EM iteration made the per-cell cost independent of the size of
+    // the cell: on a run with 78,899 genes that is 78,899 float comparisons per
+    // iteration for a cell that may have five equivalence classes.
+    //
+    // `support` is the set of indices this cell can touch. `em_update_subset`
+    // only writes to the labels of the cell's equivalence classes, and in USA
+    // mode `get_abundance_for` additionally *reads* the two sibling statuses of
+    // each label, so those are collected too: an index that is read but never
+    // written still has to be reset each iteration for the result to be
+    // identical to the dense version.
+    let mut support: Vec<u32> = Vec::with_capacity(eqclasses.label_list_size.min(num_alphas));
+    for (i, _) in cell_data {
+        for label in eqclasses.refs_for_eqc(*i) {
+            support.push(*label);
+            if let Some((unspliced_offset, ambig_offset)) = usa_offsets {
+                let idx = *label as usize;
+                if idx >= ambig_offset {
+                    support.push((idx - unspliced_offset) as u32);
+                    support.push((idx - ambig_offset) as u32);
+                } else if idx >= unspliced_offset {
+                    support.push((idx + unspliced_offset) as u32);
+                } else {
+                    support.push((idx + ambig_offset) as u32);
+                }
+            }
+        }
+    }
+    support.sort_unstable();
+    support.dedup();
+
     // fill in the alphas based on the initialization strategy
+    //
+    // Only the support is initialized. In the dense version the entries outside
+    // it were initialized too, but nothing ever reads them before the first
+    // iteration copies `alphas_out` (still zero there) over the top, so the
+    // result is unchanged. The one visible difference is that `Random` now
+    // draws one value per support entry rather than one per gene; the draws
+    // were never tied to a particular index, and no caller in this crate uses
+    // `Random`.
     let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
-    for item in alphas_in.iter_mut().take(num_alphas) {
+    for &index in &support {
+        let item = &mut alphas_in[index as usize];
         match init_type {
             EmInitType::Uniform => {
                 *item = uni_prior;
@@ -248,7 +290,8 @@ pub fn em_optimize_subset(
         converged = true;
         let mut max_rel_diff = -f64::INFINITY;
 
-        for index in 0..num_alphas {
+        for &index in &support {
+            let index = index as usize;
             if alphas_out[index] > ALPHA_CHECK_CUTOFF {
                 let diff = alphas_in[index] - alphas_out[index];
                 let rel_diff = diff.abs();
@@ -277,21 +320,23 @@ pub fn em_optimize_subset(
         // then do one last round after filtering
         // very small values.
         if it_num >= MIN_ITER && converged {
-            alphas_in.iter_mut().for_each(|alpha| {
+            for &index in &support {
+                let alpha = &mut alphas_in[index as usize];
                 if *alpha < MIN_OUTPUT_ALPHA {
                     *alpha = 0.0_f32;
                 }
-            });
+            }
             last_round = true;
         }
     }
 
-    // update too small alphas
-    alphas_in.iter_mut().for_each(|alpha| {
+    // update too small alphas; entries outside the support are still zero
+    for &index in &support {
+        let alpha = &mut alphas_in[index as usize];
         if *alpha < MIN_OUTPUT_ALPHA {
             *alpha = 0.0_f32;
         }
-    });
+    }
 
     //let alphas_sum: f32 = alphas_in.iter().sum();
     //assert!(alphas_sum > 0.0, "Alpha Sum too small");
