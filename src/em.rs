@@ -174,6 +174,45 @@ pub(crate) fn em_update_subset_usa(
     }
 }
 
+/// Returns the alpha indices that can affect this cell. Random initialization
+/// deliberately retains the dense index set: bootstrap callers use it, and
+/// changing which random values are assigned to which genes changes their
+/// statistical semantics.
+fn em_support(
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)],
+    num_alphas: usize,
+    usa_offsets: Option<(usize, usize)>,
+    init_type: EmInitType,
+) -> Vec<u32> {
+    if matches!(init_type, EmInitType::Random) {
+        return (0..num_alphas)
+            .map(|index| u32::try_from(index).expect("alpha index does not fit in u32"))
+            .collect();
+    }
+
+    let mut support = Vec::with_capacity(eqclasses.label_list_size.min(num_alphas));
+    for (eq_id, _) in cell_data {
+        for &label in eqclasses.refs_for_eqc(*eq_id) {
+            support.push(label);
+            if let Some((unspliced_offset, ambig_offset)) = usa_offsets {
+                let index = label as usize;
+                if index >= ambig_offset {
+                    support.push((index - unspliced_offset) as u32);
+                    support.push((index - ambig_offset) as u32);
+                } else if index >= unspliced_offset {
+                    support.push((index + unspliced_offset) as u32);
+                } else {
+                    support.push((index + ambig_offset) as u32);
+                }
+            }
+        }
+    }
+    support.sort_unstable();
+    support.dedup();
+    support
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn em_optimize_subset(
     eqclasses: &IndexedEqList,
@@ -215,8 +254,9 @@ pub fn em_optimize_subset(
     // USA mode), but a single cell only ever touches the handful of them that
     // appear in its own equivalence classes. Walking all `num_alphas` entries
     // once per EM iteration made the per-cell cost independent of the size of
-    // the cell: on a run with 78,899 genes that is 78,899 float comparisons per
-    // iteration for a cell that may have five equivalence classes.
+    // the cell: in USA mode, a run with 78,899 genes has 236,697 alpha values
+    // to compare per iteration even when a cell has only five equivalence
+    // classes.
     //
     // `support` is the set of indices this cell can touch. `em_update_subset`
     // only writes to the labels of the cell's equivalence classes, and in USA
@@ -224,35 +264,14 @@ pub fn em_optimize_subset(
     // each label, so those are collected too: an index that is read but never
     // written still has to be reset each iteration for the result to be
     // identical to the dense version.
-    let mut support: Vec<u32> = Vec::with_capacity(eqclasses.label_list_size.min(num_alphas));
-    for (i, _) in cell_data {
-        for label in eqclasses.refs_for_eqc(*i) {
-            support.push(*label);
-            if let Some((unspliced_offset, ambig_offset)) = usa_offsets {
-                let idx = *label as usize;
-                if idx >= ambig_offset {
-                    support.push((idx - unspliced_offset) as u32);
-                    support.push((idx - ambig_offset) as u32);
-                } else if idx >= unspliced_offset {
-                    support.push((idx + unspliced_offset) as u32);
-                } else {
-                    support.push((idx + ambig_offset) as u32);
-                }
-            }
-        }
-    }
-    support.sort_unstable();
-    support.dedup();
+    let support = em_support(eqclasses, cell_data, num_alphas, usa_offsets, init_type);
 
     // fill in the alphas based on the initialization strategy
     //
-    // Only the support is initialized. In the dense version the entries outside
-    // it were initialized too, but nothing ever reads them before the first
-    // iteration copies `alphas_out` (still zero there) over the top, so the
-    // result is unchanged. The one visible difference is that `Random` now
-    // draws one value per support entry rather than one per gene; the draws
-    // were never tied to a particular index, and no caller in this crate uses
-    // `Random`.
+    // Uniform and informative initialization only need the sparse support:
+    // entries outside it are not read before the first update resets them to
+    // zero. Random initialization uses dense support to preserve bootstrap
+    // behavior exactly.
     let mut rng = rand::rng();
     let uni_prior = 1.0 / (num_alphas as f32);
     for &index in &support {
@@ -886,4 +905,194 @@ pub fn em_optimize_long_read<P: EqClassPayload>(
     );
     */
     alphas_in
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eq_list(num_genes: usize, labels: &[&[u32]]) -> IndexedEqList {
+        let mut eqclasses = IndexedEqList::new();
+        eqclasses.num_genes = num_genes;
+        eqclasses.eq_label_starts.push(0);
+        for label in labels {
+            eqclasses.add_label_vec(label);
+        }
+        eqclasses
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dense_reference(
+        eqclasses: &IndexedEqList,
+        cell_data: &[(u32, u32)],
+        unique_evidence: &mut [bool],
+        no_ambiguity: &mut [bool],
+        init_type: EmInitType,
+        num_alphas: usize,
+        only_unique: bool,
+        usa_offsets: Option<(usize, usize)>,
+    ) -> Vec<f32> {
+        let mut alphas_in = vec![0.0; num_alphas];
+        let mut alphas_out = vec![0.0; num_alphas];
+
+        let mut needs_em = false;
+        for (eq_id, count) in cell_data {
+            let labels = eqclasses.refs_for_eqc(*eq_id);
+            if labels.len() == 1 {
+                let index = labels[0] as usize;
+                alphas_in[index] += *count as f32;
+                unique_evidence[index] = true;
+            } else {
+                for &index in labels {
+                    no_ambiguity[index as usize] = false;
+                }
+                needs_em = true;
+            }
+        }
+
+        if only_unique || !needs_em {
+            return alphas_in;
+        }
+
+        let uniform_prior = 1.0 / num_alphas as f32;
+        for alpha in &mut alphas_in {
+            match init_type {
+                EmInitType::Uniform => *alpha = uniform_prior,
+                EmInitType::Informative => *alpha = (*alpha + 0.5) * 1e-3,
+                EmInitType::Random => unreachable!("random output is not reproducible"),
+            }
+        }
+
+        let mut iteration = 0;
+        let mut converged = true;
+        let mut last_round = false;
+        while iteration < MIN_ITER || (iteration < MAX_ITER && !converged) || last_round {
+            match usa_offsets {
+                Some(offsets) => {
+                    em_update_subset_usa(&alphas_in, &mut alphas_out, eqclasses, cell_data, offsets)
+                }
+                None => em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data),
+            }
+
+            converged = true;
+            for index in 0..num_alphas {
+                if alphas_out[index] > ALPHA_CHECK_CUTOFF
+                    && (alphas_in[index] - alphas_out[index]).abs() > REL_DIFF_TOLERANCE
+                {
+                    converged = false;
+                }
+                alphas_in[index] = alphas_out[index];
+                alphas_out[index] = 0.0;
+            }
+            iteration += 1;
+
+            if last_round {
+                break;
+            }
+            if iteration >= MIN_ITER && converged {
+                for alpha in &mut alphas_in {
+                    if *alpha < MIN_OUTPUT_ALPHA {
+                        *alpha = 0.0;
+                    }
+                }
+                last_round = true;
+            }
+        }
+
+        for alpha in &mut alphas_in {
+            if *alpha < MIN_OUTPUT_ALPHA {
+                *alpha = 0.0;
+            }
+        }
+        alphas_in
+    }
+
+    fn assert_sparse_matches_dense(
+        eqclasses: &IndexedEqList,
+        cell_data: &[(u32, u32)],
+        init_type: EmInitType,
+        num_alphas: usize,
+        usa_offsets: Option<(usize, usize)>,
+    ) -> Vec<f32> {
+        let mut sparse_unique = vec![false; num_alphas];
+        let mut sparse_no_ambiguity = vec![true; num_alphas];
+        let sparse = em_optimize_subset(
+            eqclasses,
+            cell_data,
+            &mut sparse_unique,
+            &mut sparse_no_ambiguity,
+            init_type,
+            num_alphas,
+            false,
+            usa_offsets,
+            &slog::Logger::root(slog::Discard, slog::o!()),
+        );
+
+        let mut dense_unique = vec![false; num_alphas];
+        let mut dense_no_ambiguity = vec![true; num_alphas];
+        let dense = dense_reference(
+            eqclasses,
+            cell_data,
+            &mut dense_unique,
+            &mut dense_no_ambiguity,
+            init_type,
+            num_alphas,
+            false,
+            usa_offsets,
+        );
+
+        assert_eq!(sparse, dense);
+        assert_eq!(sparse_unique, dense_unique);
+        assert_eq!(sparse_no_ambiguity, dense_no_ambiguity);
+        sparse
+    }
+
+    #[test]
+    fn sparse_matches_dense_for_empty_singleton_mixed_and_converged_cells() {
+        let eqclasses = eq_list(8, &[&[0], &[1], &[0, 1], &[1, 2], &[2, 3, 4]]);
+        let cases: &[&[(u32, u32)]] = &[&[], &[(0, 7)], &[(0, 20), (1, 4), (2, 8), (3, 1), (4, 2)]];
+        for &init_type in &[EmInitType::Uniform, EmInitType::Informative] {
+            for cell_data in cases {
+                assert_sparse_matches_dense(&eqclasses, cell_data, init_type, 8, None);
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_matches_dense_for_all_usa_states_and_mixed_labels() {
+        // Three genes occupy spliced [0,3), unspliced [3,6), and ambiguous
+        // [6,9). Each case has a multi-label class so it exercises the EM.
+        let eqclasses = eq_list(3, &[&[0, 1], &[3, 4], &[6, 7], &[0, 4, 8], &[2]]);
+        let cases: &[&[(u32, u32)]] = &[
+            &[(0, 5)],
+            &[(1, 5)],
+            &[(2, 5)],
+            &[(0, 3), (1, 4), (2, 5), (3, 7), (4, 2)],
+        ];
+        for &init_type in &[EmInitType::Uniform, EmInitType::Informative] {
+            for cell_data in cases {
+                assert_sparse_matches_dense(&eqclasses, cell_data, init_type, 9, Some((3, 6)));
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_matches_dense_at_output_threshold() {
+        let eqclasses = eq_list(6, &[&[0], &[0, 1], &[1, 2], &[2, 3, 4]]);
+        let output = assert_sparse_matches_dense(
+            &eqclasses,
+            &[(0, 10_000), (1, 1), (2, 1), (3, 1)],
+            EmInitType::Informative,
+            6,
+            None,
+        );
+        assert!(output.contains(&0.0));
+    }
+
+    #[test]
+    fn random_initialization_keeps_dense_bootstrap_support() {
+        let eqclasses = eq_list(8, &[&[1, 2]]);
+        let support = em_support(&eqclasses, &[(0, 4)], 8, None, EmInitType::Random);
+        assert_eq!(support, (0..8).collect::<Vec<_>>());
+    }
 }
