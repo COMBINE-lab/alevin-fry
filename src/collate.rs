@@ -1205,14 +1205,16 @@ where
     }
 }
 
-/// Multi-barcode hierarchical collation — fast single-pass mode.
+/// Multi-barcode hierarchical collation — optimized single-pass mode.
 ///
 /// This function handles RAD files with multiple barcodes per read (e.g., 10x Flex).
 /// It performs a single-pass scatter where records are bucketed by corrected
 /// sample/cell identity, followed by a parallel gather.
 ///
-/// Gather workers build buckets in parallel and the coordinator commits them
-/// in sample/bucket order, preserving the manifest's contiguous sample ranges.
+/// The output is hierarchically grouped: all chunks for a sample are contiguous,
+/// and all records for each corrected cell are collated into one chunk. Sample
+/// ranges follow manifest order; cell order within a sample and record order
+/// within a cell are unspecified.
 #[allow(clippy::too_many_arguments)]
 fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     input_dir: P1,
