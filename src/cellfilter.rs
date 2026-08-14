@@ -17,7 +17,7 @@ use crate::utils as afutils;
 use crate::utils::KnownRecordType;
 #[allow(unused_imports)]
 use ahash::{AHasher, RandomState};
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use bio_types::strand::Strand;
 use bstr::io::BufReadExt;
 use dashmap::DashMap;
@@ -539,13 +539,9 @@ fn process_filtered(
 
     // generate the map from each permitted barcode to all barcodes within
     // edit distance 1 of it.
-    let full_permit_list = afutils::generate_permitlist_map_with_policy(
-        &valid_bc,
-        barcode_len as usize,
-        &hm,
-        gpl_opts.cell_barcode_collision_policy,
-    )
-    .map_err(|error| anyhow!("failed to generate permit list map: {}", error))?;
+    let full_permit_list =
+        afutils::generate_unambiguous_permitlist_map(&valid_bc, barcode_len as usize)
+            .map_err(|error| anyhow!("failed to generate permit list map: {}", error))?;
 
     let s2 = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut permitted_map = HashMap::with_capacity_and_hasher(valid_bc.len(), s2);
@@ -1090,13 +1086,9 @@ fn do_generate_permit_list_multi_bc(
                     sample_name
                 );
 
-                let full_permit_list = afutils::generate_permitlist_map_with_policy(
-                    &kept_bcs,
-                    cell_bc_len as usize,
-                    &cell_hist,
-                    gpl_opts.cell_barcode_collision_policy,
-                )
-                .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list =
+                    afutils::generate_unambiguous_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
@@ -1138,13 +1130,9 @@ fn do_generate_permit_list_multi_bc(
                     sample_name
                 );
 
-                let full_permit_list = afutils::generate_permitlist_map_with_policy(
-                    &kept_bcs,
-                    cell_bc_len as usize,
-                    &cell_hist,
-                    gpl_opts.cell_barcode_collision_policy,
-                )
-                .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
+                let full_permit_list =
+                    afutils::generate_unambiguous_permitlist_map(&kept_bcs, cell_bc_len as usize)
+                        .map_err(|e| anyhow!("failed to generate permit list map: {}", e))?;
                 let map_path = sample_dir.join("permit_map.bin");
                 let map_file = File::create(&map_path)?;
                 bincode::serialize_into(BufWriter::new(map_file), &full_permit_list)
@@ -1225,6 +1213,8 @@ struct SampleBarcodeInfo {
     rotation_to_canonical: HashMap<u64, u64>,
     /// Maps canonical barcode to sample name.
     canonical_to_name: HashMap<u64, String>,
+    /// Number of nucleotides in each packed sample barcode.
+    barcode_len: usize,
 }
 
 /// Load sample barcodes from a file.
@@ -1257,6 +1247,7 @@ fn load_sample_barcode_list(
     let mut canonical_to_name: HashMap<u64, String> = HashMap::new();
     let mut canonical_order: Vec<u64> = Vec::new(); // preserves order, deduplicated
     let mut has_tsv_columns = false;
+    let mut barcode_len = None;
 
     for line in reader.lines() {
         let line = line?;
@@ -1278,6 +1269,29 @@ fn load_sample_barcode_list(
             // Single column: barcode only (each is its own sample)
             (parts[0], parts[0], parts[0].to_string())
         };
+
+        if observed_seq.len() != canonical_seq.len() {
+            bail!(
+                "sample barcode '{}' and its canonical barcode '{}' have different lengths",
+                observed_seq,
+                canonical_seq
+            );
+        }
+        if !(1..=32).contains(&observed_seq.len()) {
+            bail!(
+                "sample barcode length {} is unsupported; expected 1 through 32 bases",
+                observed_seq.len()
+            );
+        }
+        match barcode_len {
+            Some(expected) if expected != observed_seq.len() => bail!(
+                "sample barcode file mixes lengths {} and {}",
+                expected,
+                observed_seq.len()
+            ),
+            None => barcode_len = Some(observed_seq.len()),
+            _ => {}
+        }
 
         let rc = |seq: &str| -> String {
             seq.bytes()
@@ -1325,6 +1339,12 @@ fn load_sample_barcode_list(
 
     let num_rotations = rotation_to_canonical.len();
     let num_canonical = canonical_order.len();
+    let barcode_len = barcode_len.ok_or_else(|| {
+        anyhow!(
+            "sample barcode list {} contains no barcodes",
+            path.display()
+        )
+    })?;
 
     if has_tsv_columns && num_rotations > num_canonical {
         info!(
@@ -1347,6 +1367,7 @@ fn load_sample_barcode_list(
         canonical_barcodes: canonical_order,
         rotation_to_canonical,
         canonical_to_name,
+        barcode_len,
     })
 }
 
@@ -1386,15 +1407,11 @@ fn build_sample_permit_map(
             // Generate 1-edit neighbors for ALL observed rotation barcodes
             let all_observed: Vec<u64> =
                 sample_info.rotation_to_canonical.keys().copied().collect();
-            let bc_len = if !all_observed.is_empty() {
-                // Estimate barcode length from packed value
-                // For 8bp barcodes: 2*8 = 16 bits used
-                8usize // TODO: derive from actual barcode length
-            } else {
-                8usize
-            };
-            let full_map = afutils::generate_permitlist_map(&all_observed, bc_len)
-                .map_err(|e| anyhow!("failed to generate sample permit map: {}", e))?;
+            let full_map = afutils::generate_unambiguous_permitlist_map(
+                &all_observed,
+                sample_info.barcode_len,
+            )
+            .map_err(|e| anyhow!("failed to generate sample permit map: {}", e))?;
             for (raw, corrected) in &full_map {
                 if !permit_map.contains_key(raw) {
                     // Map the 1-edit neighbor to the same canonical as its corrected barcode
@@ -1576,19 +1593,9 @@ pub fn permit_list_from_threshold(
     hist: &HashMap<u64, u64, ahash::RandomState>,
     min_freq: u64,
 ) -> Vec<u64> {
-    let mut valid_bc: Vec<u64> = hist
-        .iter()
+    hist.iter()
         .filter_map(|(k, v)| if v >= &min_freq { Some(*k) } else { None })
-        .collect();
-    // `hist` is a `HashMap` built by draining a `DashMap` that the parsing
-    // threads filled concurrently, so its iteration order depends on the order
-    // the threads happened to insert. That order used to reach the output:
-    // `generate_permitlist_map` gives an ambiguous one-edit neighbour to
-    // whichever permitted barcode claims it first, so two runs of the same
-    // binary on the same input corrected some barcodes differently. Sorting
-    // pins the winner to the lowest packed barcode.
-    valid_bc.sort_unstable();
-    valid_bc
+        .collect()
 }
 
 pub fn permit_list_from_file<P>(ifile: P, bclen: u16) -> Vec<u64>
@@ -2493,5 +2500,23 @@ mod cell_barcode_correction_tests {
             serde_json::to_string(&CellBarcodeCorrectionStrategy::Frequency).unwrap(),
             "\"frequency\""
         );
+    }
+
+    #[test]
+    fn sample_one_edit_correction_drops_cross_sample_collisions() {
+        let sample_info = SampleBarcodeInfo {
+            canonical_barcodes: vec![0, 5],
+            rotation_to_canonical: HashMap::from([(0, 0), (5, 5)]),
+            canonical_to_name: HashMap::new(),
+            barcode_len: 2,
+        };
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let (permit_map, sample_indices) =
+            build_sample_permit_map(&sample_info, &SampleCorrectionMode::OneEdit, &log).unwrap();
+
+        assert_eq!(permit_map.get(&0), Some(&0));
+        assert_eq!(permit_map.get(&5), Some(&5));
+        assert!(!permit_map.contains_key(&1));
+        assert_eq!(sample_indices, HashMap::from([(0, 0), (5, 1)]));
     }
 }

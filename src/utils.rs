@@ -23,7 +23,6 @@ use needletail::bitkmer::*;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs::File;
-use std::hash::BuildHasher;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::path::PathBuf;
@@ -1068,43 +1067,25 @@ pub fn generate_permitlist_map(
     Ok(one_edit_barcode_map)
 }
 
-/// Builds the filtered RNA cell-barcode correction map using an explicit
-/// collision policy. The public [`generate_permitlist_map`] function retains
-/// its historical signature and behavior for other workflows and callers.
-pub(crate) fn generate_permitlist_map_with_policy<S>(
+/// Builds a one-edit correction map that retains only unambiguous corrections.
+///
+/// Exact permitted barcodes always map to themselves. A non-exact barcode is
+/// omitted when it is a one-edit neighbor of more than one permitted barcode.
+/// Unlike [`generate_permitlist_map`], the result is therefore independent of
+/// the order of `permit_bcs`. The historical public function remains unchanged
+/// for downstream callers that rely on its permissive behavior.
+pub(crate) fn generate_unambiguous_permitlist_map(
     permit_bcs: &[u64],
     bc_length: usize,
-    observed_counts: &HashMap<u64, u64, S>,
-    policy: crate::prog_opts::BarcodeCollisionPolicy,
-) -> Result<HashMap<u64, u64>, Box<dyn Error>>
-where
-    S: BuildHasher,
-{
-    use crate::prog_opts::BarcodeCollisionPolicy;
-
-    let mut ranked_bcs = permit_bcs.to_vec();
-    match policy {
-        BarcodeCollisionPolicy::PreferMostFrequent => ranked_bcs.sort_unstable_by(|a, b| {
-            observed_counts
-                .get(b)
-                .copied()
-                .unwrap_or_default()
-                .cmp(&observed_counts.get(a).copied().unwrap_or_default())
-                .then_with(|| a.cmp(b))
-        }),
-        BarcodeCollisionPolicy::DropAmbiguous | BarcodeCollisionPolicy::AcceptFirstNeighbor => {
-            ranked_bcs.sort_unstable()
-        }
-    }
-
-    let mut correction_map = HashMap::with_capacity(10 * ranked_bcs.len());
-    for &bc in &ranked_bcs {
+) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
+    let mut correction_map = HashMap::with_capacity(10 * permit_bcs.len());
+    for &bc in permit_bcs {
         correction_map.insert(bc, bc);
     }
 
     let mut neighbors = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
     let mut ambiguous = HashSet::new();
-    for &bc in &ranked_bcs {
+    for &bc in permit_bcs {
         get_all_one_edit_neighbors(bc, bc_length, &mut neighbors)?;
         for &neighbor in &neighbors {
             // An exact retained barcode always maps to itself, regardless of
@@ -1113,26 +1094,18 @@ where
                 continue;
             }
 
-            match policy {
-                BarcodeCollisionPolicy::DropAmbiguous => {
-                    if ambiguous.contains(&neighbor) {
-                        continue;
-                    }
-                    match correction_map.get(&neighbor).copied() {
-                        Some(previous) if previous != bc => {
-                            correction_map.remove(&neighbor);
-                            ambiguous.insert(neighbor);
-                        }
-                        None => {
-                            correction_map.insert(neighbor, bc);
-                        }
-                        _ => {}
-                    }
+            if ambiguous.contains(&neighbor) {
+                continue;
+            }
+            match correction_map.get(&neighbor).copied() {
+                Some(previous) if previous != bc => {
+                    correction_map.remove(&neighbor);
+                    ambiguous.insert(neighbor);
                 }
-                BarcodeCollisionPolicy::PreferMostFrequent
-                | BarcodeCollisionPolicy::AcceptFirstNeighbor => {
-                    correction_map.entry(neighbor).or_insert(bc);
+                None => {
+                    correction_map.insert(neighbor, bc);
                 }
+                _ => {}
             }
         }
     }
@@ -1233,12 +1206,11 @@ impl FromStr for InternalVersionInfo {
 
 #[cfg(test)]
 mod tests {
-    use crate::prog_opts::BarcodeCollisionPolicy;
     use crate::utils::InternalVersionInfo;
     use crate::utils::MIN_THREADS;
     use crate::utils::ProbMap;
-    use crate::utils::generate_permitlist_map_with_policy;
     use crate::utils::enforce_thread_floor;
+    use crate::utils::generate_unambiguous_permitlist_map;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
@@ -1330,83 +1302,36 @@ mod tests {
         );
     }
 
-    fn collision_map(
-        permit_bcs: &[u64],
-        counts: &[(u64, u64)],
-        policy: BarcodeCollisionPolicy,
-    ) -> HashMap<u64, u64> {
-        let counts: HashMap<_, _> = counts.iter().copied().collect();
-        generate_permitlist_map_with_policy(permit_bcs, 2, &counts, policy).unwrap()
+    fn collision_map(permit_bcs: &[u64]) -> HashMap<u64, u64> {
+        generate_unambiguous_permitlist_map(permit_bcs, 2).unwrap()
     }
 
     #[test]
-    fn barcode_collision_policy_preserves_exact_and_unique_matches() {
-        let map = collision_map(
-            &[0, 5],
-            &[(0, 10), (5, 20)],
-            BarcodeCollisionPolicy::DropAmbiguous,
-        );
+    fn unambiguous_map_preserves_exact_and_unique_matches() {
+        let map = collision_map(&[0, 5]);
         assert_eq!(map.get(&0), Some(&0));
         assert_eq!(map.get(&5), Some(&5));
         assert_eq!(map.get(&2), Some(&0));
     }
 
     #[test]
-    fn barcode_collision_policy_drops_ambiguous_neighbors_by_default() {
-        assert_eq!(
-            BarcodeCollisionPolicy::default(),
-            BarcodeCollisionPolicy::DropAmbiguous
-        );
-        let forward = collision_map(
-            &[0, 5],
-            &[(0, 10), (5, 20)],
-            BarcodeCollisionPolicy::DropAmbiguous,
-        );
-        let reverse = collision_map(
-            &[5, 0],
-            &[(0, 10), (5, 20)],
-            BarcodeCollisionPolicy::DropAmbiguous,
-        );
+    fn unambiguous_map_drops_ambiguous_neighbors() {
+        let forward = collision_map(&[0, 5]);
+        let reverse = collision_map(&[5, 0]);
         assert!(!forward.contains_key(&1));
         assert_eq!(forward, reverse);
     }
 
     #[test]
-    fn barcode_collision_policy_prefers_frequency_then_packed_value() {
-        let frequent = collision_map(
-            &[0, 5],
-            &[(0, 10), (5, 20)],
-            BarcodeCollisionPolicy::PreferMostFrequent,
-        );
-        assert_eq!(frequent.get(&1), Some(&5));
-
-        let tied = collision_map(
-            &[5, 0],
-            &[(0, 20), (5, 20)],
-            BarcodeCollisionPolicy::PreferMostFrequent,
-        );
-        assert_eq!(tied.get(&1), Some(&0));
-    }
-
-    #[test]
-    fn barcode_collision_policy_accept_first_is_sorted_and_repeatable() {
-        let expected = collision_map(
-            &[5, 0],
-            &[(0, 10), (5, 20)],
-            BarcodeCollisionPolicy::AcceptFirstNeighbor,
-        );
-        assert_eq!(expected.get(&1), Some(&0));
+    fn unambiguous_map_is_repeatable() {
+        let expected = collision_map(&[5, 0]);
 
         std::thread::scope(|scope| {
             for iteration in 0..32 {
                 let expected = &expected;
                 scope.spawn(move || {
                     let input = if iteration % 2 == 0 { [0, 5] } else { [5, 0] };
-                    let actual = collision_map(
-                        &input,
-                        &[(0, 10), (5, 20)],
-                        BarcodeCollisionPolicy::AcceptFirstNeighbor,
-                    );
+                    let actual = collision_map(&input);
                     assert_eq!(&actual, expected);
                 });
             }
