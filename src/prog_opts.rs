@@ -35,10 +35,36 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
     pub filter_list: Option<&'d PathBuf>,
+    /// How UMIs are collapsed and how a UMI split across genes is resolved.
+    #[builder(default = UmiDedupMode::Legacy)]
+    pub umi_dedup_mode: UmiDedupMode,
     pub cmdline: &'e str,
     pub version: &'f str,
     #[serde(skip_serializing)]
     pub log: &'g slog::Logger,
+}
+
+/// How UMIs are collapsed, and what happens to a UMI whose reads are split
+/// across several genes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum UmiDedupMode {
+    /// alevin-fry's historical behaviour: UMIs are taken as sequenced, and a
+    /// UMI whose top gene is tied contributes an equivalence class holding
+    /// every tied gene.
+    Legacy,
+    /// Cell Ranger's behaviour: collapse Hamming-distance-one UMIs within a
+    /// gene toward the more abundant one, then discard any UMI whose top gene
+    /// is not a strict winner.
+    CellRanger,
+}
+
+impl std::fmt::Display for UmiDedupMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UmiDedupMode::Legacy => write!(f, "legacy"),
+            UmiDedupMode::CellRanger => write!(f, "cellranger"),
+        }
+    }
 }
 
 /// Correction mode for sample barcodes in multi-barcode protocols.

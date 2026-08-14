@@ -217,6 +217,9 @@ fn main() -> anyhow::Result<()> {
         ])
         .default_value("0") // for any other mode
         .hide(true))
+    .arg(arg!(--"umi-dedup-mode" <UMIMODE> "how UMIs are collapsed and how a UMI split across genes is resolved: `legacy` keeps UMIs as sequenced and emits an equivalence class for a tied UMI, `cellranger` collapses Hamming-distance-one UMIs within a gene and discards a UMI with no strict top gene")
+        .value_parser(["legacy", "cellranger"])
+        .default_value("legacy"))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than this many reads are resolved by a fast path that applies cr-like (winner-take-all) semantics regardless of --resolution; pass 0 to resolve every cell with the requested strategy")
         .value_parser(value_parser!(usize))
         .default_value("100"))
@@ -471,6 +474,10 @@ fn main() -> anyhow::Result<()> {
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
         let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
+        let umi_dedup_mode = match t.get_one::<String>("umi-dedup-mode").map(|s| s.as_str()) {
+            Some("cellranger") => prog_opts::UmiDedupMode::CellRanger,
+            _ => prog_opts::UmiDedupMode::Legacy,
+        };
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
@@ -570,6 +577,7 @@ fn main() -> anyhow::Result<()> {
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
+            .umi_dedup_mode(umi_dedup_mode)
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)
@@ -601,9 +609,10 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        // if something else, just panic
+                        // anything else: surface the error rather than
+                        // replacing it with a message that says nothing
                         None => {
-                            panic!("could not quantify rad file.");
+                            return Err(e.context("could not quantify rad file"));
                         }
                     },
                 }; // end match if
@@ -626,9 +635,10 @@ fn main() -> anyhow::Result<()> {
                                 }
                             }
                         }
-                        // if something else, just panic
+                        // anything else: surface the error rather than
+                        // replacing it with a message that says nothing
                         None => {
-                            panic!("could not quantify rad file.");
+                            return Err(e.context("could not quantify rad file"));
                         }
                     },
                 }; //end quant if
