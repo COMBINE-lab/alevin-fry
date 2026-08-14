@@ -873,14 +873,14 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7518c918544220380ff5ff33b243771a8757872150dd280e6cc9355cddf3043b"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=194d127105f22acbc1d9731c68022d610cc5ca86#194d127105f22acbc1d9731c68022d610cc5ca86"
 dependencies = [
  "ahash",
  "anyhow",
  "bincode",
  "bio-types",
  "bytemuck",
+ "crossbeam-channel",
  "crossbeam-queue",
  "crossbeam-utils",
  "dashmap",
@@ -899,8 +899,7 @@ dependencies = [
 [[package]]
 name = "libradicl-macros"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9974b750aed4376bb9e67feede0446f5fbba1f3bcf398bf155e5ddee34828824"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=194d127105f22acbc1d9731c68022d610cc5ca86#194d127105f22acbc1d9731c68022d610cc5ca86"
 dependencies = [
  "proc-macro2",
  "quote",

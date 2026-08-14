@@ -44,6 +44,40 @@ fn gen_random_kmer(k: usize) -> String {
     s
 }
 
+fn parse_memory_size(value: &str) -> Result<u64, String> {
+    let value = value.trim();
+    let split = value
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(value.len());
+    let (number, suffix) = value.split_at(split);
+    if number.is_empty() {
+        return Err("memory size must start with a positive number".to_string());
+    }
+    let number: f64 = number
+        .parse()
+        .map_err(|_| format!("invalid memory size {value:?}"))?;
+    if !number.is_finite() || number <= 0.0 {
+        return Err("memory size must be positive and finite".to_string());
+    }
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1_u64,
+        "k" | "kb" => 1_000,
+        "ki" | "kib" => 1_u64 << 10,
+        "m" | "mb" => 1_000_000,
+        "mi" | "mib" => 1_u64 << 20,
+        "g" | "gb" => 1_000_000_000,
+        "gi" | "gib" => 1_u64 << 30,
+        "t" | "tb" => 1_000_000_000_000,
+        "ti" | "tib" => 1_u64 << 40,
+        other => return Err(format!("unsupported memory-size suffix {other:?}")),
+    };
+    let bytes = number * multiplier as f64;
+    if bytes > u64::MAX as f64 {
+        return Err("memory size exceeds the supported range".to_string());
+    }
+    Ok(bytes.round() as u64)
+}
+
 #[allow(clippy::manual_clamp)]
 fn main() -> anyhow::Result<()> {
     let num_hardware_threads = num_cpus::get() as u32;
@@ -166,14 +200,16 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
         .required(true)
         .value_parser(pathbuf_directory_exists_validator))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2)").value_parser(value_parser!(u32).range(2..)).default_value(max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file"))
-    .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
+    .arg(arg!(-m --"max-records" <MAXRECORDS> "deprecated approximate record-count memory control; use --memory-limit")
          .value_parser(value_parser!(u32))
-         .default_value("30000000"))
-    .arg(arg!(--"collation-mode" <CMODE> "collation mode for multi-barcode data: two-round (generalizable) or fast (single-pass for 2-level)")
-         .value_parser(["two-round", "fast"])
-         .default_value("two-round"));
+         .conflicts_with("memory-limit"))
+    .arg(arg!(--"memory-limit" <SIZE> "collation buffer budget, excluding indexes and page cache (for example 2GiB or 4GB; default: 2GiB)")
+         .value_parser(parse_memory_size)
+         .conflicts_with("max-records"))
+    .arg(arg!(--"collation-mode" <CMODE> "deprecated compatibility alias; all values select the optimized collator")
+         .value_parser(["two-round", "fast"]));
 
     let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")
@@ -454,12 +490,27 @@ fn main() -> anyhow::Result<()> {
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
         let num_threads = *t.get_one("threads").unwrap();
         let compress_out = t.get_flag("compress");
-        let max_records: u32 = *t.get_one("max-records").unwrap();
-        alevin_fry::collate::collate(
+        let max_records = t
+            .get_one::<u32>("max-records")
+            .copied()
+            .unwrap_or(30_000_000);
+        let memory_limit = t.get_one::<u64>("memory-limit").copied().or_else(|| {
+            t.get_one::<u32>("max-records")
+                .is_none()
+                .then_some(2_u64 << 30)
+        });
+        if let Some(mode) = t.get_one::<String>("collation-mode") {
+            warn!(
+                log,
+                "--collation-mode={} is deprecated; using the optimized collator", mode
+            );
+        }
+        alevin_fry::collate::collate_with_memory_limit(
             input_dir,
             rad_dir,
             num_threads,
             max_records,
+            memory_limit,
             compress_out,
             &cmdline,
             VERSION,
@@ -740,7 +791,7 @@ fn atac_sub_commands() -> Command {
         .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2)").value_parser(value_parser!(u32).range(2..)).default_value(max_num_collate_threads.clone()))
         .arg(arg!(-c --compress "compress the output collated RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
             .value_parser(value_parser!(u32))
@@ -786,4 +837,24 @@ fn atac_sub_commands() -> Command {
         .subcommand(sort_app)
         .subcommand(collate_app)
         .subcommand(deduplicate_app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_memory_size;
+
+    #[test]
+    fn parses_human_readable_memory_sizes() {
+        assert_eq!(parse_memory_size("2048").unwrap(), 2048);
+        assert_eq!(parse_memory_size("256MiB").unwrap(), 256_u64 << 20);
+        assert_eq!(parse_memory_size("1.5 GiB").unwrap(), 3_u64 << 29);
+        assert_eq!(parse_memory_size("4GB").unwrap(), 4_000_000_000);
+    }
+
+    #[test]
+    fn rejects_invalid_memory_sizes() {
+        for value in ["", "0", "-1GiB", "1XB", "NaN"] {
+            assert!(parse_memory_size(value).is_err(), "accepted {value:?}");
+        }
+    }
 }
