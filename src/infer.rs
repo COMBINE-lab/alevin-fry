@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::em::{EmInitType, em_optimize_subset};
+use crate::em::{EmInitType, EmSubsetScratch, em_optimize_subset_with_scratch};
 use crate::utils::read_filter_list;
 
 #[allow(clippy::too_many_arguments)]
@@ -207,9 +207,12 @@ pub fn infer(
             // each cell.
             let mut unique_evidence = vec![false; num_genes];
             let mut no_ambiguity = vec![false; num_genes];
+            let mut em_scratch = EmSubsetScratch::default();
 
-            let mut expressed_vec = Vec::<f32>::with_capacity(num_genes);
-            let mut expressed_ind = Vec::<usize>::with_capacity(num_genes);
+            // Reuse capacity across cells, but grow only to observed
+            // expression rather than reserving the full gene axis per worker.
+            let mut expressed_vec = Vec::<f32>::new();
+            let mut expressed_ind = Vec::<usize>::new();
             //let mut eds_bytes = Vec::<u8>::new();
             //let mut bt_eds_bytes: Vec<u8> = Vec::new();
             //let mut eds_mean_bytes: Vec<u8> = Vec::new();
@@ -224,7 +227,7 @@ pub fn infer(
                     // given the set of equivalence classes and counts for
                     // this cell (coming from the input matrix), perform
                     // inference to obtain gene-level counts.
-                    let counts = em_optimize_subset(
+                    let counts = em_optimize_subset_with_scratch(
                         &global_eq_classes,
                         &cell_data,
                         &mut unique_evidence,
@@ -234,6 +237,7 @@ pub fn infer(
                         false,
                         usa_offsets,
                         &log,
+                        &mut em_scratch,
                     );
 
                     // Note: there is a fill method, but it is only on

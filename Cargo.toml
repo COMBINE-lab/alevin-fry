@@ -45,7 +45,11 @@ crossbeam-channel = "0.5.15"
 crossbeam-queue = "0.3.12"
 typed-builder = "0.23.2"
 indicatif = "0.18.4"
-needletail = "0.6.3"
+# only `needletail::bitkmer` is used, for 2-bit packing barcodes and UMIs. The
+# default `compression` feature exists for reading compressed FASTX, which this
+# crate never does, and it pulls bzip2 and liblzma (both of which build C code)
+# plus a second zstd and flate2 into the tree.
+needletail = { version = "0.6.3", default-features = false }
 petgraph = "0.8.3"
 libdeflater = "1.25.2"
 niffler = { version = "3.0.0", default-features = false, features = ["gz"] }
@@ -93,12 +97,14 @@ rand_distr = "0.6"
 [dev-dependencies]
 tempfile = "3"
 slog-term = "2.9.2"
-polars = { version = "0.45.1", features = ["polars-io", "dtype-categorical"] }
-polars-io = { version = "0.45.1", features = ["csv"] }
 
 [profile.release]
 #debug = true
 lto = "thin"
+# alevin-fry is a batch CLI and has no panic-recovery boundary. Abort instead
+# of unwinding in release binaries; Cargo does not apply this release setting
+# to the test and benchmark profiles.
+panic = "abort"
 #codegen-units=1
 opt-level = 3
 
