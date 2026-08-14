@@ -316,56 +316,8 @@ fn em_optimize_subset_impl(
     support_is_prepared: bool,
 ) -> Vec<f32> {
     let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
+    let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
 
-    // `alphas_out` is pure scratch: the iteration loop writes it, copies it into
-    // `alphas_in`, and zeroes it again, so it is all zeroes both on entry and on
-    // exit. Allocating it per call meant one `num_alphas`-sized zeroed
-    // allocation for every cell, which on a USA-mode run with 78,899 genes is
-    // 947 KiB x 26,126 cells of allocation and memset that does no work. Each
-    // worker thread keeps one instead.
-    ALPHAS_OUT_SCRATCH.with_borrow_mut(|alphas_out| {
-        if alphas_out.len() < num_alphas {
-            alphas_out.resize(num_alphas, 0.0);
-        }
-        debug_assert!(
-            alphas_out[..num_alphas].iter().all(|a| *a == 0.0),
-            "alphas_out scratch must be left zeroed by the previous call"
-        );
-        em_optimize_subset_inner(
-            eqclasses,
-            cell_data,
-            unique_evidence,
-            no_ambiguity,
-            init_type,
-            num_alphas,
-            only_unique,
-            usa_offsets,
-            &mut alphas_in,
-            &mut alphas_out[..num_alphas],
-        )
-    });
-    alphas_in
-}
-
-thread_local! {
-    /// Per-thread scratch for `em_optimize_subset`'s `alphas_out`.
-    static ALPHAS_OUT_SCRATCH: std::cell::RefCell<Vec<f32>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[allow(clippy::too_many_arguments)]
-fn em_optimize_subset_inner(
-    eqclasses: &IndexedEqList,
-    cell_data: &[(u32, u32)],
-    unique_evidence: &mut [bool],
-    no_ambiguity: &mut [bool],
-    init_type: EmInitType,
-    num_alphas: usize,
-    only_unique: bool,
-    usa_offsets: Option<(usize, usize)>,
-    alphas_in: &mut [f32],
-    alphas_out: &mut [f32],
-) {
     let mut needs_em = false;
     for (i, count) in cell_data {
         let labels = eqclasses.refs_for_eqc(*i);
@@ -385,7 +337,7 @@ fn em_optimize_subset_inner(
     // or there were no multi-mapping reads, then
     // we're done
     if only_unique || !needs_em {
-        return;
+        return alphas_in;
     }
 
     // The alpha vectors are dense over every gene (or every gene x status in
@@ -440,10 +392,10 @@ fn em_optimize_subset_inner(
         // perform one round of em update
         match usa_offsets {
             Some(otup) => {
-                em_update_subset_usa(alphas_in, alphas_out, eqclasses, cell_data, otup);
+                em_update_subset_usa(&alphas_in, &mut alphas_out, eqclasses, cell_data, otup);
             }
             None => {
-                em_update_subset(alphas_in, alphas_out, eqclasses, cell_data);
+                em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
             }
         }
 
@@ -500,6 +452,7 @@ fn em_optimize_subset_inner(
 
     //let alphas_sum: f32 = alphas_in.iter().sum();
     //assert!(alphas_sum > 0.0, "Alpha Sum too small");
+    alphas_in
 }
 
 pub fn em_update<P: EqClassPayload>(
