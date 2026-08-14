@@ -1658,7 +1658,11 @@ where
     Ok(())
 }
 
-/// Multi-barcode hierarchical collation — two-round mode.
+/// Legacy multi-barcode hierarchical collation — two-round implementation.
+///
+/// This implementation is retained for reference but is not selected by the
+/// current collate dispatch; all accepted `--collation-mode` values use the
+/// optimized single-pass implementation above.
 ///
 /// Round 1: Reads the multi-barcode RAD file, corrects sample BCs, and writes
 ///          per-sample intermediate RAD files (same format, filtered to one sample).
