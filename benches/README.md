@@ -31,6 +31,7 @@ $AF_BENCH_DATA/
   gene_eqclass.txt.gz   # quant -r cr-like-em --dump-eqclasses
   geqc_counts.mtx       # ditto
   permit_list.txt       # one barcode per line, e.g. 10x_v3_permit.txt
+  permit_map.bin        # generate-permit-list output
   map.collated.rad      # collate
 ```
 
@@ -49,6 +50,7 @@ $fry quant -r cr-like-em --small-thresh 0 --dump-eqclasses --use-mtx \
 mkdir fixtures && cd fixtures
 ln -s ../quant/alevin/gene_eqclass.txt.gz ../quant/alevin/geqc_counts.mtx .
 ln -s ../gpl/map.collated.rad .
+ln -s ../gpl/permit_map.bin .
 ln -s ../toy_data/10x_v3_permit.txt permit_list.txt
 ```
 
@@ -60,8 +62,8 @@ the baseline. The protocol used for the performance changes in this repository:
 
 ```sh
 export AF_BENCH_DATA=/path/to/fixtures
-git checkout master && cargo bench --bench em 2>&1 | tee /tmp/before.txt
-git checkout my-branch && cargo bench --bench em 2>&1 | tee /tmp/after.txt
+git checkout master && cargo bench --bench em 2>&1 | tee "${TMPDIR:?}/before.txt"
+git checkout my-branch && cargo bench --bench em 2>&1 | tee "${TMPDIR:?}/after.txt"
 ```
 
 Compare the **median** columns, not the fastest, and re-run both sides on an

@@ -81,6 +81,13 @@ fn snap_compress(src: &[u8]) -> Vec<u8> {
 #[divan::bench]
 fn snap_encode(bencher: divan::Bencher) {
     let src = chunk_bytes();
+    let compressed_len = snap_compress(&src).len();
+    eprintln!(
+        "snappy: {} -> {} bytes ({:.3}x)",
+        src.len(),
+        compressed_len,
+        src.len() as f64 / compressed_len as f64
+    );
     bencher
         .counter(divan::counter::BytesCount::of_slice(&src))
         .bench_local(|| snap_compress(&src));
@@ -101,25 +108,26 @@ fn snap_decode(bencher: divan::Bencher) {
         });
 }
 
-/// Compression ratio, reported once so that a throughput win can be weighed
-/// against the extra bytes it writes.
-#[divan::bench]
-fn snap_ratio(bencher: divan::Bencher) {
-    let src = chunk_bytes();
-    let comp = snap_compress(&src);
-    eprintln!(
-        "snappy: {} -> {} bytes ({:.3}x)",
-        src.len(),
-        comp.len(),
-        src.len() as f64 / comp.len() as f64
-    );
-    bencher.bench_local(|| comp.len());
-}
-
 /// The barcode-correction map, at the size the toy dataset produces
 /// (~80k entries). `collate` deserializes one of these per invocation, and
 /// every worker thread clones the `Arc` to it.
 fn correction_map(n: usize) -> HashMap<u64, u64> {
+    if let Some(path) = common::fixture("permit_map.bin") {
+        let bytes = std::fs::read(path).expect("could not read permit_map.bin");
+        let map: HashMap<u64, u64> =
+            bincode::deserialize(&bytes).expect("could not deserialize permit_map.bin");
+        let mut entries: Vec<_> = map.into_iter().collect();
+        entries.sort_unstable_by_key(|(barcode, _)| *barcode);
+        entries.truncate(n);
+        assert_eq!(
+            entries.len(),
+            n,
+            "permit_map.bin contains fewer than {n} corrections"
+        );
+        return entries.into_iter().collect();
+    }
+
+    common::note_synthetic("collate_io::correction_map");
     let bcs = common::synthetic_barcodes(n, 16, 0x5EED_5EED);
     bcs.iter().map(|b| (*b, b ^ 0x3)).collect()
 }

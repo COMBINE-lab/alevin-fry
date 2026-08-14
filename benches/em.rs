@@ -80,7 +80,6 @@ fn em_optimize_subset_batch(bencher: divan::Bencher, num_cells: usize) {
     bencher
         .with_inputs(|| (vec![false; w.num_alphas], vec![true; w.num_alphas]))
         .bench_local_values(|(mut unique_evidence, mut no_ambiguity)| {
-            let mut acc = 0.0f32;
             for cell in cells {
                 let alphas = em_optimize_subset(
                     &w.eql,
@@ -93,9 +92,11 @@ fn em_optimize_subset_batch(bencher: divan::Bencher, num_cells: usize) {
                     None,
                     &log,
                 );
-                acc += alphas.iter().sum::<f32>();
+                // Consume the allocation without adding a dense alpha-vector
+                // scan to the timed work. That scan would specifically hide
+                // optimizations that make EM iteration sparse.
+                std::hint::black_box(alphas);
             }
-            acc
         });
 }
 
@@ -111,7 +112,6 @@ fn em_unique_only(bencher: divan::Bencher, num_cells: usize) {
     bencher
         .with_inputs(|| (vec![false; w.num_alphas], vec![true; w.num_alphas]))
         .bench_local_values(|(mut unique_evidence, mut no_ambiguity)| {
-            let mut acc = 0.0f32;
             for cell in cells {
                 let alphas = em_optimize_subset(
                     &w.eql,
@@ -124,9 +124,8 @@ fn em_unique_only(bencher: divan::Bencher, num_cells: usize) {
                     None,
                     &log,
                 );
-                acc += alphas.iter().sum::<f32>();
+                std::hint::black_box(alphas);
             }
-            acc
         });
 }
 

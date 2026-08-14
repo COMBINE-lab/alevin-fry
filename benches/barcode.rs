@@ -35,7 +35,7 @@ fn main() {
 
 fn barcodes(n: usize) -> Vec<u64> {
     match common::fixture("permit_list.txt") {
-        Some(p) => common::load_barcodes(&p, n),
+        Some(p) => common::load_barcodes(&p, n, BC_LEN),
         None => {
             common::note_synthetic("barcode");
             common::synthetic_barcodes(n, BC_LEN, 0xB0_1CE5)

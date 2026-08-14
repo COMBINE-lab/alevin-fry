@@ -23,6 +23,8 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Check benchmark targets
+      run: cargo check --benches --verbose
 
   Linting:
     if: "!contains(github.event.head_commit.message, 'skip ci')"

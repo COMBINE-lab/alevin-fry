@@ -18,6 +18,7 @@
 //!   gene_eqclass.txt.gz   # from `quant -r cr-like-em --dump-eqclasses`
 //!   geqc_counts.mtx       # ditto
 //!   permit_list.txt       # a barcode-per-line whitelist (e.g. 10x_v3_permit.txt)
+//!   permit_map.bin        # from `generate-permit-list`
 //!   map.collated.rad      # from `collate`
 //! ```
 //!
@@ -111,9 +112,9 @@ pub fn load_cell_data(path: &Path, max_cells: usize) -> Vec<CellData> {
 
 /// Build a synthetic `IndexedEqList` plus matching per-cell workloads.
 ///
-/// The shape is taken from the distribution observed on the project's own toy
-/// dataset (26k cells / 4.3M nonzeros): most equivalence classes carry a single
-/// gene label, a long tail carries 2-8, and a handful carry up to 64.
+/// This is a deterministic stress workload, not a model of any specific real
+/// dataset: most equivalence classes carry a single gene label, a long tail
+/// carries 2-8, and a handful carry up to 64.
 pub fn synthetic_workload(
     num_genes: usize,
     num_eqc: usize,
@@ -172,7 +173,7 @@ pub fn synthetic_barcodes(n: usize, bc_len: usize, seed: u64) -> Vec<u64> {
 }
 
 /// Read a barcode-per-line whitelist and 2-bit pack it, keeping the first `n`.
-pub fn load_barcodes(path: &Path, n: usize) -> Vec<u64> {
+pub fn load_barcodes(path: &Path, n: usize, bc_len: usize) -> Vec<u64> {
     use std::io::BufRead;
     let f = std::fs::File::open(path).expect("could not open permit list");
     let mut v = Vec::with_capacity(n);
@@ -182,8 +183,11 @@ pub fn load_barcodes(path: &Path, n: usize) -> Vec<u64> {
         if l.is_empty() {
             continue;
         }
+        if l.len() != bc_len {
+            continue;
+        }
         if let Some((_, km, _)) =
-            needletail::bitkmer::BitNuclKmer::new(l.as_bytes(), l.len() as u8, false).next()
+            needletail::bitkmer::BitNuclKmer::new(l.as_bytes(), bc_len as u8, false).next()
         {
             v.push(km.0);
         }
@@ -191,5 +195,10 @@ pub fn load_barcodes(path: &Path, n: usize) -> Vec<u64> {
             break;
         }
     }
+    assert_eq!(
+        v.len(),
+        n,
+        "permit_list.txt contains fewer than {n} valid {bc_len}-base barcodes"
+    );
     v
 }
