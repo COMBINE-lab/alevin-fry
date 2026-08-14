@@ -7,9 +7,10 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use ahash::AHashMap;
 use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use slog::{crit, info};
+use slog::{crit, debug, info};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
@@ -20,12 +21,15 @@ use crossbeam_queue::ArrayQueue;
 use libradicl::chunk;
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
+use libradicl::multi_collation::{
+    MultiBarcodeCollationOptions, MultiBarcodeCollationPlan, MultiBarcodeSampleCorrection,
+    collate_multi_barcode,
+};
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AlevinFryRecordContext,
-    CollatableMappedRecord, CollatableRecordHeader, ConvertiblePrimitiveInteger,
-    HierarchicallyCollatable, KnownSize, MappedRecord, MultiBarcodeReadRecord,
-    MultiBarcodeRecordContext, RecordHeader, ScLongReadRecordContext, ScLongReadRecordT,
+    CollatableMappedRecord, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
+    MultiBarcodeReadRecord, MultiBarcodeRecordContext, ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::schema::TempCellInfo;
 
@@ -62,6 +66,53 @@ where
     P1: Into<PathBuf>,
     P2: AsRef<Path>,
 {
+    collate_with_memory_limit(
+        input_dir,
+        rad_dir,
+        num_threads,
+        max_records,
+        None,
+        compress_out,
+        cmdline,
+        version_str,
+        log,
+    )
+}
+
+/// Collate with an optional byte-based working-memory budget.
+///
+/// When `memory_limit` is `None`, the historical `max_records` value is
+/// retained and translated to a byte budget for the libradicl engine. When a
+/// byte limit is supplied, it becomes authoritative and `max_records` is
+/// derived for compatibility with collation paths that still use that knob.
+#[allow(clippy::too_many_arguments)]
+pub fn collate_with_memory_limit<P1, P2>(
+    input_dir: P1,
+    rad_dir: P2,
+    num_threads: u32,
+    max_records: u32,
+    memory_limit: Option<u64>,
+    compress_out: bool,
+    cmdline: &str,
+    version_str: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    const BYTES_PER_LEGACY_RECORD: u64 = 72;
+    const MIN_MEMORY_LIMIT: u64 = 256 * 1024 * 1024;
+    let memory_budget_bytes = memory_limit
+        .unwrap_or_else(|| u64::from(max_records).saturating_mul(BYTES_PER_LEGACY_RECORD))
+        .max(MIN_MEMORY_LIMIT);
+    let max_records = if memory_limit.is_some() {
+        (memory_budget_bytes.min(2 * 1024 * 1024 * 1024) / BYTES_PER_LEGACY_RECORD)
+            .clamp(1, u64::from(u32::MAX)) as u32
+    } else {
+        max_records
+    };
+
     let input_dir = input_dir.into();
     let parent = std::path::Path::new(input_dir.as_path());
 
@@ -115,11 +166,12 @@ where
         );
 
         // tsv_map is empty — do_collate_multi_bc will build its own from per-sample data
-        return collate_with_temp(
+        return collate_with_temp_memory(
             input_dir,
             rad_dir,
             num_threads,
             max_records,
+            memory_budget_bytes,
             Vec::new(), // tsv_map not used for multi-barcode
             total_to_collate,
             compress_out,
@@ -181,11 +233,12 @@ where
     // sort in _descending_ order by count.
     tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
 
-    collate_with_temp(
+    collate_with_temp_memory(
         input_dir,
         rad_dir,
         num_threads,
         max_records,
+        memory_budget_bytes,
         tsv_map,
         total_to_collate,
         compress_out,
@@ -254,8 +307,7 @@ fn correct_unmapped_counts_multi_bc(
     unmapped_file: &std::path::Path,
     sample_permit_map: &HashMap<u64, u64>,
     sample_bc_to_idx: &HashMap<u64, usize>,
-    per_sample_identity: &[std::collections::HashSet<u64, ahash::RandomState>],
-    per_sample_lookup: &[libradicl::BarcodeLookupMap],
+    samples: &[MultiBarcodeSampleCorrection],
     parent: &std::path::Path,
 ) {
     use libradicl::unmapped::{CollatedUnmappedCounts, UnmappedBcFormat, UnmappedBcRecordReader};
@@ -312,17 +364,12 @@ fn correct_unmapped_counts_multi_bc(
                 None => continue,
             };
 
-            // Correct cell BC (tiered: identity fast path, then per-sample 1-edit lookup)
-            let corrected_cell = if sample_idx < per_sample_identity.len()
-                && per_sample_identity[sample_idx].contains(&cell_bc)
-            {
-                cell_bc
-            } else if sample_idx < per_sample_lookup.len() {
-                match per_sample_lookup[sample_idx].find_neighbors(cell_bc, false) {
-                    (Some(idx), 1) => per_sample_lookup[sample_idx].barcodes[idx],
-                    _ => continue,
-                }
-            } else {
+            // Apply the same identity-first, unique-neighbor correction used
+            // for mapped records during scatter.
+            let Some(corrected_cell) = samples
+                .get(sample_idx)
+                .and_then(|sample| sample.correct_barcode(cell_bc))
+            else {
                 continue;
             };
 
@@ -938,12 +985,51 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
+/// Historical record-count-based collation entry point.
+#[allow(clippy::too_many_arguments)]
 pub fn collate_with_temp<P1, P2>(
     input_dir: P1,
     rad_dir: P2,
     num_threads: u32,
     max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    compress_out: bool,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    const BYTES_PER_LEGACY_RECORD: u64 = 72;
+    const MIN_MEMORY_LIMIT: u64 = 256 * 1024 * 1024;
+    let memory_budget_bytes = u64::from(max_records)
+        .saturating_mul(BYTES_PER_LEGACY_RECORD)
+        .max(MIN_MEMORY_LIMIT);
+    collate_with_temp_memory(
+        input_dir,
+        rad_dir,
+        num_threads,
+        max_records,
+        memory_budget_bytes,
+        tsv_map,
+        total_to_collate,
+        compress_out,
+        cmdline,
+        version,
+        log,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::manual_clamp)]
+fn collate_with_temp_memory<P1, P2>(
+    input_dir: P1,
+    rad_dir: P2,
+    num_threads: u32,
+    max_records: u32,
+    memory_budget_bytes: u64,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
     compress_out: bool,
@@ -1098,51 +1184,23 @@ where
                 cell_bc_len,
             );
             let parsing_context = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
-
-            // Choose collation mode based on metadata or CLI flag.
-            // The two-round mode is more modular and generalizable to N levels;
-            // the fast mode is a single-pass optimization for 2-level protocols.
-            // Default to fast mode for now.
-            //
-            // TODO: read --collation-mode from CLI and pass through
-            let use_fast_path = true;
-
-            if use_fast_path {
-                info!(log, "Using fast single-pass collation mode");
-                do_collate_multi_bc_fast(
-                    input_dir,
-                    &rad_dir,
-                    parsing_context,
-                    cell_bc_len as u32,
-                    prelude,
-                    br,
-                    end_header_pos,
-                    num_threads,
-                    max_records,
-                    total_to_collate,
-                    compress_out,
-                    cmdline,
-                    version,
-                    log,
-                )
-            } else {
-                info!(log, "Using two-round collation mode");
-                do_collate_multi_bc_two_round(
-                    input_dir,
-                    &rad_dir,
-                    parsing_context,
-                    prelude,
-                    br,
-                    end_header_pos,
-                    num_threads,
-                    max_records,
-                    total_to_collate,
-                    compress_out,
-                    cmdline,
-                    version,
-                    log,
-                )
-            }
+            info!(log, "Using the optimized libradicl collator");
+            do_collate_multi_bc_fast(
+                input_dir,
+                &rad_dir,
+                parsing_context,
+                cell_bc_len as u32,
+                prelude,
+                br,
+                end_header_pos,
+                num_threads,
+                memory_budget_bytes,
+                total_to_collate,
+                compress_out,
+                cmdline,
+                version,
+                log,
+            )
         }
     }
 }
@@ -1150,12 +1208,11 @@ where
 /// Multi-barcode hierarchical collation — fast single-pass mode.
 ///
 /// This function handles RAD files with multiple barcodes per read (e.g., 10x Flex).
-/// It performs a single-pass collation where records are bucketed by corrected cell
-/// barcode (grouped by sample), producing a hierarchically-ordered output.
+/// It performs a single-pass scatter where records are bucketed by corrected
+/// sample/cell identity, followed by a parallel gather.
 ///
-/// The output is a single collated RAD file with chunks ordered as:
-///   [sample_0/cell_0, sample_0/cell_1, ..., sample_1/cell_0, ...]
-/// plus a `collation_manifest.bin` sidecar describing sample boundaries.
+/// Gather workers build buckets in parallel and the coordinator commits them
+/// in sample/bucket order, preserving the manifest's contiguous sample ranges.
 #[allow(clippy::too_many_arguments)]
 fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     input_dir: P1,
@@ -1166,7 +1223,7 @@ fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     mut br: BufReader<A>,
     end_header_pos: u64,
     num_threads: u32,
-    max_records: u32,
+    memory_budget_bytes: u64,
     total_to_collate: u64,
     compress_out: bool,
     cmdline: &str,
@@ -1288,12 +1345,16 @@ where
                 .map_err(|e| anyhow!("couldn't deserialize {}: {}", freq_path.display(), e))?;
 
             let valid_bcs: Vec<u64> = freq_map.keys().copied().collect();
-            info!(
-                log,
-                "Sample '{}': {} valid cell barcodes from permit_freq.bin",
-                sample_name,
-                valid_bcs.len().to_formatted_string(&Locale::en),
-            );
+            if valid_bcs.is_empty() {
+                debug!(log, "Sample '{}': no retained cell barcodes", sample_name);
+            } else {
+                info!(
+                    log,
+                    "Sample '{}': {} valid cell barcodes from permit_freq.bin",
+                    sample_name,
+                    valid_bcs.len().to_formatted_string(&Locale::en),
+                );
+            }
 
             for (bc, freq) in &freq_map {
                 all_cell_freqs.push((*bc, *freq, sample_idx));
@@ -1301,7 +1362,7 @@ where
 
             per_sample_valid_bcs.push(valid_bcs);
         } else {
-            info!(log, "Sample '{}': no permit freq (no reads)", sample_name);
+            debug!(log, "Sample '{}': no permit freq (no reads)", sample_name);
             per_sample_valid_bcs.push(Vec::new());
         }
     }
@@ -1337,18 +1398,17 @@ where
     }
     let sidx_to_ord = Arc::new(sidx_to_ord);
 
-    // Build the tsv_map equivalent: (composite_key, freq) pairs.
-    // The composite key encodes (sample_idx, corrected_cell_bc).  Note:
-    // composite_key uses the sparse plate sidx (matching `all_cell_freqs`
-    // and the bucket index in the scatter phase), NOT the manifest ordinal.
-    // The ordinal is only used when writing barcodes[0] into the output
-    // record — see the scatter loop below.
-    let tsv_map: Vec<(u64, u64)> = all_cell_freqs
-        .iter()
-        .map(|(bc, freq, sidx)| (make_composite_key(*sidx as u64, *bc), *freq))
-        .collect();
+    // Aggregate the manifest metadata while `all_cell_freqs` is resident. The
+    // same sorted vector is consumed below when constructing the bucket map,
+    // avoiding a second multi-million-entry `tsv_map` allocation.
+    let mut sample_chunk_counts: HashMap<usize, (u64, u64)> = HashMap::new();
+    for &(_, freq, sample_index) in &all_cell_freqs {
+        let entry = sample_chunk_counts.entry(sample_index).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += freq;
+    }
 
-    let expected_output_chunks = tsv_map.len() as u64;
+    let expected_output_chunks = all_cell_freqs.len() as u64;
     info!(
         log,
         "Total cells across all samples: {}, total records to collate: {}",
@@ -1371,6 +1431,8 @@ where
             "compressed_output": compress_out,
             "multi_barcode": true,
             "num_samples": num_samples,
+            "collation_mode": "optimized",
+            "memory_budget_bytes": memory_budget_bytes,
         });
         let cm_path = parent.join("collate.json");
         let mut cm_file = File::create(cm_path)?;
@@ -1410,500 +1472,130 @@ where
         }
     }
 
-    // Build output_cache: composite_key -> TempBucket
-    let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
-    let _total_allocated_records: u64 = 0;
+    // Partition corrected sample/cell groups into logical gather buckets.
+    // Physical temporary storage is owned by libradicl and is bounded by the
+    // number of scatter workers rather than the number of logical buckets.
+    let num_cell_groups = all_cell_freqs.len();
+    let mut group_to_bucket = AHashMap::<u64, u32>::with_capacity(num_cell_groups);
     let mut allocated_records: u64 = 0;
-    let mut temp_buckets = vec![(
-        0u32,
-        0u32,
-        Arc::new(libradicl::TempBucket::from_id_and_parent(0, parent)),
-    )];
-    let max_records_per_thread = (max_records / n_workers as u32) + 1;
+    let mut bucket_summaries = Vec::new(); // (groups, expected records)
+    // Keep logical bucket sizing independent of the byte budget. Smaller
+    // budgets reduce spool buffering and gather concurrency in libradicl;
+    // creating more logical buckets would instead increase extent metadata
+    // and can perversely raise RSS.
+    let max_records_per_thread = (30_000_000 / n_workers as u32) + 1;
     let mut num_bucket_chunks = 0u32;
-    {
-        let moutput_cache = Arc::make_mut(&mut output_cache);
-        for rec in tsv_map.iter() {
-            moutput_cache.insert(rec.0, temp_buckets.last().unwrap().2.clone());
-            allocated_records += rec.1;
-            num_bucket_chunks += 1;
-            if allocated_records >= max_records_per_thread as u64 {
-                temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
-                temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
-                let tn = temp_buckets.len() as u32;
-                temp_buckets.push((
-                    0,
-                    0,
-                    Arc::new(libradicl::TempBucket::from_id_and_parent(tn, parent)),
-                ));
-                allocated_records = 0;
-                num_bucket_chunks = 0;
-            }
+    let mut current_sample = None;
+    for (cell_barcode, frequency, sample_index) in all_cell_freqs {
+        if num_bucket_chunks > 0
+            && (current_sample != Some(sample_index)
+                || allocated_records >= max_records_per_thread as u64)
+        {
+            bucket_summaries.push((num_bucket_chunks, allocated_records));
+            allocated_records = 0;
+            num_bucket_chunks = 0;
         }
+        current_sample = Some(sample_index);
+        let bucket_id = bucket_summaries.len() as u32;
+        let composite_key = make_composite_key(sample_index as u64, cell_barcode);
+        group_to_bucket.insert(composite_key, bucket_id);
+        allocated_records += frequency;
+        num_bucket_chunks += 1;
     }
     if num_bucket_chunks > 0 {
-        temp_buckets.last_mut().unwrap().0 = num_bucket_chunks;
-        temp_buckets.last_mut().unwrap().1 = allocated_records as u32;
+        bucket_summaries.push((num_bucket_chunks, allocated_records));
     }
     info!(
         log,
-        "Generated {} temporary buckets for multi-barcode collation.",
-        temp_buckets.len()
+        "Generated {} logical buckets for multi-barcode collation.",
+        bucket_summaries.len()
     );
 
-    let nbuckets = temp_buckets.len();
-    let hdr = &prelude.hdr;
-
-    // Progress bar
-    let sty = ProgressStyle::default_bar()
-        .template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {msg}",
-        )
-        .expect("invalid template")
-        .progress_chars("##-");
-    let pbar_inner = ProgressBar::with_draw_target(
-        Some(hdr.num_chunks),
-        ProgressDrawTarget::stderr_with_hz(5u8),
-    );
-    pbar_inner.set_style(sty.clone());
-    pbar_inner.tick();
-
-    // Work queue for scatter phase
-    let _q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
-    let _chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
-
-    // SCATTER PHASE: Read chunks, correct both barcodes, write to temp buckets
-    let _thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
-
-    let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &rec_context);
-    let _loc_buffer_size =
-        (min_rec_len * max_records as usize / (nbuckets * n_workers)).clamp(1000, 262_144usize);
-
-    let sample_permit_map = Arc::new(sample_permit_map);
-    let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
-    let rec_context = Arc::new(rec_context);
-
-    // Build tiered cell correction structure:
-    // Tier 1 (per-sample identity): HashSet of valid barcodes for each sample.
-    //   A valid barcode corrects to itself within that sample. This is the fast path.
-    //   The valid set differs per sample — the same barcode may be valid in one sample
-    //   but not another (different cell populations per sample).
-    // Tier 2 (per-sample BarcodeLookupMap): for barcodes NOT in the identity set,
-    //   do on-the-fly 1-edit neighbor lookup. Much cheaper than pre-materializing
-    //   the full correction HashMap (which can be 100M+ entries).
-    let cell_correction = {
-        // Get cell BC length from the first non-empty sample's freq file
-        let cell_bclen = {
-            let freq_path = sample_names.iter().find_map(|name| {
-                let p = parent.join(format!("sample_{}/permit_freq.bin", name));
-                if p.exists() { Some(p) } else { None }
-            });
-            if let Some(fp) = freq_path {
-                let mut f = File::open(fp)?;
-                let mut hdr = [0u8; 16];
-                f.read_exact(&mut hdr)?;
-                hdr.pread::<u64>(8).unwrap_or(16) as u32
+    let observed_sample_to_index: AHashMap<u64, usize> = sample_permit_map
+        .iter()
+        .filter_map(|(&observed, corrected)| {
+            sample_bc_to_idx
+                .get(corrected)
+                .map(|&sample_index| (observed, sample_index))
+        })
+        .collect();
+    let total_valid_cells: usize = per_sample_valid_bcs.iter().map(Vec::len).sum();
+    let mut sample_corrections = Vec::with_capacity(per_sample_valid_bcs.len());
+    for (sample_index, valid_barcodes) in per_sample_valid_bcs.into_iter().enumerate() {
+        let ordinal = sidx_to_ord[sample_index];
+        let correction = MultiBarcodeSampleCorrection::new(
+            if ordinal == usize::MAX {
+                0
             } else {
-                16u32
-            }
-        };
-
-        // Per-sample identity sets: valid barcodes that self-correct within each sample
-        let per_sample_identity: Vec<std::collections::HashSet<u64, ahash::RandomState>> =
-            per_sample_valid_bcs
-                .iter()
-                .map(|valid_bcs| valid_bcs.iter().copied().collect())
-                .collect();
-
-        // Per-sample BarcodeLookupMap for 1-edit correction
-        let per_sample_lookup: Vec<libradicl::BarcodeLookupMap> = per_sample_valid_bcs
-            .iter()
-            .map(|valid_bcs| libradicl::BarcodeLookupMap::new(valid_bcs.clone(), cell_bclen))
-            .collect();
-
-        let total_identity: usize = per_sample_identity.iter().map(|s| s.len()).sum();
-        let total_lookup: usize = per_sample_lookup.iter().map(|m| m.barcodes.len()).sum();
-        info!(
-            log,
-            "Cell correction: {} total identity barcodes across {} samples (fast path), {} total in lookup maps (bc_len={})",
-            total_identity.to_formatted_string(&Locale::en),
-            num_samples,
-            total_lookup.to_formatted_string(&Locale::en),
-            cell_bclen,
+                ordinal as u64
+            },
+            valid_barcodes,
+            cell_bc_len,
         );
-        Arc::new((per_sample_identity, per_sample_lookup))
-    };
-
-    // SCATTER PHASE: Multi-threaded scatter using header-peek pattern
-    info!(
-        log,
-        "Starting scatter phase ({} worker threads)...", n_workers
-    );
-
-    let q = Arc::new(ArrayQueue::<(usize, Vec<u8>)>::new(4 * n_workers));
-    let chunks_to_process = Arc::new(AtomicUsize::new(hdr.num_chunks as usize));
-    let mut thread_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
-
-    let min_rec_len = MultiBarcodeReadRecord::nbytes(1, &rec_context);
-    let loc_buffer_size =
-        (min_rec_len * max_records as usize / (nbuckets * n_workers)).clamp(1000, 262_144usize);
-
-    let sample_permit_map = Arc::new(sample_permit_map);
-    let sample_bc_to_idx = Arc::new(sample_bc_to_idx);
-    let rec_context = Arc::new(rec_context);
-
-    for _worker in 0..n_workers {
-        let in_q = q.clone();
-        let chunks_remaining = chunks_to_process.clone();
-        let oc = output_cache.clone();
-        let sample_map = sample_permit_map.clone();
-        let sample_idx_map = sample_bc_to_idx.clone();
-        let cell_corr = cell_correction.clone();
-        let ctx = rec_context.clone();
-        let loc_temp_buckets = temp_buckets.clone();
-        let sidx_to_ord = sidx_to_ord.clone();
-        let expected_ori_mfo: libradicl::rad_types::MappedFragmentOrientation = expected_ori.into();
-
-        let handle = thread::spawn(move || {
-            // Thread-local buffer backing: one contiguous allocation, split into per-bucket cursors
-            let mut local_buffer_backing = vec![0u8; loc_buffer_size * nbuckets];
-            let mut local_buffers: Vec<Cursor<&mut [u8]>> = Vec::with_capacity(nbuckets);
-            let mut tslice = local_buffer_backing.as_mut_slice();
-            for _ in 0..nbuckets {
-                let (first, rest) = tslice.split_at_mut(loc_buffer_size);
-                local_buffers.push(Cursor::new(first));
-                tslice = rest;
-            }
-
-            let mut tbuf = vec![0u8; 4096]; // skip buffer for unmatched records
-            let mut processed: u64 = 0;
-
-            while chunks_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some((_chunk_num, buf)) = in_q.pop() {
-                    chunks_remaining.fetch_sub(1, Ordering::SeqCst);
-
-                    // Parse chunk using the same pattern as dump_corrected_cb_chunk_to_temp_file_generic
-                    let mut reader = BufReader::new(&buf[..]);
-
-                    // Read chunk header
-                    let mut hdr_buf = [0u8; 8];
-                    reader.read_exact(&mut hdr_buf).unwrap();
-                    let _nbytes = hdr_buf.pread::<u32>(0).unwrap();
-                    let nrec = hdr_buf.pread::<u32>(4).unwrap();
-
-                    for _ in 0..nrec {
-                        // Two-pass read: header first (peek), then body
-                        let mut tup =
-                            MultiBarcodeReadRecord::from_bytes_collatable_header(&mut reader, &ctx)
-                                .expect("could read multi-BC header");
-
-                        // Extract sample BC (level 0) and look up correction
-                        let sample_bc: u64 = tup.barcodes[0];
-                        let corrected_sample = match sample_map.get(&sample_bc) {
-                            Some(&cs) => cs,
-                            None => {
-                                // Skip alignment data for unmatched sample BC
-                                let req_len =
-                                    MultiBarcodeReadRecord::nbytes_aln(&ctx) * tup.naln() as usize;
-                                if req_len > tbuf.len() {
-                                    tbuf.resize(req_len, 0);
-                                }
-                                reader.read_exact(&mut tbuf[..req_len]).unwrap();
-                                if tbuf.len() > 4096 {
-                                    tbuf.resize(4096, 0);
-                                    tbuf.shrink_to_fit();
-                                }
-                                continue;
-                            }
-                        };
-                        let sample_idx = match sample_idx_map.get(&corrected_sample) {
-                            Some(&idx) => idx,
-                            None => {
-                                let req_len =
-                                    MultiBarcodeReadRecord::nbytes_aln(&ctx) * tup.naln() as usize;
-                                if req_len > tbuf.len() {
-                                    tbuf.resize(req_len, 0);
-                                }
-                                reader.read_exact(&mut tbuf[..req_len]).unwrap();
-                                if tbuf.len() > 4096 {
-                                    tbuf.resize(4096, 0);
-                                    tbuf.shrink_to_fit();
-                                }
-                                continue;
-                            }
-                        };
-
-                        // Look up cell BC correction (tiered: per-sample identity fast path, then 1-edit lookup)
-                        let cell_bc: u64 = tup.collate_key();
-                        let (ref per_sample_identity, ref per_sample_lookup) = *cell_corr;
-                        let corrected_cell = if per_sample_identity[sample_idx].contains(&cell_bc) {
-                            // Fast path: valid barcode in this sample, corrects to itself
-                            cell_bc
-                        } else {
-                            // Slow path: 1-edit neighbor lookup in per-sample BarcodeLookupMap
-                            match per_sample_lookup[sample_idx].find_neighbors(cell_bc, false) {
-                                (Some(idx), 1) => {
-                                    // Unique 1-edit neighbor found — correct to it
-                                    per_sample_lookup[sample_idx].barcodes[idx]
-                                }
-                                _ => {
-                                    // No correction available — skip alignment data
-                                    let req_len = MultiBarcodeReadRecord::nbytes_aln(&ctx)
-                                        * tup.naln() as usize;
-                                    if req_len > tbuf.len() {
-                                        tbuf.resize(req_len, 0);
-                                    }
-                                    reader.read_exact(&mut tbuf[..req_len]).unwrap();
-                                    if tbuf.len() > 4096 {
-                                        tbuf.resize(4096, 0);
-                                        tbuf.shrink_to_fit();
-                                    }
-                                    continue;
-                                }
-                            }
-                        };
-
-                        // Compute composite key for bucket lookup.
-                        // Uses (sample_idx, corrected_cell_bc) — matching tsv_map
-                        // and gather phase.
-                        let composite_key =
-                            ((sample_idx as u64) << cell_bc_bits) | (corrected_cell & cell_bc_mask);
-
-                        if let Some(bucket) = oc.get(&composite_key) {
-                            // Read full record (alignments) with orientation filtering
-                            let mut rr = MultiBarcodeReadRecord::from_bytes_with_header_retain_ori(
-                                &mut reader,
-                                &mut tup,
-                                &ctx,
-                                &expected_ori_mfo,
-                            );
-
-                            if rr.is_empty() {
-                                continue;
-                            }
-
-                            // Set corrected barcodes.  Store the MANIFEST ORDINAL
-                            // (dense position 0..num_present_samples-1) in
-                            // barcodes[0], NOT the sparse plate sidx — quant.rs
-                            // indexes its sample_names Vec by this ordinal
-                            // directly.  Writing the plate sidx here is unsafe
-                            // when present samples don't occupy plate positions
-                            // 0..n contiguously, because the manifest is densely
-                            // packed by present-sample order.
-                            // See COMBINE-lab/simpleaf#195.
-                            let ordinal = sidx_to_ord[sample_idx];
-                            debug_assert_ne!(
-                                ordinal,
-                                usize::MAX,
-                                "scatter encountered sample_idx={} with no manifest ordinal",
-                                sample_idx
-                            );
-                            rr.set_collation_key_at_level(0, ordinal as u64);
-                            rr.set_collate_key(corrected_cell);
-
-                            let na = tup.naln() as usize;
-                            let nb = MultiBarcodeReadRecord::nbytes(na as u32, &ctx);
-
-                            let buffidx = bucket.bucket_id as usize;
-                            let bcursor = &mut local_buffers[buffidx];
-                            let len = bcursor.position() as usize;
-
-                            // Flush if buffer would overflow
-                            if len + nb >= loc_buffer_size {
-                                let mut filebuf = bucket.bucket_writer.lock().unwrap();
-                                filebuf.write_all(&bcursor.get_ref()[..len]).unwrap();
-                                bcursor.set_position(0);
-                            }
-
-                            // Write corrected record to local buffer
-                            rr.write(bcursor, &ctx).expect("can write record");
-                            bucket.num_records_written.fetch_add(1, Ordering::SeqCst);
-                            bucket
-                                .num_bytes_written
-                                .fetch_add(nb as u64, Ordering::SeqCst);
-                            processed += 1;
-                        } else {
-                            // No bucket for this composite key — skip alignment data
-                            let req_len =
-                                MultiBarcodeReadRecord::nbytes_aln(&ctx) * tup.naln() as usize;
-                            if req_len > tbuf.len() {
-                                tbuf.resize(req_len, 0);
-                            }
-                            reader.read_exact(&mut tbuf[..req_len]).unwrap();
-                            if tbuf.len() > 4096 {
-                                tbuf.resize(4096, 0);
-                                tbuf.shrink_to_fit();
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Flush remaining local buffers
-            for (bucket_id, lb) in local_buffers.iter().enumerate() {
-                let len = lb.position() as usize;
-                if len > 0 {
-                    let mut filebuf = loc_temp_buckets[bucket_id].2.bucket_writer.lock().unwrap();
-                    filebuf.write_all(&lb.get_ref()[..len]).unwrap();
-                }
-            }
-            processed
-        });
-        thread_handles.push(handle);
-    }
-
-    // Main thread: read chunks and push to work queue
-    let mut buf = vec![0u8; 65536];
-    for cell_num in 0..(hdr.num_chunks as usize) {
-        let (nbytes_chunk, nrec_chunk) =
-            chunk::Chunk::<MultiBarcodeReadRecord>::read_header(&mut br);
-        buf.resize(nbytes_chunk as usize, 0);
-        buf.pwrite::<u32>(nbytes_chunk, 0).unwrap();
-        buf.pwrite::<u32>(nrec_chunk, 4).unwrap();
-        br.read_exact(&mut buf[8..]).unwrap();
-
-        let mut bclone = (cell_num, buf.clone());
-        while let Err(t) = q.push(bclone) {
-            bclone = t;
-            while q.is_full() {}
-        }
-        pbar_inner.inc(1);
-    }
-    pbar_inner.finish_and_clear();
-
-    // Wait for workers
-    let mut total_scattered: u64 = 0;
-    for handle in thread_handles {
-        total_scattered += handle.join().unwrap();
+        sample_corrections.push(correction);
     }
     info!(
         log,
-        "Scatter phase complete: {} records scattered",
-        total_scattered.to_formatted_string(&Locale::en)
+        "Cell correction: {} valid barcodes across {} sample positions (bc_len={})",
+        total_valid_cells.to_formatted_string(&Locale::en),
+        num_samples,
+        cell_bc_len,
     );
 
-    // Flush all temp bucket writers
-    for (_, _, bucket) in &temp_buckets {
-        let bw = &bucket.bucket_writer;
-        let mut writer = bw.lock().unwrap();
-        writer.flush().unwrap();
-    }
+    let plan = Arc::new(MultiBarcodeCollationPlan::new(
+        observed_sample_to_index,
+        sample_corrections,
+        group_to_bucket,
+        cell_bc_bits as u32,
+        bucket_summaries.len(),
+    )?);
+    info!(
+        log,
+        "Starting libradicl multi-barcode collation with {} workers and a {:.2} GiB memory budget",
+        n_workers,
+        memory_budget_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+    );
+    let engine_stats = collate_multi_barcode(
+        &mut br,
+        prelude.hdr.num_chunks,
+        rec_context.clone(),
+        plan.clone(),
+        owriter.clone(),
+        parent,
+        expected_ori.into(),
+        MultiBarcodeCollationOptions {
+            num_threads: num_threads as usize,
+            memory_budget_bytes,
+            compress_output: compress_out,
+        },
+    )?;
+    let total_output_chunks = engine_stats.output_chunks;
+    info!(
+        log,
+        "Scatter phase complete: {} records in {:.2}s; gather produced {} chunks in {:.2}s ({} spool files, {} gather workers, {} KiB flush threshold)",
+        engine_stats
+            .records_scattered
+            .to_formatted_string(&Locale::en),
+        engine_stats.scatter_duration.as_secs_f64(),
+        total_output_chunks.to_formatted_string(&Locale::en),
+        engine_stats.gather_duration.as_secs_f64(),
+        engine_stats.num_scatter_workers,
+        engine_stats.num_gather_workers,
+        engine_stats.spool_flush_limit / 1024,
+    );
 
     // Correct unmapped barcode counts for multi-barcode data
     let unmapped_file = i_dir.join("unmapped_bc_count.bin");
-    {
-        let (ref per_sample_id, ref per_sample_lu) = *cell_correction;
-        correct_unmapped_counts_multi_bc(
-            &unmapped_file,
-            &sample_permit_map,
-            &sample_bc_to_idx,
-            per_sample_id,
-            per_sample_lu,
-            parent,
-        );
-    }
-
-    // GATHER PHASE: Merge temp buckets into final collated file
-    info!(
-        log,
-        "Starting gather phase ({} worker threads)...", n_workers
+    correct_unmapped_counts_multi_bc(
+        &unmapped_file,
+        &sample_permit_map,
+        &sample_bc_to_idx,
+        plan.samples(),
+        parent,
     );
 
-    let pbar_gather = ProgressBar::with_draw_target(
-        Some(temp_buckets.len() as u64),
-        ProgressDrawTarget::stderr_with_hz(5u8),
-    );
-    pbar_gather.set_style(sty);
-    pbar_gather.tick();
-
-    // Multi-threaded gather: workers pop temp buckets from a queue,
-    // call collate_temporary_bucket_twopass_generic, delete temp files.
-    let fq = Arc::new(ArrayQueue::<(u32, u32, Arc<libradicl::TempBucket>)>::new(
-        (n_workers / 2).max(1) + n_workers,
-    ));
-    let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
-
-    let mut gather_handles: Vec<thread::JoinHandle<u64>> = Vec::with_capacity(n_workers);
-
-    for _worker in 0..n_workers {
-        let in_q = fq.clone();
-        let buckets_remaining = buckets_to_process.clone();
-        let input_dir_clone: PathBuf = parent.to_path_buf();
-        let owriter_clone = owriter.clone();
-        let pbar_clone = pbar_gather.clone();
-        let ctx = rec_context.clone();
-        let handle = thread::spawn(move || {
-            let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-            let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
-            let mut local_chunks = 0u64;
-            let p = std::path::Path::new(&input_dir_clone);
-
-            while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some(temp_bucket) = in_q.pop() {
-                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
-
-                    let nrec = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
-                    if nrec == 0 {
-                        pbar_clone.inc(1);
-                        continue;
-                    }
-
-                    let fname = p.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    let tfile = File::open(&fname).expect("couldn't open temporary file");
-                    let mut treader = BufReader::new(tfile);
-
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<
-                        u64,
-                        _,
-                        _,
-                        MultiBarcodeReadRecord,
-                    >(
-                        &mut treader,
-                        &ctx,
-                        nrec,
-                        &owriter_clone,
-                        compress_out,
-                        &mut cmap,
-                    ) as u64;
-
-                    drop(treader);
-                    std::fs::remove_file(&fname).ok();
-                    pbar_clone.inc(1);
-                }
-            }
-            local_chunks
-        });
-        gather_handles.push(handle);
-    }
-
-    // Push temp buckets to the gather queue
-    for tb in temp_buckets.iter() {
-        let mut bclone = (tb.0, tb.1, tb.2.clone());
-        while let Err(t) = fq.push(bclone) {
-            bclone = t;
-            while fq.is_full() {}
-        }
-    }
-
-    // Wait for gather workers
-    let mut total_output_chunks: u64 = 0;
-    for handle in gather_handles {
-        total_output_chunks += handle.join().unwrap();
-    }
-    pbar_gather.finish_and_clear();
-
-    // Build manifest from the tsv_map (which encodes sample→cell mappings)
+    // Build the manifest from the aggregate counts computed before collation.
     let mut manifest = CollationManifest::new(vec!["sample".to_string(), "cell".to_string()]);
-
-    // Group cells by sample from the tsv_map composite keys
-    let mut sample_chunk_counts: HashMap<usize, (u64, u64)> = HashMap::new(); // sample_idx -> (num_cells, num_records)
-    for (composite_key, freq) in &tsv_map {
-        let sidx = (*composite_key >> cell_bc_bits) as usize;
-        let entry = sample_chunk_counts.entry(sidx).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += freq;
-    }
 
     let mut chunk_offset: u64 = 0;
     let mut sample_indices: Vec<usize> = sample_chunk_counts.keys().copied().collect();
@@ -1973,7 +1665,7 @@ where
 ///          the final collated file and builds the collation manifest.
 ///
 /// This mode is more modular and generalizes to N barcode levels by adding more rounds.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn do_collate_multi_bc_two_round<P1, P2, A: Read + Seek>(
     input_dir: P1,
     rad_dir: P2,

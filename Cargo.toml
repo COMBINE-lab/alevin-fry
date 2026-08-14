@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.17.0" }
+libradicl = { version = "0.17.0", git = "https://github.com/COMBINE-lab/libradicl.git", rev = "08ae41640a4da089ec33ad31a4bf927434e2557b" }
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = "0.8.12"

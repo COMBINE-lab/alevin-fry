@@ -9,6 +9,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use libradicl::chunk::Chunk;
+use libradicl::collation::CollationManifest;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{
     RadIntId, RadType, TagDesc, TagMap, TagSection, TagSectionLabel, TagValue,
@@ -510,6 +511,30 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
         collated_prelude.hdr.num_chunks,
         (num_samples * cells_per_sample) as u64
     );
+    let collated_context = collated_prelude
+        .get_record_context::<MultiBarcodeRecordContext>()
+        .unwrap();
+    let manifest =
+        CollationManifest::read_from_file(&output_dir.join("collation_manifest.bin")).unwrap();
+    let mut chunk_index = 0_u64;
+    for (sample_ordinal, group) in manifest.sample_groups.iter().enumerate() {
+        assert_eq!(group.chunk_start, chunk_index);
+        for _ in 0..group.num_chunks {
+            let chunk = Chunk::<MultiBarcodeReadRecord>::from_bytes(
+                &mut collated_reader,
+                &collated_context,
+            );
+            assert!(
+                chunk
+                    .reads
+                    .iter()
+                    .all(|record| record.barcodes[0] == sample_ordinal as u64),
+                "sample chunks are not physically contiguous"
+            );
+            chunk_index += 1;
+        }
+    }
+    assert_eq!(chunk_index, collated_prelude.hdr.num_chunks);
 
     let quant_opts = QuantOpts::builder()
         .input_dir(&output_dir)
