@@ -99,19 +99,10 @@ polars-io = { version = "0.45.1", features = ["csv"] }
 [profile.release]
 #debug = true
 lto = "thin"
-# `panic = "abort"` drops the unwind tables and the landing pads around every
-# call that could unwind. On the toy dataset that is worth ~19% of the wall
-# clock of `quant -r cr-like-em` (5.71s -> 4.60s, 9 interleaved runs) and ~19%
-# of the binary size, because the EM inner loops stop being fenced by cleanup
-# paths. Nothing here catches a panic or relies on unwinding: there is no
-# `catch_unwind`, and mutex poisoning is only ever `unwrap`ed. A panicking
-# worker thread now kills the process instead of surfacing as a `join` error,
-# which for a batch CLI is the more honest outcome. Cargo ignores this setting
-# for the test and bench profiles, so `#[should_panic]` still works.
+# alevin-fry is a batch CLI and has no panic-recovery boundary. Abort instead
+# of unwinding in release binaries; Cargo does not apply this release setting
+# to the test and benchmark profiles.
 panic = "abort"
-# codegen-units = 1 was measured and rejected: on top of `panic = "abort"` it
-# buys another 0.4% on `quant -r cr-like-em` and costs 4% on `collate`, for
-# ~3.5x the crate rebuild time (5.7s -> 23.0s).
 #codegen-units=1
 opt-level = 3
 
