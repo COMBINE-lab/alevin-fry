@@ -1407,17 +1407,15 @@ fn build_sample_permit_map(
             // Generate 1-edit neighbors for ALL observed rotation barcodes
             let all_observed: Vec<u64> =
                 sample_info.rotation_to_canonical.keys().copied().collect();
-            let full_map = afutils::generate_unambiguous_permitlist_map(
+            let full_map = afutils::generate_unambiguous_correction_map(
                 &all_observed,
                 sample_info.barcode_len,
+                |observed| sample_info.rotation_to_canonical[&observed],
             )
             .map_err(|e| anyhow!("failed to generate sample permit map: {}", e))?;
-            for (raw, corrected) in &full_map {
+            for (raw, canonical) in &full_map {
                 if !permit_map.contains_key(raw) {
-                    // Map the 1-edit neighbor to the same canonical as its corrected barcode
-                    if let Some(&canon) = sample_info.rotation_to_canonical.get(corrected) {
-                        permit_map.insert(*raw, canon);
-                    }
+                    permit_map.insert(*raw, *canonical);
                 }
             }
             info!(
@@ -2518,5 +2516,19 @@ mod cell_barcode_correction_tests {
         assert_eq!(permit_map.get(&5), Some(&5));
         assert!(!permit_map.contains_key(&1));
         assert_eq!(sample_indices, HashMap::from([(0, 0), (5, 1)]));
+
+        let rotations_of_one_sample = SampleBarcodeInfo {
+            canonical_barcodes: vec![9],
+            rotation_to_canonical: HashMap::from([(0, 9), (5, 9)]),
+            canonical_to_name: HashMap::new(),
+            barcode_len: 2,
+        };
+        let (permit_map, _) = build_sample_permit_map(
+            &rotations_of_one_sample,
+            &SampleCorrectionMode::OneEdit,
+            &log,
+        )
+        .unwrap();
+        assert_eq!(permit_map.get(&1), Some(&9));
     }
 }

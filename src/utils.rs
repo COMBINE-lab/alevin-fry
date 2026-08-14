@@ -1078,19 +1078,39 @@ pub(crate) fn generate_unambiguous_permitlist_map(
     permit_bcs: &[u64],
     bc_length: usize,
 ) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
+    generate_unambiguous_correction_map(permit_bcs, bc_length, |barcode| barcode)
+}
+
+/// Build an order-independent correction map from permitted source barcodes to
+/// caller-defined targets.
+///
+/// Multiple source barcodes may intentionally share a target, as happens when
+/// Flex sample-barcode rotations identify the same canonical sample. A neighbor
+/// is ambiguous only when its candidate sources lead to different targets.
+pub(crate) fn generate_unambiguous_correction_map<F>(
+    permit_bcs: &[u64],
+    bc_length: usize,
+    target_for: F,
+) -> Result<HashMap<u64, u64>, Box<dyn Error>>
+where
+    F: Fn(u64) -> u64,
+{
     let mut correction_map = HashMap::with_capacity(10 * permit_bcs.len());
+    let mut exact_barcodes = HashSet::with_capacity(permit_bcs.len());
     for &bc in permit_bcs {
-        correction_map.insert(bc, bc);
+        exact_barcodes.insert(bc);
+        correction_map.insert(bc, target_for(bc));
     }
 
     let mut neighbors = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
     let mut ambiguous = HashSet::new();
     for &bc in permit_bcs {
+        let target = target_for(bc);
         get_all_one_edit_neighbors(bc, bc_length, &mut neighbors)?;
         for &neighbor in &neighbors {
-            // An exact retained barcode always maps to itself, regardless of
-            // whether it is also a one-edit neighbor of another retained one.
-            if correction_map.get(&neighbor) == Some(&neighbor) {
+            // An exact permitted source always keeps its explicit target,
+            // regardless of neighboring permitted sources.
+            if exact_barcodes.contains(&neighbor) {
                 continue;
             }
 
@@ -1098,12 +1118,12 @@ pub(crate) fn generate_unambiguous_permitlist_map(
                 continue;
             }
             match correction_map.get(&neighbor).copied() {
-                Some(previous) if previous != bc => {
+                Some(previous) if previous != target => {
                     correction_map.remove(&neighbor);
                     ambiguous.insert(neighbor);
                 }
                 None => {
-                    correction_map.insert(neighbor, bc);
+                    correction_map.insert(neighbor, target);
                 }
                 _ => {}
             }
