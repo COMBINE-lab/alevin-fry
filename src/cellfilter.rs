@@ -9,6 +9,7 @@
 
 use crate::diagnostics;
 use crate::knee_finding;
+use crate::prog_opts::CellBarcodeCorrectionStrategy;
 use crate::prog_opts::GenPermitListOpts;
 use crate::prog_opts::SampleBarcodeOri;
 use crate::prog_opts::SampleCorrectionMode;
@@ -101,6 +102,136 @@ fn populate_unfiltered_barcode_map<T: Read>(
     hm
 }
 
+/// What happened to one unmatched cell barcode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CorrectionOutcome {
+    /// Correct it to this retained barcode.
+    Corrected(u64),
+    /// It has neighbours in the retained list, but none of them wins.
+    Ambiguous,
+    /// It has no neighbour in the retained list at all.
+    NotFound,
+}
+
+/// Cell Ranger's 0.975 confidence threshold, represented exactly as 39/40.
+const BARCODE_CONFIDENCE_NUMERATOR: u128 = 39;
+const BARCODE_CONFIDENCE_DENOMINATOR: u128 = 40;
+
+/// Capture retained-barcode weights before correcting any unmatched barcode.
+///
+/// Cell Ranger's count prior is explicitly the observed whitelist counts
+/// *prior to correction*. Keeping the weights aligned with `bcmap.barcodes`
+/// both freezes those semantics and replaces a hash-table lookup in the inner
+/// candidate loop with an indexed vector access.
+fn retained_barcode_weights(bcmap: &BarcodeLookupMap, count_for: impl Fn(u64) -> u64) -> Vec<u64> {
+    bcmap
+        .barcodes
+        .iter()
+        .map(|&barcode| {
+            count_for(barcode)
+                .checked_add(1)
+                .expect("retained barcode count overflow while applying Laplace smoothing")
+        })
+        .collect()
+}
+
+/// Resolve an unmatched barcode with the Cell Ranger-inspired frequency rule.
+///
+/// Cell Ranger walks every single-substitution neighbour of the observed
+/// barcode, keeps the ones on the whitelist, and scores each candidate by
+///
+/// ```text
+/// likelihood = P(sequencing error at this position | base quality)
+///              * (1 + observed count of the candidate)
+/// ```
+///
+/// then corrects to the best candidate when its share of the summed likelihood
+/// reaches 0.975. The `1 +` is Laplace smoothing.
+///
+/// **The quality term is absent here, and cannot be recovered.** A RAD file
+/// stores the barcode 2-bit packed and does not carry the base qualities that
+/// produced it. Cell Ranger uses a flat `BC_MAX_QV` when qualities are absent;
+/// that common error probability cancels from the ratio, leaving the count
+/// prior implemented here.
+///
+/// The candidate set also differs: Cell Ranger scores against the whole
+/// whitelist, while this function scores against the barcodes alevin-fry has
+/// retained after applying `--min-reads`. It is therefore Cell Ranger-inspired,
+/// not an exact reproduction of Cell Ranger's correction pipeline.
+fn frequency_correct(
+    ubc: u64,
+    barcode_len: usize,
+    bcmap: &BarcodeLookupMap,
+    candidate_weights: &[u64],
+) -> CorrectionOutcome {
+    debug_assert!(barcode_len <= 32);
+    debug_assert_eq!(bcmap.barcodes.len(), candidate_weights.len());
+
+    let mut best: Option<(u64, u64)> = None;
+    let mut total_weight = 0u128;
+
+    // Generate substitutions in place. `get_all_snps` returns an allocated
+    // vector, which would otherwise allocate 3 * barcode_len entries for every
+    // distinct unmatched barcode on this hot path.
+    for bit_offset in (0..2 * barcode_len).step_by(2) {
+        let base_mask = 3u64 << bit_offset;
+        let observed_base = (ubc & base_mask) >> bit_offset;
+        let cleared = ubc & !base_mask;
+
+        for replacement in 0..4u64 {
+            if replacement == observed_base {
+                continue;
+            }
+            let candidate = cleared | (replacement << bit_offset);
+            let Some(index) = bcmap.find_exact(candidate) else {
+                continue;
+            };
+
+            let corrected = bcmap.barcodes[index];
+            let weight = candidate_weights[index];
+            total_weight += u128::from(weight);
+            // Ties go to the larger packed barcode, matching Cell Ranger's
+            // `max` over `(likelihood, barcode)` pairs.
+            match best {
+                Some(current) if current >= (weight, corrected) => {}
+                _ => best = Some((weight, corrected)),
+            }
+        }
+    }
+
+    match best {
+        None => CorrectionOutcome::NotFound,
+        Some((best_weight, corrected))
+            if u128::from(best_weight) * BARCODE_CONFIDENCE_DENOMINATOR
+                >= total_weight * BARCODE_CONFIDENCE_NUMERATOR =>
+        {
+            CorrectionOutcome::Corrected(corrected)
+        }
+        Some(_) => CorrectionOutcome::Ambiguous,
+    }
+}
+
+fn correct_unmatched_cell_barcode(
+    ubc: u64,
+    barcode_len: usize,
+    bcmap: &BarcodeLookupMap,
+    strategy: CellBarcodeCorrectionStrategy,
+    candidate_weights: &[u64],
+) -> CorrectionOutcome {
+    match strategy {
+        CellBarcodeCorrectionStrategy::Unique => match bcmap.find_neighbors(ubc, false) {
+            (Some(index), 1) if bcmap.barcodes[index] != ubc => {
+                CorrectionOutcome::Corrected(bcmap.barcodes[index])
+            }
+            (Some(_), count) if count > 1 => CorrectionOutcome::Ambiguous,
+            _ => CorrectionOutcome::NotFound,
+        },
+        CellBarcodeCorrectionStrategy::Frequency => {
+            frequency_correct(ubc, barcode_len, bcmap, candidate_weights)
+        }
+    }
+}
+
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_unfiltered(
     hm: DashMap<u64, u64, ahash::RandomState>,
@@ -176,9 +307,16 @@ fn process_unfiltered(
         bcmap2.barcodes.len().to_formatted_string(&Locale::en)
     );
 
-    // finally, we'll go through the set of unmatched barcodes
-    // and try to rescue those that have a *unique* neighbor in the
-    // list of retained barcodes.
+    let candidate_weights = match gpl_opts.cell_bc_correction {
+        CellBarcodeCorrectionStrategy::Unique => Vec::new(),
+        CellBarcodeCorrectionStrategy::Frequency => retained_barcode_weights(&bcmap2, |barcode| {
+            hm.get(&barcode).map_or(0, |count| *count)
+        }),
+    };
+
+    // Finally, try to rescue each distinct unmatched barcode according to the
+    // selected strategy. Frequency weights were captured above and remain
+    // fixed even as corrected counts are added to `hm`.
 
     //let mut found_exact = 0usize;
     let mut found_approx = 0usize;
@@ -196,36 +334,30 @@ fn process_unfiltered(
     let mut corrected_list = Vec::<(u64, u64)>::with_capacity(1_000_000);
 
     for (count, ubc) in unmatched_bc.iter().dedup_with_count() {
-        // try to find the unmatched barcode, but
-        // look up to 1 edit away
-        match bcmap2.find_neighbors(*ubc, false) {
-            // if we have a match
-            (Some(x), n) => {
-                let cbc = bcmap2.barcodes[x];
-                // if the uncorrected barcode had a
-                // single, unique retained neighbor
-                if cbc != *ubc && n == 1 {
-                    // then increment the count of this
-                    // barcode by 1 (because we'll correct to it)
-                    if let Some(mut c) = hm.get_mut(&cbc) {
-                        *c += count as u64;
-                        corrected_list.push((*ubc, cbc));
-                    }
-                    // this counts as an approximate find
-                    found_approx += count;
-                    distinct_recoverable_bc += 1;
+        let resolved = correct_unmatched_cell_barcode(
+            *ubc,
+            barcode_len as usize,
+            &bcmap2,
+            gpl_opts.cell_bc_correction,
+            &candidate_weights,
+        );
+
+        match resolved {
+            CorrectionOutcome::Corrected(cbc) => {
+                // then increment the count of this
+                // barcode by 1 (because we'll correct to it)
+                if let Some(mut c) = hm.get_mut(&cbc) {
+                    *c += count as u64;
+                    corrected_list.push((*ubc, cbc));
                 }
-                // if we had > 1 single-mismatch neighbor
-                // then don't keep the barcode, but remember
-                // the count of such events
-                if n > 1 {
-                    ambig_approx += count;
-                }
+                // this counts as an approximate find
+                found_approx += count;
+                distinct_recoverable_bc += 1;
             }
-            // if we had no single-mismatch neighbor
-            // then this barcode is not_found and gets
-            // dropped.
-            (None, _) => {
+            CorrectionOutcome::Ambiguous => {
+                ambig_approx += count;
+            }
+            CorrectionOutcome::NotFound => {
                 not_found += count;
             }
         }
@@ -247,13 +379,15 @@ fn process_unfiltered(
     info!(log, "Of the unmatched barcodes\n============");
     info!(
         log,
-        "\t{} had exactly 1 single-edit neighbor in the retained list",
-        found_approx.to_formatted_string(&Locale::en)
+        "\t{} were corrected to a retained barcode under the '{}' strategy",
+        found_approx.to_formatted_string(&Locale::en),
+        gpl_opts.cell_bc_correction,
     );
     info!(
         log,
-        "\t{} had >1 single-edit neighbor in the retained list",
-        ambig_approx.to_formatted_string(&Locale::en)
+        "\t{} remained ambiguous under the '{}' strategy",
+        ambig_approx.to_formatted_string(&Locale::en),
+        gpl_opts.cell_bc_correction,
     );
     info!(
         log,
@@ -867,6 +1001,14 @@ fn do_generate_permit_list_multi_bc(
 
                 // Build BarcodeLookupMap from kept BCs for 1-edit correction
                 let bcmap = BarcodeLookupMap::new(kept_bcs.clone(), cell_bc_len as u32);
+                let candidate_weights = match gpl_opts.cell_bc_correction {
+                    CellBarcodeCorrectionStrategy::Unique => Vec::new(),
+                    CellBarcodeCorrectionStrategy::Frequency => {
+                        retained_barcode_weights(&bcmap, |barcode| {
+                            sample_freq_map.get(&barcode).copied().unwrap_or(0)
+                        })
+                    }
+                };
 
                 // Rescue unmatched cell BCs (not in whitelist) via 1-edit correction
                 let mut unmatched = per_sample_unmatched[sample_idx].lock().unwrap();
@@ -879,19 +1021,20 @@ fn do_generate_permit_list_multi_bc(
                 let mut corrected_list = Vec::<(u64, u64)>::new();
 
                 for (count, ubc) in unmatched.iter().dedup_with_count() {
-                    match bcmap.find_neighbors(*ubc, false) {
-                        (Some(x), n) => {
-                            let cbc = bcmap.barcodes[x];
-                            if cbc != *ubc && n == 1 {
-                                *sample_freq_map.entry(cbc).or_insert(0) += count as u64;
-                                corrected_list.push((*ubc, cbc));
-                                found_approx += count;
-                            }
-                            if n > 1 {
-                                ambig_approx += count;
-                            }
+                    match correct_unmatched_cell_barcode(
+                        *ubc,
+                        usize::from(cell_bc_len),
+                        &bcmap,
+                        gpl_opts.cell_bc_correction,
+                        &candidate_weights,
+                    ) {
+                        CorrectionOutcome::Corrected(corrected) => {
+                            *sample_freq_map.entry(corrected).or_insert(0) += count as u64;
+                            corrected_list.push((*ubc, corrected));
+                            found_approx += count;
                         }
-                        (None, _) => {
+                        CorrectionOutcome::Ambiguous => ambig_approx += count,
+                        CorrectionOutcome::NotFound => {
                             not_found += count;
                         }
                     }
@@ -899,10 +1042,11 @@ fn do_generate_permit_list_multi_bc(
 
                 info!(
                     log,
-                    "  {} unmatched BCs for sample '{}': {} rescued (1-edit), {} ambiguous, {} not found",
+                    "  {} unmatched BCs for sample '{}': {} corrected with '{}', {} ambiguous, {} not found",
                     unmatched.len(),
                     sample_name,
                     found_approx.to_formatted_string(&Locale::en),
+                    gpl_opts.cell_bc_correction,
                     ambig_approx.to_formatted_string(&Locale::en),
                     not_found.to_formatted_string(&Locale::en),
                 );
@@ -1041,6 +1185,7 @@ fn do_generate_permit_list_multi_bc(
         "unmatched_reads": unmatched_reads,
         "sample_correction_mode": format!("{:?}", gpl_opts.sample_correction_mode),
         "sample_bc_ori": format!("{:?}", gpl_opts.sample_bc_ori),
+        "cell_bc_correction": gpl_opts.cell_bc_correction.to_string(),
         "samples": sample_info_entries,
     });
     let info_path = parent.join("sample_info.json");
@@ -1056,6 +1201,7 @@ fn do_generate_permit_list_multi_bc(
         "permit-list-type": format!("{:?}", gpl_opts.fmeth),
         "multi_barcode": true,
         "num_barcodes": num_barcodes,
+        "cell_bc_correction": gpl_opts.cell_bc_correction.to_string(),
     });
     let gpl_meta_path = parent.join("generate_permit_list.json");
     let gpl_meta_file = File::create(&gpl_meta_path)?;
@@ -2260,3 +2406,92 @@ where
     }
 }
 */
+
+#[cfg(test)]
+mod cell_barcode_correction_tests {
+    use super::*;
+
+    #[test]
+    fn unique_strategy_preserves_historical_neighbor_rule() {
+        let retained = BarcodeLookupMap::new(vec![1, 5], 2);
+
+        assert_eq!(
+            correct_unmatched_cell_barcode(
+                0,
+                2,
+                &retained,
+                CellBarcodeCorrectionStrategy::Unique,
+                &[],
+            ),
+            CorrectionOutcome::Corrected(1)
+        );
+
+        let ambiguous = BarcodeLookupMap::new(vec![1, 4], 2);
+        assert_eq!(
+            correct_unmatched_cell_barcode(
+                0,
+                2,
+                &ambiguous,
+                CellBarcodeCorrectionStrategy::Unique,
+                &[],
+            ),
+            CorrectionOutcome::Ambiguous
+        );
+    }
+
+    #[test]
+    fn frequency_strategy_handles_absent_unique_ambiguous_and_threshold_cases() {
+        let absent = BarcodeLookupMap::new(vec![5], 2);
+        assert_eq!(
+            frequency_correct(0, 2, &absent, &[1]),
+            CorrectionOutcome::NotFound
+        );
+
+        let unique = BarcodeLookupMap::new(vec![1], 2);
+        assert_eq!(
+            frequency_correct(0, 2, &unique, &[1]),
+            CorrectionOutcome::Corrected(1)
+        );
+
+        let two_candidates = BarcodeLookupMap::new(vec![1, 4], 2);
+        assert_eq!(
+            frequency_correct(0, 2, &two_candidates, &[38, 2]),
+            CorrectionOutcome::Ambiguous
+        );
+        assert_eq!(
+            frequency_correct(0, 2, &two_candidates, &[39, 1]),
+            CorrectionOutcome::Corrected(1),
+            "the exact 39/40 confidence boundary must be accepted"
+        );
+    }
+
+    #[test]
+    fn frequency_weights_are_aligned_and_frozen_before_correction() {
+        let retained = BarcodeLookupMap::new(vec![4, 1], 2);
+        let mut counts = HashMap::from([(1, 38u64), (4, 0u64)]);
+        let weights = retained_barcode_weights(&retained, |barcode| counts[&barcode]);
+        assert_eq!(retained.barcodes, vec![1, 4]);
+        assert_eq!(weights, vec![39, 1]);
+
+        // Later corrections can update the count map, but must not affect the
+        // Cell Ranger prior captured before correction begins.
+        counts.insert(1, 0);
+        counts.insert(4, 1_000);
+        assert_eq!(
+            frequency_correct(0, 2, &retained, &weights),
+            CorrectionOutcome::Corrected(1)
+        );
+    }
+
+    #[test]
+    fn correction_strategy_has_stable_metadata_names_and_default() {
+        assert_eq!(
+            CellBarcodeCorrectionStrategy::default(),
+            CellBarcodeCorrectionStrategy::Unique
+        );
+        assert_eq!(
+            serde_json::to_string(&CellBarcodeCorrectionStrategy::Frequency).unwrap(),
+            "\"frequency\""
+        );
+    }
+}
