@@ -99,6 +99,10 @@ polars-io = { version = "0.45.1", features = ["csv"] }
 [profile.release]
 #debug = true
 lto = "thin"
+# alevin-fry is a batch CLI and has no panic-recovery boundary. Abort instead
+# of unwinding in release binaries; Cargo does not apply this release setting
+# to the test and benchmark profiles.
+panic = "abort"
 #codegen-units=1
 opt-level = 3
 
