@@ -44,7 +44,8 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use crate::em::{
-    EmInitType, em_optimize, em_optimize_long_read, em_optimize_subset, run_bootstrap,
+    EmInitType, EmSubsetScratch, em_optimize, em_optimize_long_read,
+    em_optimize_subset_with_scratch, run_bootstrap_with_scratch,
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
@@ -680,9 +681,15 @@ where
     // each cell.
     let mut unique_evidence = vec![false; config.num_rows];
     let mut no_ambiguity = vec![false; config.num_rows];
+    // Lazily allocated on the first subset-EM or bootstrap call, then reused
+    // for every subsequent cell handled by this worker.
+    let mut em_scratch = EmSubsetScratch::default();
     let mut eq_map = EqMap::new(num_eq_targets, eq_map_type, P::HAS_PROBS);
-    let mut expressed_vec = Vec::<f32>::with_capacity(config.num_genes);
-    let mut expressed_ind = Vec::<usize>::with_capacity(config.num_genes);
+    // These buffers are worker-local and retained across cells, so let them
+    // grow to the largest actually expressed cell instead of reserving the
+    // complete global gene axis in every worker up front.
+    let mut expressed_vec = Vec::<f32>::new();
+    let mut expressed_ind = Vec::<usize>::new();
     // Thread-local triplet buffer for MTX output. Accumulating triplets locally
     // avoids holding the global mutex during add_triplet, which was the primary
     // bottleneck serializing all workers.
@@ -889,7 +896,7 @@ where
                                         &mut idx_eq_list,
                                         &mut eq_id_count,
                                     );
-                                    counts = em_optimize_subset(
+                                    counts = em_optimize_subset_with_scratch(
                                         &idx_eq_list,
                                         &eq_id_count,
                                         &mut unique_evidence,
@@ -899,6 +906,7 @@ where
                                         only_unique,
                                         config.usa_offsets,
                                         &log,
+                                        &mut em_scratch,
                                     );
                                 }
                                 (false, _) => {
@@ -975,7 +983,7 @@ where
                                         &mut idx_eq_list,
                                         &mut eq_id_count,
                                     );
-                                    counts = em_optimize_subset(
+                                    counts = em_optimize_subset_with_scratch(
                                         &idx_eq_list,
                                         &eq_id_count,
                                         &mut unique_evidence,
@@ -985,6 +993,7 @@ where
                                         only_unique,
                                         config.usa_offsets,
                                         &log,
+                                        &mut em_scratch,
                                     );
                                 }
                                 (false, _, false) => {
@@ -1016,13 +1025,14 @@ where
                     }
 
                     if config.num_bootstraps > 0 {
-                        bootstraps = run_bootstrap(
+                        bootstraps = run_bootstrap_with_scratch(
                             &gene_eqc,
                             config.num_bootstraps,
                             &counts,
                             config.init_uniform,
                             config.summary_stat,
                             &log,
+                            &mut em_scratch,
                         );
                     }
 
