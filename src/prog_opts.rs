@@ -41,6 +41,29 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub log: &'g slog::Logger,
 }
 
+/// Options for the `bin-spatial` subcommand.
+#[derive(TypedBuilder, Debug, Serialize)]
+pub struct BinSpatialOpts<'a, 'b, 'c, 'd, 'e> {
+    /// A `quant` output directory holding the matrix to bin.
+    pub input_dir: &'a PathBuf,
+    /// Where the binned matrix is written.
+    pub output_dir: &'b PathBuf,
+    /// Side of the output bins, in micrometres.
+    pub bin_size_um: u32,
+    /// Side of the input squares, in micrometres. Ignored when the matrix rows
+    /// are already square-bin barcodes, which carry their own size.
+    #[builder(default = 2)]
+    pub source_size_um: u32,
+    /// `barcode<TAB>row<TAB>col` file placing each barcode on the slide.
+    /// Not needed when the matrix rows are already square-bin barcodes.
+    #[builder(default = None)]
+    pub barcode_positions: Option<PathBuf>,
+    pub cmdline: &'c str,
+    pub version: &'d str,
+    #[serde(skip_serializing)]
+    pub log: &'e slog::Logger,
+}
+
 /// Correction mode for sample barcodes in multi-barcode protocols.
 #[derive(Debug, Clone, Serialize)]
 pub enum SampleCorrectionMode {

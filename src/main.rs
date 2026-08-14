@@ -242,6 +242,25 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
     .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true));
 
+    let bin_spatial_app = Command::new("bin-spatial")
+    .about("Sum a quant matrix into Visium HD square bins")
+    .version(version)
+    .author(crate_authors)
+    .arg(arg!(-i --"input-dir" <INPUTDIR> "a quant output directory holding the matrix to bin")
+        .required(true)
+        .value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory for the binned matrix")
+        .required(true)
+        .value_parser(value_parser!(PathBuf)))
+    .arg(arg!(-b --"bin-size-um" <BINSIZE> "side of the output bins in micrometres; must be a whole multiple of the source size (Space Ranger reports 8 and 16)")
+        .required(true)
+        .value_parser(value_parser!(u32)))
+    .arg(arg!(--"source-size-um" <SRCSIZE> "side of the input squares in micrometres; ignored when the matrix rows are already square-bin barcodes")
+        .value_parser(value_parser!(u32))
+        .default_value("2"))
+    .arg(arg!(-p --"barcode-positions" <POSFILE> "barcode<TAB>row<TAB>col file placing each barcode on the slide; not needed when the matrix rows are already square-bin barcodes")
+        .value_parser(pathbuf_file_exists_validator));
+
     let atac_app = atac_sub_commands();
 
     let opts = Command::new("alevin-fry")
@@ -254,6 +273,7 @@ fn main() -> anyhow::Result<()> {
         .subcommand(collate_app)
         .subcommand(quant_app)
         .subcommand(infer_app)
+        .subcommand(bin_spatial_app)
         .subcommand(convert_app)
         .subcommand(view_app)
         .subcommand(atac_app)
@@ -646,6 +666,22 @@ fn main() -> anyhow::Result<()> {
 
     // Given an input of equivalence class counts, perform inference
     // and output a target-by-cell count matrix.
+    if let Some(t) = opts.subcommand_matches("bin-spatial") {
+        let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
+        let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
+        let bin_opts = alevin_fry::prog_opts::BinSpatialOpts::builder()
+            .input_dir(input_dir)
+            .output_dir(output_dir)
+            .bin_size_um(*t.get_one("bin-size-um").unwrap())
+            .source_size_um(*t.get_one("source-size-um").unwrap())
+            .barcode_positions(t.get_one::<PathBuf>("barcode-positions").cloned())
+            .cmdline(&cmdline)
+            .version(VERSION)
+            .log(&log)
+            .build();
+        alevin_fry::spatial::bin_spatial(bin_opts)?;
+    }
+
     if let Some(t) = opts.subcommand_matches("infer") {
         let num_threads = *t.get_one("threads").unwrap();
         if t.get_flag("use-eds") {
