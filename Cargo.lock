@@ -56,7 +56,6 @@ dependencies = [
  "niffler",
  "noodles",
  "num-format",
- "num_cpus",
  "petgraph",
  "rand",
  "rand_distr",

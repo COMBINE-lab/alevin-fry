@@ -71,7 +71,6 @@ chrono = "0.4.44"
 csv = "1.4.0"
 mimalloc = { version = "0.1.48", default-features = false }
 num-format = "0.4.4"
-num_cpus = "1.17.0"
 bio-types = { version = "1.0.4", default-features = true, features = ["serde"] }
 itertools = "0.15.0"
 thiserror = "2.0.18"

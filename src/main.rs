@@ -24,6 +24,7 @@ use alevin_fry::cmd_parse_utils::{
 };
 use alevin_fry::prog_opts::{self, GenPermitListOpts, QuantOpts};
 use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
+use alevin_fry::utils::{MIN_THREADS, enforce_thread_floor};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -42,6 +43,36 @@ fn gen_random_kmer(k: usize) -> String {
         })
         .collect();
     s
+}
+
+/// Determine the default thread count while enforcing alevin-fry's minimum.
+///
+/// `std::thread::available_parallelism` is what `num_cpus::get` was here for:
+/// on Linux it accounts for the CPU affinity mask and for cgroup v1 and v2
+/// quotas, which is what matters when alevin-fry runs inside a container or
+/// under a scheduler.
+fn available_parallelism(log: &slog::Logger) -> u32 {
+    match std::thread::available_parallelism() {
+        Ok(parallelism) => {
+            let reported = u32::try_from(parallelism.get()).unwrap_or(u32::MAX);
+            if reported < MIN_THREADS {
+                warn!(
+                    log,
+                    "std::thread::available_parallelism() reported {} thread, but 2 threads is the practical minimum for alevin-fry; using 2 threads.",
+                    reported
+                );
+            }
+            reported.max(MIN_THREADS)
+        }
+        Err(error) => {
+            warn!(
+                log,
+                "Could not determine available parallelism ({}), but 2 threads is the practical minimum for alevin-fry; using 2 threads.",
+                error
+            );
+            MIN_THREADS
+        }
+    }
 }
 
 fn parse_memory_size(value: &str) -> Result<u64, String> {
@@ -80,8 +111,19 @@ fn parse_memory_size(value: &str) -> Result<u64, String> {
 
 #[allow(clippy::manual_clamp)]
 fn main() -> anyhow::Result<()> {
-    let num_hardware_threads = num_cpus::get() as u32;
-    let max_num_threads: String = (num_cpus::get() as u32).to_string();
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::CompactFormat::new(decorator)
+        .use_custom_timestamp(|out: &mut dyn std::io::Write| {
+            write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
+            Ok(())
+        })
+        .build()
+        .fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let log = slog::Logger::root(drain, o!());
+
+    let num_hardware_threads = available_parallelism(&log);
+    let max_num_threads: String = num_hardware_threads.to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
 
@@ -101,7 +143,7 @@ fn main() -> anyhow::Result<()> {
                 .value_parser(pathbuf_file_exists_validator),
         )
         .arg(
-            arg!(-t --threads <THREADS> "number of threads to use for processing")
+            arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)")
                 .required(false)
                 .value_parser(value_parser!(u32))
                 .default_value(max_num_threads.clone()),
@@ -140,7 +182,7 @@ fn main() -> anyhow::Result<()> {
             -k --"knee-distance"  "attempt to determine the number of barcodes to keep using the knee distance method."
             )
         )
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
         .arg(arg!(-e --"expect-cells" <EXPECTCELLS> "defines the expected number of cells to use in determining the (read, not UMI) based cutoff")
              .value_parser(value_parser!(usize)))
         .arg(arg!(-f --"force-cells" <FORCECELLS>  "select the top-k most-frequent barcodes, based on read count, as valid (true)")
@@ -200,7 +242,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-r --"rad-dir" <RADFILE> "the directory containing the RAD file to be collated")
         .required(true)
         .value_parser(pathbuf_directory_exists_validator))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2)").value_parser(value_parser!(u32).range(2..)).default_value(max_num_collate_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
     .arg(arg!(-c --compress "compress the output collated RAD file"))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "deprecated approximate record-count memory control; use --memory-limit")
          .value_parser(value_parser!(u32))
@@ -220,7 +262,7 @@ fn main() -> anyhow::Result<()> {
         .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-m --"tg-map" <TGMAP>  "transcript to gene map").required(true).value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
@@ -278,13 +320,13 @@ fn main() -> anyhow::Result<()> {
         .required(true)
         .value_parser(pathbuf_file_exists_validator))
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
-    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
+    .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads))
     .arg(arg!(--usa "flag specifying that input equivalence classes were computed in USA mode"))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
     .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true));
 
-    let atac_app = atac_sub_commands();
+    let atac_app = atac_sub_commands(num_hardware_threads);
 
     let opts = Command::new("alevin-fry")
         .subcommand_required(true)
@@ -300,17 +342,6 @@ fn main() -> anyhow::Result<()> {
         .subcommand(view_app)
         .subcommand(atac_app)
         .get_matches();
-
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::CompactFormat::new(decorator)
-        .use_custom_timestamp(|out: &mut dyn std::io::Write| {
-            write!(out, "{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")).unwrap();
-            Ok(())
-        })
-        .build()
-        .fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-    let log = slog::Logger::root(drain, o!());
 
     use alevin_fry::atac;
     if let Some(t) = opts.subcommand_matches("atac") {
@@ -412,9 +443,11 @@ fn main() -> anyhow::Result<()> {
 
         // velo_mode --- currently, on this branch, it is always false
         let velo_mode = false; //t.get_flag("velocity-mode");
-        let gpl_threads: usize = *t
-            .get_one::<u32>("threads")
-            .expect("valid integer number of threads") as usize;
+        let gpl_threads = enforce_thread_floor(
+            *t.get_one::<u32>("threads")
+                .expect("valid integer number of threads"),
+            &log,
+        ) as usize;
 
         // Parse multi-barcode options
         let sample_bc_list: Option<PathBuf> = t.get_one::<PathBuf>("sample-bc-list").cloned();
@@ -471,7 +504,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("convert") {
         let input_file: &PathBuf = t.get_one("bam").unwrap();
         let rad_file: &PathBuf = t.get_one("output").unwrap();
-        let num_threads: u32 = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
         let filter: bool = t.get_flag("filter_best");
         alevin_fry::convert::bam2rad(input_file, rad_file, num_threads, filter, &log)?
     }
@@ -488,7 +521,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("collate") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
-        let num_threads = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
         let compress_out = t.get_flag("compress");
         let max_records = t
             .get_one::<u32>("max-records")
@@ -521,7 +554,7 @@ fn main() -> anyhow::Result<()> {
 
     // perform quantification of a collated rad file.
     if let Some(t) = opts.subcommand_matches("quant") {
-        let num_threads = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
         let num_bootstraps = *t.get_one("num-bootstraps").unwrap();
         let init_uniform = t.get_flag("init-uniform");
         let summary_stat = t.get_flag("summary-stat");
@@ -713,7 +746,7 @@ fn main() -> anyhow::Result<()> {
     // Given an input of equivalence class counts, perform inference
     // and output a target-by-cell count matrix.
     if let Some(t) = opts.subcommand_matches("infer") {
-        let num_threads = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
         if t.get_flag("use-eds") {
             anyhow::bail!(
                 "--use-eds is no longer supported. EDS output has been removed as of v0.12."
@@ -739,9 +772,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn atac_sub_commands() -> Command {
-    let num_hardware_threads = num_cpus::get() as u32;
-    let max_num_threads: String = (num_cpus::get() as u32).to_string();
+fn atac_sub_commands(num_hardware_threads: u32) -> Command {
+    let max_num_threads: String = num_hardware_threads.to_string();
     let max_num_collate_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_gpl_threads: String = (8_u32.min(num_hardware_threads).max(2_u32)).to_string();
     let max_num_sort_threads: String = (16_u32.min(num_hardware_threads).max(2_u32)).to_string();
@@ -760,7 +792,7 @@ fn atac_sub_commands() -> Command {
             .required(true)
             .value_parser(value_parser!(PathBuf))
         )
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for the first phase of permit-list generation (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_gpl_threads))
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
                 .value_parser(pathbuf_file_exists_validator)
@@ -791,7 +823,7 @@ fn atac_sub_commands() -> Command {
         .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be collated (typically produced as an output of the mapping)")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2)").value_parser(value_parser!(u32).range(2..)).default_value(max_num_collate_threads.clone()))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_collate_threads.clone()))
         .arg(arg!(-c --compress "compress the output collated RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
             .value_parser(value_parser!(u32))
@@ -807,7 +839,7 @@ fn atac_sub_commands() -> Command {
         .arg(arg!(-r --"rad-dir" <RADDIR> "the directory containing the map.rad file which will be sorted (typically produced as an output of the mapping)")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_sort_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_sort_threads))
         .arg(arg!(-c --compress "compress the output of the sorted RAD file"))
         .arg(arg!(-m --"max-records" <MAXRECORDS> "the maximum number of read records to keep in memory at once")
             .value_parser(value_parser!(u32))
@@ -823,7 +855,7 @@ fn atac_sub_commands() -> Command {
         .arg(arg!(-i --"input-dir" <INPUTDIR> "input directory made by generate-permit-list that also contains the output of collate")
             .required(true)
             .value_parser(pathbuf_directory_exists_validator))
-        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing").value_parser(value_parser!(u32)).default_value(max_num_threads))
+        .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads))
         .arg(arg!(-d --"permit-bc-ori" <EXPECTEDORI> "the expected orientation of barcodes in the permit list")
              .ignore_case(true)
              .default_value("rc")

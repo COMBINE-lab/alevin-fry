@@ -4,6 +4,7 @@ use crate::atac::collate::collate;
 use crate::atac::deduplicate::deduplicate;
 use crate::atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 use crate::atac::sort::sort;
+use crate::utils::enforce_thread_floor;
 use anyhow::bail;
 use clap::ArgMatches;
 use slog::{Logger, crit, warn};
@@ -40,9 +41,11 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             s => bail!("invalid barcode orientation {}", s),
         };
 
-        let threads = *t
-            .get_one::<u32>("threads")
-            .expect("number of threads should be given") as usize;
+        let threads = enforce_thread_floor(
+            *t.get_one::<u32>("threads")
+                .expect("number of threads should be given"),
+            log,
+        ) as usize;
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
@@ -67,7 +70,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
     if let Some(t) = opts.subcommand_matches("collate") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
-        let num_threads = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), log);
         let compress_out = t.get_flag("compress");
         let max_records: u32 = *t.get_one("max-records").unwrap();
         collate(
@@ -86,7 +89,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
     if let Some(t) = opts.subcommand_matches("sort") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
-        let num_threads: u32 = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), log);
         let compress_out = t.get_flag("compress");
         let max_records: u32 = *t.get_one("max-records").unwrap();
 
@@ -105,7 +108,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
 
     if let Some(t) = opts.subcommand_matches("deduplicate") {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
-        let num_threads = *t.get_one("threads").unwrap();
+        let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), log);
         let rc: &String = t
             .get_one("permit-bc-ori")
             .expect("permit-bc-ori must be \"fw\" or \"rc\"");

@@ -29,6 +29,23 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use thiserror::Error;
 
+/// The practical minimum number of threads supported by the alevin-fry CLI.
+pub const MIN_THREADS: u32 = 2;
+
+/// Raise a requested thread count to [`MIN_THREADS`], warning when adjusted.
+pub fn enforce_thread_floor(requested: u32, log: &slog::Logger) -> u32 {
+    if requested < MIN_THREADS {
+        slog::warn!(
+            log,
+            "Requested {} thread(s), but 2 threads is the practical minimum for alevin-fry; using 2 threads.",
+            requested
+        );
+        MIN_THREADS
+    } else {
+        requested
+    }
+}
+
 /*
 struct QuantArguments {
     num_threads: u64,
@@ -1144,7 +1161,9 @@ impl FromStr for InternalVersionInfo {
 #[cfg(test)]
 mod tests {
     use crate::utils::InternalVersionInfo;
+    use crate::utils::MIN_THREADS;
     use crate::utils::ProbMap;
+    use crate::utils::enforce_thread_floor;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
@@ -1152,6 +1171,15 @@ mod tests {
     use crate::utils::get_bit_mask;
     use std::collections::HashSet;
     use std::str::FromStr;
+
+    #[test]
+    fn thread_floor_clamps_only_undersized_requests() {
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        assert_eq!(enforce_thread_floor(0, &log), MIN_THREADS);
+        assert_eq!(enforce_thread_floor(1, &log), MIN_THREADS);
+        assert_eq!(enforce_thread_floor(2, &log), 2);
+        assert_eq!(enforce_thread_floor(17, &log), 17);
+    }
 
     #[test]
     fn test_version_info() {
