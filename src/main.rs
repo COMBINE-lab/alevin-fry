@@ -9,7 +9,9 @@
 
 use anyhow::{anyhow, bail};
 use bio_types::strand::Strand;
-use clap::{Command, arg, builder::ArgGroup, crate_authors, crate_version, value_parser};
+use clap::{
+    ArgAction, Command, arg, builder::ArgGroup, crate_authors, crate_version, value_parser,
+};
 use csv::Error as CSVError;
 use csv::ErrorKind;
 use itertools::Itertools;
@@ -217,6 +219,8 @@ fn main() -> anyhow::Result<()> {
         ])
         .default_value("0") // for any other mode
         .hide(true))
+    .arg(arg!(--"usa-collapse" "in USA mode, also write a gene-level matrix summing the spliced, unspliced and ambiguous columns of each gene, which is the shape Cell Ranger produces with intron inclusion on")
+        .action(ArgAction::SetTrue))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than this many reads are resolved by a fast path that applies cr-like (winner-take-all) semantics regardless of --resolution; pass 0 to resolve every cell with the requested strategy")
         .value_parser(value_parser!(usize))
         .default_value("100"))
@@ -471,6 +475,7 @@ fn main() -> anyhow::Result<()> {
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
         let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
+        let usa_collapse = t.get_flag("usa-collapse");
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
@@ -570,6 +575,7 @@ fn main() -> anyhow::Result<()> {
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
+            .usa_collapse(usa_collapse)
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)

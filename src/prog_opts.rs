@@ -35,6 +35,10 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
     pub filter_list: Option<&'d PathBuf>,
+    /// In USA mode, also write a gene-level matrix summing each gene's
+    /// spliced, unspliced and ambiguous columns.
+    #[builder(default = false)]
+    pub usa_collapse: bool,
     pub cmdline: &'e str,
     pub version: &'f str,
     #[serde(skip_serializing)]

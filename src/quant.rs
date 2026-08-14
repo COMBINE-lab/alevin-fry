@@ -1370,6 +1370,7 @@ where
     let tiny_cell_thresh = quant_opts.small_thresh;
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
+    let usa_collapse = quant_opts.usa_collapse;
     let log = quant_opts.log;
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
@@ -1778,7 +1779,7 @@ where
 
     // if we are not using unspliced then just write the gene names
     if !usa_mode {
-        for g in gene_names {
+        for g in gene_names.iter() {
             gn_writer.write_all(format!("{}\n", g).as_bytes())?;
         }
     } else {
@@ -1834,6 +1835,62 @@ where
 
     let mtx_path = output_matrix_path.join("quants_mat.mtx");
     sprs::io::write_matrix_market(mtx_path, &trimat)?;
+
+    // Optionally also emit the gene-level view of a USA-mode matrix.
+    //
+    // Cell Ranger, with intron inclusion on (the default since 7.0), reports one
+    // count per gene: a UMI counts toward its gene whether the reads behind it
+    // were exonic, intronic or both. USA mode splits exactly that number three
+    // ways, since a UMI lands in precisely one of the spliced, unspliced or
+    // ambiguous columns of its gene. Summing the three recovers Cell Ranger's
+    // shape, and the sum is the same number of molecules, not an approximation.
+    //
+    // The columns are laid out as [S | U | A], each `num_genes` wide, so gene
+    // `g` is columns `g`, `g + num_genes` and `g + 2 * num_genes`. Writing it
+    // here rather than leaving it to the user is the point: getting that offset
+    // wrong is silent.
+    //
+    // The USA matrix is still written; this is an extra file, not a replacement.
+    if usa_mode && usa_collapse {
+        let mut collapsed: HashMap<(usize, usize), f32, ahash::RandomState> =
+            HashMap::with_capacity_and_hasher(
+                trimat.nnz(),
+                ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64),
+            );
+        for (val, (row, col)) in trimat.triplet_iter() {
+            let (row, col) = (row as usize, col as usize);
+            *collapsed.entry((row, col % num_genes)).or_insert(0.0) += *val;
+        }
+
+        let mut gene_trimat = sprs::TriMatI::<f32, u32>::with_capacity(
+            (num_cells as usize, num_genes),
+            collapsed.len(),
+        );
+        // sorted so the file does not depend on hash iteration order
+        let mut entries: Vec<((usize, usize), f32)> = collapsed.into_iter().collect();
+        entries.sort_unstable_by_key(|&((r, c), _)| (r, c));
+        for ((row, col), val) in entries {
+            gene_trimat.add_triplet(row, col, val);
+        }
+
+        let gene_mtx_path = output_matrix_path.join("quants_mat_gene.mtx");
+        sprs::io::write_matrix_market(gene_mtx_path, &gene_trimat)?;
+
+        let gene_cols_path = output_matrix_path.join("quants_mat_gene_cols.txt");
+        let gene_cols_file =
+            File::create(gene_cols_path).expect("couldn't create gene-level column name file.");
+        let mut gene_cols_writer = BufWriter::new(gene_cols_file);
+        for g in gene_names.iter() {
+            gene_cols_writer.write_all(format!("{}\n", *g).as_bytes())?;
+        }
+
+        info!(
+            log,
+            "wrote the gene-level (Cell Ranger shaped) matrix with {} genes and {} nonzeros",
+            num_genes.to_formatted_string(&Locale::en),
+            gene_trimat.nnz().to_formatted_string(&Locale::en)
+        );
+    }
 
     // Write bootstrap summary stat matrices if bootstraps were computed
     if num_bootstraps > 0 && !all_boot_mean_triplets.is_empty() {
