@@ -503,6 +503,222 @@ fn test_multi_bc_generate_permit_list() {
 }
 
 #[test]
+fn sample_frequency_defers_only_ambiguous_pairs_and_collation_replays_decision() {
+    use alevin_fry::barcode_correction::BarcodeNeighborhood;
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::correction_plan::CorrectionPlan;
+    use alevin_fry::prog_opts::{GenPermitListOpts, SampleCorrectionMode};
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    // Raw sample 1 is one substitution from both retained samples 0 and 2.
+    // Frozen exact priors (100 versus 1, with pseudocount one) make sample 0
+    // exceed the 97.5% threshold, so its ten pairs must be deferred then
+    // replayed into sample 0.
+    let retained_samples = [0_u64, 2_u64];
+    let ambiguous_sample = 1_u64;
+    let rejected_sample = 5_u64;
+    let cell = make_packed_bc(17, CELL_BC_LEN);
+    let (prelude, file_tag_map) = make_multi_bc_prelude();
+    let context = MultiBarcodeRecordContext::get_context_from_tag_section(
+        &prelude.file_tags,
+        &prelude.read_tags,
+        &prelude.aln_tags,
+    )
+    .unwrap();
+    let file = File::create(rad_dir.join("map.rad")).unwrap();
+    let mut writer = RadFileWriter::new(file, &prelude, &file_tag_map).unwrap();
+    for (sample, count) in [
+        (retained_samples[0], 100),
+        (retained_samples[1], 1),
+        (ambiguous_sample, 10),
+        (rejected_sample, 5),
+    ] {
+        let reads = (0..count)
+            .map(|umi| MultiBarcodeReadRecord {
+                barcodes: smallvec![sample, cell],
+                umi,
+                dirs: vec![true],
+                refs: vec![0],
+            })
+            .collect::<Vec<_>>();
+        writer
+            .write_chunk(
+                &Chunk::<MultiBarcodeReadRecord> {
+                    nbytes: 0,
+                    nrec: count as u32,
+                    reads,
+                },
+                &context,
+            )
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let sample_list = tmp.path().join("samples.txt");
+    write_sample_bc_list(&sample_list, &retained_samples, SAMPLE_BC_LEN).unwrap();
+    let log = make_test_logger();
+    let opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(1))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Frequency)
+        .sample_bc_neighborhood(BarcodeNeighborhood::HammingOne)
+        .build();
+    assert_eq!(generate_permit_list(opts).unwrap(), 2);
+
+    let info: serde_json::Value =
+        serde_json::from_reader(File::open(output_dir.join("sample_info.json")).unwrap()).unwrap();
+    assert_eq!(info["sample_routing"]["exact"], 101);
+    assert_eq!(info["sample_routing"]["deferred"], 10);
+    assert_eq!(info["sample_routing"]["deferred_accepted"], 10);
+    assert_eq!(info["sample_routing"]["deferred_rejected"], 0);
+    assert_eq!(info["sample_routing"]["immediate_rejected"], 5);
+    assert!(info["sample_routing"]["spill_runs"].as_u64().unwrap() >= 1);
+    assert_eq!(info["matched_reads"], 111);
+    assert_eq!(info["unmatched_reads"], 5);
+
+    let plan = CorrectionPlan::read_from(&output_dir.join("correction_plan.bin")).unwrap();
+    assert!(plan.sample_corrections.iter().any(|entry| {
+        entry.observed == ambiguous_sample && entry.corrected == retained_samples[0]
+    }));
+    assert!(std::fs::read_dir(&output_dir).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".af-correction-")
+    }));
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        false,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+    let manifest =
+        CollationManifest::read_from_file(&output_dir.join("collation_manifest.bin")).unwrap();
+    assert_eq!(manifest.sample_groups.len(), 2);
+    assert_eq!(
+        manifest
+            .sample_groups
+            .iter()
+            .find(|group| group.key == retained_samples[0])
+            .unwrap()
+            .num_records,
+        110
+    );
+    assert_eq!(
+        manifest
+            .sample_groups
+            .iter()
+            .find(|group| group.key == retained_samples[1])
+            .unwrap()
+            .num_records,
+        1
+    );
+}
+
+#[test]
+fn filtered_multi_metadata_preserves_exact_reads_and_plan_is_thread_invariant() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::correction_plan::CorrectionPlan;
+    use alevin_fry::prog_opts::{GenPermitListOpts, SampleCorrectionMode};
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+
+    let sample = 0_u64;
+    let retained_cell = 0_u64;
+    let rescued_cell = 1_u64;
+    let (prelude, file_tag_map) = make_multi_bc_prelude();
+    let context = MultiBarcodeRecordContext::get_context_from_tag_section(
+        &prelude.file_tags,
+        &prelude.read_tags,
+        &prelude.aln_tags,
+    )
+    .unwrap();
+    let file = File::create(rad_dir.join("map.rad")).unwrap();
+    let mut writer = RadFileWriter::new(file, &prelude, &file_tag_map).unwrap();
+    for (cell, count) in [(retained_cell, 10_u32), (rescued_cell, 3_u32)] {
+        let reads = (0..count)
+            .map(|umi| MultiBarcodeReadRecord {
+                barcodes: smallvec![sample, cell],
+                umi: u64::from(umi),
+                dirs: vec![true],
+                refs: vec![0],
+            })
+            .collect();
+        writer
+            .write_chunk(
+                &Chunk::<MultiBarcodeReadRecord> {
+                    nbytes: 0,
+                    nrec: count,
+                    reads,
+                },
+                &context,
+            )
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let sample_list = tmp.path().join("samples.txt");
+    write_sample_bc_list(&sample_list, &[sample], SAMPLE_BC_LEN).unwrap();
+    let log = make_test_logger();
+    let mut plan_bytes = Vec::new();
+    for threads in [2, 3] {
+        let output_dir = tmp.path().join(format!("output-{threads}"));
+        let opts = GenPermitListOpts::builder()
+            .input_dir(&rad_dir)
+            .output_dir(&output_dir)
+            .fmeth(CellFilterMethod::ForceCells(1))
+            .expected_ori(Strand::Unknown)
+            .version(TEST_VERSION)
+            .threads(threads)
+            .velo_mode(false)
+            .cmdline("test")
+            .log(&log)
+            .sample_bc_list(Some(sample_list.clone()))
+            .sample_names(None)
+            .sample_correction_mode(SampleCorrectionMode::Exact)
+            .build();
+        assert_eq!(generate_permit_list(opts).unwrap(), 1);
+
+        let info: serde_json::Value =
+            serde_json::from_reader(File::open(output_dir.join("sample_info.json")).unwrap())
+                .unwrap();
+        assert_eq!(info["samples"][0]["num_reads"], 10);
+        assert_eq!(info["samples"][0]["collatable_reads"], 13);
+
+        let plan = CorrectionPlan::read_from(&output_dir.join("correction_plan.bin")).unwrap();
+        assert_eq!(plan.cell_scopes[0].corrections.len(), 2);
+        plan_bytes.push(std::fs::read(output_dir.join("correction_plan.bin")).unwrap());
+    }
+    assert_eq!(plan_bytes[0], plan_bytes[1]);
+}
+
+#[test]
 fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
     use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
     use alevin_fry::collate::collate;
