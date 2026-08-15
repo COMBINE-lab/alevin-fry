@@ -14,7 +14,7 @@ This command has 4 required arguments; the path to an input directory ``--input`
 the path to an output directory ``--output-dir`` (which will be created if it
 doesn't exist), and a path to the barcode permit-list file. The functioning of this argument is as follows:
 
-* ``--unfiltered-pl <plist>``: This option accepts as an argument a list of *possible* barcodes for the sample.  For example, this is the flag you should use if you wish to provide an "external permit list", like the 10x v2 or 10x v3 permit lists. Unilike with the ``--valid-bc`` flag, the list passed to this argument is the set of all possible barcodes for the technology being processed, and it is likely that most of the barcodes in the file may not correspond to cells present in this particular sample.  When using this argument, you may also pass the ``--min-reads`` argument to determine the minimum frequency with which a barcode must be seen in order to be retained.  The algorithm used here will pass over the input records (mapped reads) and count how many times each of the barcodes in the unfiltered permit list occur exactly.  Any barcode ocurring >= ``min-reads`` times will be considered as a present cell.  Subsequently, all barcodes that did not match a present cell will be searched (at an edit distance of up to 1) againt the barcodes determined to correspond to present cells.  If an initially non-matching barcode has a unique neighbor among the barcodes for present cells, it will be corrected to that barcode, but if it has no 1-edit neighbor, or if it has 2 or more 1-edit neighbors among that list (i.e. it's correction would be ambiguous), then the record is discarded.
+* ``--unfiltered-pl <plist>``: This option accepts a list of all possible barcodes for the technology.  Exact observations occurring at least ``--min-reads`` times are retained as present cells.  Other observed barcodes are resolved against the retained cells by the shared correction engine.  ATAC defaults to Hamming-1, Unique correction; ``--cell-bc-correction frequency`` enables abundance resolution with a 90% default confidence, ``--cell-bc-confidence`` changes that threshold, and ``--cell-bc-neighborhood`` selects the neighbourhood.  See :doc:`barcode_correction`.
 
 
 output
@@ -26,11 +26,13 @@ The ``generate-permit-list`` command outputs a number of different files in the 
 
 2. The file ``bin_recs.bin`` is a binary file that encodes where records should be routed during the sorting phase.
 
-3. The file ``permit_freq.bin`` is a binary file that encodes information about the frequency of occurrence of different barcodes in the permit list.
+3. The file ``permit_freq.bin`` stores read counts aggregated by corrected retained barcode.
 
-4. The file ``permit_map.bin`` is a binary file (a serde serialized HashMap) that maps each barcode in the input RAD file that is within an edit distance of 1 to some *true* barcode to the barcode to which it corrects.  This allows the ``collate`` command to group together all of the read records corresponding to the same *corrected* barcode.
+4. The file ``permit_map.bin`` preserves the historical serialized correction map for compatibility.
 
-4. The file ``generate_permit_list.json`` that is a JSON file containing information about the run of the command.
+5. The versioned file ``correction_plan.bin`` contains GPL's accepted observed-barcode decisions.  Both ATAC collation and sorting apply this plan directly and fall back to ``permit_map.bin`` only for older GPL output.
+
+6. The file ``generate_permit_list.json`` records the run and its resolved correction policy and statistics.
 
 
 sort (atac)

@@ -36,6 +36,9 @@ use alevin_fry::atac::cellfilter::{CellFilterMethod, generate_permit_list};
 use alevin_fry::atac::collate::collate;
 use alevin_fry::atac::deduplicate::deduplicate;
 use alevin_fry::atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
+use alevin_fry::atac::sort::sort;
+use alevin_fry::barcode_correction::{BarcodeNeighborhood, BarcodeResolution};
+use alevin_fry::correction_plan::CorrectionPlan;
 
 const TEST_VERSION: &str = "0.17.0";
 const CELL_BC_LEN: u16 = 16;
@@ -301,6 +304,24 @@ fn stage_permit_list(
         "synthetic barcodes match the whitelist exactly, so none should need correction"
     );
 
+    let correction_plan = CorrectionPlan::read_from(&gpl_dir.join("correction_plan.bin"))
+        .expect("ATAC GPL wrote no valid correction plan");
+    assert_eq!(correction_plan.cell_barcode_len, CELL_BC_LEN as u8);
+    assert_eq!(correction_plan.cell_scopes.len(), 1);
+    assert_eq!(
+        correction_plan.cell_scopes[0].spec.neighborhood,
+        BarcodeNeighborhood::HammingOne
+    );
+    assert_eq!(
+        correction_plan.cell_scopes[0].spec.resolution,
+        BarcodeResolution::Unique
+    );
+    assert_eq!(
+        correction_plan.cell_scopes[0].corrections.len(),
+        num_cells,
+        "the compact ATAC plan must include retained identities"
+    );
+
     // What we actually care about is the retained set, which lands in
     // permit_freq.bin. That file opens with two u64s — the format version and
     // the barcode length — before the bincode-encoded barcode -> count map.
@@ -356,6 +377,10 @@ fn atac_collate_tolerates_unmapped_and_multimapping_records() {
 
     let (rad_dir, gpl_dir) = stage_permit_list(tmp.path(), num_cells, &mix, &log);
 
+    // Prove this run consumes the compiled artifact rather than silently
+    // relying on the compatibility map.
+    std::fs::remove_file(gpl_dir.join("permit_map.bin")).unwrap();
+
     let gpl_for_collate = gpl_dir.clone();
     let rad_for_collate = rad_dir.clone();
     let collate_log = log.clone();
@@ -388,6 +413,39 @@ fn atac_collate_tolerates_unmapped_and_multimapping_records() {
     assert_eq!(
         prelude.hdr.num_chunks, num_cells as u64,
         "expected one collated chunk per cell"
+    );
+}
+
+#[test]
+fn atac_sort_uses_compiled_plan_without_legacy_map() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = make_test_logger();
+    let mix = CellMix {
+        good: 3,
+        unmapped: 0,
+        multimapped: 0,
+    };
+    let (rad_dir, gpl_dir) = stage_permit_list(tmp.path(), 4, &mix, &log);
+    std::fs::remove_file(gpl_dir.join("permit_map.bin")).unwrap();
+
+    let sort_input = gpl_dir.clone();
+    let sort_rad = rad_dir.clone();
+    let sort_log = log.clone();
+    run_with_timeout("atac sort with compiled correction plan", move || {
+        sort(
+            sort_input,
+            sort_rad,
+            2,
+            10_000,
+            false,
+            "atac_integration_test",
+            TEST_VERSION,
+            &sort_log,
+        )
+    });
+    assert!(
+        std::fs::metadata(gpl_dir.join("map.bed")).is_ok_and(|metadata| metadata.len() > 0),
+        "ATAC sort produced no BED output"
     );
 }
 
