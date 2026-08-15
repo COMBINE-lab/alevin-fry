@@ -1067,6 +1067,72 @@ pub fn generate_permitlist_map(
     Ok(one_edit_barcode_map)
 }
 
+/// Builds a one-edit correction map that retains only unambiguous corrections.
+///
+/// Exact permitted barcodes always map to themselves. A non-exact barcode is
+/// omitted when it is a one-edit neighbor of more than one permitted barcode.
+/// Unlike [`generate_permitlist_map`], the result is therefore independent of
+/// the order of `permit_bcs`. The historical public function remains unchanged
+/// for downstream callers that rely on its permissive behavior.
+pub(crate) fn generate_unambiguous_permitlist_map(
+    permit_bcs: &[u64],
+    bc_length: usize,
+) -> Result<HashMap<u64, u64>, Box<dyn Error>> {
+    generate_unambiguous_correction_map(permit_bcs, bc_length, |barcode| barcode)
+}
+
+/// Build an order-independent correction map from permitted source barcodes to
+/// caller-defined targets.
+///
+/// Multiple source barcodes may intentionally share a target, as happens when
+/// Flex sample-barcode rotations identify the same canonical sample. A neighbor
+/// is ambiguous only when its candidate sources lead to different targets.
+pub(crate) fn generate_unambiguous_correction_map<F>(
+    permit_bcs: &[u64],
+    bc_length: usize,
+    target_for: F,
+) -> Result<HashMap<u64, u64>, Box<dyn Error>>
+where
+    F: Fn(u64) -> u64,
+{
+    let mut correction_map = HashMap::with_capacity(10 * permit_bcs.len());
+    let mut exact_barcodes = HashSet::with_capacity(permit_bcs.len());
+    for &bc in permit_bcs {
+        exact_barcodes.insert(bc);
+        correction_map.insert(bc, target_for(bc));
+    }
+
+    let mut neighbors = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
+    let mut ambiguous = HashSet::new();
+    for &bc in permit_bcs {
+        let target = target_for(bc);
+        get_all_one_edit_neighbors(bc, bc_length, &mut neighbors)?;
+        for &neighbor in &neighbors {
+            // An exact permitted source always keeps its explicit target,
+            // regardless of neighboring permitted sources.
+            if exact_barcodes.contains(&neighbor) {
+                continue;
+            }
+
+            if ambiguous.contains(&neighbor) {
+                continue;
+            }
+            match correction_map.get(&neighbor).copied() {
+                Some(previous) if previous != target => {
+                    correction_map.remove(&neighbor);
+                    ambiguous.insert(neighbor);
+                }
+                None => {
+                    correction_map.insert(neighbor, target);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(correction_map)
+}
+
 /// Reads the contents of the file `flist`, which should contain
 /// a single barcode per-line, and returns a Result that is either
 /// a HashSet containing the k-mer encoding of all barcodes or
@@ -1164,12 +1230,13 @@ mod tests {
     use crate::utils::MIN_THREADS;
     use crate::utils::ProbMap;
     use crate::utils::enforce_thread_floor;
+    use crate::utils::generate_unambiguous_permitlist_map;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
     use crate::utils::get_all_one_edit_neighbors;
     use crate::utils::get_all_snps;
     use crate::utils::get_bit_mask;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::str::FromStr;
 
     #[test]
@@ -1253,6 +1320,42 @@ mod tests {
                 1, 3, 4, 5, 6, 9, 11, 12, 13, 14, 15, 23, 28, 29, 30, 31, 39, 55
             ]
         );
+    }
+
+    fn collision_map(permit_bcs: &[u64]) -> HashMap<u64, u64> {
+        generate_unambiguous_permitlist_map(permit_bcs, 2).unwrap()
+    }
+
+    #[test]
+    fn unambiguous_map_preserves_exact_and_unique_matches() {
+        let map = collision_map(&[0, 5]);
+        assert_eq!(map.get(&0), Some(&0));
+        assert_eq!(map.get(&5), Some(&5));
+        assert_eq!(map.get(&2), Some(&0));
+    }
+
+    #[test]
+    fn unambiguous_map_drops_ambiguous_neighbors() {
+        let forward = collision_map(&[0, 5]);
+        let reverse = collision_map(&[5, 0]);
+        assert!(!forward.contains_key(&1));
+        assert_eq!(forward, reverse);
+    }
+
+    #[test]
+    fn unambiguous_map_is_repeatable() {
+        let expected = collision_map(&[5, 0]);
+
+        std::thread::scope(|scope| {
+            for iteration in 0..32 {
+                let expected = &expected;
+                scope.spawn(move || {
+                    let input = if iteration % 2 == 0 { [0, 5] } else { [5, 0] };
+                    let actual = collision_map(&input);
+                    assert_eq!(&actual, expected);
+                });
+            }
+        });
     }
 
     #[test]
