@@ -1,10 +1,11 @@
 use crate::constants as afconst;
+use crate::correction_plan::{CORRECTION_PLAN_FILENAME, CorrectionPlan};
 use crate::utils as afutils;
 use afutils::InternalVersionInfo;
 use anyhow::{Context, anyhow};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use slog::{crit, info};
+use slog::{crit, info, warn};
 
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
@@ -255,7 +256,7 @@ where
     // read the barcode length
     rdr.read_exact(&mut rbuf)
         .context("couldn't read freq file buffer")?;
-    let _bc_len = rbuf
+    let bc_len = rbuf
         .pread::<u64>(0)
         .context("couldn't read freq file barcode length")?;
 
@@ -269,6 +270,7 @@ where
         rad_dir,
         num_threads,
         max_records,
+        bc_len,
         bin_rec_counts,
         bin_lens,
         tsv_map,
@@ -288,6 +290,7 @@ pub fn sort_with_temp<P1, P2>(
     rad_dir: P2,
     num_threads: u32,
     max_records: u32,
+    bc_len: u64,
     bin_recs: Vec<u64>,
     bin_lens: Vec<u64>,
     tsv_map: Vec<(u64, u64)>,
@@ -443,10 +446,36 @@ where
         }
     }
 
-    // get the correction map
-    let cmfile = std::fs::File::open(parent.join("permit_map.bin"))
-        .context("couldn't open output permit_map.bin file")?;
-    let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
+    let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
+    let correct_map: Arc<HashMap<u64, u64>> = if compact_path.exists() {
+        let plan = CorrectionPlan::read_from(&compact_path)?;
+        if plan.sample_barcode_len.is_some() || u64::from(plan.cell_barcode_len) != bc_len {
+            return Err(anyhow!("correction plan does not match this ATAC input"));
+        }
+        let scope = plan
+            .cell_scopes
+            .iter()
+            .find(|scope| scope.sample_barcode.is_none())
+            .context("ATAC correction plan has no global cell scope")?;
+        Arc::new(
+            scope
+                .corrections
+                .iter()
+                .map(|entry| (entry.observed, entry.corrected))
+                .collect(),
+        )
+    } else {
+        warn!(
+            log,
+            "No correction_plan.bin was found; loading legacy permit_map.bin for ATAC sorting"
+        );
+        let cmfile = File::open(parent.join("permit_map.bin"))
+            .context("couldn't open legacy permit_map.bin file")?;
+        Arc::new(
+            bincode::deserialize_from(&cmfile)
+                .context("couldn't deserialize legacy permit_map.bin")?,
+        )
+    };
 
     // NOTE: the assumption of where the unmapped file will be
     // should be robustified
