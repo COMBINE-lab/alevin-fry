@@ -882,7 +882,22 @@ fn atac_sub_commands(num_hardware_threads: u32) -> Command {
         .arg(arg!(-d --"permit-bc-ori" <EXPECTEDORI> "the expected orientation of barcodes in the permit list")
              .ignore_case(true)
              .default_value("rc")
-             .value_parser(["fw", "rc"]));
+             .value_parser(["fw", "rc"]))
+        .arg(
+            arg!(--"cell-bc-correction" <STRATEGY> "cell-barcode collision policy")
+                .value_parser(["unique", "frequency"])
+                .default_value("unique")
+        )
+        .arg(
+            arg!(--"cell-bc-neighborhood" <NEIGHBORHOOD> "cell-barcode neighbourhood")
+                .value_parser(["hamming-1", "substitution-or-shift-1", "edit-1"])
+                .default_value("hamming-1")
+        )
+        .arg(
+            arg!(--"cell-bc-confidence" <CONFIDENCE> "Frequency confidence as a decimal or exact fraction")
+                .value_parser(value_parser!(Confidence))
+                .default_value("0.90")
+        );
 
     // Hidden: provisional, and not part of the supported scATAC-seq pipeline.
     // See the module comment on `atac::collate`.

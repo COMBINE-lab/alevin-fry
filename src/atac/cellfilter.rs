@@ -1,4 +1,8 @@
 use crate::atac::prog_opts::GenPermitListOpts;
+use crate::barcode_correction::{
+    BarcodeNeighborhood, BarcodeResolution, CorrectionIndex, RetainedSource,
+};
+use crate::correction_plan::{BarcodeCorrection, CellCorrectionScope, CorrectionPlan};
 use crate::diagnostics;
 use crate::utils as afutils;
 use anyhow::{Context, bail};
@@ -11,8 +15,6 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
 };
 // use indexmap::map::IndexMap;
-use itertools::Itertools;
-use libradicl::BarcodeLookupMap;
 use libradicl::exit_codes;
 use libradicl::rad_types;
 use libradicl::rad_types::TagValue;
@@ -26,7 +28,6 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::time::Instant;
 
 type ParBCMap = DashMap<u64, u64, ahash::RandomState>;
 type BCMap = HashMap<u64, u64, ahash::RandomState>;
@@ -66,7 +67,7 @@ pub enum CellFilterMethod {
 
 pub fn update_barcode_hist_unfiltered(
     hist: &ParBCMap,
-    unmatched_bc: &mut Vec<u64>,
+    unmatched_bc: &mut BCMap,
     max_ambiguity_read: &mut usize,
     chunk: &chunk::Chunk<AtacSeqReadRecord>,
     bins: &[AtomicU64],
@@ -84,7 +85,7 @@ pub fn update_barcode_hist_unfiltered(
             Some(mut c) => *c += 1,
             // otherwise, push this into the unmatched list
             None => {
-                unmatched_bc.push(r.bc);
+                *unmatched_bc.entry(r.bc).or_insert(0) += 1;
             }
         }
 
@@ -141,7 +142,7 @@ fn populate_unfiltered_barcode_map<T: Read>(
 #[allow(clippy::unnecessary_unwrap, clippy::too_many_arguments)]
 fn process_unfiltered(
     hm: ParBCMap,
-    mut unmatched_bc: Vec<u64>,
+    unmatched_bc: BCMap,
     file_tag_map: &rad_types::TagMap,
     filter_meth: &CellFilterMethod,
     output_dir: &PathBuf,
@@ -164,168 +165,110 @@ fn process_unfiltered(
         }
     };
 
-    // the set of barcodes we'll keep
-    let mut kept_bc = Vec::<u64>::new();
-
-    // iterate over the count map
-    for mut kvp in hm.iter_mut() {
-        // if this satisfies our requirement for the minimum count
-        // then keep this barcode
-        if *kvp.value() >= min_freq {
-            kept_bc.push(*kvp.key());
-        } else {
-            // otherwise, we have to add this barcode's
-            // counts to our unmatched list
-            for _ in 0..*kvp.value() {
-                unmatched_bc.push(*kvp.key());
-            }
-            // and then reset the counter for this barcode to 0
-            *kvp.value_mut() = 0u64;
-        }
-    }
-
-    // drop the absent barcodes from hm
-    hm.retain(|_, &mut v| v > 0);
-
-    // how many we will keep
-    let num_passing = kept_bc.len();
-    info!(
-        log,
-        "num_passing = {}",
-        num_passing.to_formatted_string(&Locale::en)
-    );
     let barcode_tag = file_tag_map
         .get("cblen")
         .expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
-    let bcmap2 = BarcodeLookupMap::new(kept_bc, barcode_len as u32);
+    let mut observed_counts: BCMap = HashMap::default();
+    let mut kept_barcodes = Vec::new();
+    for entry in &hm {
+        if *entry.value() > 0 {
+            observed_counts.insert(*entry.key(), *entry.value());
+        }
+        if *entry.value() >= min_freq {
+            kept_barcodes.push(*entry.key());
+        }
+    }
+    for (barcode, count) in unmatched_bc {
+        *observed_counts.entry(barcode).or_insert(0) += count;
+    }
+    kept_barcodes.sort_unstable();
+
+    let spec = gpl_opts.correction_spec(barcode_len as u8);
+    if matches!(spec.resolution, BarcodeResolution::Frequency { .. })
+        && spec.neighborhood == BarcodeNeighborhood::SubstitutionOrShiftOne
+    {
+        warn!(
+            log,
+            "ATAC Frequency correction is using substitution-or-shift-1. RAD stores no barcode base qualities or indel-error model, so this is an abundance heuristic rather than a calibrated indel posterior."
+        );
+    }
+    let correction_index = CorrectionIndex::new(
+        spec,
+        kept_barcodes.iter().map(|&barcode| RetainedSource {
+            source: barcode,
+            target: barcode,
+            exact_count: observed_counts.get(&barcode).copied().unwrap_or(0),
+        }),
+    )?;
     info!(
         log,
         "found {} cells with non-trivial number of reads by exact barcode match",
-        bcmap2.barcodes.len().to_formatted_string(&Locale::en)
+        kept_barcodes.len().to_formatted_string(&Locale::en)
     );
-
-    // finally, we'll go through the set of unmatched barcodes
-    // and try to rescue those that have a *unique* neighbor in the
-    // list of retained barcodes.
-
-    //let mut found_exact = 0usize;
-    let mut found_approx = 0usize;
-    let mut ambig_approx = 0usize;
-    let mut not_found = 0usize;
-
-    let start_unmatched_time = Instant::now();
-
-    unmatched_bc.sort_unstable();
-
-    let mut distinct_unmatched_bc = 0usize;
-    let mut distinct_recoverable_bc = 0usize;
-
-    // mapping the uncorrected barcode to what it corrects to
-    let mut corrected_list = Vec::<(u64, u64)>::with_capacity(1_000_000);
-
-    for (count, ubc) in unmatched_bc.iter().dedup_with_count() {
-        // try to find the unmatched barcode, but
-        // look up to 1 edit away
-        match bcmap2.find_neighbors(*ubc, false) {
-            // if we have a match
-            (Some(x), n) => {
-                let cbc = bcmap2.barcodes[x];
-                // if the uncorrected barcode had a
-                // single, unique retained neighbor
-                if cbc != *ubc && n == 1 {
-                    // then increment the count of this
-                    // barcode by 1 (because we'll correct to it)
-                    if let Some(mut c) = hm.get_mut(&cbc) {
-                        *c += count as u64;
-                        corrected_list.push((*ubc, cbc));
-                    }
-                    // this counts as an approximate find
-                    found_approx += count;
-                    distinct_recoverable_bc += 1;
-                }
-                // if we had > 1 single-mismatch neighbor
-                // then don't keep the barcode, but remember
-                // the count of such events
-                if n > 1 {
-                    ambig_approx += count;
-                }
-            }
-            // if we had no single-mismatch neighbor
-            // then this barcode is not_found and gets
-            // dropped.
-            (None, _) => {
-                not_found += count;
-            }
-        }
-        distinct_unmatched_bc += 1;
-    }
-    let unmatched_duration = start_unmatched_time.elapsed();
-    let num_corrected = distinct_recoverable_bc as u64;
-
+    let (correction_table, target_counts) = correction_index
+        .compile_distinct_observed_with_target_counts(
+            observed_counts
+                .iter()
+                .map(|(&barcode, &count)| (barcode, count)),
+        );
+    let permitted_counts: BCMap = target_counts.into_iter().collect();
+    let stats = correction_table.stats();
     info!(
         log,
-        "There were {} distinct unmatched barcodes, and {} that can be recovered",
-        distinct_unmatched_bc,
-        distinct_recoverable_bc
-    );
-    info!(
-        log,
-        "Matching unmatched barcodes to retained barcodes took {:?}", unmatched_duration
-    );
-    info!(log, "Of the unmatched barcodes\n============");
-    info!(
-        log,
-        "\t{} had exactly 1 single-edit neighbor in the retained list",
-        found_approx.to_formatted_string(&Locale::en)
-    );
-    info!(
-        log,
-        "\t{} had >1 single-edit neighbor in the retained list",
-        ambig_approx.to_formatted_string(&Locale::en)
-    );
-    info!(
-        log,
-        "\t{} had no neighbor in the retained list",
-        not_found.to_formatted_string(&Locale::en)
+        "ATAC cell correction: {} exact reads, {} corrected, {} ambiguous, {} without a candidate",
+        stats.exact_reads,
+        stats.corrected_reads,
+        stats.ambiguous_reads,
+        stats.not_found_reads,
     );
 
     let parent = std::path::Path::new(output_dir);
     let o_path = parent.join("permit_freq.bin");
 
-    // convert the DashMap to a HashMap
-    let mut hm: BCMap = hm.into_iter().collect();
-    match afutils::write_permit_list_freq(&o_path, barcode_len, &hm) {
+    match afutils::write_permit_list_freq(&o_path, barcode_len, &permitted_counts) {
         Ok(_) => {}
         Err(error) => {
             panic!("Error: {}", error);
         }
     };
 
-    /*
-    // don't need this right now
-    let s_path = parent.join("bcmap.bin");
-    let s_file = std::fs::File::create(&s_path).expect("could not create serialization file.");
-    let mut s_writer = BufWriter::new(&s_file);
-    bincode::serialize_into(&mut s_writer, &bcmap2).expect("couldn't serialize barcode list.");
-    */
-
-    // now that we are done with using hm to count, we can repurpose it as
-    // the correction map.
-    for (k, v) in hm.iter_mut() {
-        // each present barcode corrects to itself
-        *v = *k;
-    }
-    for (uncorrected, corrected) in corrected_list.iter() {
-        hm.insert(*uncorrected, *corrected);
-    }
+    let permit_map: BCMap = correction_table
+        .entries()
+        .iter()
+        .copied()
+        .filter(|(_, target)| permitted_counts.contains_key(target))
+        .collect();
 
     let pm_path = parent.join("permit_map.bin");
     let pm_file = std::fs::File::create(pm_path).context("could not create serialization file.")?;
     let mut pm_writer = BufWriter::new(&pm_file);
-    bincode::serialize_into(&mut pm_writer, &hm)
+    bincode::serialize_into(&mut pm_writer, &permit_map)
         .context("couldn't serialize permit list mapping.")?;
+
+    let compact_entries = correction_table
+        .entries()
+        .iter()
+        .copied()
+        .filter(|(_, target)| permitted_counts.contains_key(target))
+        .map(|(observed, corrected)| BarcodeCorrection {
+            observed,
+            corrected,
+        })
+        .collect();
+    let mut correction_plan = CorrectionPlan {
+        sample_barcode_len: None,
+        cell_barcode_len: barcode_len as u8,
+        sample_spec: None,
+        sample_corrections: Vec::new(),
+        cell_scopes: vec![CellCorrectionScope {
+            sample_barcode: None,
+            spec,
+            corrections: compact_entries,
+        }],
+    };
+    correction_plan.write_to(parent)?;
 
     let meta_info = json!({
     "version_str" : version,
@@ -334,7 +277,10 @@ fn process_unfiltered(
     "cmd" : cmdline,
     "permit-list-type" : "unfiltered",
     "gpl_options" : &gpl_opts,
-    "max-rec-in-bin": bmax
+    "max-rec-in-bin": bmax,
+    "resolved_cell_bc_neighborhood": spec.neighborhood.to_string(),
+    "resolved_cell_bc_confidence": gpl_opts.cell_bc_confidence.to_string(),
+    "correction_stats": stats,
     });
 
     let m_path = parent.join("generate_permit_list.json");
@@ -349,10 +295,10 @@ fn process_unfiltered(
     info!(
         log,
         "total number of distinct corrected barcodes : {}",
-        num_corrected.to_formatted_string(&Locale::en)
+        stats.corrected_distinct.to_formatted_string(&Locale::en)
     );
 
-    Ok(num_corrected)
+    Ok(stats.corrected_distinct)
 }
 
 pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> {
@@ -492,7 +438,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let num_reads = Arc::new(AtomicUsize::new(0));
     // if dealing with the unfiltered type
     // the set of barcodes that are not an exact match for any known barcodes
-    let mut unmatched_bc: Vec<u64>;
+    let mut unmatched_bc: BCMap;
     // let mut num_orientation_compat_reads = 0usize;
     let mut max_ambiguity_read = 0usize;
     let mut num_orientation_compat_reads = 0usize;
@@ -514,7 +460,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     match filter_meth {
         CellFilterMethod::UnfilteredExternalList(_, _min_reads) => {
-            unmatched_bc = Vec::with_capacity(10_000_000);
+            unmatched_bc = HashMap::default();
 
             // the unfiltered_bc_count map must be valid in this branch
             if unfiltered_bc_counts.is_some() {
@@ -529,7 +475,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     let hmu = std::sync::Arc::new(unfiltered_bc_counts.unwrap());
                     let num_chunks = Arc::new(AtomicUsize::new(0));
                     let mut handles =
-                        Vec::<std::thread::ScopedJoinHandle<(usize, Vec<u64>, usize)>>::new();
+                        Vec::<std::thread::ScopedJoinHandle<(usize, BCMap, usize)>>::new();
                     for _ in 0..nworkers {
                         let chunks = rad_reader.chunk_iter();
                         let hmu = hmu.clone();
@@ -538,7 +484,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                         let num_reads = num_reads.clone();
                         let num_chunks = num_chunks.clone();
                         let handle = s.spawn(move || {
-                            let mut unmatched_bc = Vec::<u64>::new();
+                            let mut unmatched_bc: BCMap = HashMap::default();
                             let mut max_ambiguity_read = 0usize;
                             let mut num_orientation_compat_reads = 0;
                             for meta_chunk in chunks {
@@ -568,7 +514,9 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                     for handle in handles {
                         let (nocr, ubc, mar) = handle.join().expect("The parsing thread panicked");
                         num_orientation_compat_reads += nocr;
-                        unmatched_bc.extend_from_slice(&ubc);
+                        for (barcode, count) in ubc {
+                            *unmatched_bc.entry(barcode).or_insert(0) += count;
+                        }
                         max_ambiguity_read = max_ambiguity_read.max(mar);
                     }
                     pbar.finish_with_message("finished parsing RAD file\n");
@@ -603,7 +551,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
                 let num_reads = num_reads.load(AtomicOrdering::Acquire);
                 let valid_thresh = 0.3f64;
                 match diagnostics::likely_valid_permit_list(
-                    unmatched_bc.len(),
+                    unmatched_bc.values().sum::<u64>() as usize,
                     num_reads,
                     valid_thresh,
                 ) {

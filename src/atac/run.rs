@@ -4,6 +4,8 @@ use crate::atac::collate::collate;
 use crate::atac::deduplicate::deduplicate;
 use crate::atac::prog_opts::{DeduplicateOpts, GenPermitListOpts};
 use crate::atac::sort::sort;
+use crate::barcode_correction::{BarcodeNeighborhood, Confidence};
+use crate::prog_opts::CellBarcodeCorrectionStrategy;
 use crate::utils::enforce_thread_floor;
 use anyhow::bail;
 use clap::ArgMatches;
@@ -46,6 +48,20 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
                 .expect("number of threads should be given"),
             log,
         ) as usize;
+        let cell_bc_correction = match t
+            .get_one::<String>("cell-bc-correction")
+            .map(String::as_str)
+        {
+            Some("frequency") => CellBarcodeCorrectionStrategy::Frequency,
+            _ => CellBarcodeCorrectionStrategy::Unique,
+        };
+        let cell_bc_neighborhood = t
+            .get_one::<String>("cell-bc-neighborhood")
+            .expect("ATAC cell neighbourhood has a default")
+            .parse::<BarcodeNeighborhood>()?;
+        let cell_bc_confidence = *t
+            .get_one::<Confidence>("cell-bc-confidence")
+            .expect("ATAC confidence has a default");
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
@@ -56,6 +72,9 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             .version(version)
             .cmdline(cmdline)
             .log(log)
+            .cell_bc_correction(cell_bc_correction)
+            .cell_bc_neighborhood(cell_bc_neighborhood)
+            .cell_bc_confidence(cell_bc_confidence)
             .build();
 
         match generate_permit_list(gpl_opts) {

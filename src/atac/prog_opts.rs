@@ -1,4 +1,8 @@
 use crate::atac::cellfilter::CellFilterMethod;
+use crate::barcode_correction::{
+    BarcodeNeighborhood, BarcodeResolution, Confidence, CorrectionSpec,
+};
+use crate::prog_opts::CellBarcodeCorrectionStrategy;
 use serde::Serialize;
 use slog;
 use std::path::PathBuf;
@@ -15,6 +19,28 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub version: &'d str,
     #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
+    #[builder(default)]
+    pub cell_bc_correction: CellBarcodeCorrectionStrategy,
+    #[builder(default = BarcodeNeighborhood::HammingOne)]
+    pub cell_bc_neighborhood: BarcodeNeighborhood,
+    #[builder(default = Confidence::ATAC)]
+    pub cell_bc_confidence: Confidence,
+}
+
+impl GenPermitListOpts<'_, '_, '_, '_, '_> {
+    pub fn correction_spec(&self, barcode_len: u8) -> CorrectionSpec {
+        CorrectionSpec {
+            barcode_len,
+            neighborhood: self.cell_bc_neighborhood,
+            resolution: match self.cell_bc_correction {
+                CellBarcodeCorrectionStrategy::Unique => BarcodeResolution::Unique,
+                CellBarcodeCorrectionStrategy::Frequency => BarcodeResolution::Frequency {
+                    confidence: self.cell_bc_confidence,
+                    pseudocount: 1,
+                },
+            },
+        }
+    }
 }
 
 #[derive(TypedBuilder, Debug, Serialize)]
