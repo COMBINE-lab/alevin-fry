@@ -20,7 +20,7 @@ use crate::prog_opts::SampleBarcodeOri;
 use crate::utils as afutils;
 use crate::utils::KnownRecordType;
 #[allow(unused_imports)]
-use ahash::{AHasher, RandomState};
+use ahash::{AHashMap, AHashSet, AHasher, RandomState};
 use anyhow::{Context, anyhow, bail};
 use bio_types::strand::Strand;
 use bstr::io::BufReadExt;
@@ -107,6 +107,39 @@ fn populate_unfiltered_barcode_map<T: Read>(
 
 type BarcodeCountMap = HashMap<u64, u64, ahash::RandomState>;
 
+/// The policy-free sample routing information needed by the RAD scan.
+///
+/// GPL has already resolved `observed -> canonical sample` before this is
+/// built.  Compiling the canonical target to its dense sample index here
+/// lets each aligned record use one fast lookup instead of separately
+/// consulting the permit map, exact-source map, and canonical-index map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImmediateSampleRoute {
+    sample_index: usize,
+    exact_source: bool,
+}
+
+fn compile_immediate_sample_routes(
+    sample_permit_map: &HashMap<u64, u64>,
+    canonical_to_index: &HashMap<u64, usize>,
+    exact_sources: &HashMap<u64, u64>,
+) -> anyhow::Result<AHashMap<u64, ImmediateSampleRoute>> {
+    let mut routes = AHashMap::with_capacity(sample_permit_map.len());
+    for (&observed, corrected) in sample_permit_map {
+        let &sample_index = canonical_to_index.get(corrected).ok_or_else(|| {
+            anyhow!("sample correction target 0x{corrected:x} has no canonical sample index")
+        })?;
+        routes.insert(
+            observed,
+            ImmediateSampleRoute {
+                sample_index,
+                exact_source: exact_sources.contains_key(&observed),
+            },
+        );
+    }
+    Ok(routes)
+}
+
 fn flush_unmatched_counts(
     local: &mut [BarcodeCountMap],
     shared: &[std::sync::Mutex<BarcodeCountMap>],
@@ -118,6 +151,33 @@ fn flush_unmatched_counts(
         let mut target = shared[sample_idx].lock().unwrap();
         for (cell, count) in buffer.drain() {
             *target.entry(cell).or_insert(0) += count;
+        }
+    }
+}
+
+fn flush_cell_counts(
+    local: &mut [BarcodeCountMap],
+    shared: &[DashMap<u64, u64, ahash::RandomState>],
+) {
+    for (sample_idx, buffer) in local.iter_mut().enumerate() {
+        for (cell, count) in buffer.drain() {
+            *shared[sample_idx].entry(cell).or_insert(0) += count;
+        }
+    }
+}
+
+#[inline]
+fn buffer_count(
+    buffer: &mut BarcodeCountMap,
+    barcode: u64,
+    count: u64,
+    buffered_distinct: &mut usize,
+) {
+    match buffer.entry(barcode) {
+        Entry::Occupied(mut entry) => *entry.get_mut() += count,
+        Entry::Vacant(entry) => {
+            entry.insert(count);
+            *buffered_distinct += 1;
         }
     }
 }
@@ -765,6 +825,11 @@ fn do_generate_permit_list_multi_bc(
     let ambiguous_sample_barcodes = sample_routing.ambiguous_sample_barcodes;
     let sample_frequency = sample_correction_spec
         .is_some_and(|spec| matches!(spec.resolution, BarcodeResolution::Frequency { .. }));
+    let immediate_sample_routes = compile_immediate_sample_routes(
+        &sample_permit_map,
+        &sample_bc_to_idx,
+        &sample_info.rotation_to_canonical,
+    )?;
 
     // Get sample names from the barcode file (uses canonical → name mapping)
     let sample_names = get_sample_names(&sample_info);
@@ -783,6 +848,7 @@ fn do_generate_permit_list_multi_bc(
                 .with_context(|| format!("couldn't open whitelist {}", wl_path.display()))?;
             let mut first_bclen = 0usize;
             let wl = populate_unfiltered_barcode_map(BufReader::new(wl_file), &mut first_bclen);
+            let wl: AHashSet<u64> = wl.iter().map(|entry| *entry.key()).collect();
             info!(
                 log,
                 "Loaded {} cell barcodes from whitelist (bclen={})",
@@ -839,10 +905,8 @@ fn do_generate_permit_list_multi_bc(
     // Wrap shared state in Arcs for the worker threads
     let per_sample_cell_hist = std::sync::Arc::new(per_sample_cell_hist);
     let per_sample_unmatched = std::sync::Arc::new(per_sample_unmatched);
-    let sample_permit_map = std::sync::Arc::new(sample_permit_map);
-    let sample_bc_to_idx = std::sync::Arc::new(sample_bc_to_idx);
+    let immediate_sample_routes = std::sync::Arc::new(immediate_sample_routes);
     let ambiguous_sample_barcodes = std::sync::Arc::new(ambiguous_sample_barcodes);
-    let sample_exact_sources = std::sync::Arc::new(sample_info.rotation_to_canonical.clone());
     let cell_bc_whitelist = std::sync::Arc::new(cell_bc_whitelist);
     let total_reads_arc = &total_reads;
     let matched_reads_arc = &matched_reads;
@@ -868,10 +932,8 @@ fn do_generate_permit_list_multi_bc(
                 let chunks = chunk_reader.chunk_iter();
                 let hist = per_sample_cell_hist.clone();
                 let unmatched = per_sample_unmatched.clone();
-                let spm = sample_permit_map.clone();
-                let s2i = sample_bc_to_idx.clone();
+                let sample_routes = immediate_sample_routes.clone();
                 let ambiguous_samples = ambiguous_sample_barcodes.clone();
-                let exact_sources = sample_exact_sources.clone();
                 let wl = cell_bc_whitelist.clone();
                 let spool_dir = tmp_dir.clone();
 
@@ -884,13 +946,16 @@ fn do_generate_permit_list_multi_bc(
                     let mut local_deferred_sample = 0u64;
                     let mut local_sample_exact_counts = BarcodeCountMap::default();
                     let num_s = hist.len();
+                    let mut local_cell_bufs: Vec<BarcodeCountMap> =
+                        (0..num_s).map(|_| HashMap::default()).collect();
                     let mut local_unmatched_bufs: Vec<BarcodeCountMap> =
                         (0..num_s).map(|_| HashMap::default()).collect();
-                    let mut local_unmatched_distinct = 0usize;
-                    // Bound per-worker duplicate histograms. Without periodic
-                    // reduction, every worker can retain its own copy of most
-                    // distinct unmatched barcodes until the RAD pass ends.
-                    const UNMATCHED_FLUSH_ENTRIES: usize = 1 << 18;
+                    let mut local_buffered_distinct = 0usize;
+                    // Bound the combined exact and unmatched per-worker
+                    // histograms. Local aggregation avoids a concurrent map
+                    // operation for every read without allowing every worker
+                    // to retain a full copy of the barcode universe.
+                    const CELL_COUNT_FLUSH_ENTRIES: usize = 1 << 16;
                     let mut spool = if sample_frequency {
                         Some(DeferredPairSpool::new(
                             &spool_dir,
@@ -913,8 +978,8 @@ fn do_generate_permit_list_multi_bc(
                                 let sample_bc: u64 = read.collation_key_at_level(0);
                                 let cell_bc: u64 = read.collate_key();
 
-                                if let Some(&corrected_sample) = spm.get(&sample_bc) {
-                                    if exact_sources.contains_key(&sample_bc) {
+                                if let Some(route) = sample_routes.get(&sample_bc) {
+                                    if route.exact_source {
                                         if sample_frequency {
                                             *local_sample_exact_counts
                                                 .entry(sample_bc)
@@ -924,36 +989,39 @@ fn do_generate_permit_list_multi_bc(
                                     } else {
                                         local_structurally_unique_sample += 1;
                                     }
-                                    if let Some(&sample_idx) = s2i.get(&corrected_sample) {
-                                        local_matched += 1;
-                                        if let Some(ref wl_map) = *wl {
-                                            if wl_map.contains_key(&cell_bc) {
-                                                *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
-                                            } else {
-                                                match local_unmatched_bufs[sample_idx]
-                                                    .entry(cell_bc)
-                                                {
-                                                    Entry::Occupied(mut entry) => {
-                                                        *entry.get_mut() += 1;
-                                                    }
-                                                    Entry::Vacant(entry) => {
-                                                        entry.insert(1);
-                                                        local_unmatched_distinct += 1;
-                                                    }
-                                                }
-                                                if local_unmatched_distinct
-                                                    >= UNMATCHED_FLUSH_ENTRIES
-                                                {
-                                                    flush_unmatched_counts(
-                                                        &mut local_unmatched_bufs,
-                                                        &unmatched,
-                                                    );
-                                                    local_unmatched_distinct = 0;
-                                                }
-                                            }
+                                    let sample_idx = route.sample_index;
+                                    local_matched += 1;
+                                    if let Some(ref wl_map) = *wl {
+                                        if wl_map.contains(&cell_bc) {
+                                            buffer_count(
+                                                &mut local_cell_bufs[sample_idx],
+                                                cell_bc,
+                                                1,
+                                                &mut local_buffered_distinct,
+                                            );
                                         } else {
-                                            *hist[sample_idx].entry(cell_bc).or_insert(0) += 1;
+                                            buffer_count(
+                                                &mut local_unmatched_bufs[sample_idx],
+                                                cell_bc,
+                                                1,
+                                                &mut local_buffered_distinct,
+                                            );
                                         }
+                                    } else {
+                                        buffer_count(
+                                            &mut local_cell_bufs[sample_idx],
+                                            cell_bc,
+                                            1,
+                                            &mut local_buffered_distinct,
+                                        );
+                                    }
+                                    if local_buffered_distinct >= CELL_COUNT_FLUSH_ENTRIES {
+                                        flush_cell_counts(&mut local_cell_bufs, &hist);
+                                        flush_unmatched_counts(
+                                            &mut local_unmatched_bufs,
+                                            &unmatched,
+                                        );
+                                        local_buffered_distinct = 0;
                                     }
                                 } else if sample_frequency
                                     && ambiguous_samples
@@ -974,6 +1042,7 @@ fn do_generate_permit_list_multi_bc(
                         }
                     }
 
+                    flush_cell_counts(&mut local_cell_bufs, &hist);
                     flush_unmatched_counts(&mut local_unmatched_bufs, &unmatched);
 
                     Ok((
@@ -1022,8 +1091,7 @@ fn do_generate_permit_list_multi_bc(
 
     let total_reads = total_reads.load(Ordering::SeqCst);
 
-    let mut sample_permit_map = std::sync::Arc::into_inner(sample_permit_map).unwrap();
-    let sample_bc_to_idx = std::sync::Arc::into_inner(sample_bc_to_idx).unwrap();
+    let mut sample_permit_map = sample_permit_map;
 
     let mut replay_time = std::time::Duration::ZERO;
     let mut spool_stats = SpoolStats::default();
@@ -1057,7 +1125,7 @@ fn do_generate_permit_list_multi_bc(
                         let sample_idx = sample_bc_to_idx[&corrected];
                         matched_reads.fetch_add(count, Ordering::SeqCst);
                         if let Some(ref whitelist) = *cell_bc_whitelist {
-                            if whitelist.contains_key(&cell) {
+                            if whitelist.contains(&cell) {
                                 *per_sample_cell_hist[sample_idx].entry(cell).or_insert(0) += count;
                             } else {
                                 *per_sample_unmatched[sample_idx]
@@ -2595,6 +2663,59 @@ mod cell_barcode_correction_tests {
             serde_json::to_string(&CellBarcodeCorrectionStrategy::Frequency).unwrap(),
             "\"frequency\""
         );
+    }
+
+    #[test]
+    fn immediate_sample_routes_fuse_target_index_and_exactness() {
+        let permit_map = HashMap::from([(10, 100), (11, 100), (20, 200)]);
+        let canonical_to_index = HashMap::from([(100, 0), (200, 1)]);
+        let exact_sources = HashMap::from([(10, 100), (20, 200)]);
+
+        let routes =
+            compile_immediate_sample_routes(&permit_map, &canonical_to_index, &exact_sources)
+                .unwrap();
+        assert_eq!(
+            routes.get(&10),
+            Some(&ImmediateSampleRoute {
+                sample_index: 0,
+                exact_source: true,
+            })
+        );
+        assert_eq!(
+            routes.get(&11),
+            Some(&ImmediateSampleRoute {
+                sample_index: 0,
+                exact_source: false,
+            })
+        );
+        assert!(
+            compile_immediate_sample_routes(
+                &HashMap::from([(30, 300)]),
+                &canonical_to_index,
+                &exact_sources,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn buffered_cell_counts_reduce_exactly_and_clear_local_state() {
+        let mut local = vec![BarcodeCountMap::default(), BarcodeCountMap::default()];
+        let mut buffered_distinct = 0;
+        buffer_count(&mut local[0], 7, 2, &mut buffered_distinct);
+        buffer_count(&mut local[0], 7, 3, &mut buffered_distinct);
+        buffer_count(&mut local[1], 9, 4, &mut buffered_distinct);
+        assert_eq!(buffered_distinct, 2);
+
+        let shared = vec![DashMap::default(), DashMap::default()];
+        flush_cell_counts(&mut local, &shared);
+        assert!(local.iter().all(HashMap::is_empty));
+        assert_eq!(shared[0].get(&7).map(|count| *count), Some(5));
+        assert_eq!(shared[1].get(&9).map(|count| *count), Some(4));
+
+        buffer_count(&mut local[0], 7, 6, &mut buffered_distinct);
+        flush_cell_counts(&mut local, &shared);
+        assert_eq!(shared[0].get(&7).map(|count| *count), Some(11));
     }
 
     #[test]

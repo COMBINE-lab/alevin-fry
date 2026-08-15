@@ -35,10 +35,10 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.17.0", git = "https://github.com/COMBINE-lab/libradicl.git", rev = "195cd1d81b87bc291e677103aa5ebe84984782cf" }
+libradicl = { version = "0.17.0", git = "https://github.com/COMBINE-lab/libradicl.git", rev = "f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563" }
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
-ahash = "0.8.12"
+ahash = { version = "0.8.12", features = ["serde"] }
 bincode = "1.3.3"
 bstr = "1.12.1"
 crossbeam-channel = "0.5.15"

@@ -27,6 +27,7 @@
 //! and covered by `tests/atac_integration.rs`, but coverage here is thinner
 //! than on the supported path — measure twice before relying on it.
 
+use ahash::AHashMap;
 use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use slog::{crit, info, warn};
@@ -244,7 +245,7 @@ pub fn get_num_chunks(mdata: &serde_json::Value, log: &slog::Logger) -> anyhow::
 }
 
 pub fn correct_unmapped_counts(
-    correct_map: &Arc<HashMap<u64, u64>>,
+    correct_map: &HashMap<u64, u64, impl std::hash::BuildHasher>,
     unmapped_file: &std::path::Path,
     parent: &std::path::Path,
 ) {
@@ -457,7 +458,7 @@ where
     }
 
     let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
-    let correct_map: Arc<HashMap<u64, u64>> = if compact_path.exists() {
+    let correct_map: Arc<AHashMap<u64, u64>> = if compact_path.exists() {
         let plan = CorrectionPlan::read_from(&compact_path)?;
         if plan.sample_barcode_len.is_some() || u64::from(plan.cell_barcode_len) != bc_len {
             return Err(anyhow!("correction plan does not match this ATAC input"));
@@ -504,7 +505,7 @@ where
     };
 
     // TODO: see if we can do this without the Arc
-    let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
+    let mut output_cache = Arc::new(AHashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
     // max_records is the max size of each intermediate file
     let mut total_allocated_records = 0;
