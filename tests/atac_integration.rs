@@ -449,6 +449,39 @@ fn atac_sort_uses_compiled_plan_without_legacy_map() {
     );
 }
 
+#[test]
+fn atac_sort_uses_legacy_map_without_compiled_plan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = make_test_logger();
+    let mix = CellMix {
+        good: 3,
+        unmapped: 0,
+        multimapped: 0,
+    };
+    let (rad_dir, gpl_dir) = stage_permit_list(tmp.path(), 4, &mix, &log);
+    std::fs::remove_file(gpl_dir.join("correction_plan.bin")).unwrap();
+
+    let sort_input = gpl_dir.clone();
+    let sort_rad = rad_dir.clone();
+    let sort_log = log.clone();
+    run_with_timeout("atac sort with legacy permit map", move || {
+        sort(
+            sort_input,
+            sort_rad,
+            2,
+            10_000,
+            false,
+            "atac_integration_test",
+            TEST_VERSION,
+            &sort_log,
+        )
+    });
+    assert!(
+        std::fs::metadata(gpl_dir.join("map.bed")).is_ok_and(|metadata| metadata.len() > 0),
+        "ATAC legacy fallback produced no BED output"
+    );
+}
+
 /// A cell whose records are *all* dropped by the scatter phase contributes no
 /// chunk, so the collated file legitimately holds fewer chunks than there are
 /// retained barcodes. That used to be a hard assertion failure.

@@ -6,6 +6,48 @@ Changelog for alevin-fry
 > releases 0.10.0 through 0.17.0 are not recorded here. See the git history and
 > the GitHub releases page for that range.
 
+## [0.18.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.17.1...v0.18.0) (2026-08-15)
+
+### Added
+
+* Deterministic, shared barcode correction for every ordinary-RNA filtering
+  mode, multi-sample RNA, and ATAC.  Cell barcodes support `unique` and
+  abundance-weighted `frequency` policies with Hamming-1 or the historical
+  substitution-or-shift neighbourhood; sample barcodes additionally support
+  exact correction.
+* A versioned `correction_plan.bin` handoff that records GPL's accepted
+  observed-barcode decisions.  Collation and ATAC sorting apply the compiled
+  decisions directly while retaining explicit fallbacks for older GPL output.
+* Bounded, Snappy-compressed spill and replay for the structurally ambiguous
+  sample-Frequency cases, controlled by `--memory-limit` and `--tmp-dir`.
+* User-selectable cell and sample Frequency confidence thresholds, exact
+  rational comparisons, correction diagnostics, and corrected
+  `permit_freq.bin` aggregation.
+
+### Changed
+
+* Single- and multi-barcode collation now use libradicl's bounded parallel
+  engines.  Their hot paths fuse correction and bucket routing into one lookup,
+  preserve hierarchical sample/cell output, and fully order manifests.
+* Requests below two threads warn and continue with two.  Collation and GPL
+  memory requests below 256 MiB likewise warn and continue with 256 MiB.
+* Legacy `--sample-correction-mode`, `--max-records`, and `--collation-mode`
+  spellings remain accepted but are hidden from normal help.
+* Quantification reuses sparse scratch storage and equivalence-class state;
+  bootstrap and summary-stat handling were corrected, and release builds abort
+  rather than unwind on panic.
+
+### Performance
+
+* On the 1.995-billion-record Flex v2 benchmark, bounded worker-local barcode
+  counts and private AHash execution maps reduced GPL median wall time from
+  31.39 to 9.35 seconds and peak RSS from 1,735.5 to 1,550.2 MiB while
+  producing byte-identical correction artifacts.
+* The optimized compiled-plan collators reduced measured Flex collation wall
+  time by 10.5% and single-barcode PBMC collation by 6.8% relative to their
+  immediate baselines.  ATAC sorting improved by 5.3% on the measured
+  28.4-million-record input with byte-identical BED output.
+
 ## [0.17.1](https://github.com/COMBINE-lab/alevin-fry/compare/v0.17.0...v0.17.1)
 
 ### Fixed

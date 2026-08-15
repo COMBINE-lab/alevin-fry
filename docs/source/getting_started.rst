@@ -35,7 +35,10 @@ Finally, we quantify the collated rad file using the `cr-like` resolution strate
 
     $ alevin-fry quant -i <fry_odir> -m <tg_map> -t <num_threads> -r cr-like -o <fry_odir> 
 
-Note that with the exception of the `generate-permit-list` command, the other `alevin-fry` commands are designed to scale well with the number of provided threads. Thus, if you have multiple threads to use, then you can provide the appropriate argument to the `-t` option.
+The ``-t`` option controls the thread count used by each stage. Two threads is
+the practical minimum: a request of zero or one produces a prominent warning,
+is raised to two, and execution continues. Larger requests are honored, though
+the best scaling point depends on the stage and dataset.
 
 Detailed information on the alevin-fry commands
 -----------------------------------------------

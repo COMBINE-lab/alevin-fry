@@ -441,8 +441,9 @@ struct WorkerSharedState<R: MappedRecord> {
 /// Default threshold (in number of records) below which a cell uses the fast
 /// path that avoids HashMap-based equivalence class construction entirely.
 ///
-/// This is the default for `--small-thresh`, not a hard-coded limit; see
-/// [`QuantConfig::tiny_cell_thresh`]. The fast path implements `cr-like`
+/// This is the default for `--small-thresh`, not a hard-coded limit; the
+/// resolved value is carried by the worker configuration's
+/// `tiny_cell_thresh` field. The fast path implements `cr-like`
 /// winner-take-all semantics, so it is only taken when those semantics are
 /// what was asked for.
 pub const DEFAULT_SMALL_CELL_FAST_THRESHOLD: usize = 100;

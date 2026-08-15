@@ -2502,3 +2502,25 @@ where
     Ok(())
 }
 */
+
+#[cfg(test)]
+mod tests {
+    use super::load_single_corrections;
+    use std::collections::HashMap;
+    use std::fs::File;
+
+    #[test]
+    fn single_barcode_loader_accepts_legacy_permit_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let expected = HashMap::from([(7_u64, 11_u64), (13_u64, 17_u64)]);
+        bincode::serialize_into(
+            File::create(dir.path().join("permit_map.bin")).unwrap(),
+            &expected,
+        )
+        .unwrap();
+
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let loaded = load_single_corrections(dir.path(), 16, &log).unwrap();
+        assert_eq!(loaded, expected);
+    }
+}

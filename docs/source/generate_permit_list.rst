@@ -72,6 +72,6 @@ relevant to users of ``alevin-fry``, but the files are described here.
 
 3. ``permit_map.bin`` retains the historical serialized-map interface for older consumers.
 
-4. ``correction_plan.bin`` is the deterministic, versioned handoff consumed by current collation and ATAC sorting.  It contains the accepted observed corrections, including identities, and their resolved policy metadata.
+4. ``correction_plan.bin`` is the deterministic, versioned internal handoff consumed by current collation and ATAC sorting.  It contains the accepted observed corrections, including identities, and their resolved policy metadata.  It is not a user-editable permit list or stable interchange format; keep it with the complete GPL output and use compatible alevin-fry stages.
 
 5. ``generate_permit_list.json`` records the command, resolved options, correction statistics, and expected orientation.  Multi-barcode workflows additionally write ``sample_info.json``, ``sample_permit_map.bin``, and per-sample permit files for samples having retained cells.
