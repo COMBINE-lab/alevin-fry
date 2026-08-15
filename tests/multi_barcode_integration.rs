@@ -778,6 +778,10 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
     let total_cells = generate_permit_list(gpl_opts).unwrap();
     assert_eq!(total_cells, (num_samples * cells_per_sample) as u64);
 
+    // Older GPL outputs predate correction_plan.bin. Collation must retain
+    // its documented Hamming-1 Unique compatibility path for those outputs.
+    std::fs::remove_file(output_dir.join("correction_plan.bin")).unwrap();
+
     collate(
         output_dir.clone(),
         &rad_dir,

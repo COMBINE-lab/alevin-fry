@@ -25,7 +25,9 @@ sample and cell-barcode tie-breaks.
 
 If ``correction_plan.bin`` is absent, collation uses the historical correction
 files and emits a warning.  A present but malformed or unsupported plan is an
-error; it is never silently ignored.
+error; it is never silently ignored.  This file is a versioned internal
+GPL-to-collate handoff and should be kept with the rest of the GPL output rather
+than edited or copied independently between incompatible releases.
 
 output
 ------

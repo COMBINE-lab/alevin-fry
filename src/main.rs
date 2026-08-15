@@ -224,6 +224,7 @@ fn main() -> anyhow::Result<()> {
             arg!(--"sample-correction-mode" <SCMODE> "deprecated alias: exact, or 1-edit (Unique plus substitution-or-shift-1)")
                 .value_parser(["exact", "1-edit"])
                 .requires("sample-bc-list")
+                .hide(true)
         )
         .arg(
             arg!(--"cell-bc-correction" <STRATEGY> "cell-barcode collision policy: `unique` accepts one canonical target; `frequency` uses frozen exact counts and a confidence threshold")
@@ -281,12 +282,14 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-c --compress "compress the output collated RAD file"))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "deprecated approximate record-count memory control; use --memory-limit")
          .value_parser(value_parser!(u32))
-         .conflicts_with("memory-limit"))
+         .conflicts_with("memory-limit")
+         .hide(true))
     .arg(arg!(--"memory-limit" <SIZE> "collation buffer budget, excluding indexes and page cache (for example 2GiB or 4GB; default: 2GiB)")
          .value_parser(parse_memory_size)
          .conflicts_with("max-records"))
     .arg(arg!(--"collation-mode" <CMODE> "deprecated compatibility alias; all values select the optimized collator")
-         .value_parser(["two-round", "fast"]));
+         .value_parser(["two-round", "fast"])
+         .hide(true));
 
     let quant_app = Command::new("quant")
     .about("Quantify expression from a collated RAD file")

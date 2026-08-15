@@ -7,7 +7,7 @@ authors = [
   "Rob Patro <rob@cs.umd.edu>",
 ]
 name = "alevin-fry"
-version = "0.17.1"
+version = "0.18.0"
 edition = "2024"
 
 description = "A suite of tools for the rapid, accurate and memory-frugal processing single-cell and single-nucleus sequencing data."
@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = { version = "0.17.0", git = "https://github.com/COMBINE-lab/libradicl.git", rev = "f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563" }
+libradicl = "0.18.0"
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = { version = "0.8.12", features = ["serde"] }
@@ -86,7 +86,7 @@ clap = { version = "4.6.0", features = [
   "error-context",
 ] }
 
-# libradicl 0.17 depends on noodles 0.115; a mismatch here yields two
+# libradicl 0.18 depends on noodles 0.115; a mismatch here yields two
 # incompatible `sam::Header` types at the `RadHeader::from_bam_header` call in
 # src/convert.rs. Keep these in lockstep.
 noodles = { version = "0.115.0", features = ["bam", "bgzf", "sam"] }

@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "alevin-fry"
-version = "0.17.1"
+version = "0.18.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -872,8 +872,9 @@ dependencies = [
 
 [[package]]
 name = "libradicl"
-version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563#f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a1d9494fd770a1d6a07d679f6b722c48fea53dc9c64a4e95e13b71066308c4e"
 dependencies = [
  "ahash",
  "anyhow",
@@ -898,8 +899,9 @@ dependencies = [
 
 [[package]]
 name = "libradicl-macros"
-version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563#f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8dbcfb3a9fd7e663131c333ddc7ed932fc1c6a0d14ac75508992193c4bbb4e0d"
 dependencies = [
  "proc-macro2",
  "quote",

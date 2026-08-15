@@ -1,3 +1,5 @@
+.. _alevin-fry commands:
+
 ===================
 alevin-fry commands
 ===================

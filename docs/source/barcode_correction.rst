@@ -111,6 +111,13 @@ barcode lengths and resolved policies, and stores sorted observed-to-corrected
 entries including retained identities.  Multi-sample cell corrections are
 grouped by canonical sample.
 
+The plan is an internal, versioned handoff between GPL and later stages, not a
+user-editable permit list or a stable interchange format.  Run GPL and
+collation or ATAC sorting with compatible alevin-fry releases, keep the file
+alongside the historical artifacts, and do not modify it.  A newer reader may
+support an older directory through the explicit fallbacks below; it will never
+guess how to interpret a present plan whose version it does not support.
+
 Collation validates the plan, compiles its sorted entries into a direct fused
 correction-and-bucket lookup, and performs one lookup on each RAD record.  The
 record hot path contains no neighbour generation, collision-policy dispatch,

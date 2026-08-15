@@ -32,6 +32,26 @@ barcodes, read totals, and cell totals. Record order inside a cell is not part
 of the RAD contract and differed between parallel runs, so whole-file hashes
 are not expected to match.
 
+### 0.18.0 registry-dependency release gate
+
+Immediately before release, the full Flex GPL and collation measurements were
+repeated to compare current `master` (using its pinned libradicl Git revision)
+with the 0.18.0 release candidate (using `libradicl = "0.18.0"` from
+crates.io). Both builds used their locked release dependency graph.
+
+| Stage | Build | Wall times (s) | Median (s) | Peak RSS runs (KiB) | Median RSS (KiB) | RC change |
+|---|---|---:|---:|---:|---:|---:|
+| GPL | current master | 10.24, 10.27, 10.23 | 10.24 | 1,575,844; 1,598,820; 1,584,600 | 1,584,600 | — |
+| GPL | 0.18.0 RC | 9.95, 10.16, 10.37 | 10.16 | 1,590,256; 1,582,072; 1,619,352 | 1,590,256 | wall −0.8%; RSS +0.4% |
+| Collate | current master | 20.64, 20.99, 20.85 | 20.85 | 1,224,836; 1,255,840; 1,230,088 | 1,230,088 | — |
+| Collate | 0.18.0 RC | 21.20, 20.04, 21.14 | 21.14 | 1,237,232; 1,238,248; 1,252,016 | 1,238,248 | wall +1.4%; RSS +0.7% |
+
+All six GPL runs produced the same correction-plan hash. All six collations
+produced the same manifest hash, 2,423,889 chunks, 1,869,082,132 written
+records, and a 37,402,724,053-byte output. The registry transition therefore
+cleared the 3% wall-time and peak-RSS release gates without changing the
+output contract.
+
 The 2.6 GB unfiltered single-barcode PBMC GPL was also measured three times at
 8 threads. Baseline wall times were 2.25, 2.27, and 2.26 seconds (median 2.26)
 with median RSS 357,124 KiB. Feature times were 2.24, 2.25, and 2.35 seconds
@@ -49,6 +69,39 @@ seconds (median 1.65) with median RSS 896,504 KiB: wall −6.8% and RSS
 was found to amplify allocator high-water use; the final handoff instead
 borrows the one map for unmapped-read accounting and then moves it into
 libradicl's fused lookup.
+
+## Final hash and count aggregation optimization
+
+A subsequent release-candidate pass replaced private multi-sample routing and
+cell-count maps with AHash-based execution structures, made the immutable cell
+whitelist an `AHashSet`, and aggregated counts in bounded worker-local maps.
+The correction engine and persisted artifacts remained ordered and
+deterministic; the hash implementation is private and does not choose targets.
+
+The full Flex v2 input above was measured with 32 threads and three runs per
+main comparison:
+
+| Implementation | Median wall (s) | Median peak RSS (MiB) |
+|---|---:|---:|
+| Original resolved-correction GPL | 31.39 | 1,735.5 |
+| Fused route, SipHash | 28.80 | 1,697.9 |
+| Fused route, AHash | 19.43 | 1,741.5 |
+| Immutable AHash whitelist | 17.02 | 1,703.0 |
+| Bounded worker-local counts (final) | **9.35** | **1,550.2** |
+
+The final implementation reduced median wall time by 70.2% and peak RSS by
+10.7% relative to the original resolved-correction implementation.  The
+forced-cell path improved from 15.65 seconds / 1,402.3 MiB to 9.84 seconds /
+1,352.4 MiB.  Cell-Frequency and sample-Frequency completed in 8.03 and 8.14
+seconds and reproduced their pre-change correction artifacts byte-for-byte.
+
+A six-run FoldHash comparison at the fused-routing stage measured 19.22 seconds
+versus 19.43 seconds for AHash.  The roughly 1% and inconsistent difference did
+not justify another direct dependency or a different fixed-seed tradeoff.
+
+On a 28.4-million-record, 3.8 GB ATAC RAD, 13 paired warm-cache sort runs
+improved from 0.76 to 0.72 seconds median (5.3%).  The BED outputs were
+byte-identical.
 
 ## Neighbourhood effects
 
