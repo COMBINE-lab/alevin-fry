@@ -18,6 +18,7 @@ use rand::RngExt;
 use slog::{Drain, crit, info, o, warn};
 use std::path::PathBuf;
 
+use alevin_fry::barcode_correction::{BarcodeNeighborhood, Confidence};
 use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
 use alevin_fry::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
@@ -194,7 +195,6 @@ fn main() -> anyhow::Result<()> {
         .arg(
             arg!(-u --"unfiltered-pl" <UNFILTEREDPL> "uses an unfiltered external permit list")
             .value_parser(pathbuf_file_exists_validator)
-            .required_if_eq("cell-bc-correction", "frequency")
         )
         .group(ArgGroup::new("filter-method")
                .args(["knee-distance", "expect-cells", "force-cells", "valid-bc", "unfiltered-pl"])
@@ -215,15 +215,50 @@ fn main() -> anyhow::Result<()> {
                 .requires("sample-bc-list")
         )
         .arg(
-            arg!(--"sample-correction-mode" <SCMODE> "correction mode for sample barcodes")
+            arg!(--"sample-bc-correction" <SCMODE> "sample-barcode correction policy")
+                .value_parser(["exact", "unique", "frequency"])
+                .requires("sample-bc-list")
+                .conflicts_with("sample-correction-mode")
+        )
+        .arg(
+            arg!(--"sample-correction-mode" <SCMODE> "deprecated alias: exact, or 1-edit (Unique plus substitution-or-shift-1)")
                 .value_parser(["exact", "1-edit"])
-                .default_value("exact")
                 .requires("sample-bc-list")
         )
         .arg(
-            arg!(--"cell-bc-correction" <STRATEGY> "cell-barcode correction strategy for --unfiltered-pl: `unique` accepts only a unique retained neighbour (the default); `frequency` applies a Cell Ranger-inspired, uniform-quality rule and accepts the most frequent retained neighbour when it has at least 97.5% of the total Laplace-smoothed weight")
+            arg!(--"cell-bc-correction" <STRATEGY> "cell-barcode collision policy: `unique` accepts one canonical target; `frequency` uses frozen exact counts and a confidence threshold")
                 .value_parser(["unique", "frequency"])
                 .default_value("unique")
+        )
+        .arg(
+            arg!(--"cell-bc-neighborhood" <NEIGHBORHOOD> "cell-barcode neighbourhood; edit-1 is a compatibility alias for substitution-or-shift-1")
+                .value_parser(["hamming-1", "substitution-or-shift-1", "edit-1"])
+        )
+        .arg(
+            arg!(--"sample-bc-neighborhood" <NEIGHBORHOOD> "sample-barcode neighbourhood for non-exact correction")
+                .value_parser(["hamming-1", "substitution-or-shift-1", "edit-1"])
+                .default_value("hamming-1")
+                .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"cell-bc-confidence" <CONFIDENCE> "Frequency confidence as a decimal or exact fraction")
+                .value_parser(value_parser!(Confidence))
+                .default_value("0.975")
+        )
+        .arg(
+            arg!(--"sample-bc-confidence" <CONFIDENCE> "sample-Frequency confidence as a decimal or exact fraction")
+                .value_parser(value_parser!(Confidence))
+                .default_value("0.975")
+                .requires("sample-bc-list")
+        )
+        .arg(
+            arg!(--"memory-limit" <MEMORY> "memory available to deferred GPL correction buffers")
+                .value_parser(parse_memory_size)
+                .default_value("512MiB")
+        )
+        .arg(
+            arg!(--"tmp-dir" <TMPDIR> "directory for temporary GPL correction spools (default: output directory)")
+                .value_parser(value_parser!(PathBuf))
         )
         .arg(
             arg!(--"sample-bc-ori" <SBCORI> "orientation of sample barcodes in the whitelist relative to the read (forward = whitelist matches read as-is; reverse = reverse-complement the whitelist before lookup, e.g. 10x Flex v2)")
@@ -452,12 +487,26 @@ fn main() -> anyhow::Result<()> {
         // Parse multi-barcode options
         let sample_bc_list: Option<PathBuf> = t.get_one::<PathBuf>("sample-bc-list").cloned();
         let sample_names: Option<PathBuf> = t.get_one::<PathBuf>("sample-names").cloned();
-        let sample_correction_mode = match t
-            .get_one::<String>("sample-correction-mode")
-            .map(|s| s.as_str())
+        let sample_correction_mode = if let Some(mode) =
+            t.get_one::<String>("sample-correction-mode")
         {
-            Some("1-edit") => prog_opts::SampleCorrectionMode::OneEdit,
-            _ => prog_opts::SampleCorrectionMode::Exact,
+            warn!(
+                log,
+                "--sample-correction-mode is deprecated; use --sample-bc-correction and --sample-bc-neighborhood"
+            );
+            match mode.as_str() {
+                "1-edit" => prog_opts::SampleCorrectionMode::OneEdit,
+                _ => prog_opts::SampleCorrectionMode::Exact,
+            }
+        } else {
+            match t
+                .get_one::<String>("sample-bc-correction")
+                .map(String::as_str)
+            {
+                Some("unique") => prog_opts::SampleCorrectionMode::Unique,
+                Some("frequency") => prog_opts::SampleCorrectionMode::Frequency,
+                _ => prog_opts::SampleCorrectionMode::Exact,
+            }
         };
 
         let cell_bc_correction = match t
@@ -472,6 +521,25 @@ fn main() -> anyhow::Result<()> {
             Some("reverse") => prog_opts::SampleBarcodeOri::Reverse,
             _ => prog_opts::SampleBarcodeOri::Forward,
         };
+
+        let cell_bc_neighborhood = t
+            .get_one::<String>("cell-bc-neighborhood")
+            .map(|value| value.parse::<BarcodeNeighborhood>())
+            .transpose()?;
+        let sample_bc_neighborhood = t
+            .get_one::<String>("sample-bc-neighborhood")
+            .expect("sample barcode neighbourhood has a default")
+            .parse::<BarcodeNeighborhood>()?;
+        let cell_bc_confidence = *t
+            .get_one::<Confidence>("cell-bc-confidence")
+            .expect("cell barcode confidence has a default");
+        let sample_bc_confidence = *t
+            .get_one::<Confidence>("sample-bc-confidence")
+            .expect("sample barcode confidence has a default");
+        let memory_limit = *t
+            .get_one::<u64>("memory-limit")
+            .expect("GPL memory limit has a default");
+        let tmp_dir = t.get_one::<PathBuf>("tmp-dir").cloned();
 
         let gpl_opts = GenPermitListOpts::builder()
             .input_dir(input_dir)
@@ -488,6 +556,12 @@ fn main() -> anyhow::Result<()> {
             .sample_correction_mode(sample_correction_mode)
             .sample_bc_ori(sample_bc_ori)
             .cell_bc_correction(cell_bc_correction)
+            .cell_bc_neighborhood(cell_bc_neighborhood)
+            .sample_bc_neighborhood(sample_bc_neighborhood)
+            .cell_bc_confidence(cell_bc_confidence)
+            .sample_bc_confidence(sample_bc_confidence)
+            .memory_limit(memory_limit)
+            .tmp_dir(tmp_dir)
             .build();
 
         match generate_permit_list(gpl_opts) {

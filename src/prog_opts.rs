@@ -13,6 +13,9 @@ use serde::Serialize;
 use slog;
 use typed_builder::TypedBuilder;
 
+use crate::barcode_correction::{
+    BarcodeNeighborhood, BarcodeResolution, Confidence, CorrectionSpec,
+};
 use crate::cellfilter::CellFilterMethod;
 use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
 
@@ -42,12 +45,29 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
 }
 
 /// Correction mode for sample barcodes in multi-barcode protocols.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SampleCorrectionMode {
     /// Exact match only — no error correction
     Exact,
-    /// Allow single-edit correction using BarcodeLookupMap
+    /// Accept a non-exact barcode only when it has one canonical target.
+    Unique,
+    /// Resolve competing canonical samples using frozen exact counts.
+    Frequency,
+    /// Deprecated compatibility spelling for Unique plus the historical
+    /// substitution-or-shift neighbourhood.
     OneEdit,
+}
+
+impl std::fmt::Display for SampleCorrectionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exact => f.write_str("exact"),
+            Self::Unique => f.write_str("unique"),
+            Self::Frequency => f.write_str("frequency"),
+            Self::OneEdit => f.write_str("1-edit"),
+        }
+    }
 }
 
 /// Orientation of the sample/probe barcodes in the whitelist relative to
@@ -92,6 +112,92 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     /// unfiltered external permit list is used.
     #[builder(default)]
     pub cell_bc_correction: CellBarcodeCorrectionStrategy,
+    /// Explicit cell neighbourhood. `None` retains protocol/filter-specific
+    /// historical defaults.
+    #[builder(default)]
+    pub cell_bc_neighborhood: Option<BarcodeNeighborhood>,
+    /// Sample neighbourhood for the new Unique/Frequency modes.
+    #[builder(default = BarcodeNeighborhood::HammingOne)]
+    pub sample_bc_neighborhood: BarcodeNeighborhood,
+    #[builder(default = Confidence::RNA)]
+    pub cell_bc_confidence: Confidence,
+    #[builder(default = Confidence::RNA)]
+    pub sample_bc_confidence: Confidence,
+    /// Total memory available to deferred sample-Frequency buffers.
+    #[builder(default = 512_u64 << 20)]
+    pub memory_limit: u64,
+    /// Directory for correction spools; defaults to `output_dir`.
+    #[builder(default)]
+    pub tmp_dir: Option<PathBuf>,
+}
+
+impl GenPermitListOpts<'_, '_, '_, '_, '_> {
+    pub fn resolved_cell_neighborhood(&self, multi_barcode: bool) -> BarcodeNeighborhood {
+        self.cell_bc_neighborhood.unwrap_or({
+            if multi_barcode || matches!(self.fmeth, CellFilterMethod::UnfilteredExternalList(_, _))
+            {
+                BarcodeNeighborhood::HammingOne
+            } else {
+                BarcodeNeighborhood::SubstitutionOrShiftOne
+            }
+        })
+    }
+
+    pub fn cell_correction_spec(&self, barcode_len: u8, multi_barcode: bool) -> CorrectionSpec {
+        let resolution = match self.cell_bc_correction {
+            CellBarcodeCorrectionStrategy::Unique => BarcodeResolution::Unique,
+            CellBarcodeCorrectionStrategy::Frequency => BarcodeResolution::Frequency {
+                confidence: self.cell_bc_confidence,
+                pseudocount: 1,
+            },
+        };
+        CorrectionSpec {
+            barcode_len,
+            neighborhood: self.resolved_cell_neighborhood(multi_barcode),
+            resolution,
+        }
+    }
+
+    pub fn sample_correction_spec(&self, barcode_len: u8) -> Option<CorrectionSpec> {
+        let (neighborhood, resolution) = match self.sample_correction_mode {
+            SampleCorrectionMode::Exact => return None,
+            SampleCorrectionMode::Unique => {
+                (self.sample_bc_neighborhood, BarcodeResolution::Unique)
+            }
+            SampleCorrectionMode::Frequency => (
+                self.sample_bc_neighborhood,
+                BarcodeResolution::Frequency {
+                    confidence: self.sample_bc_confidence,
+                    pseudocount: 1,
+                },
+            ),
+            SampleCorrectionMode::OneEdit => (
+                BarcodeNeighborhood::SubstitutionOrShiftOne,
+                BarcodeResolution::Unique,
+            ),
+        };
+        Some(CorrectionSpec {
+            barcode_len,
+            neighborhood,
+            resolution,
+        })
+    }
+
+    /// Enforce the documented practical lower bound inside the library API,
+    /// not just in the CLI parser.
+    pub fn effective_memory_limit(&self) -> u64 {
+        const MINIMUM: u64 = 256_u64 << 20;
+        if self.memory_limit < MINIMUM {
+            slog::warn!(
+                self.log,
+                "Requested a {} byte GPL memory limit, but correction is not designed for less than 256 MiB; proceeding with 256 MiB.",
+                self.memory_limit
+            );
+            MINIMUM
+        } else {
+            self.memory_limit
+        }
+    }
 }
 
 /// How to resolve an unmatched barcode that is one substitution away from more

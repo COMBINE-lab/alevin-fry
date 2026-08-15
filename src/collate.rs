@@ -7,10 +7,11 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
+use crate::correction_plan::{CORRECTION_PLAN_FILENAME, CorrectionPlan};
 use ahash::AHashMap;
 use anyhow::{Context, anyhow};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use slog::{crit, debug, info};
+use slog::{crit, debug, info, warn};
 //use anyhow::{anyhow, Result};
 use crate::constants as afconst;
 use crate::utils::InternalVersionInfo;
@@ -52,6 +53,42 @@ use std::thread;
 
 use crate::utils as afutils;
 use crate::utils::KnownRecordType;
+
+fn load_single_corrections(
+    parent: &Path,
+    expected_barcode_len: u8,
+    log: &slog::Logger,
+) -> anyhow::Result<HashMap<u64, u64>> {
+    let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
+    if compact_path.exists() {
+        let plan = CorrectionPlan::read_from(&compact_path)?;
+        if plan.sample_barcode_len.is_some() || plan.cell_barcode_len != expected_barcode_len {
+            return Err(anyhow!(
+                "correction plan does not match this single-barcode RAD input"
+            ));
+        }
+        let scope = plan
+            .cell_scopes
+            .iter()
+            .find(|scope| scope.sample_barcode.is_none())
+            .context("single-barcode correction plan has no global cell scope")?;
+        return Ok(scope
+            .corrections
+            .iter()
+            .map(|entry| (entry.observed, entry.corrected))
+            .collect());
+    }
+
+    warn!(
+        log,
+        "No correction_plan.bin was found; loading legacy permit_map.bin. Rerun generate-permit-list to persist deterministic policy decisions."
+    );
+    let correction_file = File::open(parent.join("permit_map.bin"))
+        .context("could not open legacy permit_map.bin")?;
+    let correction_map: HashMap<u64, u64> = bincode::deserialize_from(correction_file)
+        .context("could not deserialize legacy permit_map.bin")?;
+    Ok(correction_map)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn collate<P1, P2>(
@@ -234,7 +271,7 @@ where
 
     // sort this so that we deal with largest cells (by # of reads) first
     // sort in _descending_ order by count.
-    tsv_map.sort_unstable_by_key(|&a: &(u64, u64)| std::cmp::Reverse(a.1));
+    tsv_map.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     collate_with_temp_memory(
         input_dir,
@@ -447,6 +484,7 @@ fn do_collate_single_barcode<P1, P2, A>(
     input_dir: P1,
     rad_dir: P2,
     rec_context: AlevinFryRecordContext,
+    barcode_len: u8,
     prelude: RadPrelude,
     mut br: BufReader<A>,
     end_header_pos: u64,
@@ -496,12 +534,9 @@ where
         File::create(&output_path)?,
     )));
 
-    let correction_file =
-        File::open(parent.join("permit_map.bin")).context("could not open permit_map.bin")?;
-    let correction_map: HashMap<u64, u64> = bincode::deserialize_from(correction_file)
-        .context("could not deserialize permit_map.bin")?;
+    let corrections = load_single_corrections(parent, barcode_len, log)?;
     correct_unmapped_counts(
-        &correction_map,
+        &corrections,
         &rad_parent.join("unmapped_bc_count.bin"),
         parent,
     );
@@ -544,9 +579,8 @@ where
         ));
     }
 
-    let correction_map = correction_map.into_iter().collect::<AHashMap<_, _>>();
-    let plan = Arc::new(SingleBarcodeCollationPlan::new(
-        correction_map,
+    let plan = Arc::new(SingleBarcodeCollationPlan::from_corrections(
+        corrections,
         group_to_bucket,
         bucket_records.len(),
     )?);
@@ -619,6 +653,7 @@ pub fn do_collate_with_temp<
     input_dir: P1,
     rad_dir: P2,
     rec_context: <R as MappedRecord>::ParsingContext,
+    barcode_len: u8,
     prelude: RadPrelude,
     mut br: BufReader<A>,
     end_header_pos: u64,
@@ -736,10 +771,7 @@ where
         .with_context(|| format!("couldn't create directory {}", cfname))?;
     let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
 
-    // get the correction map
-    let cmfile = std::fs::File::open(parent.join("permit_map.bin"))
-        .context("couldn't open output permit_map.bin file")?;
-    let correct_map: Arc<HashMap<u64, u64>> = Arc::new(bincode::deserialize_from(&cmfile).unwrap());
+    let correct_map = Arc::new(load_single_corrections(parent, barcode_len, log)?);
 
     // NOTE: the assumption of where the unmapped file will be
     // should be robustified
@@ -1258,7 +1290,7 @@ where
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
     match rec_type {
-        KnownRecordType::RnaLong(_bc_len) => {
+        KnownRecordType::RnaLong(bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
             info!(log, "long read single-cell");
@@ -1267,6 +1299,7 @@ where
                 input_dir,
                 &rad_dir,
                 parsing_context,
+                bc_len as u8,
                 prelude,
                 br,
                 end_header_pos,
@@ -1284,7 +1317,7 @@ where
             info!(log, "record type is short read single-cell ATAC-seq");
             anyhow::bail!("To process atac-seq data, you should use the \"atac\" sub-command");
         }
-        KnownRecordType::RnaShortPos(_bc_len) => {
+        KnownRecordType::RnaShortPos(bc_len) => {
             // alevin-fry with positions
             info!(log, "short read single-cell with position");
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
@@ -1294,6 +1327,7 @@ where
                         input_dir,
                         &rad_dir,
                         parsing_context,
+                        bc_len as u8,
                         prelude,
                         br,
                         end_header_pos,
@@ -1315,7 +1349,7 @@ where
                 }
             }
         }
-        KnownRecordType::RnaShort(_bc_len) => {
+        KnownRecordType::RnaShort(bc_len) => {
             info!(log, "short read single-cell without poisition");
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
@@ -1324,6 +1358,7 @@ where
                         input_dir,
                         &rad_dir,
                         parsing_context,
+                        bc_len as u8,
                         prelude,
                         br,
                         end_header_pos,
@@ -1421,9 +1456,18 @@ where
     // (sample_idx, corrected_cell_bc).  The cell barcode occupies the low
     // bits; the sample index is shifted above it.
     let cell_bc_bits = (cell_bc_len * 2) as u64; // 2 bits per nucleotide
-    let cell_bc_mask = (1u64 << cell_bc_bits) - 1;
+    let cell_bc_mask = if cell_bc_bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << cell_bc_bits) - 1
+    };
     let make_composite_key = |sample_idx: u64, cell_bc: u64| -> u64 {
-        (sample_idx << cell_bc_bits) | (cell_bc & cell_bc_mask)
+        if cell_bc_bits == 64 {
+            debug_assert_eq!(sample_idx, 0);
+            cell_bc
+        } else {
+            (sample_idx << cell_bc_bits) | (cell_bc & cell_bc_mask)
+        }
     };
 
     // Read metadata
@@ -1470,20 +1514,44 @@ where
         }
     }
 
-    // Load sample_permit_map.bin
-    let sample_map_file = File::open(parent.join("sample_permit_map.bin"))
-        .context("couldn't open sample_permit_map.bin")?;
-    let sample_permit_map: HashMap<u64, u64> =
+    let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
+    let mut compact_correction_plan = if compact_path.exists() {
+        let plan = CorrectionPlan::read_from(&compact_path)?;
+        if plan.sample_barcode_len.is_none() || u32::from(plan.cell_barcode_len) != cell_bc_len {
+            return Err(anyhow!(
+                "correction plan does not match this multi-barcode RAD input"
+            ));
+        }
+        Some(plan)
+    } else {
+        warn!(
+            log,
+            "No correction_plan.bin was found for this multi-barcode run; using the historical sample map and on-the-fly Hamming-1 Unique cell correction. Rerun generate-permit-list to reproduce newer correction policies."
+        );
+        None
+    };
+
+    let sample_permit_map: HashMap<u64, u64> = if let Some(plan) = &compact_correction_plan {
+        plan.sample_corrections
+            .iter()
+            .map(|entry| (entry.observed, entry.corrected))
+            .collect()
+    } else {
+        let sample_map_file = File::open(parent.join("sample_permit_map.bin"))
+            .context("couldn't open sample_permit_map.bin")?;
         bincode::deserialize_from(BufReader::new(sample_map_file))
-            .map_err(|e| anyhow!("couldn't deserialize sample_permit_map.bin: {}", e))?;
+            .map_err(|e| anyhow!("couldn't deserialize sample_permit_map.bin: {}", e))?
+    };
 
     // Build sample_bc -> sample_idx mapping
     let mut sample_bc_to_idx: HashMap<u64, usize> = HashMap::new();
     let mut sample_names: Vec<String> = Vec::new();
+    let mut canonical_sample_barcodes = Vec::with_capacity(sample_entries.len());
     for (idx, entry) in sample_entries.iter().enumerate() {
         let bc_str = entry["barcode"].as_str().unwrap_or("0x0");
         let bc = u64::from_str_radix(bc_str.trim_start_matches("0x"), 16).unwrap_or(0);
         sample_bc_to_idx.insert(bc, idx);
+        canonical_sample_barcodes.push(bc);
         sample_names.push(
             entry["name"]
                 .as_str()
@@ -1540,7 +1608,7 @@ where
     }
 
     // Sort cell frequencies: group by sample_idx first, then by frequency descending
-    all_cell_freqs.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)));
+    all_cell_freqs.sort_by(|a, b| a.2.cmp(&b.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
 
     // Build a sparse-plate-sidx -> manifest-ordinal map.  `sample_idx` so far
     // is a position in `sample_entries` (the full chemistry plate, e.g. 384
@@ -1692,18 +1760,40 @@ where
         })
         .collect();
     let total_valid_cells: usize = per_sample_valid_bcs.iter().map(Vec::len).sum();
+    // Consume compact scopes as libradicl takes ownership of their decisions.
+    // This avoids retaining the full decoded artifact alongside the optimized
+    // collation lookup for the duration of scatter and gather.
+    let mut compact_cell_scopes = compact_correction_plan.take().map(|plan| {
+        plan.cell_scopes
+            .into_iter()
+            .filter_map(|scope| scope.sample_barcode.map(|sample| (sample, scope)))
+            .collect::<HashMap<_, _>>()
+    });
     let mut sample_corrections = Vec::with_capacity(per_sample_valid_bcs.len());
     for (sample_index, valid_barcodes) in per_sample_valid_bcs.into_iter().enumerate() {
         let ordinal = sidx_to_ord[sample_index];
-        let correction = MultiBarcodeSampleCorrection::new(
-            if ordinal == usize::MAX {
-                0
-            } else {
-                ordinal as u64
-            },
-            valid_barcodes,
-            cell_bc_len,
-        );
+        let output_ordinal = if ordinal == usize::MAX {
+            0
+        } else {
+            ordinal as u64
+        };
+        let correction = if let Some(scopes) = &mut compact_cell_scopes {
+            let canonical_sample = canonical_sample_barcodes[sample_index];
+            let scope = scopes.remove(&canonical_sample).with_context(|| {
+                format!(
+                    "correction plan has no cell scope for canonical sample 0x{canonical_sample:x}"
+                )
+            })?;
+            MultiBarcodeSampleCorrection::from_corrections(
+                output_ordinal,
+                scope
+                    .corrections
+                    .into_iter()
+                    .map(|entry| (entry.observed, entry.corrected)),
+            )?
+        } else {
+            MultiBarcodeSampleCorrection::new(output_ordinal, valid_barcodes, cell_bc_len)
+        };
         sample_corrections.push(correction);
     }
     info!(
@@ -1721,6 +1811,17 @@ where
         cell_bc_bits as u32,
         bucket_summaries.len(),
     )?);
+    // Unmapped correction also needs the scatter lookup. Complete it before
+    // transferring the sole plan Arc to libradicl, which can then release the
+    // large correction index before its gather working set is allocated.
+    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
+    correct_unmapped_counts_multi_bc(
+        &unmapped_file,
+        &sample_permit_map,
+        &sample_bc_to_idx,
+        plan.samples(),
+        parent,
+    );
     info!(
         log,
         "Starting libradicl multi-barcode collation with {} workers and a {:.2} GiB memory budget",
@@ -1731,7 +1832,7 @@ where
         &mut br,
         prelude.hdr.num_chunks,
         rec_context.clone(),
-        plan.clone(),
+        plan,
         owriter.clone(),
         parent,
         expected_ori.into(),
@@ -1754,16 +1855,6 @@ where
         engine_stats.num_scatter_workers,
         engine_stats.num_gather_workers,
         engine_stats.spool_flush_limit / 1024,
-    );
-
-    // Correct unmapped barcode counts for multi-barcode data
-    let unmapped_file = i_dir.join("unmapped_bc_count.bin");
-    correct_unmapped_counts_multi_bc(
-        &unmapped_file,
-        &sample_permit_map,
-        &sample_bc_to_idx,
-        plan.samples(),
-        parent,
     );
 
     // Build the manifest from the aggregate counts computed before collation.
