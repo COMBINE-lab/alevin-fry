@@ -22,6 +22,7 @@ It makes use of the lightweight mapping and tag processing framework of
    installing
    getting_started
    commands
+   barcode_correction
    LICENSE.rst
 
 Indices and tables
