@@ -17,6 +17,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.3.4",
  "once_cell",
+ "serde",
  "version_check",
  "zerocopy",
 ]
@@ -872,7 +873,7 @@ dependencies = [
 [[package]]
 name = "libradicl"
 version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=195cd1d81b87bc291e677103aa5ebe84984782cf#195cd1d81b87bc291e677103aa5ebe84984782cf"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563#f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563"
 dependencies = [
  "ahash",
  "anyhow",
@@ -898,7 +899,7 @@ dependencies = [
 [[package]]
 name = "libradicl-macros"
 version = "0.17.0"
-source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=195cd1d81b87bc291e677103aa5ebe84984782cf#195cd1d81b87bc291e677103aa5ebe84984782cf"
+source = "git+https://github.com/COMBINE-lab/libradicl.git?rev=f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563#f2c5c899bf21bbc7d9437e4e2b3c1a7d1f7ff563"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -2,6 +2,7 @@ use crate::constants as afconst;
 use crate::correction_plan::{CORRECTION_PLAN_FILENAME, CorrectionPlan};
 use crate::utils as afutils;
 use afutils::InternalVersionInfo;
+use ahash::AHashMap;
 use anyhow::{Context, anyhow};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -447,7 +448,7 @@ where
     }
 
     let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
-    let correct_map: Arc<HashMap<u64, u64>> = if compact_path.exists() {
+    let correct_map: Arc<AHashMap<u64, u64>> = if compact_path.exists() {
         let plan = CorrectionPlan::read_from(&compact_path)?;
         if plan.sample_barcode_len.is_some() || u64::from(plan.cell_barcode_len) != bc_len {
             return Err(anyhow!("correction plan does not match this ATAC input"));
@@ -494,7 +495,7 @@ where
     };
 
     // TODO: see if we can do this without the Arc
-    let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
+    let mut output_cache = Arc::new(AHashMap::<u64, Arc<libradicl::TempBucket>>::new());
 
     // max_records is the max size of each intermediate file
     // let mut total_allocated_records = 0;
