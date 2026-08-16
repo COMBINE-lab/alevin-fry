@@ -49,6 +49,7 @@ use crate::em::{
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::prog_opts::QuantOpts;
+use crate::prog_opts::UmiDedupMode;
 
 /// Shared closure that extracts a sample index from a record.
 type SampleIdxExtractor<R> = Arc<dyn Fn(&R) -> usize + Send + Sync>;
@@ -410,6 +411,8 @@ struct WorkerConfig {
     num_genes: usize,
     num_rows: usize,
     barcode_len: u16,
+    umi_len: u16,
+    umi_dedup_mode: UmiDedupMode,
     /// Cells with fewer than this many records take the tiny-cell fast path.
     /// Set from `--small-thresh`; 0 disables the fast path entirely.
     tiny_cell_thresh: usize,
@@ -865,6 +868,8 @@ where
                                     config.num_genes,
                                     &mut gene_eqc,
                                     config.sa_model,
+                                    config.umi_dedup_mode,
+                                    config.umi_len as usize,
                                     &log,
                                 );
                             } else {
@@ -875,6 +880,8 @@ where
                                     config.num_genes,
                                     &mut gene_eqc,
                                     config.sa_model,
+                                    config.umi_dedup_mode,
+                                    config.umi_len as usize,
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1054,6 +1061,8 @@ where
                         config.num_genes,
                         &mut gene_eqc,
                         config.sa_model,
+                        config.umi_dedup_mode,
+                        config.umi_len as usize,
                         &log,
                     );
                     // USA-mode
@@ -1381,6 +1390,7 @@ where
     let tiny_cell_thresh = quant_opts.small_thresh;
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
+    let umi_dedup_mode = quant_opts.umi_dedup_mode;
     let log = quant_opts.log;
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
@@ -1436,6 +1446,21 @@ where
             tid_to_gid = v;
             usa_mode = us;
             if usa_mode {
+                // Cell Ranger's UMI rules are defined over genes. In USA mode a
+                // gene id here also carries a splicing status, so applying the
+                // low-support rule directly would discard every UMI that is
+                // ambiguous between the spliced and unspliced variant of one
+                // gene, which is not what Cell Ranger does with those reads. How
+                // the two should be reconciled is a modelling decision, not
+                // something this flag should make silently.
+                anyhow::ensure!(
+                    umi_dedup_mode != UmiDedupMode::CellRanger,
+                    "--umi-dedup-mode cellranger is not supported in USA mode \
+                     (a 3-column transcript-to-gene map). Cell Ranger's rules are \
+                     defined over genes, while USA-mode gene ids also encode the \
+                     splicing status; reconciling the two is not decided here. Use \
+                     a 2-column transcript-to-gene map, or --umi-dedup-mode legacy."
+                );
                 assert_eq!(
                     num_bootstraps, 0,
                     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
@@ -1518,6 +1543,13 @@ where
         })
         .expect("tag map must contain cblen or bNlen for barcode length");
     let barcode_len: u16 = barcode_tag.try_into()?;
+
+    // UMI length, needed by the Cell Ranger UMI collapsing rule to enumerate
+    // the one-substitution neighbours of a packed UMI.
+    let umi_len: u16 = match file_tag_map.get("ulen") {
+        Some(t) => t.try_into()?,
+        None => 0u16,
+    };
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
@@ -1738,6 +1770,8 @@ where
             num_genes,
             num_rows,
             barcode_len,
+            umi_len,
+            umi_dedup_mode,
             tiny_cell_thresh,
         };
 
@@ -1882,6 +1916,19 @@ where
     );
     pbar.finish_with_message(pb_msg);
 
+    if umi_dedup_mode == UmiDedupMode::CellRanger {
+        let st = pugutils::cellranger_umi_stats();
+        info!(
+            log,
+            "Cell Ranger UMI rules: saw {} (UMI, gene) pairs; collapsed {} UMIs onto a \
+             Hamming-distance-one neighbour; discarded {} UMIs with no strict top gene, \
+             {} (UMI, gene) pairs dropped in total",
+            st.umi_genes.to_formatted_string(&Locale::en),
+            st.corrected.to_formatted_string(&Locale::en),
+            st.tied_umis.to_formatted_string(&Locale::en),
+            st.dropped.to_formatted_string(&Locale::en)
+        );
+    }
     info!(
         log,
         "processed {} total read records",

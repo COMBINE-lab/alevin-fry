@@ -11,10 +11,11 @@
 use ahash::{AHasher, RandomState};
 use arrayvec::ArrayVec;
 use smallvec::SmallVec;
-use std::cmp::Ordering;
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use petgraph::prelude::*;
 use petgraph::unionfind::*;
@@ -29,6 +30,7 @@ use libradicl::record::{
 use slog::{crit, info, warn};
 
 use crate::eq_class::{EqMap, EqMapType};
+use crate::prog_opts::UmiDedupMode;
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
 
@@ -611,12 +613,12 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
             // the new max gene.  Having a distinct max
             // also makes this UMI uniquely resolvable
             match count_aggr.cmp(&max_count) {
-                Ordering::Greater => {
+                CmpOrdering::Greater => {
                     max_count = count_aggr;
                     best_genes.clear();
                     best_genes.extend(curr_gn.iter());
                 }
-                Ordering::Equal => {
+                CmpOrdering::Equal => {
                     // if we have a tie for the max count
                     // then the current UMI isn't uniquely-unresolvable
                     // it will stay this way unless we see a bigger
@@ -624,7 +626,7 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
                     // "tied" gene to the equivalence class.
                     best_genes.extend(curr_gn.iter());
                 }
-                Ordering::Less => {
+                CmpOrdering::Less => {
                     // we do nothing
                 }
             }
@@ -640,7 +642,157 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
     }
 }
 
+/// Counters for `--umi-dedup-mode cellranger`, summed over every cell of the
+/// run. Process-wide, which is enough: one `quant` invocation is one run.
+static STAT_UMIGENES: AtomicU64 = AtomicU64::new(0);
+static STAT_CORRECTED: AtomicU64 = AtomicU64::new(0);
+static STAT_TIED_UMIS: AtomicU64 = AtomicU64::new(0);
+static STAT_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// What the Cell Ranger UMI rules did over the whole run.
+pub struct CellRangerUmiStats {
+    /// Distinct (UMI, gene) pairs seen.
+    pub umi_genes: u64,
+    /// UMIs moved onto a Hamming-distance-one neighbour within a gene.
+    pub corrected: u64,
+    /// UMIs discarded because no gene was a strict winner.
+    pub tied_umis: u64,
+    /// (UMI, gene) pairs discarded, ties and non-winners together.
+    pub dropped: u64,
+}
+
+/// Read the counters above.
+pub fn cellranger_umi_stats() -> CellRangerUmiStats {
+    CellRangerUmiStats {
+        umi_genes: STAT_UMIGENES.load(Ordering::Relaxed),
+        corrected: STAT_CORRECTED.load(Ordering::Relaxed),
+        tied_umis: STAT_TIED_UMIS.load(Ordering::Relaxed),
+        dropped: STAT_DROPPED.load(Ordering::Relaxed),
+    }
+}
+
 #[inline]
+/// Resolve a cell's `(umi, gene, count)` triplets the way Cell Ranger does.
+///
+/// Two rules, both from `lib/rust/tx_annotation/src/mark_dups.rs` at tag
+/// `cellranger-10.0.0`:
+///
+/// 1. `correct_umis`: within a gene, a UMI is moved onto any UMI one
+///    substitution away that carries a strictly greater count, or an equal
+///    count and a lexicographically greater sequence. All destinations are
+///    chosen from the *original* counts, in a single pass; the corrections are
+///    not applied iteratively.
+///
+/// 2. `determine_low_support_umigenes`: a UMI keeps only its strict top gene.
+///    If two genes tie for the top count, the whole UMI is discarded, top genes
+///    included.
+///
+/// The corrections are applied in two stages around rule 2, exactly as Cell
+/// Ranger does it: one read is moved before the low-support decision and the
+/// remainder afterwards, which changes which UMI-genes look tied. Cell Ranger
+/// notes this is to preserve Cell Ranger 3 behaviour.
+///
+/// Comparing packed UMIs numerically is the same as comparing the sequences
+/// lexicographically: bases are packed two bits at a time with the first base
+/// in the most significant position, and the encoding A=0, C=1, G=2, T=3 is
+/// already in alphabetical order.
+///
+/// Every surviving UMI resolves to exactly one gene, so the equivalence classes
+/// this produces are always singletons.
+fn resolve_num_molecules_cellranger_from_vec<P: EqClassPayload>(
+    umi_gene_count_vec: &mut [(u64, u32, u32)],
+    umi_len: usize,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+) {
+    if umi_gene_count_vec.is_empty() {
+        return;
+    }
+
+    // aggregate duplicate (umi, gene) rows into one count each
+    umi_gene_count_vec.sort_unstable();
+    let mut counts: Vec<(u64, u32, i64)> = Vec::with_capacity(umi_gene_count_vec.len());
+    for &(umi, gene, ct) in umi_gene_count_vec.iter() {
+        match counts.last_mut() {
+            Some(last) if last.0 == umi && last.1 == gene => last.2 += ct as i64,
+            _ => counts.push((umi, gene, ct as i64)),
+        }
+    }
+
+    // index (umi, gene) -> position in `counts`, so the mutated lookups below
+    // are constant time
+    let mut pos: HashMap<(u64, u32), usize, ahash::RandomState> =
+        HashMap::with_capacity_and_hasher(counts.len(), RandomState::with_seeds(2, 7, 1, 8));
+    for (i, &(umi, gene, _)) in counts.iter().enumerate() {
+        pos.insert((umi, gene), i);
+    }
+
+    STAT_UMIGENES.fetch_add(counts.len() as u64, Ordering::Relaxed);
+    // rule 1, over the original counts
+    let mut corrections: Vec<(usize, usize)> = Vec::new(); // (from, to) indices
+    for (i, &(umi, gene, count)) in counts.iter().enumerate() {
+        let mut best_umi = umi;
+        let mut best_count = count;
+        for cand in afutils::get_all_snps(umi, umi_len) {
+            let cand_count = pos.get(&(cand, gene)).map_or(0i64, |&j| counts[j].2);
+            if cand_count > best_count || (cand_count == best_count && cand > best_umi) {
+                best_umi = cand;
+                best_count = cand_count;
+            }
+        }
+        if best_umi != umi {
+            let dest = pos[&(best_umi, gene)];
+            corrections.push((i, dest));
+            STAT_CORRECTED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    // stage A: move one read per correction, then decide low support
+    let raw_counts: Vec<i64> = corrections
+        .iter()
+        .map(|&(from, _)| counts[from].2)
+        .collect();
+    for &(from, to) in &corrections {
+        counts[from].2 -= 1;
+        counts[to].2 += 1;
+    }
+
+    let mut dropped = vec![false; counts.len()];
+    let mut i = 0usize;
+    while i < counts.len() {
+        let umi = counts[i].0;
+        let mut j = i;
+        while j < counts.len() && counts[j].0 == umi {
+            j += 1;
+        }
+        let max_count = counts[i..j].iter().map(|c| c.2).max().unwrap();
+        let tied = counts[i..j].iter().filter(|c| c.2 == max_count).count() >= 2;
+        if tied {
+            STAT_TIED_UMIS.fetch_add(1, Ordering::Relaxed);
+        }
+        for k in i..j {
+            if tied || counts[k].2 < max_count {
+                dropped[k] = true;
+                STAT_DROPPED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        i = j;
+    }
+
+    // stage B: move the remaining reads
+    for (&(from, to), raw) in corrections.iter().zip(raw_counts.iter()) {
+        counts[from].2 -= raw - 1;
+        counts[to].2 += raw - 1;
+    }
+
+    for (k, &(_umi, gene, count)) in counts.iter().enumerate() {
+        if dropped[k] || count <= 0 {
+            continue;
+        }
+        let labels = vec![gene];
+        gene_eqclass_hash.entry(labels).or_insert(P::new(1)).inc();
+    }
+}
+
 fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
@@ -707,7 +859,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
             // the new max gene.  Having a distinct max
             // also makes this UMI uniquely resolvable
             match count_aggr.cmp(&max_count) {
-                Ordering::Greater => {
+                CmpOrdering::Greater => {
                     max_count = count_aggr;
                     // we want to avoid the case that we are just
                     // updating the count of the best gene above and
@@ -724,7 +876,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
                         }
                     }
                 }
-                Ordering::Equal => {
+                CmpOrdering::Equal => {
                     // if we have a tie for the max count
                     // then the current UMI isn't uniquely-unresolvable
                     // it will stay this way unless we see a bigger
@@ -732,7 +884,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
                     // "tied" gene to the equivalence class.
                     best_genes.push(gn);
                 }
-                Ordering::Less => {
+                CmpOrdering::Less => {
                     // we do nothing
                 }
             }
@@ -748,12 +900,15 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     cell_chunk: &mut chunk::Chunk<R>,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
+    umi_dedup_mode: UmiDedupMode,
+    umi_len: usize,
     _log: &slog::Logger,
 ) where
     B: ConvertiblePrimitiveInteger,
@@ -784,9 +939,18 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
         }
     }
     match sa_model {
-        SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
-        }
+        SplicedAmbiguityModel::WinnerTakeAll => match umi_dedup_mode {
+            UmiDedupMode::Legacy => {
+                resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
+            }
+            UmiDedupMode::CellRanger => {
+                resolve_num_molecules_cellranger_from_vec(
+                    &mut umi_gene_count_vec,
+                    umi_len,
+                    gene_eqclass_hash,
+                );
+            }
+        },
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
                 &mut umi_gene_count_vec,
@@ -796,12 +960,15 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
+    umi_dedup_mode: UmiDedupMode,
+    umi_len: usize,
     _log: &slog::Logger,
 ) {
     // TODO: better capacity
@@ -837,9 +1004,18 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
         }
     }
     match sa_model {
-        SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
-        }
+        SplicedAmbiguityModel::WinnerTakeAll => match umi_dedup_mode {
+            UmiDedupMode::Legacy => {
+                resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
+            }
+            UmiDedupMode::CellRanger => {
+                resolve_num_molecules_cellranger_from_vec(
+                    &mut umi_gene_count_vec,
+                    umi_len,
+                    gene_eqclass_hash,
+                );
+            }
+        },
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
                 &mut umi_gene_count_vec,
