@@ -81,7 +81,7 @@ where
     let gpl_path = parent.join("generate_permit_list.json");
     let meta_data_file = File::open(&gpl_path)
         .with_context(|| format!("Could not open the file {:?}.", gpl_path.display()))?;
-    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(meta_data_file))?;
 
     let calling_version = InternalVersionInfo::from_str(version_str)?;
     let vd: InternalVersionInfo;
@@ -315,7 +315,7 @@ where
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .context("could not open the generate_permit_list.json file.")?;
-    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_data_file))?;
 
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);

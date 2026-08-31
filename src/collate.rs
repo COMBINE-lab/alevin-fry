@@ -169,7 +169,7 @@ where
     let gpl_path = parent.join("generate_permit_list.json");
     let meta_data_file = File::open(&gpl_path)
         .with_context(|| format!("Could not open the file {:?}.", gpl_path.display()))?;
-    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(meta_data_file))?;
 
     let calling_version = InternalVersionInfo::from_str(version_str)?;
     let vd: InternalVersionInfo;
@@ -206,7 +206,8 @@ where
         // total_to_collate is computed from sample_info.json
         let sample_info_file = File::open(parent.join("sample_info.json"))
             .context("couldn't open sample_info.json for multi-barcode collation")?;
-        let sample_info: serde_json::Value = serde_json::from_reader(sample_info_file)?;
+        let sample_info: serde_json::Value =
+            serde_json::from_reader(BufReader::new(sample_info_file))?;
         let total_to_collate = sample_info["matched_reads"].as_u64().unwrap_or(0);
 
         info!(
@@ -520,7 +521,7 @@ where
 
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .context("could not open generate_permit_list.json")?;
-    let metadata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let metadata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_data_file))?;
     let expected_orientation =
         get_orientation(&metadata).map_err(|error| anyhow!("could not read strand: {error}"))?;
     let velo_mode = metadata["velo_mode"]
@@ -702,7 +703,7 @@ where
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .context("could not open the generate_permit_list.json file.")?;
-    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_data_file))?;
 
     // velo_mode
     let velo_mode = mdata["velo_mode"]
@@ -1484,7 +1485,7 @@ where
     // Read metadata
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .context("could not open the generate_permit_list.json file.")?;
-    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_data_file))?;
     let expected_ori: Strand =
         get_orientation(&mdata).map_err(|e| anyhow!("Error reading strand info: {}", e))?;
 
@@ -1492,7 +1493,8 @@ where
     let sample_info_file = File::open(parent.join("sample_info.json")).context(
         "could not open sample_info.json — was generate-permit-list run with --sample-bc-list?",
     )?;
-    let sample_info: serde_json::Value = serde_json::from_reader(&sample_info_file)?;
+    let sample_info: serde_json::Value =
+        serde_json::from_reader(BufReader::new(&sample_info_file))?;
 
     let num_samples = sample_info["num_samples"]
         .as_u64()
@@ -1962,7 +1964,7 @@ where
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .context("could not open the generate_permit_list.json file.")?;
-    let mdata: serde_json::Value = serde_json::from_reader(&meta_data_file)?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_data_file))?;
 
     // velo_mode
     let velo_mode = mdata["velo_mode"]

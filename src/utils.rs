@@ -1099,7 +1099,7 @@ pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
     // open the metadata file and read the json
     let meta_data_file = File::open(parent.join("generate_permit_list.json"))
         .expect("could not open the generate_permit_list.json file.");
-    let mdata: serde_json::Value = serde_json::from_reader(meta_data_file)
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(meta_data_file))
         .expect("could not deseralize generate_permit_list.json");
     let vm = mdata.get("velo_mode");
     match vm {
