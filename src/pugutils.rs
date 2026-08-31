@@ -748,12 +748,30 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     }
 }
 
+/// Per-worker scratch buffers reused by the cr-like resolvers across cells.
+///
+/// The hot path is one call to a `get_num_molecules_cell_ranger_like*` per cell,
+/// over millions of cells. Without reuse each call allocates a fresh working
+/// vector (and each equivalence class a fresh gene-set vector), which the
+/// profile shows dominating quant's CPU. Holding these buffers on the worker and
+/// `clear()`ing them per use keeps the capacity and removes the churn. It is
+/// purely an allocation optimisation: the contents built each call are identical
+/// to the freshly-allocated version, so the output is unchanged.
+#[derive(Default)]
+pub struct CrLikeScratch {
+    /// `(umi, gene_id, count)` triplets accumulated for one cell.
+    umi_gene_count_vec: Vec<(u64, u32, u32)>,
+    /// Deduplicated gene ids for one equivalence class / record.
+    gset: Vec<u32>,
+}
+
 pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     cell_chunk: &mut chunk::Chunk<R>,
     tid_to_gid: &[u32],
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
+    scratch: &mut CrLikeScratch,
     _log: &slog::Logger,
 ) where
     B: ConvertiblePrimitiveInteger,
@@ -763,7 +781,14 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,
 {
-    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = Vec::with_capacity(cell_chunk.nrec as usize);
+    // Disjoint borrows of the two reusable buffers; both cleared before use so
+    // prior capacity is kept without carrying stale contents.
+    let CrLikeScratch {
+        umi_gene_count_vec,
+        gset,
+    } = scratch;
+    umi_gene_count_vec.clear();
+    umi_gene_count_vec.reserve(cell_chunk.nrec as usize);
 
     // for each record
     for rec in &cell_chunk.reads {
@@ -771,25 +796,22 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
         let umi = rec.umi();
 
         // project the transcript ids to gene ids
-        let mut gset: Vec<u32> = rec
-            .refs()
-            .iter()
-            .map(|tid| tid_to_gid[*tid as usize])
-            .collect();
+        gset.clear();
+        gset.extend(rec.refs().iter().map(|tid| tid_to_gid[*tid as usize]));
         // and make the gene ids unique
         gset.sort_unstable();
         gset.dedup();
-        for g in &gset {
+        for g in gset.iter() {
             umi_gene_count_vec.push((umi, *g, 1));
         }
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
+            resolve_num_molecules_crlike_from_vec(umi_gene_count_vec, gene_eqclass_hash);
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
-                &mut umi_gene_count_vec,
+                umi_gene_count_vec,
                 gene_eqclass_hash,
             );
         }
@@ -802,10 +824,16 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     _num_genes: usize,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     sa_model: SplicedAmbiguityModel,
+    scratch: &mut CrLikeScratch,
     _log: &slog::Logger,
 ) {
-    // TODO: better capacity
-    let mut umi_gene_count_vec: Vec<(u64, u32, u32)> = vec![];
+    // Disjoint borrows of the two reusable buffers; both cleared before use so
+    // prior capacity is kept without carrying stale contents.
+    let CrLikeScratch {
+        umi_gene_count_vec,
+        gset,
+    } = scratch;
+    umi_gene_count_vec.clear();
 
     // for each equivalence class
     for eqinfo in &eq_map.eqc_info {
@@ -814,11 +842,13 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
         let eqid = &eqinfo.eq_num;
 
         // project the transcript ids to gene ids
-        let mut gset: Vec<u32> = eq_map
-            .refs_for_eqc(*eqid)
-            .iter()
-            .map(|tid| tid_to_gid[*tid as usize])
-            .collect();
+        gset.clear();
+        gset.extend(
+            eq_map
+                .refs_for_eqc(*eqid)
+                .iter()
+                .map(|tid| tid_to_gid[*tid as usize]),
+        );
         // and make the gene ids unique,
         // note, if we have both spliced and
         // unspliced gene ids, then they will
@@ -831,18 +861,18 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
         // add every (umi, count), gene pair as a triplet
         // of (umi, gene_id, count) to the output vector
         for umi_ct in umis {
-            for g in &gset {
+            for g in gset.iter() {
                 umi_gene_count_vec.push((umi_ct.0, *g, umi_ct.1));
             }
         }
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
+            resolve_num_molecules_crlike_from_vec(umi_gene_count_vec, gene_eqclass_hash);
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
-                &mut umi_gene_count_vec,
+                umi_gene_count_vec,
                 gene_eqclass_hash,
             );
         }

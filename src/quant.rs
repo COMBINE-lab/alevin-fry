@@ -725,6 +725,10 @@ where
     let mut idx_eq_list = IndexedEqList::new();
     let mut eq_id_count = Vec::<(u32, u32)>::new();
 
+    // Reusable working buffers for the cr-like resolvers, carried across cells
+    // to avoid a fresh allocation per cell / per equivalence class.
+    let mut crlike_scratch = pugutils::CrLikeScratch::default();
+
     let mut local_nrec = 0usize;
     // Drain MetaChunks until the producer is done and the queue is empty.
     // Moved out of `shared` so the iterator can be advanced by value; the
@@ -865,6 +869,7 @@ where
                                     config.num_genes,
                                     &mut gene_eqc,
                                     config.sa_model,
+                                    &mut crlike_scratch,
                                     &log,
                                 );
                             } else {
@@ -875,6 +880,7 @@ where
                                     config.num_genes,
                                     &mut gene_eqc,
                                     config.sa_model,
+                                    &mut crlike_scratch,
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1054,6 +1060,7 @@ where
                         config.num_genes,
                         &mut gene_eqc,
                         config.sa_model,
+                        &mut crlike_scratch,
                         &log,
                     );
                     // USA-mode
