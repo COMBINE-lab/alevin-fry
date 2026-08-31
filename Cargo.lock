@@ -872,9 +872,7 @@ dependencies = [
 
 [[package]]
 name = "libradicl"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a1d9494fd770a1d6a07d679f6b722c48fea53dc9c64a4e95e13b71066308c4e"
+version = "0.18.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -900,8 +898,6 @@ dependencies = [
 [[package]]
 name = "libradicl-macros"
 version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dbcfb3a9fd7e663131c333ddc7ed932fc1c6a0d14ac75508992193c4bbb4e0d"
 dependencies = [
  "proc-macro2",
  "quote",

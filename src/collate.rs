@@ -44,6 +44,15 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::{BufWriter, Cursor, Read, Seek, Write};
+
+/// Read-buffer capacity for the collate input RAD.
+///
+/// The scatter phase streams the whole (multi-GB) `map.rad` chunk-by-chunk, so
+/// the number of `read` syscalls is `file_size / buffer_capacity`. The default
+/// 8 KiB `BufReader` turns that into millions of tiny reads — the read-syscall
+/// cost the profile flags in collate. The gather/spool side already buffers at
+/// 1 MiB; match that scale on the input so the scatter read is not syscall-bound.
+const COLLATE_INPUT_BUF_BYTES: usize = 4 * 1024 * 1024;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -1072,8 +1081,10 @@ where
         // each thread will need to access the work queue
         let in_q = fq.clone();
         // the output cache and correction map
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // Byte-accounting map keyed on a single u64 barcode, hit once per
+        // record: use libradicl's fixed u64 hasher instead of the randomized
+        // AES hasher (see libradicl::schema::U64BuildHasher).
+        let mut cmap = libradicl::schema::U64Map::<TempCellInfo>::default();
         // alternative strategy
         // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
 
@@ -1255,7 +1266,7 @@ where
 
     let input_rad_path = i_dir.join("map.rad");
     let i_file = File::open(&input_rad_path).context("couldn't open input RAD file")?;
-    let mut br = BufReader::new(i_file);
+    let mut br = BufReader::with_capacity(COLLATE_INPUT_BUF_BYTES, i_file);
 
     let hdr = RadHeader::from_bytes(&mut br)?;
 
@@ -2032,7 +2043,7 @@ where
 
     let input_rad_path = i_dir.join("map.rad");
     let i_file = File::open(&input_rad_path).context("couldn't open input RAD file")?;
-    let mut br = BufReader::new(i_file);
+    let mut br = BufReader::with_capacity(COLLATE_INPUT_BUF_BYTES, i_file);
 
     let hdr = RadHeader::from_bytes(&mut br)?;
 
@@ -2383,8 +2394,10 @@ where
         // each thread will need to access the work queue
         let in_q = fq.clone();
         // the output cache and correction map
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
+        // Byte-accounting map keyed on a single u64 barcode, hit once per
+        // record: use libradicl's fixed u64 hasher instead of the randomized
+        // AES hasher (see libradicl::schema::U64BuildHasher).
+        let mut cmap = libradicl::schema::U64Map::<TempCellInfo>::default();
         // alternative strategy
         // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
 
