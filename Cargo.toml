@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = "0.18.0"
+libradicl = "0.18.1"
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = { version = "0.8.12", features = ["serde"] }
@@ -111,8 +111,3 @@ opt-level = 3
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-# Local validation against the in-tree libradicl 0.18.1 (fast collation hasher).
-# Remove before release; restore once 0.18.1 is published to crates.io.
-[patch.crates-io]
-libradicl = { path = "../libradicl/libradicl" }
