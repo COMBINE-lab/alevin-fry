@@ -6,6 +6,42 @@ Changelog for alevin-fry
 > releases 0.10.0 through 0.17.0 are not recorded here. See the git history and
 > the GitHub releases page for that range.
 
+## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
+
+### Performance
+
+* Stream quantification count matrices and bootstrap mean/variance matrices
+  instead of retaining complete sparse matrices in memory. Bounded worker-local
+  batches and 256 KiB output buffers reduce shared-lock work and write syscalls.
+* Buffer barcode and feature output, format records outside shared locks, and
+  remove unused worker state and redundant allocations.
+* On a real 37.4 GB Flex collation containing 833 million matrix entries,
+  median quantification peak RSS fell from 35.91 GiB in 0.18.1 to 617 MiB,
+  and median wall time fell from 99.84 to 21.28 seconds. These are three-run
+  measurements at 16 threads with warm filesystem caches; baseline wall time
+  ranged from 68.69 to 110.19 seconds. Results depend on the input and host.
+
+### Fixed
+
+* Validate streamed matrix coordinates and dimensions, check nonzero-count
+  arithmetic, and explicitly finish buffered output, including the matrix header.
+* Return quantification output errors with context, join workers and drain
+  queued input after worker output failures, and avoid writing new success
+  metadata when quantification fails.
+* Preserve bootstrap variance conventions and empty-output behavior while
+  bounding output staging memory.
+
+### Validation
+
+* Complete numeric matrices, barcode/gene identities, feature records, and
+  normalized metadata matched the previous implementation on three real
+  datasets, including every entry of the 833-million-entry Flex matrix.
+* Added tests for sparse output, USA mode, bootstrap summaries, coordinate
+  bounds, and output/read failures; Linux and macOS CI passed.
+
+Thanks to @an-altosian for the initial streaming implementation in [#189](https://github.com/COMBINE-lab/alevin-fry/pull/189).
+Buffering, bootstrap streaming, validation and error handling follow in [#190](https://github.com/COMBINE-lab/alevin-fry/pull/190).
+
 ## [0.18.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.17.1...v0.18.0) (2026-08-15)
 
 ### Added
