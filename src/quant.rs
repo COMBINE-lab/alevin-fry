@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom};
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -214,6 +214,35 @@ struct QuantOutputInfo {
     feature_file: BufWriter<fs::File>,
     row_index: usize,
 }
+
+/// Streaming MatrixMarket writer for the count matrix.
+///
+/// Low-memory quant, change 2: instead of accumulating every nonzero into a
+/// per-thread `Vec` and then a global `all_triplets` `Vec` (24 B/nonzero) that
+/// is only written at the very end — the single largest contributor to peak
+/// RSS — each worker formats one cell's entries into a thread-local `String`
+/// off-lock and appends them here with a single `write_all` under this mutex.
+/// No global triplet buffer is ever materialized, so the matrix step's memory
+/// is just the I/O buffer.
+///
+/// The MatrixMarket size line needs `nnz`, which is unknown until all cells are
+/// processed. `rows` (num_cells) and `cols` (num_rows) are known up front, so
+/// we write the size line with a fixed-width, right-justified blank field for
+/// `nnz` at construction (recording its byte offset), count nonzeros in `nnz`
+/// as we stream, then `seek` back and overwrite that field once the workers
+/// finish. Entries may appear in any cell order — MatrixMarket coordinate
+/// format carries explicit `(row, col)`, so readers do not require row order.
+struct MatrixOut {
+    writer: BufWriter<File>,
+    /// Number of nonzeros streamed so far (patched into the size line at end).
+    nnz: u64,
+    /// Byte offset of the fixed-width `nnz` field within the size line.
+    nnz_offset: u64,
+}
+
+/// Width of the blank `nnz` field reserved in the size line. u64::MAX is 20
+/// digits, so 20 bytes always suffices to overwrite with the true count.
+const MTX_NNZ_FIELD_WIDTH: usize = 20;
 
 struct EqcMap {
     // the *global* gene-level equivalence class map
@@ -423,6 +452,10 @@ struct WorkerSharedState<R: MappedRecord> {
     tid_to_gid: Arc<Vec<u32>>,
     cells_remaining: Arc<AtomicUsize>,
     bcout: Arc<Mutex<QuantOutputInfo>>,
+    /// Streaming count-matrix writer. Guarded by its own mutex (separate from
+    /// `bcout`) so appending a cell's entries never lengthens the barcode/
+    /// feature critical section, and vice-versa.
+    matrix_out: Arc<Mutex<MatrixOut>>,
     eqid_map_lock: Arc<Mutex<EqcMap>>,
     alt_res_cells: Arc<Mutex<Vec<u64>>>,
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
@@ -663,7 +696,7 @@ fn run_worker_thread<B, R, P>(
     log: slog::Logger,
     num_eq_targets: u32,
     eq_map_type: EqMapType,
-) -> (usize, Vec<(usize, usize, f32)>, BootstrapHelper)
+) -> (usize, BootstrapHelper)
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -691,10 +724,13 @@ where
     // complete global gene axis in every worker up front.
     let mut expressed_vec = Vec::<f32>::new();
     let mut expressed_ind = Vec::<usize>::new();
-    // Thread-local triplet buffer for MTX output. Accumulating triplets locally
-    // avoids holding the global mutex during add_triplet, which was the primary
-    // bottleneck serializing all workers.
-    let mut local_triplets: Vec<(usize, usize, f32)> = Vec::new();
+    // Thread-local, reusable line buffer for streaming this thread's MTX
+    // entries (change 2, low-memory quant). Each cell's rows are formatted here
+    // off-lock, then appended to the shared matrix writer with a single
+    // write_all under the matrix mutex — so no per-thread or global triplet
+    // `Vec` is ever accumulated.
+    use std::fmt::Write as _;
+    let mut mtx_line_buf = String::new();
     // Thread-local bootstrap helper for accumulating summary stat triplets
     let mut boot_helper = BootstrapHelper::new(
         std::path::Path::new(""),
@@ -1269,9 +1305,23 @@ where
                     .expect("can't write to feature file");
                 } // lock on bc_writer released here (end of scope)
 
-                // Accumulate MTX triplets in thread-local buffer (no lock held)
+                // Stream this cell's MTX entries (change 2, low-memory quant):
+                // format off-lock into the reusable thread-local buffer, then
+                // append to the shared matrix writer with a single write under
+                // the matrix mutex. Kept separate from the `bcout` lock above so
+                // neither critical section lengthens the other.
+                mtx_line_buf.clear();
+                let mut cell_nnz: u64 = 0;
                 for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                    local_triplets.push((row_index, ind, val));
+                    let _ = writeln!(mtx_line_buf, "{} {} {}", row_index + 1, ind + 1, val);
+                    cell_nnz += 1;
+                }
+                if cell_nnz > 0 {
+                    let mut mo = shared.matrix_out.lock().unwrap();
+                    mo.writer
+                        .write_all(mtx_line_buf.as_bytes())
+                        .expect("can't write to matrix file");
+                    mo.nnz += cell_nnz;
                 }
 
                 // Record bootstrap summary stats (mean/var) as sparse triplets
@@ -1328,7 +1378,9 @@ where
             }
         } // for all cells in this meta chunk
     } // for each meta chunk
-    (local_nrec, local_triplets, boot_helper)
+    // Matrix entries were streamed directly to the shared writer; only the
+    // record count and bootstrap helper are returned (change 2).
+    (local_nrec, boot_helper)
 }
 
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
@@ -1663,9 +1715,32 @@ where
         row_index: 0usize,
     }));
 
+    // Open the streaming count-matrix writer and emit its MatrixMarket header
+    // now (change 2, low-memory quant). `rows` (num_cells) and `cols`
+    // (num_rows) are known here; the `nnz` field is reserved as a fixed-width
+    // blank whose byte offset we record, then overwritten via `seek` once every
+    // worker has streamed its entries. The `% written by sprs` line is kept
+    // verbatim so the header matches the previous sprs-produced output.
+    let matrix_out = {
+        let mtx_path = output_matrix_path.join("quants_mat.mtx");
+        let mut writer = BufWriter::new(File::create(&mtx_path)?);
+        let banner = "%%MatrixMarket matrix coordinate real general\n% written by sprs\n";
+        writer.write_all(banner.as_bytes())?;
+        let size_prefix = format!("{} {} ", num_cells as usize, num_rows);
+        writer.write_all(size_prefix.as_bytes())?;
+        let nnz_offset = (banner.len() + size_prefix.len()) as u64;
+        writer.write_all(&b" ".repeat(MTX_NNZ_FIELD_WIDTH))?;
+        writer.write_all(b"\n")?;
+        Arc::new(Mutex::new(MatrixOut {
+            writer,
+            nnz: 0,
+            nnz_offset,
+        }))
+    };
+
     let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
 
-    type WorkerResult = (usize, Vec<(usize, usize, f32)>, BootstrapHelper);
+    type WorkerResult = (usize, BootstrapHelper);
     let mut thread_handles: Vec<thread::JoinHandle<WorkerResult>> = Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
@@ -1694,6 +1769,8 @@ where
 
         // and the file writer
         let bcout = bc_writer.clone();
+        // and the streaming count-matrix writer
+        let matrix_out = matrix_out.clone();
         // global gene-level eqc map
         let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
@@ -1753,6 +1830,7 @@ where
             tid_to_gid,
             cells_remaining,
             bcout,
+            matrix_out,
             eqid_map_lock: eqid_map_lockc,
             alt_res_cells,
             empty_resolved_cells,
@@ -1816,14 +1894,12 @@ where
     }
 
     let mut total_records = 0usize;
-    let mut all_triplets: Vec<(usize, usize, f32)> = Vec::new();
     let mut all_boot_mean_triplets: Vec<(usize, usize, f32)> = Vec::new();
     let mut all_boot_var_triplets: Vec<(usize, usize, f32)> = Vec::new();
     for h in thread_handles {
         match h.join() {
-            Ok((rc, triplets, boot)) => {
+            Ok((rc, boot)) => {
                 total_records += rc;
-                all_triplets.extend(triplets);
                 if boot.num_bootstraps > 0 {
                     all_boot_mean_triplets.extend(boot.mean_triplets);
                     all_boot_var_triplets.extend(boot.var_triplets);
@@ -1835,23 +1911,33 @@ where
         }
     }
 
-    // Write the MTX output
+    // Finalize the streamed count matrix (change 2, low-memory quant). Workers
+    // appended every entry directly to `quants_mat.mtx` as they ran, so there
+    // is no triplet buffer to materialize here: we only flush and patch the
+    // reserved `nnz` field of the MatrixMarket size line with the number of
+    // nonzeros actually streamed. Every Arc clone held by a worker was dropped
+    // when the threads joined above, so this is the sole remaining handle.
+    let total_nnz = {
+        let mut mo = matrix_out.lock().unwrap();
+        mo.writer.flush()?;
+        let nnz = mo.nnz;
+        let offset = mo.nnz_offset;
+        let f = mo.writer.get_mut();
+        f.seek(SeekFrom::Start(offset))?;
+        // Left-justify within the reserved fixed-width field: the value hugs the
+        // single space after `cols`, and the remaining bytes are trailing spaces
+        // before the newline. The size line therefore reads as three
+        // single-space-separated integers plus harmless trailing whitespace,
+        // which every MatrixMarket reader (scipy/scanpy/af-anndata) tolerates.
+        write!(f, "{:<width$}", nnz, width = MTX_NNZ_FIELD_WIDTH)?;
+        f.flush()?;
+        nnz
+    };
     info!(
         log,
-        "building triplet matrix from {} entries",
-        all_triplets.len().to_formatted_string(&Locale::en),
+        "wrote streamed count matrix: {} nonzeros",
+        total_nnz.to_formatted_string(&Locale::en),
     );
-
-    let mut trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-        (num_cells as usize, num_rows),
-        all_triplets.len(),
-    );
-    for (row, col, val) in all_triplets {
-        trimat.add_triplet(row, col, val);
-    }
-
-    let mtx_path = output_matrix_path.join("quants_mat.mtx");
-    sprs::io::write_matrix_market(mtx_path, &trimat)?;
 
     // Write bootstrap summary stat matrices if bootstraps were computed
     if num_bootstraps > 0 && !all_boot_mean_triplets.is_empty() {
