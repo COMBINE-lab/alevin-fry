@@ -21,10 +21,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
-use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::str::FromStr;
 use std::string::ToString;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -48,6 +48,7 @@ use crate::em::{
     em_optimize_subset_with_scratch, run_bootstrap_with_scratch,
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
+use crate::matrix_market::{MATRIX_BUFFER_CAPACITY, MatrixBatch, MatrixMarketWriter};
 use crate::prog_opts::QuantOpts;
 
 /// Shared closure that extracts a sample index from a record.
@@ -125,87 +126,78 @@ impl FromStr for ResolutionStrategy {
 /// provides efficient storage for the 3D (cells × genes × replicates) array
 /// via chunked, compressed datasets in `.h5ad` format.
 struct BootstrapHelper {
-    num_bootstraps: u32,
     summary_stat: bool,
-    /// Thread-local bootstrap mean triplets: (row, col, val)
-    mean_triplets: Vec<(usize, usize, f32)>,
-    /// Thread-local bootstrap variance triplets: (row, col, val)
-    var_triplets: Vec<(usize, usize, f32)>,
+    mean: MatrixBatch,
+    variance: MatrixBatch,
+}
+
+struct BootstrapOutput {
+    mean: Mutex<MatrixMarketWriter<File>>,
+    variance: Mutex<MatrixMarketWriter<File>>,
 }
 
 impl BootstrapHelper {
-    fn new(
-        _output_path: &std::path::Path,
-        num_bootstraps: u32,
-        summary_stat: bool,
-    ) -> BootstrapHelper {
-        if num_bootstraps > 0 && !summary_stat {
-            eprintln!(
-                "NOTE: Full per-replicate bootstrap output is not yet supported in MTX format. \
-                 Summary statistics (mean, variance) will be written instead. \
-                 Full replicate output will be available in a future release via AnnData/h5ad."
-            );
-        }
-        BootstrapHelper {
-            num_bootstraps,
+    fn new(summary_stat: bool) -> Self {
+        Self {
             summary_stat,
-            mean_triplets: Vec::new(),
-            var_triplets: Vec::new(),
+            mean: MatrixBatch::default(),
+            variance: MatrixBatch::default(),
         }
     }
 
-    /// Record bootstrap results for one cell. Computes mean and variance
-    /// across replicates and stores nonzero entries as sparse triplets.
-    fn record_cell(&mut self, row_index: usize, bootstraps: &[Vec<f32>]) {
+    fn record_cell(
+        &mut self,
+        row_index: usize,
+        bootstraps: &[Vec<f32>],
+        output: &BootstrapOutput,
+    ) -> std::io::Result<()> {
         if bootstraps.is_empty() {
-            return;
+            return Ok(());
         }
-
-        let (mean_vec, var_vec) = if self.summary_stat && bootstraps.len() == 2 {
-            // run_bootstrap already returned [mean, var]
-            (&bootstraps[0], &bootstraps[1])
+        if self.summary_stat {
+            if bootstraps.len() != 2 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bootstrap summary must contain mean and variance",
+                ));
+            }
+            for (col, &val) in bootstraps[0].iter().enumerate() {
+                if val != 0.0 {
+                    self.mean.push(row_index, col, val, &output.mean)?;
+                }
+            }
+            for (col, &val) in bootstraps[1].iter().enumerate() {
+                if val != 0.0 {
+                    self.variance.push(row_index, col, val, &output.variance)?;
+                }
+            }
         } else {
-            // Shouldn't happen in current flow, but handle gracefully
-            return;
-        };
-
-        for (col, &val) in mean_vec.iter().enumerate() {
-            if val != 0.0 {
-                self.mean_triplets.push((row_index, col, val));
-            }
-        }
-        for (col, &val) in var_vec.iter().enumerate() {
-            if val != 0.0 {
-                self.var_triplets.push((row_index, col, val));
-            }
-        }
-    }
-
-    /// Compute mean and variance from full bootstrap replicates for one cell.
-    fn record_cell_from_replicates(&mut self, row_index: usize, bootstraps: &[Vec<f32>]) {
-        if bootstraps.is_empty() {
-            return;
-        }
-        let n = bootstraps.len() as f32;
-        let num_genes = bootstraps[0].len();
-
-        for col in 0..num_genes {
-            let mean: f32 = bootstraps.iter().map(|b| b[col]).sum::<f32>() / n;
-            if mean != 0.0 {
-                self.mean_triplets.push((row_index, col, mean));
-                let var: f32 = bootstraps
-                    .iter()
-                    .map(|b| {
-                        let d = b[col] - mean;
-                        d * d
-                    })
-                    .sum::<f32>()
-                    / (n - 1.0).max(1.0);
-                if var != 0.0 {
-                    self.var_triplets.push((row_index, col, var));
+            let n = bootstraps.len() as f32;
+            for col in 0..bootstraps[0].len() {
+                let mean = bootstraps.iter().map(|b| b[col]).sum::<f32>() / n;
+                if mean != 0.0 {
+                    self.mean.push(row_index, col, mean, &output.mean)?;
+                    let variance = bootstraps
+                        .iter()
+                        .map(|b| {
+                            let d = b[col] - mean;
+                            d * d
+                        })
+                        .sum::<f32>()
+                        / (n - 1.0).max(1.0);
+                    if variance != 0.0 {
+                        self.variance
+                            .push(row_index, col, variance, &output.variance)?;
+                    }
                 }
             }
         }
+        Ok(())
+    }
+
+    fn flush(&mut self, output: &BootstrapOutput) -> std::io::Result<()> {
+        self.mean.flush(&output.mean)?;
+        self.variance.flush(&output.variance)
     }
 }
 
@@ -214,35 +206,6 @@ struct QuantOutputInfo {
     feature_file: BufWriter<fs::File>,
     row_index: usize,
 }
-
-/// Streaming MatrixMarket writer for the count matrix.
-///
-/// Low-memory quant, change 2: instead of accumulating every nonzero into a
-/// per-thread `Vec` and then a global `all_triplets` `Vec` (24 B/nonzero) that
-/// is only written at the very end — the single largest contributor to peak
-/// RSS — each worker formats one cell's entries into a thread-local `String`
-/// off-lock and appends them here with a single `write_all` under this mutex.
-/// No global triplet buffer is ever materialized, so the matrix step's memory
-/// is just the I/O buffer.
-///
-/// The MatrixMarket size line needs `nnz`, which is unknown until all cells are
-/// processed. `rows` (num_cells) and `cols` (num_rows) are known up front, so
-/// we write the size line with a fixed-width, right-justified blank field for
-/// `nnz` at construction (recording its byte offset), count nonzeros in `nnz`
-/// as we stream, then `seek` back and overwrite that field once the workers
-/// finish. Entries may appear in any cell order — MatrixMarket coordinate
-/// format carries explicit `(row, col)`, so readers do not require row order.
-struct MatrixOut {
-    writer: BufWriter<File>,
-    /// Number of nonzeros streamed so far (patched into the size line at end).
-    nnz: u64,
-    /// Byte offset of the fixed-width `nnz` field within the size line.
-    nnz_offset: u64,
-}
-
-/// Width of the blank `nnz` field reserved in the size line. u64::MAX is 20
-/// digits, so 20 bytes always suffices to overwrite with the true count.
-const MTX_NNZ_FIELD_WIDTH: usize = 20;
 
 struct EqcMap {
     // the *global* gene-level equivalence class map
@@ -450,12 +413,13 @@ struct WorkerSharedState<R: MappedRecord> {
     /// single stream behind a lock would serialize the consumers.
     chunks: libradicl::readers::MetaChunkStream<R>,
     tid_to_gid: Arc<Vec<u32>>,
-    cells_remaining: Arc<AtomicUsize>,
     bcout: Arc<Mutex<QuantOutputInfo>>,
     /// Streaming count-matrix writer. Guarded by its own mutex (separate from
     /// `bcout`) so appending a cell's entries never lengthens the barcode/
     /// feature critical section, and vice-versa.
-    matrix_out: Arc<Mutex<MatrixOut>>,
+    matrix_out: Arc<Mutex<MatrixMarketWriter<File>>>,
+    bootstrap_out: Option<Arc<BootstrapOutput>>,
+    output_failed: Arc<AtomicBool>,
     eqid_map_lock: Arc<Mutex<EqcMap>>,
     alt_res_cells: Arc<Mutex<Vec<u64>>>,
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
@@ -464,7 +428,6 @@ struct WorkerSharedState<R: MappedRecord> {
     /// cells took it is part of how the output should be interpreted.
     tiny_cell_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<libradicl::unmapped::CollatedUnmappedCounts>,
-    mmrate: Arc<Mutex<Vec<f64>>>,
     /// Sample names indexed by sample index. None for single-barcode.
     sample_names: Option<Arc<Vec<String>>>,
     /// Extracts the sample index from a record. None for single-barcode types.
@@ -696,7 +659,7 @@ fn run_worker_thread<B, R, P>(
     log: slog::Logger,
     num_eq_targets: u32,
     eq_map_type: EqMapType,
-) -> (usize, BootstrapHelper)
+) -> anyhow::Result<usize>
 where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -724,19 +687,13 @@ where
     // complete global gene axis in every worker up front.
     let mut expressed_vec = Vec::<f32>::new();
     let mut expressed_ind = Vec::<usize>::new();
-    // Thread-local, reusable line buffer for streaming this thread's MTX
-    // entries (change 2, low-memory quant). Each cell's rows are formatted here
-    // off-lock, then appended to the shared matrix writer with a single
-    // write_all under the matrix mutex — so no per-thread or global triplet
-    // `Vec` is ever accumulated.
+    // Batches are bounded independently of cell size and formatted off-lock.
     use std::fmt::Write as _;
-    let mut mtx_line_buf = String::new();
-    // Thread-local bootstrap helper for accumulating summary stat triplets
-    let mut boot_helper = BootstrapHelper::new(
-        std::path::Path::new(""),
-        config.num_bootstraps,
-        config.summary_stat,
-    );
+    let mut matrix_batch = MatrixBatch::default();
+    let mut boot_helper = BootstrapHelper::new(config.summary_stat);
+    let mut barcode_buf = String::new();
+    let mut feature_buf = String::new();
+    let mut output_error = None;
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
@@ -771,9 +728,16 @@ where
     // remaining fields of `shared` stay usable inside the loop.
     let chunks = shared.chunks;
     for meta_chunk in chunks {
+        // Continue consuming queued chunks after an output failure. Returning
+        // immediately could leave the producer blocked on its bounded queue.
+        if shared.output_failed.load(Ordering::Relaxed) {
+            continue;
+        }
         let first_cell_in_chunk = meta_chunk.first_chunk_index;
         for (cn, mut c) in meta_chunk.iter().enumerate() {
-            shared.cells_remaining.fetch_sub(1, Ordering::SeqCst);
+            if shared.output_failed.load(Ordering::Relaxed) {
+                break;
+            }
             let cell_num = first_cell_in_chunk + cn;
 
             let nbytes = c.nbytes;
@@ -975,7 +939,6 @@ where
                                 &log,
                             );
                             counts = ct.0;
-                            shared.mmrate.lock().unwrap()[cell_num] = ct.1;
                             eq_map.clear();
                         }
                         ResolutionStrategy::Parsimony
@@ -1238,101 +1201,73 @@ where
             // expressed mean / max expression
             let mean_by_max = mean_expr / max_umi;
 
-            let row_index: usize; // the index for this row (cell)
-            {
-                // writing the files
-                let bc_mer: BitKmer = (bc.into(), config.barcode_len as u8);
+            // Decode and format both auxiliary rows before taking the shared
+            // lock. Only row allocation and paired appends must be serialized.
+            let bc_bytes = bitmer_to_bytes((bc.into(), config.barcode_len as u8));
+            let bc_str = unsafe { std::str::from_utf8_unchecked(&bc_bytes) };
+            let sample_name = sample_idx_from_rec
+                .and_then(|si| shared.sample_names.as_ref()?.get(si).map(|s| s.as_str()));
+            barcode_buf.clear();
+            feature_buf.clear();
+            if let Some(sn) = sample_name {
+                writeln!(barcode_buf, "{}_{}", sn, bc_str).unwrap();
+                write!(feature_buf, "{}\t{}\t", bc_str, sn).unwrap();
+            } else {
+                writeln!(barcode_buf, "{}", bc_str).unwrap();
+                write!(feature_buf, "{}\t", bc_str).unwrap();
+            }
+            writeln!(
+                feature_buf,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                num_mapped + num_unmapped,
+                num_mapped,
+                sum_umi,
+                mapping_rate,
+                dedup_rate,
+                mean_by_max,
+                num_expr,
+                num_genes_over_mean
+            )
+            .unwrap();
 
-                // Scope the lock to minimize hold time — triplet accumulation
-                // happens after the lock is released.
-                {
-                    let writer_deref = shared.bcout.lock();
-                    let writer = &mut *writer_deref.unwrap();
-
-                    // get the row index and then increment it
-                    row_index = writer.row_index;
+            let cell_output = (|| -> anyhow::Result<usize> {
+                let row_index = {
+                    let mut writer = shared
+                        .bcout
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("barcode/feature output lock was poisoned"))?;
+                    let row_index = writer.row_index;
+                    writer
+                        .barcode_file
+                        .write_all(barcode_buf.as_bytes())
+                        .context("could not write barcode output")?;
+                    writer
+                        .feature_file
+                        .write_all(feature_buf.as_bytes())
+                        .context("could not write feature output")?;
                     writer.row_index += 1;
-
-                    // write to barcode file
-                    let bc_bytes = &bitmer_to_bytes(bc_mer)[..];
-                    let bc_str = unsafe { std::str::from_utf8_unchecked(bc_bytes) };
-
-                    // For multi-barcode data, prefix with sample name.
-                    // The sample index was read from the first record's
-                    // barcodes[0] (written by the scatter phase), so
-                    // assignment is correct regardless of chunk order.
-                    let sample_name = sample_idx_from_rec
-                        .and_then(|si| shared.sample_names.as_ref()?.get(si).map(|s| s.as_str()));
-
-                    if let Some(sn) = sample_name {
-                        writeln!(&mut writer.barcode_file, "{}_{}", sn, bc_str)
-                    } else {
-                        writeln!(&mut writer.barcode_file, "{}", bc_str)
-                    }
-                    .expect("can't write to barcode file.");
-
-                    // write to feature dump file
-                    if let Some(sn) = sample_name {
-                        writeln!(
-                            &mut writer.feature_file,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            bc_str,
-                            sn,
-                            (num_mapped + num_unmapped),
-                            num_mapped,
-                            sum_umi,
-                            mapping_rate,
-                            dedup_rate,
-                            mean_by_max,
-                            num_expr,
-                            num_genes_over_mean
-                        )
-                    } else {
-                        writeln!(
-                            &mut writer.feature_file,
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                            bc_str,
-                            (num_mapped + num_unmapped),
-                            num_mapped,
-                            sum_umi,
-                            mapping_rate,
-                            dedup_rate,
-                            mean_by_max,
-                            num_expr,
-                            num_genes_over_mean
-                        )
-                    }
-                    .expect("can't write to feature file");
-                } // lock on bc_writer released here (end of scope)
-
-                // Stream this cell's MTX entries (change 2, low-memory quant):
-                // format off-lock into the reusable thread-local buffer, then
-                // append to the shared matrix writer with a single write under
-                // the matrix mutex. Kept separate from the `bcout` lock above so
-                // neither critical section lengthens the other.
-                mtx_line_buf.clear();
-                let mut cell_nnz: u64 = 0;
+                    row_index
+                };
                 for (&ind, &val) in expressed_ind.iter().zip(expressed_vec.iter()) {
-                    let _ = writeln!(mtx_line_buf, "{} {} {}", row_index + 1, ind + 1, val);
-                    cell_nnz += 1;
+                    matrix_batch
+                        .push(row_index, ind, val, &shared.matrix_out)
+                        .context("could not write count matrix")?;
                 }
-                if cell_nnz > 0 {
-                    let mut mo = shared.matrix_out.lock().unwrap();
-                    mo.writer
-                        .write_all(mtx_line_buf.as_bytes())
-                        .expect("can't write to matrix file");
-                    mo.nnz += cell_nnz;
+                if let Some(output) = &shared.bootstrap_out {
+                    boot_helper
+                        .record_cell(row_index, &bootstraps, output)
+                        .context("could not write bootstrap matrices")?;
                 }
-
-                // Record bootstrap summary stats (mean/var) as sparse triplets
-                if config.num_bootstraps > 0 && !bootstraps.is_empty() {
-                    if config.summary_stat {
-                        boot_helper.record_cell(row_index, &bootstraps);
-                    } else {
-                        boot_helper.record_cell_from_replicates(row_index, &bootstraps);
-                    }
+                Ok(row_index)
+            })();
+            let row_index = match cell_output {
+                Ok(row_index) => row_index,
+                Err(error) => {
+                    output_error = Some(error);
+                    shared.output_failed.store(true, Ordering::Relaxed);
+                    break;
                 }
-            } // end of cell processing
+            };
 
             // if we are dumping the equivalence class output, fill in
             // the in-memory representation here.
@@ -1355,7 +1290,7 @@ where
                         }
                     }
                     if !found {
-                        geqmap.global_eqc.insert(labels.to_vec().clone(), next_id);
+                        geqmap.global_eqc.insert(labels.clone(), next_id);
                         next_id += 1;
                     }
                 }
@@ -1378,9 +1313,27 @@ where
             }
         } // for all cells in this meta chunk
     } // for each meta chunk
-    // Matrix entries were streamed directly to the shared writer; only the
-    // record count and bootstrap helper are returned (change 2).
-    (local_nrec, boot_helper)
+    if !shared.output_failed.load(Ordering::Relaxed) {
+        let flush_output = (|| -> anyhow::Result<()> {
+            matrix_batch
+                .flush(&shared.matrix_out)
+                .context("could not flush count matrix batch")?;
+            if let Some(output) = &shared.bootstrap_out {
+                boot_helper
+                    .flush(output)
+                    .context("could not flush bootstrap batches")?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = flush_output {
+            output_error = Some(error);
+            shared.output_failed.store(true, Ordering::Relaxed);
+        }
+    }
+    match output_error {
+        Some(error) => Err(error),
+        None => Ok(local_nrec),
+    }
 }
 
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
@@ -1617,10 +1570,7 @@ where
     // populates the queue, and the remaining worker threads
     // pop a chunk, perform the quantification, and update the
     // output.  The updating of the output requires acquiring
-    // two locks (1) to update the data in the matrix and
-    // (2) to write to the barcode file.  We also have to
-    // decrement an atomic coutner for the numebr of cells that
-    // remain to be processed.
+    // separate locks for matrix batches and paired barcode/feature rows.
 
     // create a thread-safe queue based on the number of worker threads
     let n_workers = if num_threads > 1 {
@@ -1633,8 +1583,6 @@ where
         std::num::NonZeroUsize::new(n_workers).unwrap(),
     );
 
-    // the number of cells left to process
-    let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
     // the number of reference sequences
@@ -1655,7 +1603,12 @@ where
     let bc_path = output_matrix_path.join("quants_mat_rows.txt");
     let bc_file = fs::File::create(bc_path)?;
 
-    let _boot_helper = BootstrapHelper::new(output_path, num_bootstraps, summary_stat);
+    if num_bootstraps > 0 && !summary_stat {
+        warn!(
+            log,
+            "Full per-replicate MTX output is not supported; writing bootstrap mean and variance instead."
+        );
+    }
 
     let ff_path = output_path.join("featureDump.txt");
     let mut ff_file = fs::File::create(ff_path)?;
@@ -1673,14 +1626,6 @@ where
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let tiny_cell_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
-
-    // Estimate initial triplet capacity for MTX output. The 10% density assumption
-    // is far too high for large multiplexed datasets (actual density is often <0.5%).
-    // Cap at 256M entries (~3GB) to avoid overallocation; the vec will grow as needed.
-    let _tmcap = {
-        let estimate = (0.1f64 * num_genes as f64 * num_cells as f64).round() as usize;
-        estimate.min(256_000_000)
-    };
 
     // the length of the vector of gene counts we'll use
     let num_rows = if usa_mode {
@@ -1710,37 +1655,29 @@ where
     };
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
-        barcode_file: BufWriter::new(bc_file),
-        feature_file: BufWriter::new(ff_file),
+        barcode_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, bc_file),
+        feature_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, ff_file),
         row_index: 0usize,
     }));
 
-    // Open the streaming count-matrix writer and emit its MatrixMarket header
-    // now (change 2, low-memory quant). `rows` (num_cells) and `cols`
-    // (num_rows) are known here; the `nnz` field is reserved as a fixed-width
-    // blank whose byte offset we record, then overwritten via `seek` once every
-    // worker has streamed its entries. The `% written by sprs` line is kept
-    // verbatim so the header matches the previous sprs-produced output.
-    let matrix_out = {
-        let mtx_path = output_matrix_path.join("quants_mat.mtx");
-        let mut writer = BufWriter::new(File::create(&mtx_path)?);
-        let banner = "%%MatrixMarket matrix coordinate real general\n% written by sprs\n";
-        writer.write_all(banner.as_bytes())?;
-        let size_prefix = format!("{} {} ", num_cells as usize, num_rows);
-        writer.write_all(size_prefix.as_bytes())?;
-        let nnz_offset = (banner.len() + size_prefix.len()) as u64;
-        writer.write_all(&b" ".repeat(MTX_NNZ_FIELD_WIDTH))?;
-        writer.write_all(b"\n")?;
-        Arc::new(Mutex::new(MatrixOut {
-            writer,
-            nnz: 0,
-            nnz_offset,
-        }))
+    let open_matrix = |name: &str| -> anyhow::Result<MatrixMarketWriter<File>> {
+        let path = output_matrix_path.join(name);
+        let file =
+            File::create(&path).with_context(|| format!("could not create {}", path.display()))?;
+        Ok(MatrixMarketWriter::new(file, num_cells as usize, num_rows)?)
     };
+    let matrix_out = Arc::new(Mutex::new(open_matrix("quants_mat.mtx")?));
+    let bootstrap_out = if num_bootstraps > 0 {
+        Some(Arc::new(BootstrapOutput {
+            mean: Mutex::new(open_matrix("bootstraps_mean.mtx")?),
+            variance: Mutex::new(open_matrix("bootstraps_var.mtx")?),
+        }))
+    } else {
+        None
+    };
+    let output_failed = Arc::new(AtomicBool::new(false));
 
-    let mmrate = Arc::new(Mutex::new(vec![0f64; num_cells as usize]));
-
-    type WorkerResult = (usize, BootstrapHelper);
+    type WorkerResult = anyhow::Result<usize>;
     let mut thread_handles: Vec<thread::JoinHandle<WorkerResult>> = Vec::with_capacity(n_workers);
 
     // This is the hash table that will hold the global
@@ -1764,13 +1701,13 @@ where
         let log = log.clone();
         // the shared tid_to_gid map
         let tid_to_gid = tid_to_gid_shared.clone();
-        // and the atomic counter of remaining work
-        let cells_remaining = cells_to_process.clone();
 
         // and the file writer
         let bcout = bc_writer.clone();
         // and the streaming count-matrix writer
         let matrix_out = matrix_out.clone();
+        let bootstrap_out = bootstrap_out.clone();
+        let output_failed = output_failed.clone();
         // global gene-level eqc map
         let eqid_map_lockc = eqid_map_lock.clone();
         // and will need to know the barcode length
@@ -1778,7 +1715,6 @@ where
         let empty_resolved_cells = empty_resolved_cells.clone();
         let tiny_cell_resolved_cells = tiny_cell_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
-        let mmrate = mmrate.clone();
 
         // if we are performing parsimony-gene or parsimony-gene-em
         // resolution, then the equivalence classes will be immediately
@@ -1828,15 +1764,15 @@ where
         let shared = WorkerSharedState {
             chunks,
             tid_to_gid,
-            cells_remaining,
             bcout,
             matrix_out,
+            bootstrap_out,
+            output_failed,
             eqid_map_lock: eqid_map_lockc,
             alt_res_cells,
             empty_resolved_cells,
             tiny_cell_resolved_cells,
             unmapped_count,
-            mmrate,
             sample_names: sample_names.clone(),
             sample_idx_extractor: sample_bc_extractor.clone(),
         };
@@ -1855,7 +1791,7 @@ where
 
     // push the work onto the queue for the worker threads
     // we spawned above.
-    let _ = if let Some(ret_bc) = retained_bc {
+    let reader_result = if let Some(ret_bc) = retained_bc {
         let filter_fn =
             |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
                 let ch = R::peek_collatable_header(&buf[8..], record_context)
@@ -1868,106 +1804,114 @@ where
         chunk_reader.start(&mut br, Some(cb))
     };
 
+    let mut total_records = 0usize;
+    let mut worker_error = None;
+    for handle in thread_handles {
+        let result = match handle.join() {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::anyhow!("quantification worker panicked")),
+        };
+        match result {
+            Ok(records) => total_records += records,
+            Err(error) if worker_error.is_none() => worker_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    // Every worker is joined even when input or output failed. Never finalize
+    // a partial matrix or write success metadata on these error paths.
+    if let Some(error) = worker_error {
+        return Err(error);
+    }
+    reader_result.context("could not read collated RAD input")?;
+
+    let emitted_rows = {
+        let mut writer = bc_writer
+            .lock()
+            .map_err(|_| anyhow::anyhow!("barcode/feature output lock was poisoned"))?;
+        writer
+            .barcode_file
+            .flush()
+            .context("could not flush barcode output")?;
+        writer
+            .feature_file
+            .flush()
+            .context("could not flush feature output")?;
+        writer.row_index
+    };
+    anyhow::ensure!(
+        emitted_rows <= num_cells as usize,
+        "quantification emitted {} rows, but the matrix declares only {}; check the cell filter for shared barcodes across samples",
+        emitted_rows,
+        num_cells
+    );
+    let total_nnz = matrix_out
+        .lock()
+        .map_err(|_| anyhow::anyhow!("count matrix output lock was poisoned"))?
+        .finish()
+        .context("could not finalize count matrix")?;
+    info!(
+        log,
+        "wrote streamed count matrix: {} nonzeros",
+        total_nnz.to_formatted_string(&Locale::en)
+    );
+
+    if let Some(output) = bootstrap_out {
+        let output = Arc::try_unwrap(output)
+            .map_err(|_| anyhow::anyhow!("bootstrap output is still held by a worker"))?;
+        let mean_nnz = output
+            .mean
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bootstrap mean output lock was poisoned"))?
+            .finish()
+            .context("could not finalize bootstrap mean matrix")?;
+        let var_nnz = output
+            .variance
+            .lock()
+            .map_err(|_| anyhow::anyhow!("bootstrap variance output lock was poisoned"))?
+            .finish()
+            .context("could not finalize bootstrap variance matrix")?;
+        // Preserve the existing file set when no bootstrap means were produced.
+        // Close first so removal also works on platforms that lock open files.
+        drop(output);
+        if mean_nnz == 0 {
+            fs::remove_file(output_matrix_path.join("bootstraps_mean.mtx"))?;
+            fs::remove_file(output_matrix_path.join("bootstraps_var.mtx"))?;
+        } else {
+            info!(
+                log,
+                "wrote bootstrap summary statistics: mean ({} entries), variance ({} entries)",
+                mean_nnz,
+                var_nnz
+            );
+        }
+    }
+
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
-    let gn_file = File::create(gn_path).expect("couldn't create gene name file.");
+    let gn_file = File::create(gn_path).context("could not create gene name output")?;
     let mut gn_writer = BufWriter::new(gn_file);
 
     // if we are not using unspliced then just write the gene names
     if !usa_mode {
         for g in gene_names {
-            gn_writer.write_all(format!("{}\n", g).as_bytes())?;
+            writeln!(gn_writer, "{}", g)?;
         }
     } else {
         // otherwise, we write the spliced names, the unspliced names, and then
         // the ambiguous names
         for g in gene_names.iter() {
-            gn_writer.write_all(format!("{}\n", *g).as_bytes())?;
+            writeln!(gn_writer, "{}", g)?;
         }
         // unspliced
         for g in gene_names.iter() {
-            gn_writer.write_all(format!("{}-U\n", *g).as_bytes())?;
+            writeln!(gn_writer, "{}-U", g)?;
         }
         // ambiguous
         for g in gene_names.iter() {
-            gn_writer.write_all(format!("{}-A\n", *g).as_bytes())?;
+            writeln!(gn_writer, "{}-A", g)?;
         }
     }
 
-    let mut total_records = 0usize;
-    let mut all_boot_mean_triplets: Vec<(usize, usize, f32)> = Vec::new();
-    let mut all_boot_var_triplets: Vec<(usize, usize, f32)> = Vec::new();
-    for h in thread_handles {
-        match h.join() {
-            Ok((rc, boot)) => {
-                total_records += rc;
-                if boot.num_bootstraps > 0 {
-                    all_boot_mean_triplets.extend(boot.mean_triplets);
-                    all_boot_var_triplets.extend(boot.var_triplets);
-                }
-            }
-            Err(_e) => {
-                info!(log, "thread panicked");
-            }
-        }
-    }
-
-    // Finalize the streamed count matrix (change 2, low-memory quant). Workers
-    // appended every entry directly to `quants_mat.mtx` as they ran, so there
-    // is no triplet buffer to materialize here: we only flush and patch the
-    // reserved `nnz` field of the MatrixMarket size line with the number of
-    // nonzeros actually streamed. Every Arc clone held by a worker was dropped
-    // when the threads joined above, so this is the sole remaining handle.
-    let total_nnz = {
-        let mut mo = matrix_out.lock().unwrap();
-        mo.writer.flush()?;
-        let nnz = mo.nnz;
-        let offset = mo.nnz_offset;
-        let f = mo.writer.get_mut();
-        f.seek(SeekFrom::Start(offset))?;
-        // Left-justify within the reserved fixed-width field: the value hugs the
-        // single space after `cols`, and the remaining bytes are trailing spaces
-        // before the newline. The size line therefore reads as three
-        // single-space-separated integers plus harmless trailing whitespace,
-        // which every MatrixMarket reader (scipy/scanpy/af-anndata) tolerates.
-        write!(f, "{:<width$}", nnz, width = MTX_NNZ_FIELD_WIDTH)?;
-        f.flush()?;
-        nnz
-    };
-    info!(
-        log,
-        "wrote streamed count matrix: {} nonzeros",
-        total_nnz.to_formatted_string(&Locale::en),
-    );
-
-    // Write bootstrap summary stat matrices if bootstraps were computed
-    if num_bootstraps > 0 && !all_boot_mean_triplets.is_empty() {
-        let mut mean_trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-            (num_cells as usize, num_rows),
-            all_boot_mean_triplets.len(),
-        );
-        for (row, col, val) in all_boot_mean_triplets {
-            mean_trimat.add_triplet(row, col, val);
-        }
-        let mean_path = output_matrix_path.join("bootstraps_mean.mtx");
-        sprs::io::write_matrix_market(mean_path, &mean_trimat)?;
-
-        let mut var_trimat = sprs::TriMatI::<f32, u32>::with_capacity(
-            (num_cells as usize, num_rows),
-            all_boot_var_triplets.len(),
-        );
-        for (row, col, val) in all_boot_var_triplets {
-            var_trimat.add_triplet(row, col, val);
-        }
-        let var_path = output_matrix_path.join("bootstraps_var.mtx");
-        sprs::io::write_matrix_market(var_path, &var_trimat)?;
-
-        info!(
-            log,
-            "wrote bootstrap summary statistics: mean ({} entries), variance ({} entries)",
-            mean_trimat.nnz(),
-            var_trimat.nnz(),
-        );
-    }
+    gn_writer.flush().context("could not flush gene names")?;
 
     let pb_msg = format!(
         "finished quantifying {} cells.",
@@ -2019,11 +1963,12 @@ where
     });
 
     let mut meta_info_file =
-        File::create(output_path.join("quant.json")).expect("couldn't create quant.json file.");
-    let aux_info_str = serde_json::to_string_pretty(&meta_info).expect("could not format json.");
+        File::create(output_path.join("quant.json")).context("could not create quant.json")?;
+    let aux_info_str =
+        serde_json::to_string_pretty(&meta_info).context("could not format quant.json")?;
     meta_info_file
         .write_all(aux_info_str.as_bytes())
-        .expect("cannot write to quant.json file");
+        .context("could not write quant.json")?;
 
     // k3yavi: Todo delete after api stability
     // creating a dummy cmd_info.json for R compatibility

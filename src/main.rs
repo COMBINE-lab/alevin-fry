@@ -7,11 +7,9 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{anyhow, bail};
+use anyhow::{Context, bail};
 use bio_types::strand::Strand;
 use clap::{Command, arg, builder::ArgGroup, crate_authors, crate_version, value_parser};
-use csv::Error as CSVError;
-use csv::ErrorKind;
 use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::RngExt;
@@ -758,57 +756,12 @@ fn main() -> anyhow::Result<()> {
         // then proceed.  otherwise print a critical error.
         if json_path.exists() {
             let velo_mode = alevin_fry::utils::is_velo_mode(quant_opts.input_dir);
-            if velo_mode {
-                match alevin_fry::quant::velo_quantify(quant_opts) {
-                    // if we're all good; then great!
-                    Ok(_) => {}
-                    // if we have an error, see if it's an error parsing
-                    // the CSV or something else.
-                    Err(e) => match e.downcast_ref::<CSVError>() {
-                        Some(error) => {
-                            match *error.kind() {
-                                // if a deserialize error, we already complained about it
-                                ErrorKind::Deserialize { .. } => {
-                                    return Err(anyhow!("execution terminated unexpectedly"));
-                                }
-                                // if another type of error, just panic for now
-                                _ => {
-                                    panic!("could not quantify rad file.");
-                                }
-                            }
-                        }
-                        // if something else, just panic
-                        None => {
-                            panic!("could not quantify rad file.");
-                        }
-                    },
-                }; // end match if
+            let result = if velo_mode {
+                alevin_fry::quant::velo_quantify(quant_opts)
             } else {
-                match alevin_fry::quant::quantify(quant_opts) {
-                    // if we're all good; then great!
-                    Ok(_) => {}
-                    // if we have an error, see if it's an error parsing
-                    // the CSV or something else.
-                    Err(e) => match e.downcast_ref::<CSVError>() {
-                        Some(error) => {
-                            match *error.kind() {
-                                // if a deserialize error, we already complained about it
-                                ErrorKind::Deserialize { .. } => {
-                                    return Err(anyhow!("execution terminated unexpectedly"));
-                                }
-                                // if another type of error, just panic for now
-                                _ => {
-                                    panic!("could not quantify rad file.");
-                                }
-                            }
-                        }
-                        // if something else, just panic
-                        None => {
-                            panic!("could not quantify rad file.");
-                        }
-                    },
-                }; //end quant if
-            }; // end velo_mode if
+                alevin_fry::quant::quantify(quant_opts)
+            };
+            result.context("could not quantify RAD file")?;
         } else {
             crit!(
                 log,
