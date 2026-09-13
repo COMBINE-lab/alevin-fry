@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = "0.18.1"
+libradicl = "0.19.0"
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = { version = "0.8.12", features = ["serde"] }
@@ -111,3 +111,11 @@ opt-level = 3
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[features]
+default = []
+# Enable zstd as a selectable collated-RAD chunk codec (`--compress zstd`). Off by
+# default so the standard build stays pure-Rust (lz4); this pulls in libradicl's
+# zstd feature, which compiles the C zstd-sys.
+zstd = ["libradicl/zstd"]
+

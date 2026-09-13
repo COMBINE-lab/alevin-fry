@@ -352,24 +352,26 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(quant_opts.input_dir);
     let log = quant_opts.log;
 
-    // read the collate metadata
+    // Confirm collate ran (and surface a clear error if not).
     let collate_md_file =
         File::open(parent.join("collate.json")).context("could not open the collate.json file.")?;
-    let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
+    let _collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
 
-    // is the collated RAD file compressed?
-    let compressed_input = collate_md["compressed_output"]
-        .as_bool()
-        .context("could not read compressed_output field from collate metadata.")?;
-
-    if compressed_input {
-        let i_file =
-            File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
+    // Pick the reader by which collated file exists. A `.sz` sidecar is the
+    // legacy whole-file Snappy stream (pre-per-chunk-codec output, and the
+    // temp-collate fallback), which must be decoded as one stream up front.
+    // Otherwise `map.collated.rad` is read directly: it is either uncompressed
+    // or per-chunk-codec compressed, and in the latter case the codec is
+    // recorded in a file tag and decompressed transparently by the chunk
+    // readers — so the raw file is what they expect.
+    let sz_path = parent.join("map.collated.rad.sz");
+    if sz_path.exists() {
+        let i_file = File::open(&sz_path).context("run collate before quant")?;
         let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
 
         info!(
             log,
-            "quantifying from compressed, collated RAD file {:?}", i_file
+            "quantifying from compressed (whole-file) collated RAD file {:?}", i_file
         );
 
         do_quantify_dispatch(br, quant_opts)
@@ -378,10 +380,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
         let br = BufReader::new(&i_file);
 
-        info!(
-            log,
-            "quantifying from uncompressed, collated RAD file {:?}", i_file
-        );
+        info!(log, "quantifying from collated RAD file {:?}", i_file);
 
         do_quantify_dispatch(br, quant_opts)
     }
@@ -1348,12 +1347,12 @@ where
 // sidecar and falls back to the single reader when it is absent, mismatched, or
 // fails to load — so default behavior is unchanged when no index exists.
 //
-// The sidecar records on-disk chunk offsets. This filler reads chunk bytes
-// VERBATIM, so it currently supports only uncompressed collated RADs; per-chunk
-// compression (libradicl `ChunkCodec`) is decompressed in the producer loop, so
-// supporting it here means decompressing each chunk in the filler (see the
-// compressed-collate follow-up). The engage guard requires `map.collated.rad`
-// (uncompressed), so the compressed case never reaches this path today.
+// The sidecar records on-disk chunk offsets (framing sizes, compressed when a
+// codec is applied). Each filler materializes chunks in the uncompressed layout
+// the consumers parse: verbatim for uncompressed RADs, or decompressing each
+// chunk's payload with the file's `ChunkCodec` (producer-side, matching the
+// stock reader) for per-chunk-compressed RADs. Only the legacy whole-file `.sz`
+// stream is excluded — it is not chunk-seekable and takes the `.sz` reader path.
 // ==========================================================================
 
 /// Meta-chunk buffer size for the parallel reader. Must match libradicl's
@@ -1404,17 +1403,22 @@ fn load_and_validate_chunkidx(
 }
 
 /// One filler thread: read chunks `[lo, hi)` from `start_off`, packing them into
-/// `MetaChunk`s onto the shared queue. Reads chunk bytes verbatim
-/// (`[nbytes][nrec][payload]`), matching the uncompressed on-disk layout the
-/// consumers parse. For a per-chunk-compressed RAD the producer must decompress
-/// each chunk (as the stock reader does); that is the compressed-collate
-/// follow-up. Never touches the done flag (the coordinator owns it).
+/// `MetaChunk`s onto the shared queue. Each chunk is materialized in the
+/// uncompressed on-disk layout (`[nbytes][nrec][records]`) the consumers parse:
+/// for [`ChunkCodec::None`](libradicl::codec::ChunkCodec) the on-disk bytes are
+/// copied verbatim; for a per-chunk codec the record payload is decompressed
+/// here (producer-side, exactly as the stock reader does) and the chunk header's
+/// `nbytes` is rewritten to the decompressed size. `MetaChunk` boundaries are a
+/// batching detail and do not affect the records parsed. Never touches the done
+/// flag (the coordinator owns it).
+#[allow(clippy::too_many_arguments)]
 fn fill_range<R>(
     rad_path: &std::path::Path,
     start_off: u64,
     lo: usize,
     hi: usize,
     offsets: &[u64],
+    codec: libradicl::codec::ChunkCodec,
     record_context: &<R as MappedRecord>::ParsingContext,
     queue: &crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>,
     pbar: &ProgressBar,
@@ -1423,21 +1427,42 @@ where
     R: MappedRecord,
     <R as MappedRecord>::ParsingContext: RecordContext + Clone,
 {
+    use libradicl::codec::ChunkCodec;
     let mut br = BufReader::new(File::open(rad_path)?);
     br.seek(SeekFrom::Start(start_off))?;
     let mut buf = vec![0u8; RAD_META_CHUNK_BUFSIZE];
+    let mut scratch: Vec<u8> = Vec::new(); // on-disk (compressed) chunk bytes when codec != None
     let mut cbytes = 0u32;
     let mut crec = 0u32;
     let mut chunks_in_meta = 0usize;
     let mut first_chunk = lo;
     for chunk_idx in lo..hi {
-        let nbytes = (offsets[chunk_idx + 1] - offsets[chunk_idx]) as u32;
+        let disk_nbytes = (offsets[chunk_idx + 1] - offsets[chunk_idx]) as usize;
         let boffset = cbytes as usize;
-        if boffset + nbytes as usize > buf.len() {
-            buf.resize(boffset + nbytes as usize, 0);
-        }
-        br.read_exact(&mut buf[boffset..boffset + nbytes as usize])
-            .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+        // Materialize this chunk into `buf` at `boffset` in the uncompressed
+        // layout, returning its (uncompressed) framing size.
+        let dec_nbytes: usize = if codec == ChunkCodec::None {
+            if boffset + disk_nbytes > buf.len() {
+                buf.resize(boffset + disk_nbytes, 0);
+            }
+            br.read_exact(&mut buf[boffset..boffset + disk_nbytes])
+                .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+            disk_nbytes
+        } else {
+            scratch.resize(disk_nbytes, 0);
+            br.read_exact(&mut scratch)
+                .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+            let records = libradicl::codec::decompress_payload(codec, &scratch[8..disk_nbytes])
+                .with_context(|| format!("failed decompressing chunk {chunk_idx}"))?;
+            let nb = records.len() + 8;
+            if boffset + nb > buf.len() {
+                buf.resize(boffset + nb, 0);
+            }
+            buf[boffset..boffset + 4].copy_from_slice(&(nb as u32).to_le_bytes());
+            buf[boffset + 4..boffset + 8].copy_from_slice(&scratch[4..8]); // nrec, verbatim
+            buf[boffset + 8..boffset + nb].copy_from_slice(&records);
+            nb
+        };
         let nrec = u32::from_le_bytes([
             buf[boffset + 4],
             buf[boffset + 5],
@@ -1445,15 +1470,10 @@ where
             buf[boffset + 7],
         ]);
         chunks_in_meta += 1;
-        cbytes += nbytes;
+        cbytes += dec_nbytes as u32;
         crec += nrec;
         let is_last = chunk_idx + 1 == hi;
-        let next_nbytes = if is_last {
-            0u32
-        } else {
-            (offsets[chunk_idx + 2] - offsets[chunk_idx + 1]) as u32
-        };
-        if is_last || (cbytes + next_nbytes) as usize > buf.len() {
+        if is_last || cbytes as usize >= RAD_META_CHUNK_BUFSIZE {
             let mut mc = libradicl::readers::MetaChunk::<R>::new(
                 first_chunk,
                 chunks_in_meta,
@@ -1490,6 +1510,7 @@ fn parallel_fill_from_index<R>(
     offsets: &[u64],
     num_readers: usize,
     prelude: &RadPrelude,
+    codec: libradicl::codec::ChunkCodec,
     queue: std::sync::Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
     done_var: std::sync::Arc<AtomicBool>,
     pbar: &ProgressBar,
@@ -1533,7 +1554,9 @@ where
             let pbar_ref = &*pbar;
             let rc = record_context.clone();
             handles.push(s.spawn(move || {
-                fill_range::<R>(rad_path, start_off, lo, hi, offsets, &rc, &q, pbar_ref)
+                fill_range::<R>(
+                    rad_path, start_off, lo, hi, offsets, codec, &rc, &q, pbar_ref,
+                )
             }));
         }
         let mut first_err: Option<anyhow::Error> = None;
@@ -1797,10 +1820,15 @@ where
     } else {
         1
     };
+    // Per-chunk codec advertised by the collated RAD's file tags (absent => None).
+    // The chunk readers decompress transparently so consumers see uncompressed
+    // records; `ParallelChunkReader::new` alone assumes None, so set it here.
+    let chunk_codec = libradicl::codec::chunk_codec_from_tag_map(&file_tag_map)?;
     let mut chunk_reader = libradicl::readers::ParallelChunkReader::<R>::new(
         &prelude,
         std::num::NonZeroUsize::new(n_workers).unwrap(),
-    );
+    )
+    .with_chunk_codec(chunk_codec);
 
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
@@ -2021,7 +2049,12 @@ where
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
         // Parallel read auto-engages when collate wrote a valid chunk-offset
-        // sidecar for this (uncompressed) RAD; otherwise the stock single reader.
+        // sidecar for this RAD; otherwise the stock single reader. Works for
+        // uncompressed and per-chunk-codec RADs alike — the fillers decompress
+        // each chunk with `chunk_codec` (producer-side, matching the stock
+        // reader), so consumers see uncompressed records either way. It does not
+        // apply to the legacy whole-file `.sz` stream (not chunk-seekable), which
+        // takes the `.sz` branch at the entry point and never reaches here.
         // `AF_RAD_READERS` overrides the reader count (set 1 to disable).
         let rad_path = parent.join("map.collated.rad");
         let idx_path = parent.join("map.collated.rad.chunkidx");
@@ -2037,7 +2070,10 @@ where
             Ok(Some((n, offsets))) => {
                 info!(
                     log,
-                    "parallel RAD reader: {} readers over {} chunks", num_readers, n
+                    "parallel RAD reader: {} readers over {} chunks (codec: {})",
+                    num_readers,
+                    n,
+                    chunk_codec.as_str()
                 );
                 parallel_fill_from_index::<R>(
                     &rad_path,
@@ -2045,6 +2081,7 @@ where
                     &offsets,
                     num_readers,
                     &prelude,
+                    chunk_codec,
                     chunk_reader.get_queue(),
                     chunk_reader.is_done(),
                     &pbar,

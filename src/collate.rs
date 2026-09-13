@@ -20,6 +20,7 @@ use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
 use libradicl::chunk;
+use libradicl::codec::ChunkCodec;
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -105,7 +106,7 @@ pub fn collate<P1, P2>(
     rad_dir: P2,
     num_threads: u32,
     max_records: u32,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version_str: &str,
     //expected_ori: Strand,
@@ -121,7 +122,7 @@ where
         num_threads,
         max_records,
         None,
-        compress_out,
+        codec,
         cmdline,
         version_str,
         log,
@@ -141,7 +142,7 @@ pub fn collate_with_memory_limit<P1, P2>(
     num_threads: u32,
     max_records: u32,
     memory_limit: Option<u64>,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version_str: &str,
     log: &slog::Logger,
@@ -224,7 +225,7 @@ where
             memory_budget_bytes,
             Vec::new(), // tsv_map not used for multi-barcode
             total_to_collate,
-            compress_out,
+            codec,
             cmdline,
             version_str,
             log,
@@ -291,7 +292,7 @@ where
         memory_budget_bytes,
         tsv_map,
         total_to_collate,
-        compress_out,
+        codec,
         cmdline,
         version_str,
         log,
@@ -498,15 +499,68 @@ fn correct_unmapped_counts(
 /// `num_chunks + 1` absolute byte offsets; `offset_0` is the first chunk header
 /// (right after the prelude + file-tag map) and the last equals the file length.
 ///
-/// Uncompressed only for now. A per-chunk-codec RAD (libradicl [`ChunkCodec`],
-/// where a chunk's `nbytes` is its *compressed* framing size) is indexable by
-/// exactly these on-disk offsets and each chunk decompresses independently — so
-/// this generalizes to compressed output once collate emits the per-chunk codec
-/// instead of the legacy whole-file `.sz` stream (which is not chunk-seekable).
-/// Failure here is non-fatal: quant simply falls back to the single reader.
+/// Works for both uncompressed and per-chunk-codec ([`ChunkCodec`]) output: a
+/// chunk's on-disk `nbytes` is its framing size (compressed when a codec is
+/// applied), so these offsets seek to chunk boundaries and each chunk
+/// decompresses independently. It does *not* work for the legacy whole-file
+/// `.sz` stream, which is not chunk-seekable. Failure here is non-fatal: quant
+/// simply falls back to the single reader.
 ///
 /// A follow-up can make this truly free by recording each chunk's offset in the
 /// gather writer (which already emits every chunk) instead of this post-scan.
+/// Map the `--compress` CLI value to a per-chunk [`ChunkCodec`]. `None` (flag
+/// absent) is uncompressed; `lz4` (the default when `--compress` is given with
+/// no value) is pure-Rust and always available; `zstd` needs an alevin-fry build
+/// with the `zstd` feature (which enables `libradicl/zstd`) and errors clearly
+/// otherwise. Per-chunk framing keeps the collated RAD chunk-seekable, unlike
+/// the legacy whole-file Snappy stream.
+pub fn codec_from_compress_arg(arg: Option<&str>) -> anyhow::Result<ChunkCodec> {
+    Ok(match arg {
+        None => ChunkCodec::None,
+        Some("lz4") => ChunkCodec::Lz4,
+        Some("zstd") => {
+            #[cfg(feature = "zstd")]
+            {
+                ChunkCodec::Zstd
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                anyhow::bail!(
+                    "zstd compression requires an alevin-fry build with the `zstd` feature \
+                     (rebuild with `--features zstd`); use `--compress` (lz4) otherwise"
+                )
+            }
+        }
+        Some(other) => anyhow::bail!("unknown compression codec '{other}' (expected lz4 or zstd)"),
+    })
+}
+
+/// Serialize the collated-output header. For a per-chunk codec this rebuilds the
+/// source header with the [`libradicl::codec::CHUNK_CODEC_TAG`] file tag (via
+/// [`RadPrelude::write_with_chunk_codec`]); for [`ChunkCodec::None`] it returns
+/// the source header verbatim with only `num_chunks` patched (already applied to
+/// `patched_header`). `patched_header` is the source header bytes with the
+/// collated chunk count already written into the num_chunks field.
+fn collated_header_bytes(
+    prelude: &RadPrelude,
+    patched_header: Vec<u8>,
+    num_chunks: u64,
+    codec: ChunkCodec,
+) -> anyhow::Result<Vec<u8>> {
+    if codec == ChunkCodec::None {
+        return Ok(patched_header);
+    }
+    // The source header is [prelude bytes][file-tag values]; re-serializing the
+    // prelude gives the exact split point (num_chunks is fixed-width, so the
+    // patch does not move it).
+    let mut orig_prelude = Vec::new();
+    prelude.write(&mut orig_prelude)?;
+    let file_tag_values = &patched_header[orig_prelude.len()..];
+    let mut out = Vec::with_capacity(patched_header.len() + 16);
+    prelude.write_with_chunk_codec(&mut out, file_tag_values, num_chunks, codec)?;
+    Ok(out)
+}
+
 fn write_collated_chunk_index(rad_path: &Path, log: &slog::Logger) -> anyhow::Result<()> {
     let f = File::open(rad_path)?;
     let file_len = f.metadata()?.len();
@@ -586,7 +640,7 @@ fn do_collate_single_barcode<P1, P2, A>(
     memory_budget_bytes: u64,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -611,10 +665,11 @@ where
         .as_bool()
         .context("could not read velo_mode from generate-permit-list metadata")?;
 
+    // Compressed output now uses per-chunk codec framing (chunk-seekable), so
+    // the collated RAD keeps the `.rad` name; the codec lives in a header tag.
+    let compress_out = codec != ChunkCodec::None;
     let output_name = if velo_mode {
         "velo.map.collated.rad"
-    } else if compress_out {
-        "map.collated.rad.sz"
     } else {
         "map.collated.rad"
     };
@@ -640,11 +695,7 @@ where
     let chunk_count_offset = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
     header[chunk_count_offset..chunk_count_offset + 8]
         .copy_from_slice(&expected_output_chunks.to_le_bytes());
-    if compress_out {
-        let mut encoder = snap::write::FrameEncoder::new(Vec::with_capacity(header.len()));
-        encoder.write_all(&header)?;
-        header = encoder.into_inner()?;
-    }
+    let header = collated_header_bytes(&prelude, header, expected_output_chunks, codec)?;
     output
         .lock()
         .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
@@ -683,6 +734,7 @@ where
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
+            "chunk_codec": codec.as_str(),
             "collation_mode": "optimized",
             "memory_budget_bytes": memory_budget_bytes,
         });
@@ -701,7 +753,7 @@ where
         SingleBarcodeCollationOptions {
             num_threads: num_threads as usize,
             memory_budget_bytes,
-            compress_output: compress_out,
+            chunk_codec: codec,
         },
     )?;
 
@@ -735,13 +787,12 @@ where
 
     // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
     // Optimization only; a failure leaves quant on its single-reader path.
-    if !compress_out {
-        if let Err(e) = write_collated_chunk_index(&output_path, log) {
-            warn!(
-                log,
-                "could not write collated chunk index ({e}); quant will use the single reader"
-            );
-        }
+    // Per-chunk codec output is chunk-seekable, so index it too.
+    if let Err(e) = write_collated_chunk_index(&output_path, log) {
+        warn!(
+            log,
+            "could not write collated chunk index ({e}); quant will use the single reader"
+        );
     }
     Ok(())
 }
@@ -765,7 +816,7 @@ pub fn do_collate_with_temp<
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -829,6 +880,10 @@ where
     let filter_type = get_filter_type(&mdata, log);
     let most_ambig_record = get_most_ambiguous_record(&mdata, log);
 
+    // Compressed output uses per-chunk codec framing (chunk-seekable), keeping
+    // the `.rad` name; the codec is recorded in a header tag.
+    let compress_out = codec != ChunkCodec::None;
+
     // log the filter type
     info!(log, "filter_type = {:?}", filter_type);
     info!(
@@ -840,8 +895,6 @@ where
     // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
     let cfname = if velo_mode {
         "velo.map.collated.rad"
-    } else if compress_out {
-        "map.collated.rad.sz"
     } else {
         "map.collated.rad"
     };
@@ -852,6 +905,7 @@ where
             "cmd" : cmdline,
             "version_str" : version,
             "compressed_output" : compress_out,
+            "chunk_codec" : codec.as_str(),
         });
 
         let cm_path = parent.join("collate.json");
@@ -911,23 +965,14 @@ where
         hdr_buf
             .write_all(&expected_output_chunks.to_le_bytes())
             .context("couldn't write num_chunks")?;
-        hdr_buf.set_position(0);
-
-        // compress the header buffer to a compressed buffer
-        if compress_out {
-            let mut compressed_buf =
-                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
-            compressed_buf
-                .write_all(hdr_buf.get_ref())
-                .context("could not compress the output header.")?;
-            hdr_buf = compressed_buf
-                .into_inner()
-                .context("couldn't unwrap the FrameEncoder.")?;
-            hdr_buf.set_position(0);
-        }
-
+        let header = collated_header_bytes(
+            &prelude,
+            hdr_buf.into_inner(),
+            expected_output_chunks,
+            codec,
+        )?;
         if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref())
+            oput.write_all(&header)
                 .context("could not write the output header.")?;
         }
     }
@@ -1214,7 +1259,7 @@ where
                         &ctx,
                         temp_bucket.1,
                         &owriter,
-                        compress_out,
+                        codec,
                         &mut cmap,
                     ) as u64;
 
@@ -1301,7 +1346,7 @@ pub fn collate_with_temp<P1, P2>(
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -1323,7 +1368,7 @@ where
         memory_budget_bytes,
         tsv_map,
         total_to_collate,
-        compress_out,
+        codec,
         cmdline,
         version,
         log,
@@ -1339,7 +1384,7 @@ fn collate_with_temp_memory<P1, P2>(
     memory_budget_bytes: u64,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -1413,7 +1458,7 @@ where
                 max_records,
                 tsv_map.clone(),
                 total_to_collate,
-                compress_out,
+                codec,
                 cmdline,
                 version,
                 log,
@@ -1441,7 +1486,7 @@ where
                         max_records,
                         tsv_map.clone(),
                         total_to_collate,
-                        compress_out,
+                        codec,
                         cmdline,
                         version,
                         log,
@@ -1473,7 +1518,7 @@ where
                         memory_budget_bytes,
                         tsv_map.clone(),
                         total_to_collate,
-                        compress_out,
+                        codec,
                         cmdline,
                         version,
                         log,
@@ -1507,7 +1552,7 @@ where
                 num_threads,
                 memory_budget_bytes,
                 total_to_collate,
-                compress_out,
+                codec,
                 cmdline,
                 version,
                 log,
@@ -1538,7 +1583,7 @@ fn do_collate_multi_bc_fast<P1, P2, A: Read + Seek>(
     num_threads: u32,
     memory_budget_bytes: u64,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -1763,12 +1808,10 @@ where
         total_to_collate.to_formatted_string(&Locale::en),
     );
 
-    // Create output file
-    let cfname = if compress_out {
-        "map.collated.rad.sz"
-    } else {
-        "map.collated.rad"
-    };
+    // Create output file. Compressed output uses per-chunk codec framing
+    // (chunk-seekable), keeping the `.rad` name; the codec lives in a header tag.
+    let compress_out = codec != ChunkCodec::None;
+    let cfname = "map.collated.rad";
 
     // Write collate metadata
     {
@@ -1776,6 +1819,7 @@ where
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
+            "chunk_codec": codec.as_str(),
             "multi_barcode": true,
             "num_samples": num_samples,
             "collation_mode": "optimized",
@@ -1804,18 +1848,15 @@ where
         rfile.read_exact(hdr_buf.get_mut())?;
         hdr_buf.set_position(take_pos);
         hdr_buf.write_all(&expected_output_chunks.to_le_bytes())?;
-        hdr_buf.set_position(0);
 
-        if compress_out {
-            let mut compressed_buf =
-                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
-            compressed_buf.write_all(hdr_buf.get_ref())?;
-            hdr_buf = compressed_buf.into_inner()?;
-            hdr_buf.set_position(0);
-        }
-
+        let header = collated_header_bytes(
+            &prelude,
+            hdr_buf.into_inner(),
+            expected_output_chunks,
+            codec,
+        )?;
         if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref())?;
+            oput.write_all(&header)?;
         }
     }
 
@@ -1946,7 +1987,7 @@ where
         MultiBarcodeCollationOptions {
             num_threads: num_threads as usize,
             memory_budget_bytes,
-            compress_output: compress_out,
+            chunk_codec: codec,
         },
     )?;
     let total_output_chunks = engine_stats.output_chunks;
@@ -2004,8 +2045,12 @@ where
     }
     drop(owriter);
 
-    // Backpatch num_chunks in the output file header
-    if !compress_out {
+    // Backpatch num_chunks in the output file header. This works for both
+    // uncompressed and per-chunk-codec output because the header itself is never
+    // compressed (only chunk payloads are), so num_chunks stays seek-patchable at
+    // its fixed offset (adding the codec file tag grows the tag section *after*
+    // the header, leaving num_chunks in place).
+    {
         let chunk_bytes = std::mem::size_of::<u64>() as u64;
         let nc_pos = end_header_pos - chunk_bytes;
         let mut ofile = std::fs::OpenOptions::new().write(true).open(&oname)?;
@@ -2025,7 +2070,8 @@ where
 
     // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
     // Optimization only; a failure leaves quant on its single-reader path.
-    if !compress_out {
+    // Per-chunk codec output is chunk-seekable, so index it too.
+    {
         let rad_path = parent.join("map.collated.rad");
         if let Err(e) = write_collated_chunk_index(&rad_path, log) {
             warn!(
@@ -2046,7 +2092,7 @@ pub fn collate_with_temp<P1, P2>(
     max_records: u32,
     tsv_map: Vec<(u64, u64)>,
     total_to_collate: u64,
-    compress_out: bool,
+    codec: ChunkCodec,
     cmdline: &str,
     version: &str,
     log: &slog::Logger,
@@ -2545,7 +2591,7 @@ where
                         &umi_type,
                         temp_bucket.1,
                         &owriter,
-                        compress_out,
+                        codec,
                         &mut cmap,
                     ) as u64;
 
