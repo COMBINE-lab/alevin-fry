@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1336,6 +1336,206 @@ where
     }
 }
 
+// ==========================================================================
+// PROTOTYPE: parallel RAD reader (proto/parallel-rad-read)
+//
+// When a `map.collated.rad.chunkidx` sidecar exists (built by the standalone
+// `build_chunkidx` binary), the collated RAD is read by `num_readers` filler
+// threads, each over a DISJOINT contiguous chunk range (split by BYTES on
+// chunk boundaries), all pushing MetaChunks into the SAME shared consumer
+// work-queue that the stock ParallelChunkReader uses. Consumers (EM workers)
+// are unchanged. Falls back to the stock single filler when no sidecar exists.
+//
+// Codec-None (uncompressed) only. The number of readers is set by the
+// AF_RAD_READERS env var (default 4; =1 forces the stock single-filler path).
+// ==========================================================================
+
+/// Read the chunk-offset sidecar: returns (num_chunks, offsets) where
+/// offsets has num_chunks+1 entries (offsets[i] = absolute byte offset of
+/// chunk i's header; offsets[num_chunks] = EOF).
+fn load_chunkidx(idx_path: &std::path::Path) -> anyhow::Result<(usize, Vec<u64>)> {
+    let mut f = BufReader::new(File::open(idx_path)?);
+    let mut b8 = [0u8; 8];
+    f.read_exact(&mut b8)?;
+    let num_chunks = u64::from_le_bytes(b8) as usize;
+    let mut offsets = Vec::with_capacity(num_chunks + 1);
+    for _ in 0..(num_chunks + 1) {
+        f.read_exact(&mut b8)?;
+        offsets.push(u64::from_le_bytes(b8));
+    }
+    Ok((num_chunks, offsets))
+}
+
+/// One filler thread: read chunks [lo, hi) from `rad_path` starting at byte
+/// `start_off`, packing them into MetaChunks and pushing onto the shared queue.
+/// Does NOT touch the done flag (the coordinator sets it once, after join).
+fn fill_range<R>(
+    rad_path: &std::path::Path,
+    start_off: u64,
+    lo: usize,
+    hi: usize,
+    offsets: &[u64],
+    record_context: &<R as MappedRecord>::ParsingContext,
+    queue: &crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>,
+    pbar: &ProgressBar,
+) -> anyhow::Result<()>
+where
+    R: MappedRecord,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone,
+{
+    // Same meta-chunk buffer size as libradicl's stock fill loop.
+    const BUFSIZE: usize = 524208;
+    let mut f = File::open(rad_path)?;
+    f.seek(SeekFrom::Start(start_off))?;
+    let mut br = BufReader::new(f);
+
+    let mut buf = vec![0u8; BUFSIZE];
+    let mut cbytes = 0u32; // bytes packed into the current meta-chunk
+    let mut crec = 0u32; // records packed into the current meta-chunk
+    let mut chunks_in_meta = 0usize; // cells in the current meta-chunk
+    let mut first_chunk = lo; // GLOBAL index of the first cell in the meta-chunk
+
+    for chunk_idx in lo..hi {
+        // full on-disk size of this chunk (includes its own 8-byte header)
+        let nbytes = (offsets[chunk_idx + 1] - offsets[chunk_idx]) as u32;
+        let boffset = cbytes as usize;
+        if boffset + nbytes as usize > buf.len() {
+            buf.resize(boffset + nbytes as usize, 0);
+        }
+        // Read the chunk verbatim ([nbytes][nrec][records]) into the buffer.
+        // This is byte-identical to what stock fill_work_queue assembles (it
+        // splits header from payload and rewrites the header); the resulting
+        // blob is what MetaChunkIterator/Chunk::from_bytes expects.
+        br.read_exact(&mut buf[boffset..boffset + nbytes as usize])
+            .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+        let nrec = u32::from_le_bytes([
+            buf[boffset + 4],
+            buf[boffset + 5],
+            buf[boffset + 6],
+            buf[boffset + 7],
+        ]);
+        chunks_in_meta += 1;
+        cbytes += nbytes;
+        crec += nrec;
+
+        let is_last = chunk_idx + 1 == hi;
+        let next_nbytes = if is_last {
+            0u32
+        } else {
+            (offsets[chunk_idx + 2] - offsets[chunk_idx + 1]) as u32
+        };
+        // Push when the next chunk would not fit, or this range is exhausted.
+        if is_last || (cbytes + next_nbytes) as usize > buf.len() {
+            let mut mc = libradicl::readers::MetaChunk::<R>::new(
+                first_chunk,
+                chunks_in_meta,
+                cbytes,
+                crec,
+                record_context.clone(),
+                buf.clone(),
+            );
+            while let Err(t) = queue.push(mc) {
+                mc = t;
+                while queue.is_full() {
+                    std::thread::yield_now();
+                }
+            }
+            pbar.inc(chunks_in_meta as u64);
+            first_chunk += chunks_in_meta;
+            chunks_in_meta = 0;
+            cbytes = 0;
+            crec = 0;
+            buf.resize(BUFSIZE, 0);
+        }
+    }
+    Ok(())
+}
+
+/// Coordinator: split num_chunks into `num_readers` byte-balanced ranges on
+/// chunk boundaries, spawn one filler per range, and set the done flag exactly
+/// once after all fillers finish (covers early return and panic).
+fn parallel_fill_from_index<R>(
+    rad_path: &std::path::Path,
+    num_chunks: usize,
+    offsets: &[u64],
+    num_readers: usize,
+    prelude: &RadPrelude,
+    queue: std::sync::Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
+    done_var: std::sync::Arc<AtomicBool>,
+    pbar: &ProgressBar,
+) -> anyhow::Result<()>
+where
+    R: MappedRecord,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    // Set the done flag exactly once, on EVERY exit path (Ok, `?`, panic), and
+    // only from here — never from a filler. A filler that set it would strand
+    // the others (consumers drain and exit; remaining fillers hang on a full
+    // queue) and silently drop records.
+    struct DoneGuard(std::sync::Arc<AtomicBool>);
+    impl Drop for DoneGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _done_guard = DoneGuard(done_var);
+
+    // byte-balanced split points -> chunk indices
+    let total = offsets[num_chunks] - offsets[0];
+    let mut bounds: Vec<usize> = Vec::with_capacity(num_readers + 1);
+    bounds.push(0);
+    for p in 1..num_readers {
+        let target = offsets[0] + (total * p as u64) / (num_readers as u64);
+        // first chunk index c with offsets[c] >= target
+        let c = offsets.partition_point(|&o| o < target).min(num_chunks);
+        bounds.push(c);
+    }
+    bounds.push(num_chunks);
+
+    let record_context = prelude
+        .get_record_context::<<R as MappedRecord>::ParsingContext>()
+        .map_err(|e| anyhow::anyhow!("could not get record context: {e}"))?;
+    let offs_ref = offsets;
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for p in 0..num_readers {
+            let lo = bounds[p];
+            let hi = bounds[p + 1];
+            if lo >= hi {
+                continue;
+            }
+            let start_off = offsets[lo];
+            let q = queue.clone();
+            let pbar_ref = &*pbar;
+            // Each filler owns its record-context clone; ParsingContext need
+            // only be Send (not Sync), matching the stock reader's bounds.
+            let rc = record_context.clone();
+            handles.push(s.spawn(move || {
+                fill_range::<R>(rad_path, start_off, lo, hi, offs_ref, &rc, &q, pbar_ref)
+            }));
+        }
+        // Join ALL fillers before propagating any error, so a failure in one
+        // does not leave the rest unjoined (the scope would then re-panic).
+        let mut first_err: Option<anyhow::Error> = None;
+        for h in handles {
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Ok(Err(_)) => {}
+                Err(_) if first_err.is_none() => {
+                    first_err = Some(anyhow::anyhow!("RAD filler thread panicked"))
+                }
+                Err(_) => {}
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    })
+}
+
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
     mut br: T,
     quant_opts: QuantOpts,
@@ -1801,7 +2001,51 @@ where
             };
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
-        chunk_reader.start(&mut br, Some(cb))
+        // PROTOTYPE parallel-read path (proto/parallel-rad-read): engage when a
+        // chunk-offset sidecar exists and AF_RAD_READERS != 1; else stock filler.
+        let rad_path = parent.join("map.collated.rad");
+        let idx_path = parent.join("map.collated.rad.chunkidx");
+        let num_readers: usize = std::env::var("AF_RAD_READERS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(4);
+        if num_readers >= 2 && rad_path.exists() && idx_path.exists() {
+            match load_chunkidx(&idx_path) {
+                Ok((idx_nchunks, offsets)) if idx_nchunks == hdr.num_chunks as usize => {
+                    info!(
+                        log,
+                        "PROTOTYPE parallel RAD reader: {} filler threads over {} chunks",
+                        num_readers,
+                        idx_nchunks
+                    );
+                    parallel_fill_from_index::<R>(
+                        &rad_path,
+                        idx_nchunks,
+                        &offsets,
+                        num_readers,
+                        &prelude,
+                        chunk_reader.get_queue(),
+                        chunk_reader.is_done(),
+                        &pbar,
+                    )
+                }
+                Ok((idx_nchunks, _)) => {
+                    warn!(
+                        log,
+                        "chunkidx num_chunks ({}) != RAD header ({}); stock single reader",
+                        idx_nchunks,
+                        hdr.num_chunks
+                    );
+                    chunk_reader.start(&mut br, Some(cb))
+                }
+                Err(e) => {
+                    warn!(log, "failed to load chunkidx ({}); stock single reader", e);
+                    chunk_reader.start(&mut br, Some(cb))
+                }
+            }
+        } else {
+            chunk_reader.start(&mut br, Some(cb))
+        }
     };
 
     let mut total_records = 0usize;
