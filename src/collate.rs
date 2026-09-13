@@ -63,6 +63,142 @@ use std::thread;
 use crate::utils as afutils;
 use crate::utils::KnownRecordType;
 
+// ==========================================================================
+// Chunk-offset index (sidecar) support for the parallel RAD reader in quant.
+//
+// collate writes a `map.collated.rad.chunkidx` sidecar (uncompressed output
+// only) recording, at each collated bucket boundary, the byte offset in the
+// RAD and the cumulative chunk (cell) count up to that boundary. quant uses it
+// to split the RAD into disjoint byte ranges read by parallel filler threads.
+// The RAD itself is left byte-identical (backward compatible; old quant and
+// external tools ignore the sidecar).
+// ==========================================================================
+
+/// Sidecar magic. Bumping the format bumps CHUNKIDX_VERSION; quant rejects an
+/// unknown magic or version and falls back to the stock single reader.
+pub(crate) const CHUNKIDX_MAGIC: &[u8; 8] = b"AFCHKIDX";
+pub(crate) const CHUNKIDX_VERSION: u16 = 1;
+
+/// Count the chunks packed into one uncompressed bucket blob by walking the
+/// per-chunk `[nbytes:u32][nrec:u32]` headers (nbytes counts the 8-byte header).
+/// This touches only ~num_chunks u32s across the whole run (one 4-byte read per
+/// chunk header), never the record payloads, so it is negligible next to the
+/// bucket write itself.
+fn count_chunk_headers(buf: &[u8]) -> u64 {
+    let mut pos = 0usize;
+    let mut n = 0u64;
+    while pos + 8 <= buf.len() {
+        let nbytes = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]) as usize;
+        if nbytes < 8 {
+            break; // corrupt/short; stop rather than loop forever
+        }
+        pos += nbytes;
+        n += 1;
+    }
+    n
+}
+
+/// A `Write` (+ `Seek`) wrapper that records a sidecar boundary for every
+/// SEQUENTIAL TAIL write (one per collated bucket) once armed. It mirrors any
+/// `seek` into an internal `pos` and tracks the true stream tail; a non-tail
+/// seek-rewrite (e.g. a header num_chunks backpatch performed through this
+/// writer) advances `pos` WITHOUT recording a boundary, so recorded offsets
+/// stay monotonic and land only on real chunk headers. Each `write` forwards
+/// the whole buffer to the inner writer and reports it fully consumed, so a
+/// caller's `write_all` yields exactly one recorded boundary per logical write.
+pub(crate) struct OffsetTrackingWriter<W> {
+    inner: W,
+    pos: u64,
+    tail: u64,
+    armed: bool,
+    pub(crate) boundaries: Vec<u64>,
+    pub(crate) cum_chunks: Vec<u64>,
+    pub(crate) running_chunks: u64,
+}
+
+impl<W: Write> OffsetTrackingWriter<W> {
+    pub(crate) fn new(inner: W) -> Self {
+        Self {
+            inner,
+            pos: 0,
+            tail: 0,
+            armed: false,
+            boundaries: Vec::new(),
+            cum_chunks: Vec::new(),
+            running_chunks: 0,
+        }
+    }
+    /// Start recording boundaries at the current tail. Call AFTER writing the
+    /// RAD prelude/header so the first recorded boundary is bucket 0 (the first
+    /// chunk), not the header. Only call for uncompressed output.
+    pub(crate) fn arm(&mut self) {
+        self.armed = true;
+    }
+    pub(crate) fn tail(&self) -> u64 {
+        self.tail
+    }
+}
+
+impl<W: Write> Write for OffsetTrackingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        // Record a boundary only for an append at the true tail; never for a
+        // seek-rewrite (pos < tail).
+        if self.armed && self.pos == self.tail {
+            self.boundaries.push(self.pos);
+            self.cum_chunks.push(self.running_chunks);
+            self.running_chunks += count_chunk_headers(buf);
+        }
+        self.inner.write_all(buf)?;
+        self.pos += buf.len() as u64;
+        if self.pos > self.tail {
+            self.tail = self.pos;
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl<W: Write + Seek> Seek for OffsetTrackingWriter<W> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        let np = self.inner.seek(pos)?;
+        self.pos = np;
+        Ok(np)
+    }
+}
+
+/// Write the chunk-offset sidecar. Layout (all little-endian):
+///   magic[8] "AFCHKIDX" | version:u16 | reserved:u16 | num_chunks:u64 |
+///   num_boundaries:u64 | offsets:[u64; num_boundaries] |
+///   cum_chunks:[u64; num_boundaries]
+/// `boundaries[i]` is the byte offset of bucket i's start (boundaries[0] = the
+/// first chunk; the last entry = EOF). `cum_chunks[i]` is the number of chunks
+/// before that boundary (cum_chunks[0] = 0; last = num_chunks).
+fn write_chunkidx_sidecar(
+    path: &Path,
+    num_chunks: u64,
+    boundaries: &[u64],
+    cum_chunks: &[u64],
+) -> anyhow::Result<()> {
+    assert_eq!(boundaries.len(), cum_chunks.len());
+    let f = File::create(path)?;
+    let mut w = BufWriter::new(f);
+    w.write_all(CHUNKIDX_MAGIC)?;
+    w.write_all(&CHUNKIDX_VERSION.to_le_bytes())?;
+    w.write_all(&0u16.to_le_bytes())?; // reserved
+    w.write_all(&num_chunks.to_le_bytes())?;
+    w.write_all(&(boundaries.len() as u64).to_le_bytes())?;
+    for o in boundaries {
+        w.write_all(&o.to_le_bytes())?;
+    }
+    for c in cum_chunks {
+        w.write_all(&c.to_le_bytes())?;
+    }
+    w.flush()?;
+    Ok(())
+}
+
 fn load_single_corrections(
     parent: &Path,
     expected_barcode_len: u8,
@@ -1697,8 +1833,16 @@ where
     if oname.exists() {
         std::fs::remove_file(&oname)?;
     }
+    // Chunk-offset index invariant: delete any stale sidecar BEFORE writing the
+    // RAD; a fresh one is written below only after the RAD is complete.
+    let idxname = parent.join("map.collated.rad.chunkidx");
+    if idxname.exists() {
+        std::fs::remove_file(&idxname)?;
+    }
     let ofile = File::create(&oname)?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let owriter = Arc::new(Mutex::new(OffsetTrackingWriter::new(BufWriter::with_capacity(
+        1048576, ofile,
+    ))));
 
     // Copy header with updated num_chunks
     let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
@@ -1722,6 +1866,14 @@ where
 
         if let Ok(mut oput) = owriter.lock() {
             oput.write_all(hdr_buf.get_ref())?;
+        }
+    }
+
+    // Header written; begin recording bucket boundaries for the sidecar
+    // (uncompressed output only; compressed bucket frames can't be split).
+    if !compress_out {
+        if let Ok(mut oput) = owriter.lock() {
+            oput.arm();
         }
     }
 
@@ -1904,10 +2056,20 @@ where
         total_output_chunks,
     );
 
-    // Flush output
-    if let Ok(mut oput) = owriter.lock() {
+    // Flush output, then extract the chunk-offset index data collected by the
+    // wrapper during the per-bucket gather writes.
+    let (mut idx_boundaries, mut idx_cum_chunks, idx_tail, idx_running) = {
+        let mut oput = owriter
+            .lock()
+            .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?;
         oput.flush()?;
-    }
+        (
+            std::mem::take(&mut oput.boundaries),
+            std::mem::take(&mut oput.cum_chunks),
+            oput.tail(),
+            oput.running_chunks,
+        )
+    };
     drop(owriter);
 
     // Backpatch num_chunks in the output file header
@@ -1922,6 +2084,33 @@ where
             "Backpatched num_chunks to {} in output file", total_output_chunks
         );
     }
+
+    // Write the chunk-offset sidecar LAST (uncompressed output only), after the
+    // RAD and its header backpatch are complete, so a present sidecar always
+    // implies a complete RAD.
+    if !compress_out && !idx_boundaries.is_empty() {
+        // Internal consistency: the chunks counted while writing buckets must
+        // equal the collator's reported output chunk total (the value just
+        // backpatched into the RAD header). If not, the index would be wrong.
+        anyhow::ensure!(
+            idx_running == total_output_chunks,
+            "chunk-offset index counted {} chunks but collation reported {}",
+            idx_running,
+            total_output_chunks
+        );
+        // Append the trailing EOF boundary (offset == file end, cum == num_chunks).
+        idx_boundaries.push(idx_tail);
+        idx_cum_chunks.push(idx_running);
+        write_chunkidx_sidecar(&idxname, total_output_chunks, &idx_boundaries, &idx_cum_chunks)?;
+        info!(
+            log,
+            "Wrote chunk-offset index {} ({} bucket boundaries, {} chunks)",
+            idxname.display(),
+            idx_boundaries.len(),
+            total_output_chunks
+        );
+    }
+
 
     info!(
         log,

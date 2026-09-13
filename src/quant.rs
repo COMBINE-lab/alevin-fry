@@ -1337,44 +1337,95 @@ where
 }
 
 // ==========================================================================
-// PROTOTYPE: parallel RAD reader (proto/parallel-rad-read)
+// Parallel RAD reader for quant.
 //
-// When a `map.collated.rad.chunkidx` sidecar exists (built by the standalone
-// `build_chunkidx` binary), the collated RAD is read by `num_readers` filler
-// threads, each over a DISJOINT contiguous chunk range (split by BYTES on
-// chunk boundaries), all pushing MetaChunks into the SAME shared consumer
-// work-queue that the stock ParallelChunkReader uses. Consumers (EM workers)
-// are unchanged. Falls back to the stock single filler when no sidecar exists.
+// When collate has written a `map.collated.rad.chunkidx` sidecar next to an
+// uncompressed collated RAD, quant reads the RAD with several filler threads
+// instead of one. Each filler reads a DISJOINT, byte-balanced range of the RAD
+// (split on collated-bucket boundaries recorded in the sidecar) and pushes
+// MetaChunks into the SAME shared work-queue the stock ParallelChunkReader
+// uses; the EM worker (consumer) threads are unchanged. This turns the cold,
+// single-stream-I/O-bound read into a compute-bound one.
 //
-// Codec-None (uncompressed) only. The number of readers is set by the
-// AF_RAD_READERS env var (default 4; =1 forces the stock single-filler path).
+// Falls back to the stock single filler when the sidecar is absent, invalid,
+// stale (num_chunks mismatch), or the RAD is compressed. Codec-None only.
+//
+// Number of readers: default 4; `AF_RAD_READERS` env var overrides the count
+// (a value < 2 forces the stock single reader). The sidecar's presence — not
+// the env var — is what enables the parallel path.
 // ==========================================================================
 
-/// Read the chunk-offset sidecar: returns (num_chunks, offsets) where
-/// offsets has num_chunks+1 entries (offsets[i] = absolute byte offset of
-/// chunk i's header; offsets[num_chunks] = EOF).
-fn load_chunkidx(idx_path: &std::path::Path) -> anyhow::Result<(usize, Vec<u64>)> {
-    let mut f = BufReader::new(File::open(idx_path)?);
-    let mut b8 = [0u8; 8];
-    f.read_exact(&mut b8)?;
-    let num_chunks = u64::from_le_bytes(b8) as usize;
-    let mut offsets = Vec::with_capacity(num_chunks + 1);
-    for _ in 0..(num_chunks + 1) {
-        f.read_exact(&mut b8)?;
-        offsets.push(u64::from_le_bytes(b8));
-    }
-    Ok((num_chunks, offsets))
+/// The parsed chunk-offset sidecar. `boundaries[i]` is the byte offset of
+/// bucket i's first chunk (boundaries[0] = the first chunk in the file; the
+/// last entry = EOF); `cum_chunks[i]` is the number of chunks before that
+/// boundary (cum_chunks[0] = 0; last = num_chunks). Both have the same length.
+struct ChunkIndex {
+    num_chunks: u64,
+    boundaries: Vec<u64>,
+    cum_chunks: Vec<u64>,
 }
 
-/// One filler thread: read chunks [lo, hi) from `rad_path` starting at byte
-/// `start_off`, packing them into MetaChunks and pushing onto the shared queue.
-/// Does NOT touch the done flag (the coordinator sets it once, after join).
+/// Read and validate the sidecar. Returns an error (caller warns and falls back
+/// to the stock reader) on bad magic, unknown version, or a malformed body.
+fn load_chunkidx(idx_path: &std::path::Path) -> anyhow::Result<ChunkIndex> {
+    let mut f = BufReader::new(File::open(idx_path)?);
+    let mut magic = [0u8; 8];
+    f.read_exact(&mut magic)?;
+    anyhow::ensure!(
+        &magic == crate::collate::CHUNKIDX_MAGIC,
+        "chunk-offset index has bad magic (not an AFCHKIDX sidecar)"
+    );
+    let mut b2 = [0u8; 2];
+    f.read_exact(&mut b2)?;
+    let version = u16::from_le_bytes(b2);
+    anyhow::ensure!(
+        version == crate::collate::CHUNKIDX_VERSION,
+        "chunk-offset index version {} != supported {}",
+        version,
+        crate::collate::CHUNKIDX_VERSION
+    );
+    f.read_exact(&mut b2)?; // reserved u16
+    let mut b8 = [0u8; 8];
+    f.read_exact(&mut b8)?;
+    let num_chunks = u64::from_le_bytes(b8);
+    f.read_exact(&mut b8)?;
+    let num_boundaries = u64::from_le_bytes(b8) as usize;
+    anyhow::ensure!(num_boundaries >= 2, "chunk-offset index has too few boundaries");
+    let mut boundaries = Vec::with_capacity(num_boundaries);
+    for _ in 0..num_boundaries {
+        f.read_exact(&mut b8)?;
+        boundaries.push(u64::from_le_bytes(b8));
+    }
+    let mut cum_chunks = Vec::with_capacity(num_boundaries);
+    for _ in 0..num_boundaries {
+        f.read_exact(&mut b8)?;
+        cum_chunks.push(u64::from_le_bytes(b8));
+    }
+    anyhow::ensure!(
+        *cum_chunks.last().unwrap() == num_chunks,
+        "chunk-offset index trailing cumulative count {} != num_chunks {}",
+        cum_chunks.last().unwrap(),
+        num_chunks
+    );
+    Ok(ChunkIndex {
+        num_chunks,
+        boundaries,
+        cum_chunks,
+    })
+}
+
+/// One filler thread: read `nchunks` chunks from `rad_path` starting at byte
+/// `start_off`, packing them into MetaChunks (framing each chunk by its own
+/// `[nbytes:u32][nrec:u32]` header, exactly as the stock reader does) and
+/// pushing onto the shared queue. `first_chunk` is the GLOBAL index of the
+/// first chunk in this range, so MetaChunk::first_chunk_index (hence quant's
+/// cell numbering) matches the stock single-reader ordering. Does NOT touch the
+/// done flag — the coordinator sets it once, after all fillers join.
 fn fill_range<R>(
     rad_path: &std::path::Path,
     start_off: u64,
-    lo: usize,
-    hi: usize,
-    offsets: &[u64],
+    first_chunk: usize,
+    nchunks: usize,
     record_context: &<R as MappedRecord>::ParsingContext,
     queue: &crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>,
     pbar: &ProgressBar,
@@ -1393,41 +1444,38 @@ where
     let mut cbytes = 0u32; // bytes packed into the current meta-chunk
     let mut crec = 0u32; // records packed into the current meta-chunk
     let mut chunks_in_meta = 0usize; // cells in the current meta-chunk
-    let mut first_chunk = lo; // GLOBAL index of the first cell in the meta-chunk
+    let mut meta_first = first_chunk; // global index of first cell in the meta-chunk
 
-    for chunk_idx in lo..hi {
-        // full on-disk size of this chunk (includes its own 8-byte header)
-        let nbytes = (offsets[chunk_idx + 1] - offsets[chunk_idx]) as u32;
+    let mut hdr = [0u8; 8];
+    for i in 0..nchunks {
+        // Read this chunk's 8-byte header to learn its size, then read the rest.
+        br.read_exact(&mut hdr)
+            .with_context(|| format!("failed reading header of chunk {}; RAD truncated?", first_chunk + i))?;
+        let nbytes = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let nrec = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]);
+        anyhow::ensure!(nbytes >= 8, "chunk {} declares nbytes {} (< 8); corrupt RAD", first_chunk + i, nbytes);
+
         let boffset = cbytes as usize;
         if boffset + nbytes as usize > buf.len() {
             buf.resize(boffset + nbytes as usize, 0);
         }
-        // Read the chunk verbatim ([nbytes][nrec][records]) into the buffer.
-        // This is byte-identical to what stock fill_work_queue assembles (it
-        // splits header from payload and rewrites the header); the resulting
-        // blob is what MetaChunkIterator/Chunk::from_bytes expects.
-        br.read_exact(&mut buf[boffset..boffset + nbytes as usize])
-            .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
-        let nrec = u32::from_le_bytes([
-            buf[boffset + 4],
-            buf[boffset + 5],
-            buf[boffset + 6],
-            buf[boffset + 7],
-        ]);
+        // Store the header verbatim, then read the payload after it, so the
+        // blob is exactly [nbytes][nrec][records] — what MetaChunkIterator /
+        // Chunk::from_bytes expects.
+        buf[boffset..boffset + 8].copy_from_slice(&hdr);
+        br.read_exact(&mut buf[boffset + 8..boffset + nbytes as usize])
+            .with_context(|| format!("failed reading body of chunk {}; RAD truncated?", first_chunk + i))?;
         chunks_in_meta += 1;
         cbytes += nbytes;
         crec += nrec;
 
-        let is_last = chunk_idx + 1 == hi;
-        let next_nbytes = if is_last {
-            0u32
-        } else {
-            (offsets[chunk_idx + 2] - offsets[chunk_idx + 1]) as u32
-        };
-        // Push when the next chunk would not fit, or this range is exhausted.
-        if is_last || (cbytes + next_nbytes) as usize > buf.len() {
+        let is_last = i + 1 == nchunks;
+        // Push when the buffer is (nearly) full or the range is exhausted. We
+        // don't know the next chunk's size until we read its header, so push on
+        // a simple fill threshold; packing has no effect on results.
+        if is_last || (cbytes as usize) > BUFSIZE - (BUFSIZE / 8) {
             let mut mc = libradicl::readers::MetaChunk::<R>::new(
-                first_chunk,
+                meta_first,
                 chunks_in_meta,
                 cbytes,
                 crec,
@@ -1441,7 +1489,7 @@ where
                 }
             }
             pbar.inc(chunks_in_meta as u64);
-            first_chunk += chunks_in_meta;
+            meta_first += chunks_in_meta;
             chunks_in_meta = 0;
             cbytes = 0;
             crec = 0;
@@ -1451,13 +1499,13 @@ where
     Ok(())
 }
 
-/// Coordinator: split num_chunks into `num_readers` byte-balanced ranges on
-/// chunk boundaries, spawn one filler per range, and set the done flag exactly
-/// once after all fillers finish (covers early return and panic).
+/// Coordinator: split the RAD's collated buckets into `num_readers`
+/// byte-balanced contiguous groups (on bucket boundaries from the index),
+/// spawn one filler per group, and set the done flag exactly once after all
+/// fillers finish (covers early return and panic).
 fn parallel_fill_from_index<R>(
     rad_path: &std::path::Path,
-    num_chunks: usize,
-    offsets: &[u64],
+    idx: &ChunkIndex,
     num_readers: usize,
     prelude: &RadPrelude,
     queue: std::sync::Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
@@ -1480,43 +1528,46 @@ where
     }
     let _done_guard = DoneGuard(done_var);
 
-    // byte-balanced split points -> chunk indices
-    let total = offsets[num_chunks] - offsets[0];
-    let mut bounds: Vec<usize> = Vec::with_capacity(num_readers + 1);
-    bounds.push(0);
+    // Boundaries are bucket starts; the last entry is EOF. nb = number of
+    // buckets. Split them into byte-balanced contiguous groups. Never make more
+    // groups than buckets (empty groups are pointless; this also bounds readers
+    // by the chunk count, since nb <= num_chunks).
+    let nb = idx.boundaries.len() - 1;
+    let num_readers = num_readers.min(nb).max(1);
+    let base = idx.boundaries[0];
+    let total = idx.boundaries[nb] - base;
+    let mut cut: Vec<usize> = Vec::with_capacity(num_readers + 1);
+    cut.push(0);
     for p in 1..num_readers {
-        let target = offsets[0] + (total * p as u64) / (num_readers as u64);
-        // first chunk index c with offsets[c] >= target
-        let c = offsets.partition_point(|&o| o < target).min(num_chunks);
-        bounds.push(c);
+        let target = base + (total * p as u64) / (num_readers as u64);
+        // first bucket index b whose start offset >= target
+        let b = idx.boundaries[..=nb].partition_point(|&o| o < target).min(nb);
+        cut.push(b);
     }
-    bounds.push(num_chunks);
+    cut.push(nb);
 
     let record_context = prelude
         .get_record_context::<<R as MappedRecord>::ParsingContext>()
         .map_err(|e| anyhow::anyhow!("could not get record context: {e}"))?;
-    let offs_ref = offsets;
 
     std::thread::scope(|s| {
         let mut handles = Vec::new();
         for p in 0..num_readers {
-            let lo = bounds[p];
-            let hi = bounds[p + 1];
+            let lo = cut[p];
+            let hi = cut[p + 1];
             if lo >= hi {
                 continue;
             }
-            let start_off = offsets[lo];
+            let start_off = idx.boundaries[lo];
+            let first_chunk = idx.cum_chunks[lo] as usize;
+            let nchunks = (idx.cum_chunks[hi] - idx.cum_chunks[lo]) as usize;
             let q = queue.clone();
             let pbar_ref = &*pbar;
-            // Each filler owns its record-context clone; ParsingContext need
-            // only be Send (not Sync), matching the stock reader's bounds.
             let rc = record_context.clone();
             handles.push(s.spawn(move || {
-                fill_range::<R>(rad_path, start_off, lo, hi, offs_ref, &rc, &q, pbar_ref)
+                fill_range::<R>(rad_path, start_off, first_chunk, nchunks, &rc, &q, pbar_ref)
             }));
         }
-        // Join ALL fillers before propagating any error, so a failure in one
-        // does not leave the rest unjoined (the scope would then re-panic).
         let mut first_err: Option<anyhow::Error> = None;
         for h in handles {
             match h.join() {
@@ -2001,27 +2052,38 @@ where
             };
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
-        // PROTOTYPE parallel-read path (proto/parallel-rad-read): engage when a
-        // chunk-offset sidecar exists and AF_RAD_READERS != 1; else stock filler.
+        // Parallel-read path: auto-detect a `map.collated.rad.chunkidx` sidecar
+        // (written by collate for uncompressed output). Its presence enables
+        // the path; `AF_RAD_READERS` only overrides the reader count (default 4;
+        // a value < 2 forces the stock single reader). Any problem — absent,
+        // invalid, stale, or compressed input — falls back to the stock filler.
         let rad_path = parent.join("map.collated.rad");
         let idx_path = parent.join("map.collated.rad.chunkidx");
+        // Number of parallel RAD filler threads. The default of ~4 is the
+        // measured saturation point of a typical NVMe-RAID stripe: once the
+        // consumer (EM) threads are fed, reading faster buys nothing (per our
+        // headroom measurement). Bound it by the thread budget the user
+        // allotted so we never oversubscribe their cores; it is further capped
+        // to the bucket count in `parallel_fill_from_index`. `AF_RAD_READERS`
+        // overrides the count (a value < 2 forces the stock single reader).
         let num_readers: usize = std::env::var("AF_RAD_READERS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(4);
+            .unwrap_or(4)
+            .min(num_threads.max(1) as usize);
         if num_readers >= 2 && rad_path.exists() && idx_path.exists() {
             match load_chunkidx(&idx_path) {
-                Ok((idx_nchunks, offsets)) if idx_nchunks == hdr.num_chunks as usize => {
+                Ok(idx) if idx.num_chunks == hdr.num_chunks => {
                     info!(
                         log,
-                        "PROTOTYPE parallel RAD reader: {} filler threads over {} chunks",
+                        "parallel RAD reader: {} filler threads over {} chunks ({} buckets)",
                         num_readers,
-                        idx_nchunks
+                        idx.num_chunks,
+                        idx.boundaries.len() - 1
                     );
                     parallel_fill_from_index::<R>(
                         &rad_path,
-                        idx_nchunks,
-                        &offsets,
+                        &idx,
                         num_readers,
                         &prelude,
                         chunk_reader.get_queue(),
@@ -2029,17 +2091,17 @@ where
                         &pbar,
                     )
                 }
-                Ok((idx_nchunks, _)) => {
+                Ok(idx) => {
                     warn!(
                         log,
-                        "chunkidx num_chunks ({}) != RAD header ({}); stock single reader",
-                        idx_nchunks,
+                        "chunk-offset index num_chunks ({}) != RAD header ({}); using stock single reader",
+                        idx.num_chunks,
                         hdr.num_chunks
                     );
                     chunk_reader.start(&mut br, Some(cb))
                 }
                 Err(e) => {
-                    warn!(log, "failed to load chunkidx ({}); stock single reader", e);
+                    warn!(log, "chunk-offset index unusable ({}); using stock single reader", e);
                     chunk_reader.start(&mut br, Some(cb))
                 }
             }
