@@ -1221,10 +1221,33 @@ fn do_generate_permit_list_multi_bc(
     warn_for_shift_frequency(cell_spec, "cell", log);
     let cell_correction_start = Instant::now();
 
-    // Sample scopes are independent once exact priors are frozen. Use a small
-    // worker cap: this removes the serial tail without multiplying the large
-    // per-sample histograms by the user's full RAD-reader thread count.
-    let correction_workers = gpl_opts.threads.min(4).min(num_samples).max(1);
+    // Sample scopes are independent once exact priors are frozen, so correction
+    // parallelizes across samples. The previous hard cap of 4 serialized
+    // high-plex runs (e.g. the 16-sample datasets corrected in 4 round-robin
+    // rounds) for no benefit at low plex. Each concurrent scope holds only a
+    // bounded working set (its sample's histogram plus correction scratch; the
+    // per-sample histograms are partitioned across workers, not duplicated), so
+    // cap the number of concurrent scopes by the caller's correction memory
+    // budget rather than by an arbitrary constant.
+    //
+    // Size the per-scope working set from the actual histograms — a worker may
+    // hold the largest sample — with a conservative per-entry factor and a
+    // floor, then divide the budget by it. Concurrency stays bounded by the
+    // sample count and the caller's thread budget so we never oversubscribe the
+    // allotted cores. This is cap-invariant: correction is deterministic per
+    // sample, so the worker count changes only wall time, never output.
+    const BYTES_PER_HIST_ENTRY: u64 = 256; // histogram entry + correction scratch (conservative)
+    const MIN_PER_SCOPE_BYTES: u64 = 16 * 1024 * 1024;
+    let max_hist_entries = per_sample_cell_hist
+        .iter()
+        .map(|hist| hist.len() as u64)
+        .max()
+        .unwrap_or(0);
+    let per_scope_bytes = max_hist_entries
+        .saturating_mul(BYTES_PER_HIST_ENTRY)
+        .max(MIN_PER_SCOPE_BYTES);
+    let max_scopes = (gpl_opts.effective_memory_limit() / per_scope_bytes).max(1) as usize;
+    let correction_workers = num_samples.min(max_scopes).min(gpl_opts.threads).max(1);
     let mut partitions: Vec<Vec<_>> = (0..correction_workers).map(|_| Vec::new()).collect();
     for (sample_idx, input) in per_sample_cell_hist
         .into_iter()
