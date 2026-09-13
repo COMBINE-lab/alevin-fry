@@ -1221,10 +1221,19 @@ fn do_generate_permit_list_multi_bc(
     warn_for_shift_frequency(cell_spec, "cell", log);
     let cell_correction_start = Instant::now();
 
-    // Sample scopes are independent once exact priors are frozen. Use a small
-    // worker cap: this removes the serial tail without multiplying the large
-    // per-sample histograms by the user's full RAD-reader thread count.
-    let correction_workers = gpl_opts.threads.min(4).min(num_samples).max(1);
+    // Sample scopes are independent once exact priors are frozen, so correction
+    // parallelizes across samples. The previous hard cap of 4 serialized
+    // high-plex runs (e.g. the 16-sample datasets corrected in 4 round-robin
+    // rounds) for no benefit at low plex. Each concurrent scope holds only a
+    // bounded working set (~tens of MB of correction scratch; the per-sample
+    // histograms are partitioned across workers, not duplicated), so cap the
+    // number of concurrent scopes by a small memory budget rather than by an
+    // arbitrary constant. Still bounded by the caller's thread budget so we
+    // never oversubscribe the cores the user allotted.
+    const PER_SCOPE_MEM_BYTES: u64 = 128 * 1024 * 1024; // conservative; measured ~58 MiB/scope
+    const CORRECTION_MEM_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB of concurrent scopes
+    let max_scopes = (CORRECTION_MEM_BUDGET_BYTES / PER_SCOPE_MEM_BYTES).max(1) as usize;
+    let correction_workers = num_samples.min(max_scopes).min(gpl_opts.threads).max(1);
     let mut partitions: Vec<Vec<_>> = (0..correction_workers).map(|_| Vec::new()).collect();
     for (sample_idx, input) in per_sample_cell_hist
         .into_iter()
