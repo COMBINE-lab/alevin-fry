@@ -626,6 +626,40 @@ fn write_collated_chunk_index(rad_path: &Path, log: &slog::Logger) -> anyhow::Re
     Ok(())
 }
 
+/// Write the chunk-offset sidecar from offsets captured during gather — no
+/// re-scan of the RAD. `gather_offsets` are gather-relative (`num_chunks + 1`
+/// entries, the last == total gather bytes, from the collation stats);
+/// `header_len` is the bytes written before the first chunk. Emits the same
+/// `<rad_path>.chunkidx` = `[num_chunks u64][absolute offset_0 .. offset_n]`
+/// format as [`write_collated_chunk_index`], so quant reads it identically.
+fn write_chunk_index_from_offsets(
+    rad_path: &Path,
+    header_len: u64,
+    gather_offsets: &[u64],
+    log: &slog::Logger,
+) -> anyhow::Result<()> {
+    if gather_offsets.len() < 2 {
+        anyhow::bail!("gather produced no chunk offsets");
+    }
+    let num_chunks = gather_offsets.len() - 1;
+    let mut idx = rad_path.as_os_str().to_owned();
+    idx.push(".chunkidx");
+    let idx_path = PathBuf::from(idx);
+    let mut out = BufWriter::new(File::create(&idx_path)?);
+    out.write_all(&(num_chunks as u64).to_le_bytes())?;
+    for &rel in gather_offsets {
+        out.write_all(&(header_len + rel).to_le_bytes())?;
+    }
+    out.flush()?;
+    info!(
+        log,
+        "Wrote collated chunk index {} ({} chunks, from gather)",
+        idx_path.display(),
+        num_chunks
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_collate_single_barcode<P1, P2, A>(
     input_dir: P1,
@@ -696,6 +730,7 @@ where
     header[chunk_count_offset..chunk_count_offset + 8]
         .copy_from_slice(&expected_output_chunks.to_le_bytes());
     let header = collated_header_bytes(&prelude, header, expected_output_chunks, codec)?;
+    let header_len = header.len() as u64;
     output
         .lock()
         .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
@@ -785,10 +820,14 @@ where
         stats.spool_flush_limit / 1024,
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
-    // Optimization only; a failure leaves quant on its single-reader path.
-    // Per-chunk codec output is chunk-seekable, so index it too.
-    if let Err(e) = write_collated_chunk_index(&output_path, log) {
+    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
+    // the offsets captured during gather (no re-scan). Optimization only; a
+    // failure leaves quant on its single-reader path. Fall back to the post-scan
+    // if the gather offsets are somehow unusable.
+    if let Err(e) =
+        write_chunk_index_from_offsets(&output_path, header_len, &stats.chunk_offsets, log)
+            .or_else(|_| write_collated_chunk_index(&output_path, log))
+    {
         warn!(
             log,
             "could not write collated chunk index ({e}); quant will use the single reader"
@@ -1840,6 +1879,7 @@ where
 
     // Copy header with updated num_chunks
     let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
+    let header_len;
     {
         let chunk_bytes = std::mem::size_of::<u64>() as u64;
         let take_pos = end_header_pos - chunk_bytes;
@@ -1855,6 +1895,7 @@ where
             expected_output_chunks,
             codec,
         )?;
+        header_len = header.len() as u64;
         if let Ok(mut oput) = owriter.lock() {
             oput.write_all(&header)?;
         }
@@ -2068,12 +2109,16 @@ where
         total_output_chunks.to_formatted_string(&Locale::en),
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
-    // Optimization only; a failure leaves quant on its single-reader path.
-    // Per-chunk codec output is chunk-seekable, so index it too.
+    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
+    // the offsets captured during gather (no re-scan). Optimization only; a
+    // failure leaves quant on its single-reader path. Fall back to the post-scan
+    // if the gather offsets are somehow unusable.
     {
         let rad_path = parent.join("map.collated.rad");
-        if let Err(e) = write_collated_chunk_index(&rad_path, log) {
+        if let Err(e) =
+            write_chunk_index_from_offsets(&rad_path, header_len, &engine_stats.chunk_offsets, log)
+                .or_else(|_| write_collated_chunk_index(&rad_path, log))
+        {
             warn!(
                 log,
                 "could not write collated chunk index ({e}); quant will use the single reader"
