@@ -1348,8 +1348,12 @@ where
 // sidecar and falls back to the single reader when it is absent, mismatched, or
 // fails to load — so default behavior is unchanged when no index exists.
 //
-// The sidecar records on-disk chunk offsets, so this reads chunk bytes verbatim
-// and is agnostic to per-chunk payload compression (libradicl `ChunkCodec`).
+// The sidecar records on-disk chunk offsets. This filler reads chunk bytes
+// VERBATIM, so it currently supports only uncompressed collated RADs; per-chunk
+// compression (libradicl `ChunkCodec`) is decompressed in the producer loop, so
+// supporting it here means decompressing each chunk in the filler (see the
+// compressed-collate follow-up). The engage guard requires `map.collated.rad`
+// (uncompressed), so the compressed case never reaches this path today.
 // ==========================================================================
 
 /// Meta-chunk buffer size for the parallel reader. Must match libradicl's
@@ -1401,9 +1405,10 @@ fn load_and_validate_chunkidx(
 
 /// One filler thread: read chunks `[lo, hi)` from `start_off`, packing them into
 /// `MetaChunk`s onto the shared queue. Reads chunk bytes verbatim
-/// (`[nbytes][nrec][payload]`) — exactly what the consumers already expect, so
-/// this is agnostic to per-chunk payload compression. Never touches the done
-/// flag (the coordinator owns it).
+/// (`[nbytes][nrec][payload]`), matching the uncompressed on-disk layout the
+/// consumers parse. For a per-chunk-compressed RAD the producer must decompress
+/// each chunk (as the stock reader does); that is the compressed-collate
+/// follow-up. Never touches the done flag (the coordinator owns it).
 fn fill_range<R>(
     rad_path: &std::path::Path,
     start_off: u64,
