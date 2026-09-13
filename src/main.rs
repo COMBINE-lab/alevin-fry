@@ -277,7 +277,10 @@ fn main() -> anyhow::Result<()> {
         .required(true)
         .value_parser(pathbuf_directory_exists_validator))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_collate_threads))
-    .arg(arg!(-c --compress "compress the output collated RAD file"))
+    .arg(arg!(-c --compress [CODEC] "compress the output collated RAD file; optional per-chunk codec: lz4 (default, pure-Rust) or zstd (requires a build with --features zstd)")
+        .num_args(0..=1)
+        .default_missing_value("lz4")
+        .value_parser(["lz4", "zstd"]))
     .arg(arg!(-m --"max-records" <MAXRECORDS> "deprecated approximate record-count memory control; use --memory-limit")
          .value_parser(value_parser!(u32))
          .conflicts_with("memory-limit")
@@ -597,7 +600,9 @@ fn main() -> anyhow::Result<()> {
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
         let rad_dir: &PathBuf = t.get_one("rad-dir").unwrap();
         let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
-        let compress_out = t.get_flag("compress");
+        let codec = alevin_fry::collate::codec_from_compress_arg(
+            t.get_one::<String>("compress").map(|s| s.as_str()),
+        )?;
         let max_records = t
             .get_one::<u32>("max-records")
             .copied()
@@ -619,7 +624,7 @@ fn main() -> anyhow::Result<()> {
             num_threads,
             max_records,
             memory_limit,
-            compress_out,
+            codec,
             &cmdline,
             VERSION,
             &log,

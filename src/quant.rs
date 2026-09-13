@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
-use std::io::{BufRead, BufReader, BufWriter};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::string::ToString;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -352,24 +352,26 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(quant_opts.input_dir);
     let log = quant_opts.log;
 
-    // read the collate metadata
+    // Confirm collate ran (and surface a clear error if not).
     let collate_md_file =
         File::open(parent.join("collate.json")).context("could not open the collate.json file.")?;
-    let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
+    let _collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
 
-    // is the collated RAD file compressed?
-    let compressed_input = collate_md["compressed_output"]
-        .as_bool()
-        .context("could not read compressed_output field from collate metadata.")?;
-
-    if compressed_input {
-        let i_file =
-            File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
+    // Pick the reader by which collated file exists. A `.sz` sidecar is the
+    // legacy whole-file Snappy stream (pre-per-chunk-codec output, and the
+    // temp-collate fallback), which must be decoded as one stream up front.
+    // Otherwise `map.collated.rad` is read directly: it is either uncompressed
+    // or per-chunk-codec compressed, and in the latter case the codec is
+    // recorded in a file tag and decompressed transparently by the chunk
+    // readers — so the raw file is what they expect.
+    let sz_path = parent.join("map.collated.rad.sz");
+    if sz_path.exists() {
+        let i_file = File::open(&sz_path).context("run collate before quant")?;
         let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
 
         info!(
             log,
-            "quantifying from compressed, collated RAD file {:?}", i_file
+            "quantifying from compressed (whole-file) collated RAD file {:?}", i_file
         );
 
         do_quantify_dispatch(br, quant_opts)
@@ -378,10 +380,7 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
             File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
         let br = BufReader::new(&i_file);
 
-        info!(
-            log,
-            "quantifying from uncompressed, collated RAD file {:?}", i_file
-        );
+        info!(log, "quantifying from collated RAD file {:?}", i_file);
 
         do_quantify_dispatch(br, quant_opts)
     }
@@ -1336,6 +1335,249 @@ where
     }
 }
 
+// ==========================================================================
+// Parallel RAD reader.
+//
+// `quant` reads the collated RAD with a single producer thread that frames
+// chunks into the shared consumer work-queue. When the collated RAD is read
+// *cold* (working set exceeds RAM, evicting the RAD before quant), that single
+// producer starves the EM consumers. When collate wrote a chunk-offset sidecar
+// (`map.collated.rad.chunkidx`), N filler threads instead read disjoint chunk
+// ranges into the SAME queue; consumers are unchanged. Auto-engages on the
+// sidecar and falls back to the single reader when it is absent, mismatched, or
+// fails to load — so default behavior is unchanged when no index exists.
+//
+// The sidecar records on-disk chunk offsets (framing sizes, compressed when a
+// codec is applied). Each filler materializes chunks in the uncompressed layout
+// the consumers parse: verbatim for uncompressed RADs, or decompressing each
+// chunk's payload with the file's `ChunkCodec` (producer-side, matching the
+// stock reader) for per-chunk-compressed RADs. Only the legacy whole-file `.sz`
+// stream is excluded — it is not chunk-seekable and takes the `.sz` reader path.
+// ==========================================================================
+
+/// Meta-chunk buffer size for the parallel reader. Must match libradicl's
+/// internal fill buffer (`readers.rs`); a follow-up should expose it from
+/// libradicl as a `pub const` so the two cannot silently drift.
+const RAD_META_CHUNK_BUFSIZE: usize = 524_208;
+
+/// Default parallel RAD reader count when a sidecar is present. ~4 is the
+/// measured sweet spot (the read becomes compute-bound once consumers are fed).
+/// `AF_RAD_READERS` overrides it; set 1 to force the single-reader path.
+const DEFAULT_RAD_READERS: usize = 4;
+
+/// Read the chunk-offset sidecar: `(num_chunks, offsets)` with `num_chunks + 1`
+/// absolute byte offsets (`offsets[i]` = chunk i header; last = EOF).
+fn load_chunkidx(idx_path: &std::path::Path) -> anyhow::Result<(usize, Vec<u64>)> {
+    let mut f = BufReader::new(File::open(idx_path)?);
+    let mut b8 = [0u8; 8];
+    f.read_exact(&mut b8)?;
+    let num_chunks = u64::from_le_bytes(b8) as usize;
+    let mut offsets = Vec::with_capacity(num_chunks + 1);
+    for _ in 0..(num_chunks + 1) {
+        f.read_exact(&mut b8)?;
+        offsets.push(u64::from_le_bytes(b8));
+    }
+    Ok((num_chunks, offsets))
+}
+
+/// Load and validate the sidecar before trusting its byte ranges: the chunk
+/// count must match the RAD header, and the final offset must equal the RAD
+/// file length (guards against a stale sidecar left by an earlier collate).
+fn load_and_validate_chunkidx(
+    idx_path: &std::path::Path,
+    rad_path: &std::path::Path,
+    hdr_num_chunks: u64,
+) -> anyhow::Result<(usize, Vec<u64>)> {
+    let (num_chunks, offsets) = load_chunkidx(idx_path)?;
+    if num_chunks != hdr_num_chunks as usize {
+        anyhow::bail!("chunk index count ({num_chunks}) != RAD header ({hdr_num_chunks})");
+    }
+    let file_len = std::fs::metadata(rad_path)?.len();
+    match offsets.last() {
+        Some(&last) if last == file_len => Ok((num_chunks, offsets)),
+        Some(&last) => {
+            anyhow::bail!("chunk index is stale: end offset {last} != RAD length {file_len}")
+        }
+        None => anyhow::bail!("chunk index is empty"),
+    }
+}
+
+/// One filler thread: read chunks `[lo, hi)` from `start_off`, packing them into
+/// `MetaChunk`s onto the shared queue. Each chunk is materialized in the
+/// uncompressed on-disk layout (`[nbytes][nrec][records]`) the consumers parse:
+/// for [`ChunkCodec::None`](libradicl::codec::ChunkCodec) the on-disk bytes are
+/// copied verbatim; for a per-chunk codec the record payload is decompressed
+/// here (producer-side, exactly as the stock reader does) and the chunk header's
+/// `nbytes` is rewritten to the decompressed size. `MetaChunk` boundaries are a
+/// batching detail and do not affect the records parsed. Never touches the done
+/// flag (the coordinator owns it).
+#[allow(clippy::too_many_arguments)]
+fn fill_range<R>(
+    rad_path: &std::path::Path,
+    start_off: u64,
+    lo: usize,
+    hi: usize,
+    offsets: &[u64],
+    codec: libradicl::codec::ChunkCodec,
+    record_context: &<R as MappedRecord>::ParsingContext,
+    queue: &crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>,
+    pbar: &ProgressBar,
+) -> anyhow::Result<()>
+where
+    R: MappedRecord,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone,
+{
+    use libradicl::codec::ChunkCodec;
+    let mut br = BufReader::new(File::open(rad_path)?);
+    br.seek(SeekFrom::Start(start_off))?;
+    let mut buf = vec![0u8; RAD_META_CHUNK_BUFSIZE];
+    let mut scratch: Vec<u8> = Vec::new(); // on-disk (compressed) chunk bytes when codec != None
+    let mut cbytes = 0u32;
+    let mut crec = 0u32;
+    let mut chunks_in_meta = 0usize;
+    let mut first_chunk = lo;
+    for chunk_idx in lo..hi {
+        let disk_nbytes = (offsets[chunk_idx + 1] - offsets[chunk_idx]) as usize;
+        let boffset = cbytes as usize;
+        // Materialize this chunk into `buf` at `boffset` in the uncompressed
+        // layout, returning its (uncompressed) framing size.
+        let dec_nbytes: usize = if codec == ChunkCodec::None {
+            if boffset + disk_nbytes > buf.len() {
+                buf.resize(boffset + disk_nbytes, 0);
+            }
+            br.read_exact(&mut buf[boffset..boffset + disk_nbytes])
+                .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+            disk_nbytes
+        } else {
+            scratch.resize(disk_nbytes, 0);
+            br.read_exact(&mut scratch)
+                .with_context(|| format!("failed reading chunk {chunk_idx}; RAD truncated?"))?;
+            let records = libradicl::codec::decompress_payload(codec, &scratch[8..disk_nbytes])
+                .with_context(|| format!("failed decompressing chunk {chunk_idx}"))?;
+            let nb = records.len() + 8;
+            if boffset + nb > buf.len() {
+                buf.resize(boffset + nb, 0);
+            }
+            buf[boffset..boffset + 4].copy_from_slice(&(nb as u32).to_le_bytes());
+            buf[boffset + 4..boffset + 8].copy_from_slice(&scratch[4..8]); // nrec, verbatim
+            buf[boffset + 8..boffset + nb].copy_from_slice(&records);
+            nb
+        };
+        let nrec = u32::from_le_bytes([
+            buf[boffset + 4],
+            buf[boffset + 5],
+            buf[boffset + 6],
+            buf[boffset + 7],
+        ]);
+        chunks_in_meta += 1;
+        cbytes += dec_nbytes as u32;
+        crec += nrec;
+        let is_last = chunk_idx + 1 == hi;
+        if is_last || cbytes as usize >= RAD_META_CHUNK_BUFSIZE {
+            let mut mc = libradicl::readers::MetaChunk::<R>::new(
+                first_chunk,
+                chunks_in_meta,
+                cbytes,
+                crec,
+                record_context.clone(),
+                buf.clone(),
+            );
+            while let Err(t) = queue.push(mc) {
+                mc = t;
+                while queue.is_full() {
+                    std::thread::yield_now();
+                }
+            }
+            pbar.inc(chunks_in_meta as u64);
+            first_chunk += chunks_in_meta;
+            chunks_in_meta = 0;
+            cbytes = 0;
+            crec = 0;
+            buf.resize(RAD_META_CHUNK_BUFSIZE, 0);
+        }
+    }
+    Ok(())
+}
+
+/// Coordinator: split `num_chunks` into `num_readers` byte-balanced ranges on
+/// chunk boundaries, spawn one filler per range, and set the done flag exactly
+/// once after all fillers finish (on every exit path, including panic) — only
+/// from here, never from a filler (which would strand the others).
+#[allow(clippy::too_many_arguments)]
+fn parallel_fill_from_index<R>(
+    rad_path: &std::path::Path,
+    num_chunks: usize,
+    offsets: &[u64],
+    num_readers: usize,
+    prelude: &RadPrelude,
+    codec: libradicl::codec::ChunkCodec,
+    queue: std::sync::Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
+    done_var: std::sync::Arc<AtomicBool>,
+    pbar: &ProgressBar,
+) -> anyhow::Result<()>
+where
+    R: MappedRecord,
+    <R as MappedRecord>::ParsingContext: RecordContext + Clone + Send,
+{
+    struct DoneGuard(std::sync::Arc<AtomicBool>);
+    impl Drop for DoneGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let _done_guard = DoneGuard(done_var);
+
+    let total = offsets[num_chunks] - offsets[0];
+    let mut bounds: Vec<usize> = Vec::with_capacity(num_readers + 1);
+    bounds.push(0);
+    for p in 1..num_readers {
+        let target = offsets[0] + (total * p as u64) / (num_readers as u64);
+        let c = offsets.partition_point(|&o| o < target).min(num_chunks);
+        bounds.push(c);
+    }
+    bounds.push(num_chunks);
+
+    let record_context = prelude
+        .get_record_context::<<R as MappedRecord>::ParsingContext>()
+        .map_err(|e| anyhow::anyhow!("could not get record context: {e}"))?;
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for p in 0..num_readers {
+            let lo = bounds[p];
+            let hi = bounds[p + 1];
+            if lo >= hi {
+                continue;
+            }
+            let start_off = offsets[lo];
+            let q = queue.clone();
+            let pbar_ref = &*pbar;
+            let rc = record_context.clone();
+            handles.push(s.spawn(move || {
+                fill_range::<R>(
+                    rad_path, start_off, lo, hi, offsets, codec, &rc, &q, pbar_ref,
+                )
+            }));
+        }
+        let mut first_err: Option<anyhow::Error> = None;
+        for h in handles {
+            match h.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if first_err.is_none() => first_err = Some(e),
+                Ok(Err(_)) => {}
+                Err(_) if first_err.is_none() => {
+                    first_err = Some(anyhow::anyhow!("RAD filler thread panicked"))
+                }
+                Err(_) => {}
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    })
+}
+
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
     mut br: T,
     quant_opts: QuantOpts,
@@ -1578,10 +1820,15 @@ where
     } else {
         1
     };
+    // Per-chunk codec advertised by the collated RAD's file tags (absent => None).
+    // The chunk readers decompress transparently so consumers see uncompressed
+    // records; `ParallelChunkReader::new` alone assumes None, so set it here.
+    let chunk_codec = libradicl::codec::chunk_codec_from_tag_map(&file_tag_map)?;
     let mut chunk_reader = libradicl::readers::ParallelChunkReader::<R>::new(
         &prelude,
         std::num::NonZeroUsize::new(n_workers).unwrap(),
-    );
+    )
+    .with_chunk_codec(chunk_codec);
 
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
@@ -1801,7 +2048,54 @@ where
             };
         chunk_reader.start_filtered(&mut br, filter_fn, Some(cb))
     } else {
-        chunk_reader.start(&mut br, Some(cb))
+        // Parallel read auto-engages when collate wrote a valid chunk-offset
+        // sidecar for this RAD; otherwise the stock single reader. Works for
+        // uncompressed and per-chunk-codec RADs alike — the fillers decompress
+        // each chunk with `chunk_codec` (producer-side, matching the stock
+        // reader), so consumers see uncompressed records either way. It does not
+        // apply to the legacy whole-file `.sz` stream (not chunk-seekable), which
+        // takes the `.sz` branch at the entry point and never reaches here.
+        // `AF_RAD_READERS` overrides the reader count (set 1 to disable).
+        let rad_path = parent.join("map.collated.rad");
+        let idx_path = parent.join("map.collated.rad.chunkidx");
+        let num_readers: usize = std::env::var("AF_RAD_READERS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_RAD_READERS);
+        let engage = num_readers >= 2 && rad_path.exists() && idx_path.exists();
+        match engage
+            .then(|| load_and_validate_chunkidx(&idx_path, &rad_path, hdr.num_chunks))
+            .transpose()
+        {
+            Ok(Some((n, offsets))) => {
+                info!(
+                    log,
+                    "parallel RAD reader: {} readers over {} chunks (codec: {})",
+                    num_readers,
+                    n,
+                    chunk_codec.as_str()
+                );
+                parallel_fill_from_index::<R>(
+                    &rad_path,
+                    n,
+                    &offsets,
+                    num_readers,
+                    &prelude,
+                    chunk_codec,
+                    chunk_reader.get_queue(),
+                    chunk_reader.is_done(),
+                    &pbar,
+                )
+            }
+            Ok(None) => chunk_reader.start(&mut br, Some(cb)),
+            Err(e) => {
+                warn!(
+                    log,
+                    "chunk index present but unusable ({}); using the single reader", e
+                );
+                chunk_reader.start(&mut br, Some(cb))
+            }
+        }
     };
 
     let mut total_records = 0usize;
