@@ -9,6 +9,7 @@ use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use libradicl::chunk::Chunk;
+use libradicl::codec::ChunkCodec;
 use libradicl::collation::CollationManifest;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types::{
@@ -609,7 +610,7 @@ fn sample_frequency_defers_only_ambiguous_pairs_and_collation_replays_decision()
         &rad_dir,
         2,
         1_000,
-        false,
+        ChunkCodec::None,
         "test",
         TEST_VERSION,
         &log,
@@ -787,7 +788,7 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
         &rad_dir,
         2,
         1_000,
-        false,
+        ChunkCodec::None,
         "test",
         TEST_VERSION,
         &log,
@@ -969,7 +970,7 @@ fn test_multi_bc_quant_handles_sparse_sample_positions() {
         &rad_dir,
         2,
         1_000,
-        false,
+        ChunkCodec::None,
         "test",
         TEST_VERSION,
         &log,
@@ -1185,7 +1186,7 @@ fn test_multi_bc_quant_flexv2_real_data() {
         &rad_dir,
         4,
         100_000,
-        false,
+        ChunkCodec::None,
         "test_flexv2_real_data",
         TEST_VERSION,
         &log,
@@ -1456,7 +1457,7 @@ fn tiny_cell_fast_path_does_not_override_requested_resolution() {
         &rad_dir,
         2,
         1_000,
-        false,
+        ChunkCodec::None,
         "test",
         TEST_VERSION,
         &log,
