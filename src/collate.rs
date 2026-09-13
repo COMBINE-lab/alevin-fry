@@ -489,6 +489,89 @@ fn correct_unmapped_counts(
         .expect("could not write collated unmapped bc count.");
 }
 
+/// Write the chunk-offset sidecar (`<rad>.chunkidx`) beside a freshly written,
+/// **uncompressed** collated RAD, so `quant`'s parallel reader can split the
+/// file on chunk boundaries without a separate scan. This folds in the former
+/// standalone `build_chunkidx` binary so the index is produced at collate time.
+///
+/// Format: `[num_chunks: u64 LE][offset_0 .. offset_num_chunks : u64 LE]` —
+/// `num_chunks + 1` absolute byte offsets; `offset_0` is the first chunk header
+/// (right after the prelude + file-tag map) and the last equals the file length.
+///
+/// Uncompressed only for now. A per-chunk-codec RAD (libradicl [`ChunkCodec`],
+/// where a chunk's `nbytes` is its *compressed* framing size) is indexable by
+/// exactly these on-disk offsets and each chunk decompresses independently — so
+/// this generalizes to compressed output once collate emits the per-chunk codec
+/// instead of the legacy whole-file `.sz` stream (which is not chunk-seekable).
+/// Failure here is non-fatal: quant simply falls back to the single reader.
+///
+/// A follow-up can make this truly free by recording each chunk's offset in the
+/// gather writer (which already emits every chunk) instead of this post-scan.
+fn write_collated_chunk_index(rad_path: &Path, log: &slog::Logger) -> anyhow::Result<()> {
+    let f = File::open(rad_path)?;
+    let file_len = f.metadata()?.len();
+    let mut reader = BufReader::new(f);
+    let prelude = RadPrelude::from_bytes(&mut reader)
+        .context("could not parse prelude while writing chunk index")?;
+    prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut reader)
+        .map_err(|e| anyhow!("could not parse file-tag map for chunk index: {e}"))?;
+    let num_chunks = prelude.hdr.num_chunks as usize;
+    let offset0 = reader.stream_position()?;
+    drop(reader);
+
+    // Scan chunk headers only, seeking past each payload (offset += nbytes), so
+    // this is O(num_chunks) small reads over the just-written (warm) file.
+    let mut f = File::open(rad_path)?;
+    f.seek(std::io::SeekFrom::Start(offset0))?;
+    let mut offsets = Vec::with_capacity(num_chunks + 1);
+    offsets.push(offset0);
+    let mut off = offset0;
+    let mut hdr = [0u8; 8];
+    for c in 0..num_chunks {
+        f.read_exact(&mut hdr)
+            .with_context(|| format!("failed reading header of chunk {c} for index"))?;
+        let nbytes = u32::from_le_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as u64;
+        if nbytes < 8 {
+            return Err(anyhow!(
+                "chunk {c} declares nbytes={nbytes} (< 8); corrupt RAD"
+            ));
+        }
+        off += nbytes;
+        offsets.push(off);
+        if c + 1 < num_chunks {
+            f.seek(std::io::SeekFrom::Current(nbytes as i64 - 8))?;
+        }
+    }
+    // Load-bearing check: "nbytes includes the 8-byte header" must hold exactly,
+    // or every downstream byte range is wrong. If it does, the offsets land on EOF.
+    if *offsets.last().unwrap() != file_len {
+        return Err(anyhow!(
+            "chunk index end {} != file length {}; chunk-framing assumption wrong",
+            offsets.last().unwrap(),
+            file_len
+        ));
+    }
+
+    let mut idx = rad_path.as_os_str().to_owned();
+    idx.push(".chunkidx");
+    let idx_path = PathBuf::from(idx);
+    let mut out = BufWriter::new(File::create(&idx_path)?);
+    out.write_all(&(num_chunks as u64).to_le_bytes())?;
+    for o in &offsets {
+        out.write_all(&o.to_le_bytes())?;
+    }
+    out.flush()?;
+    info!(
+        log,
+        "Wrote collated chunk index {} ({} chunks)",
+        idx_path.display(),
+        num_chunks
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_collate_single_barcode<P1, P2, A>(
     input_dir: P1,
@@ -649,6 +732,17 @@ where
         stats.num_gather_workers,
         stats.spool_flush_limit / 1024,
     );
+
+    // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
+    // Optimization only; a failure leaves quant on its single-reader path.
+    if !compress_out {
+        if let Err(e) = write_collated_chunk_index(&output_path, log) {
+            warn!(
+                log,
+                "could not write collated chunk index ({e}); quant will use the single reader"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1928,6 +2022,18 @@ where
         "Multi-barcode collation complete: {} output chunks",
         total_output_chunks.to_formatted_string(&Locale::en),
     );
+
+    // Emit the chunk-offset sidecar so quant can read this RAD in parallel.
+    // Optimization only; a failure leaves quant on its single-reader path.
+    if !compress_out {
+        let rad_path = parent.join("map.collated.rad");
+        if let Err(e) = write_collated_chunk_index(&rad_path, log) {
+            warn!(
+                log,
+                "could not write collated chunk index ({e}); quant will use the single reader"
+            );
+        }
+    }
 
     Ok(())
 }
