@@ -21,6 +21,7 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
+use libradicl::collate_generic::{CollationScan, collate_bucket};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -33,7 +34,6 @@ use libradicl::record::{
     ConvertiblePrimitiveInteger, KnownSize, MappedRecord, MultiBarcodeRecordContext,
     ScLongReadRecordContext, ScLongReadRecordT,
 };
-use libradicl::schema::TempCellInfo;
 use libradicl::single_collation::{
     SingleBarcodeCollationOptions, SingleBarcodeCollationPlan, collate_single_barcode,
 };
@@ -842,7 +842,10 @@ pub fn do_collate_with_temp<
     P2,
     A: Read + std::io::Seek,
     B: ConvertiblePrimitiveInteger + std::convert::From<u64>,
-    R: MappedRecord + KnownSize + CollatableMappedRecord<B>,
+    R: MappedRecord
+        + KnownSize
+        + CollatableMappedRecord<B>
+        + CollationScan<Ctx = <R as MappedRecord>::ParsingContext>,
 >(
     input_dir: P1,
     rad_dir: P2,
@@ -1266,14 +1269,6 @@ where
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
-        // the output cache and correction map
-        // Byte-accounting map keyed on a single u64 barcode, hit once per
-        // record: use libradicl's fixed u64 hasher instead of the randomized
-        // AES hasher (see libradicl::schema::U64BuildHasher).
-        let mut cmap = libradicl::schema::U64Map::<TempCellInfo>::default();
-        // alternative strategy
-        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
-
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // have access to the input directory
@@ -1294,24 +1289,32 @@ where
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
 
                     let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    // create a new handle for reading
+                    // Collate this temp bucket through the unified streaming gather
+                    // (bounded memory: streams the input in two passes, holds only
+                    // the collated output), then record its chunk offsets and
+                    // append it under one lock so the index stays in file order.
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
-
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<B, _, _, R>(
+                    let mut collated = Vec::new();
+                    local_chunks += collate_bucket::<R, _>(
                         &mut treader,
+                        temp_bucket.1 as usize,
                         &ctx,
-                        temp_bucket.1,
-                        &owriter,
-                        &chunk_index,
                         codec,
-                        &mut cmap,
-                    ) as u64;
-
-                    // we don't need the file or reader anymore
+                        &mut collated,
+                    )
+                    .expect("collate_bucket failed") as u64;
+                    {
+                        let mut w = owriter.lock().expect("output mutex poisoned");
+                        chunk_index
+                            .lock()
+                            .expect("chunk index mutex poisoned")
+                            .record_bucket(&collated);
+                        w.write_all(&collated)
+                            .expect("could not write collated bucket");
+                    }
                     drop(treader);
                     std::fs::remove_file(fname).expect("could not delete temporary file.");
 
