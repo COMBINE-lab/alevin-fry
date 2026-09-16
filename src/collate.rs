@@ -20,7 +20,7 @@ use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
 use libradicl::chunk;
-use libradicl::codec::ChunkCodec;
+use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -985,6 +985,7 @@ where
     let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
 
     // copy the header
+    let header_len;
     {
         // we want to copy up to the end of the header
         // minus the num chunks (sizeof u64), and then
@@ -1010,6 +1011,7 @@ where
             expected_output_chunks,
             codec,
         )?;
+        header_len = header.len() as u64;
         if let Ok(mut oput) = owriter.lock() {
             oput.write_all(&header)
                 .context("could not write the output header.")?;
@@ -1255,6 +1257,11 @@ where
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
+    // Records each output chunk's offset as gather workers append collated
+    // buckets (under the output write lock, so offsets stay in file order), for
+    // the chunk-offset sidecar quant's parallel reader uses.
+    let chunk_index = Arc::new(Mutex::new(ChunkIndexBuilder::default()));
+
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -1273,6 +1280,7 @@ where
         let input_dir: PathBuf = input_dir.clone();
         // the output file
         let owriter = owriter.clone();
+        let chunk_index = chunk_index.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
         let rec_context = rec_context.clone();
@@ -1298,6 +1306,7 @@ where
                         &ctx,
                         temp_bucket.1,
                         &owriter,
+                        &chunk_index,
                         codec,
                         &mut cmap,
                     ) as u64;
@@ -1368,6 +1377,25 @@ where
     );
 
     owriter.lock().unwrap().flush()?;
+
+    // Emit the chunk-offset sidecar from the offsets recorded during gather, so
+    // quant's parallel reader engages for this (position/long/u128) path too.
+    // Optimization only; a failure leaves quant on its single-reader path.
+    {
+        // Workers are all joined here, so the Arc is uniquely held.
+        let offsets = Arc::try_unwrap(chunk_index)
+            .map_err(|_| anyhow!("chunk index still shared after gather"))?
+            .into_inner()
+            .map_err(|_| anyhow!("chunk index mutex poisoned"))?
+            .into_offsets();
+        if let Err(e) = write_chunk_index_from_offsets(&oname, header_len, &offsets, log) {
+            warn!(
+                log,
+                "could not write collated chunk index ({e}); quant will use the single reader"
+            );
+        }
+    }
+
     info!(
         log,
         "finished collating input rad file {:?}.",
