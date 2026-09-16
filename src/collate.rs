@@ -21,7 +21,7 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
-use libradicl::collate_generic::{CollationScan, collate_bucket};
+use libradicl::collate_generic::{CollationScan, GenericCollateCtx, collate_bucket};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -31,8 +31,8 @@ use libradicl::multi_collation::{
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordWithPositionT, AlevinFryRecordContext, CollatableMappedRecord,
-    ConvertiblePrimitiveInteger, KnownSize, MappedRecord, MultiBarcodeRecordContext,
-    ScLongReadRecordContext, ScLongReadRecordT,
+    ConvertiblePrimitiveInteger, GenericReadRecord, GenericReadRecordContext, KnownSize,
+    MappedRecord, MultiBarcodeRecordContext, ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::single_collation::{
     SingleBarcodeCollationOptions, SingleBarcodeCollationPlan, collate_single_barcode,
@@ -1423,6 +1423,92 @@ where
     Ok(())
 }
 
+/// Collate a single-barcode RAD through the tag-driven generic record, exercising
+/// the unified engine's `GenericReadRecord` path (spec-driven scatter + gather)
+/// instead of a specialized fast record. This is the interim, single-barcode
+/// generic collation: the collation key tag is named by `key_tag_name` (the
+/// bridge; RAD-declared roles will supply it later — COMBINE-lab/libradicl#64),
+/// and orientation filtering is not yet applied, so it is gated to
+/// non-orientation-filtering runs. Composite/hierarchical generic keys are a
+/// follow-up (COMBINE-lab/libradicl#66).
+#[allow(clippy::too_many_arguments)]
+fn do_collate_generic<P1, P2, A: Read + Seek>(
+    input_dir: P1,
+    rad_dir: P2,
+    prelude: RadPrelude,
+    br: BufReader<A>,
+    end_header_pos: u64,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    barcode_len: u8,
+    key_tag_name: &str,
+    codec: ChunkCodec,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let input_dir = input_dir.into();
+    let parent = input_dir.as_path();
+
+    // Gate: the generic record does not yet filter alignments by orientation, so
+    // refuse a run whose permit list requested orientation filtering (fw/rc) —
+    // silently keeping all alignments would diverge from the fast path. This lifts
+    // once orientation is available via a declared role (#64).
+    let meta_file = File::open(parent.join("generate_permit_list.json"))
+        .context("could not open generate_permit_list.json")?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_file))?;
+    let expected_ori =
+        get_orientation(&mdata).map_err(|e| anyhow!("could not read strand: {e}"))?;
+    if !matches!(expected_ori, Strand::Unknown) {
+        anyhow::bail!(
+            "generic collation does not yet apply orientation filtering; \
+             re-run generate-permit-list with --expected-ori both (or use the specialized path)"
+        );
+    }
+
+    // Bridge: locate the barcode collation-key tag by name (RAD-declared roles
+    // will replace this — #64). Build the parse context (with the key index) and
+    // the validated gather context from the same tag sections.
+    let read_tags = prelude.read_tags.clone();
+    let aln_tags = prelude.aln_tags.clone();
+    let key_tag_idx = read_tags
+        .tags
+        .iter()
+        .position(|t| t.name == key_tag_name)
+        .with_context(|| format!("collation key tag `{key_tag_name}` not found in read tags"))?;
+    let parse_ctx = GenericReadRecordContext {
+        read_tags: read_tags.clone(),
+        aln_tags: aln_tags.clone(),
+        key_tag_idx: Some(key_tag_idx),
+    };
+    let collate_ctx = GenericCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
+
+    do_collate_with_temp::<_, _, _, u64, GenericReadRecord>(
+        input_dir,
+        rad_dir,
+        parse_ctx,
+        collate_ctx,
+        barcode_len,
+        prelude,
+        br,
+        end_header_pos,
+        num_threads,
+        max_records,
+        tsv_map,
+        total_to_collate,
+        codec,
+        cmdline,
+        version,
+        log,
+    )
+}
+
 /// Historical record-count-based collation entry point.
 #[allow(clippy::too_many_arguments)]
 pub fn collate_with_temp<P1, P2>(
@@ -1594,6 +1680,33 @@ where
         }
         KnownRecordType::RnaShort(bc_len) => {
             info!(log, "short read single-cell without poisition");
+            // Validation / preview hook: route a standard single-barcode RAD through
+            // the tag-driven generic collation path instead of the fast engine, so
+            // the two can be compared for equivalence. Automatic routing of unknown
+            // record types awaits RAD role annotations (COMBINE-lab/libradicl#64).
+            if std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok() {
+                info!(
+                    log,
+                    "AF_FORCE_GENERIC_COLLATE set: using the tag-driven generic collation path"
+                );
+                return do_collate_generic(
+                    input_dir,
+                    &rad_dir,
+                    prelude,
+                    br,
+                    end_header_pos,
+                    num_threads,
+                    max_records,
+                    tsv_map.clone(),
+                    total_to_collate,
+                    bc_len as u8,
+                    "b",
+                    codec,
+                    cmdline,
+                    version,
+                    log,
+                );
+            }
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
