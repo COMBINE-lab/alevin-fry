@@ -660,6 +660,105 @@ fn write_chunk_index_from_offsets(
     Ok(())
 }
 
+/// Create the collated output file (`velo.map.collated.rad` in velo mode, else
+/// `map.collated.rad`), removing any stale file first, and return its path plus a
+/// shared buffered writer. Shared by all three collation drivers.
+fn create_collated_output(
+    parent: &Path,
+    velo_mode: bool,
+) -> anyhow::Result<(PathBuf, Arc<Mutex<BufWriter<File>>>)> {
+    let name = if velo_mode {
+        "velo.map.collated.rad"
+    } else {
+        "map.collated.rad"
+    };
+    let path = parent.join(name);
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("could not remove {}", path.display()))?;
+    }
+    let file =
+        File::create(&path).with_context(|| format!("couldn't create {}", path.display()))?;
+    let writer = Arc::new(Mutex::new(BufWriter::with_capacity(1024 * 1024, file)));
+    Ok((path, writer))
+}
+
+/// Copy the input RAD header, patch its `num_chunks` to `expected_output_chunks`,
+/// append the collated-RAD chunk-codec tag via [`collated_header_bytes`], write the
+/// result to `owriter`, and return the written header length. The header is
+/// record-type-agnostic, so this is generic only over the reader — callable from
+/// the record-type-generic `do_collate_with_temp` without extra bounds.
+fn write_collated_output_header<A: Read + Seek>(
+    br: &mut BufReader<A>,
+    input_rad_path: &Path,
+    prelude: &RadPrelude,
+    end_header_pos: u64,
+    expected_output_chunks: u64,
+    codec: ChunkCodec,
+    owriter: &Arc<Mutex<BufWriter<File>>>,
+) -> anyhow::Result<u64> {
+    // exact end of the header + file-tag values in the input stream
+    let pos = br.get_mut().stream_position()? - br.buffer().len() as u64;
+    // copy up to the end of the header minus num_chunks (sizeof u64), then write
+    // the actual number of chunks we expect.
+    let chunk_bytes = std::mem::size_of::<u64>() as u64;
+    let take_pos = end_header_pos - chunk_bytes;
+
+    let mut rfile = File::open(input_rad_path).context("couldn't open input RAD file")?;
+    let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
+    rfile
+        .read_exact(hdr_buf.get_mut())
+        .context("couldn't read input file header")?;
+    hdr_buf.set_position(take_pos);
+    hdr_buf
+        .write_all(&expected_output_chunks.to_le_bytes())
+        .context("couldn't write num_chunks")?;
+
+    let header =
+        collated_header_bytes(prelude, hdr_buf.into_inner(), expected_output_chunks, codec)?;
+    let header_len = header.len() as u64;
+    owriter
+        .lock()
+        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
+        .write_all(&header)
+        .context("could not write the output header")?;
+    Ok(header_len)
+}
+
+/// Write the `collate.json` metadata file. Callers supply the JSON value (its
+/// fields differ per collation mode); only the create+serialize is shared.
+fn write_collate_json(parent: &Path, meta: &serde_json::Value) -> anyhow::Result<()> {
+    let mut file =
+        File::create(parent.join("collate.json")).context("could not create collate.json")?;
+    serde_json::to_writer_pretty(&mut file, meta).context("could not write collate.json")?;
+    Ok(())
+}
+
+/// Emit the collated-RAD chunk-offset sidecar (`.chunkidx`) from the offsets
+/// captured during gather, so quant's parallel reader can engage. Optimization
+/// only — on failure it warns and leaves quant on its single-reader path. When
+/// `scan_fallback` is set, a failed direct write falls back to a post-hoc scan.
+fn emit_chunk_index(
+    rad_path: &Path,
+    header_len: u64,
+    offsets: &[u64],
+    scan_fallback: bool,
+    log: &slog::Logger,
+) {
+    let result = if scan_fallback {
+        write_chunk_index_from_offsets(rad_path, header_len, offsets, log)
+            .or_else(|_| write_collated_chunk_index(rad_path, log))
+    } else {
+        write_chunk_index_from_offsets(rad_path, header_len, offsets, log)
+    };
+    if let Err(e) = result {
+        warn!(
+            log,
+            "could not write collated chunk index ({e}); quant will use the single reader"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_collate_single_barcode<P1, P2, A>(
     input_dir: P1,
@@ -702,19 +801,7 @@ where
     // Compressed output now uses per-chunk codec framing (chunk-seekable), so
     // the collated RAD keeps the `.rad` name; the codec lives in a header tag.
     let compress_out = codec != ChunkCodec::None;
-    let output_name = if velo_mode {
-        "velo.map.collated.rad"
-    } else {
-        "map.collated.rad"
-    };
-    let output_path = parent.join(output_name);
-    if output_path.exists() {
-        std::fs::remove_file(&output_path)?;
-    }
-    let output = Arc::new(Mutex::new(BufWriter::with_capacity(
-        1024 * 1024,
-        File::create(&output_path)?,
-    )));
+    let (output_path, output) = create_collated_output(parent, velo_mode)?;
 
     let corrections = load_single_corrections(parent, barcode_len, log)?;
     correct_unmapped_counts(
@@ -723,18 +810,15 @@ where
         parent,
     );
 
-    let header_end = br.get_mut().stream_position()? - br.buffer().len() as u64;
-    let mut header = vec![0_u8; header_end as usize];
-    File::open(&input_rad_path)?.read_exact(&mut header)?;
-    let chunk_count_offset = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
-    header[chunk_count_offset..chunk_count_offset + 8]
-        .copy_from_slice(&expected_output_chunks.to_le_bytes());
-    let header = collated_header_bytes(&prelude, header, expected_output_chunks, codec)?;
-    let header_len = header.len() as u64;
-    output
-        .lock()
-        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
-        .write_all(&header)?;
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &output,
+    )?;
 
     let num_workers = (num_threads as usize).saturating_sub(1).max(1);
     let max_records_per_bucket = u64::from(max_records / num_workers as u32 + 1);
@@ -764,18 +848,17 @@ where
         bucket_records.len(),
     )?);
 
-    {
-        let collate_metadata = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
             "chunk_codec": codec.as_str(),
             "collation_mode": "optimized",
             "memory_budget_bytes": memory_budget_bytes,
-        });
-        let mut metadata_file = File::create(parent.join("collate.json"))?;
-        serde_json::to_writer_pretty(&mut metadata_file, &collate_metadata)?;
-    }
+        }),
+    )?;
 
     let stats = collate_single_barcode(
         &mut br,
@@ -820,19 +903,7 @@ where
         stats.spool_flush_limit / 1024,
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
-    // the offsets captured during gather (no re-scan). Optimization only; a
-    // failure leaves quant on its single-reader path. Fall back to the post-scan
-    // if the gather offsets are somehow unusable.
-    if let Err(e) =
-        write_chunk_index_from_offsets(&output_path, header_len, &stats.chunk_offsets, log)
-            .or_else(|_| write_collated_chunk_index(&output_path, log))
-    {
-        warn!(
-            log,
-            "could not write collated chunk index ({e}); quant will use the single reader"
-        );
-    }
+    emit_chunk_index(&output_path, header_len, &stats.chunk_offsets, true, log);
     Ok(())
 }
 
@@ -933,43 +1004,17 @@ where
         "collated rad file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
-    // because :
-    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if velo_mode {
-        "velo.map.collated.rad"
-    } else {
-        "map.collated.rad"
-    };
-
-    // writing the collate metadata
-    {
-        let collate_meta = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd" : cmdline,
             "version_str" : version,
             "compressed_output" : compress_out,
             "chunk_codec" : codec.as_str(),
-        });
+        }),
+    )?;
 
-        let cm_path = parent.join("collate.json");
-        let mut cm_file =
-            std::fs::File::create(cm_path).context("could not create metadata file.")?;
-
-        let cm_info_string =
-            serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
-        cm_file
-            .write_all(cm_info_string.as_bytes())
-            .context("cannot write to collate.json file")?;
-    }
-
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)
-            .with_context(|| format!("could not remove {}", oname.display()))?;
-    }
-
-    let ofile = File::create(parent.join(cfname))
-        .with_context(|| format!("couldn't create directory {}", cfname))?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let (oname, owriter) = create_collated_output(parent, velo_mode)?;
 
     let correct_map = Arc::new(load_single_corrections(parent, barcode_len, log)?);
 
@@ -984,42 +1029,15 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    // the exact position at the end of the header + file tags
-    let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
-
-    // copy the header
-    let header_len;
-    {
-        // we want to copy up to the end of the header
-        // minus the num chunks (sizeof u64), and then
-        // write the actual number of chunks we expect.
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-
-        // This temporary file pointer and buffer will be dropped
-        // at the end of this block (scope).
-        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-
-        rfile
-            .read_exact(hdr_buf.get_mut())
-            .context("couldn't read input file header")?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf
-            .write_all(&expected_output_chunks.to_le_bytes())
-            .context("couldn't write num_chunks")?;
-        let header = collated_header_bytes(
-            &prelude,
-            hdr_buf.into_inner(),
-            expected_output_chunks,
-            codec,
-        )?;
-        header_len = header.len() as u64;
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(&header)
-                .context("could not write the output header.")?;
-        }
-    }
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     // TODO: see if we can do this without the Arc
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
@@ -1383,7 +1401,6 @@ where
 
     // Emit the chunk-offset sidecar from the offsets recorded during gather, so
     // quant's parallel reader engages for this (position/long/u128) path too.
-    // Optimization only; a failure leaves quant on its single-reader path.
     {
         // Workers are all joined here, so the Arc is uniquely held.
         let offsets = Arc::try_unwrap(chunk_index)
@@ -1391,12 +1408,7 @@ where
             .into_inner()
             .map_err(|_| anyhow!("chunk index mutex poisoned"))?
             .into_offsets();
-        if let Err(e) = write_chunk_index_from_offsets(&oname, header_len, &offsets, log) {
-            warn!(
-                log,
-                "could not write collated chunk index ({e}); quant will use the single reader"
-            );
-        }
+        emit_chunk_index(&oname, header_len, &offsets, false, log);
     }
 
     info!(
@@ -1878,14 +1890,13 @@ where
         total_to_collate.to_formatted_string(&Locale::en),
     );
 
-    // Create output file. Compressed output uses per-chunk codec framing
-    // (chunk-seekable), keeping the `.rad` name; the codec lives in a header tag.
+    // Compressed output uses per-chunk codec framing (chunk-seekable), keeping
+    // the `.rad` name; the codec lives in a header tag.
     let compress_out = codec != ChunkCodec::None;
-    let cfname = "map.collated.rad";
 
-    // Write collate metadata
-    {
-        let collate_meta = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
@@ -1894,43 +1905,20 @@ where
             "num_samples": num_samples,
             "collation_mode": "optimized",
             "memory_budget_bytes": memory_budget_bytes,
-        });
-        let cm_path = parent.join("collate.json");
-        let mut cm_file = File::create(cm_path)?;
-        let cm_str = serde_json::to_string_pretty(&collate_meta)?;
-        cm_file.write_all(cm_str.as_bytes())?;
-    }
+        }),
+    )?;
 
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)?;
-    }
-    let ofile = File::create(&oname)?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let (oname, owriter) = create_collated_output(parent, false)?;
 
-    // Copy header with updated num_chunks
-    let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
-    let header_len;
-    {
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-        let mut rfile = File::open(&input_rad_path)?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-        rfile.read_exact(hdr_buf.get_mut())?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf.write_all(&expected_output_chunks.to_le_bytes())?;
-
-        let header = collated_header_bytes(
-            &prelude,
-            hdr_buf.into_inner(),
-            expected_output_chunks,
-            codec,
-        )?;
-        header_len = header.len() as u64;
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(&header)?;
-        }
-    }
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     // Partition corrected sample/cell groups into logical gather buckets.
     // Physical temporary storage is owned by libradicl and is bounded by the
@@ -2140,22 +2128,7 @@ where
         total_output_chunks.to_formatted_string(&Locale::en),
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
-    // the offsets captured during gather (no re-scan). Optimization only; a
-    // failure leaves quant on its single-reader path. Fall back to the post-scan
-    // if the gather offsets are somehow unusable.
-    {
-        let rad_path = parent.join("map.collated.rad");
-        if let Err(e) =
-            write_chunk_index_from_offsets(&rad_path, header_len, &engine_stats.chunk_offsets, log)
-                .or_else(|_| write_collated_chunk_index(&rad_path, log))
-        {
-            warn!(
-                log,
-                "could not write collated chunk index ({e}); quant will use the single reader"
-            );
-        }
-    }
+    emit_chunk_index(&oname, header_len, &engine_stats.chunk_offsets, true, log);
 
     Ok(())
 }

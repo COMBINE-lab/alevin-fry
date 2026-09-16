@@ -120,3 +120,7 @@ default = []
 zstd = ["libradicl/zstd"]
 
 
+
+# TEMP: build against local libradicl unified-collate branch; remove before release.
+[patch.crates-io]
+libradicl = { path = "../libradicl/libradicl" }
