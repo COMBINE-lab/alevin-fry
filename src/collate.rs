@@ -913,14 +913,17 @@ pub fn do_collate_with_temp<
     P2,
     A: Read + std::io::Seek,
     B: ConvertiblePrimitiveInteger + std::convert::From<u64>,
-    R: MappedRecord
-        + KnownSize
-        + CollatableMappedRecord<B>
-        + CollationScan<Ctx = <R as MappedRecord>::ParsingContext>,
+    R: MappedRecord + KnownSize + CollatableMappedRecord<B> + CollationScan,
 >(
     input_dir: P1,
     rad_dir: P2,
     rec_context: <R as MappedRecord>::ParsingContext,
+    // The collation (gather) context. For the fast records this is the same value
+    // as `rec_context` (their `CollationScan::Ctx == ParsingContext`); for the
+    // generic record it is a distinct, validated `GenericCollateCtx`. Kept separate
+    // so the parse context stays collation-agnostic (a RAD need not be collatable
+    // to be read) and so composite/generic keys are not forced into the parse ctx.
+    collation_ctx: <R as CollationScan>::Ctx,
     barcode_len: u8,
     prelude: RadPrelude,
     mut br: BufReader<A>,
@@ -942,6 +945,7 @@ where
     // can be used in the closure.
     <R as MappedRecord>::ParsingContext:
         std::marker::Sync + Send + std::clone::Clone + 'static + std::fmt::Debug,
+    <R as CollationScan>::Ctx: std::marker::Sync + Send + std::clone::Clone + 'static,
 {
     let i_dir = std::path::Path::new(rad_dir.as_ref());
     let input_rad_path = i_dir.join("map.rad");
@@ -1296,10 +1300,10 @@ where
         let chunk_index = chunk_index.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
-        let rec_context = rec_context.clone();
+        let collation_ctx = collation_ctx.clone();
         // now, make the worker threads
         let handle = std::thread::spawn(move || {
-            let ctx = rec_context;
+            let collation_ctx = collation_ctx;
             let mut local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
@@ -1319,7 +1323,7 @@ where
                     local_chunks += collate_bucket::<R, _>(
                         &mut treader,
                         temp_bucket.1 as usize,
-                        &ctx,
+                        &collation_ctx,
                         codec,
                         &mut collated,
                     )
@@ -1528,10 +1532,13 @@ where
             // long-read single cell
             info!(log, "long read single-cell");
             let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
+            // fast record: collation context == parsing context
+            let collation_ctx = parsing_context.clone();
             do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(
                 input_dir,
                 &rad_dir,
                 parsing_context,
+                collation_ctx,
                 bc_len as u8,
                 prelude,
                 br,
@@ -1556,10 +1563,13 @@ where
             let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
+                    // fast record: collation context == parsing context
+                    let collation_ctx = parsing_context.clone();
                     do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordWithPositionT<u64>>(
                         input_dir,
                         &rad_dir,
                         parsing_context,
+                        collation_ctx,
                         bc_len as u8,
                         prelude,
                         br,
