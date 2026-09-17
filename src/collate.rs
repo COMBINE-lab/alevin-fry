@@ -1750,15 +1750,38 @@ where
         }
         KnownRecordType::RnaShort(bc_len) => {
             info!(log, "short read single-cell without poisition");
-            // Validation / preview hook: route a standard single-barcode RAD through
-            // the tag-driven generic collation path instead of the fast engine, so
-            // the two can be compared for equivalence. Automatic routing of unknown
-            // record types awaits RAD role annotations (COMBINE-lab/libradicl#64).
-            if std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok() {
-                info!(
-                    log,
-                    "AF_FORCE_GENERIC_COLLATE set: using the tag-driven generic collation path"
-                );
+            // Routing to the tag-driven generic collation path. `RnaShort` is the
+            // fallback bucket: a RAD lands here when it matches none of the
+            // positively-identified fast layouts. We take the generic path when:
+            //   * AF_FORCE_GENERIC_COLLATE is set — a validation/preview override
+            //     that forces generic even on a file the fast engine could handle
+            //     (used to prove the two paths are equivalent), or
+            //   * the file is unknown to the fast engine (it lacks the `b`/`u`
+            //     bridge tags the fast context requires) but declares a `Barcode`
+            //     role, so it can describe how to collate itself despite using
+            //     non-conventional tag names (COMBINE-lab/libradicl#64).
+            // Positively-identified fast layouts keep their specialized engine;
+            // declared roles there are optional validation only.
+            let forced = std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok();
+            let has_bridge = prelude.read_tags.has_tag("b") && prelude.read_tags.has_tag("u");
+            let has_barcode_role = prelude
+                .read_tags
+                .tags
+                .iter()
+                .any(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }));
+            if forced || (!has_bridge && has_barcode_role) {
+                if forced {
+                    info!(
+                        log,
+                        "AF_FORCE_GENERIC_COLLATE set: using the tag-driven generic collation path"
+                    );
+                } else {
+                    info!(
+                        log,
+                        "record layout is unknown to the fast engine but declares a barcode role; \
+                         auto-routing to the tag-driven generic collation path"
+                    );
+                }
                 return do_collate_generic(
                     input_dir,
                     &rad_dir,

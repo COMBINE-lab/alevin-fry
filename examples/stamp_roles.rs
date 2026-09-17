@@ -5,7 +5,7 @@
 // Usage: stamp_roles <in.rad> <out.rad> <read_tag_name> <barcode_level> [ori_aln_tag]
 use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagRole;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Seek, SeekFrom, Write};
 
 fn main() -> anyhow::Result<()> {
     let mut a = std::env::args().skip(1);
@@ -25,10 +25,17 @@ fn main() -> anyhow::Result<()> {
     // stamp: versioned header + the named read tag gets a Barcode role
     prelude.hdr.major_version = libradicl::constants::RAD_SPEC_MAJOR;
     prelude.hdr.minor_version = libradicl::constants::RAD_SPEC_MINOR;
+    // Optionally rename the barcode tag (STAMP_RENAME_BC) so the file no longer
+    // carries the `b` bridge name and is thus unknown to the fast engine —
+    // exercising the role-driven auto-routing of unknown record types.
+    let rename_bc = std::env::var("STAMP_RENAME_BC").ok();
     let mut stamped = false;
     for t in &mut prelude.read_tags.tags {
         if t.name == tag {
             t.role = TagRole::Barcode { level };
+            if let Some(new_name) = &rename_bc {
+                t.name = new_name.clone();
+            }
             stamped = true;
         }
     }
