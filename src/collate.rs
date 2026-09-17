@@ -44,7 +44,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 
 /// Read-buffer capacity for the collate input RAD.
 ///
@@ -1662,6 +1662,23 @@ where
 
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
+
+    // Field-completeness self-check (best-effort): confirm the first chunk's
+    // records exactly fill the payload under the declared tag layout, catching
+    // undeclared on-disk fields early and clearly rather than as a deep parse
+    // panic. Run on a fresh reader so `br` (used by the collation below) is
+    // undisturbed; skipped automatically for variable-width tag layouts.
+    if prelude.hdr.num_chunks > 0 {
+        let first_chunk_pos = br.stream_position()?;
+        let mut chk = BufReader::new(File::open(&input_rad_path)?);
+        chk.seek(SeekFrom::Start(first_chunk_pos))?;
+        libradicl::chunk::validate_first_chunk_layout(
+            &mut chk,
+            &prelude.read_tags,
+            &prelude.aln_tags,
+        )
+        .context("RAD field-completeness check failed on the first chunk")?;
+    }
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
 
