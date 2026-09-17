@@ -1595,13 +1595,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need
@@ -2387,13 +2387,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need

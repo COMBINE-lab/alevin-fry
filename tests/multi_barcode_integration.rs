@@ -49,6 +49,8 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
     }
 
     let hdr = RadHeader {
+        major_version: 0,
+        minor_version: 0,
         is_paired: 0,
         ref_count: NUM_REFS,
         ref_names,
@@ -58,22 +60,27 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
     // File-level tags: num_barcodes, b0len, b1len, ulen, known_rad_type
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "num_barcodes".to_string(),
         typeid: RadType::Int(RadIntId::U16),
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "b0len".to_string(),
         typeid: RadType::Int(RadIntId::U16),
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "b1len".to_string(),
         typeid: RadType::Int(RadIntId::U16),
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "ulen".to_string(),
         typeid: RadType::Int(RadIntId::U16),
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "known_rad_type".to_string(),
         typeid: RadType::String,
     });
@@ -81,14 +88,17 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
     // Read-level tags: b0 (sample), b1 (cell), u (UMI)
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
     read_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "b0".to_string(),
         typeid: RadType::Int(RadIntId::U32),
     });
     read_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "b1".to_string(),
         typeid: RadType::Int(RadIntId::U32),
     });
     read_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "u".to_string(),
         typeid: RadType::Int(RadIntId::U32),
     });
@@ -96,6 +106,7 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
     // Alignment-level tags
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
     aln_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "compressed_ori_refid".to_string(),
         typeid: RadType::Int(RadIntId::U32),
     });

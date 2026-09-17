@@ -281,15 +281,17 @@ where
         // file-level
         let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
         file_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: "cblen".to_owned(),
             typeid: RadType::Int(RadIntId::U16),
         });
         file_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: "ulen".to_owned(),
             typeid: RadType::Int(RadIntId::U16),
         });
 
-        file_tags.write(&mut data)?;
+        file_tags.write(&mut data, 0)?;
 
         // read-level
         let flag_data = rec.data();
@@ -344,22 +346,25 @@ where
 
         let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
         read_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: "b".to_owned(),
             typeid: bc_typeid,
         });
         read_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: "u".to_owned(),
             typeid: umi_typeid,
         });
-        read_tags.write(&mut data)?;
+        read_tags.write(&mut data, 0)?;
 
         // alignment-level
         let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
         aln_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: "compressed_ori_refid".to_owned(),
             typeid: RadType::Int(RadIntId::U32),
         });
-        aln_tags.write(&mut data)?;
+        aln_tags.write(&mut data, 0)?;
 
         // done with tag descriptions
         // now write the values associated with the file-level tags

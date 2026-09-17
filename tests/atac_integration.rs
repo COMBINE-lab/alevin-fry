@@ -78,6 +78,8 @@ fn packed_to_nuc(packed: u64, len: usize) -> String {
 /// alignment tags.
 fn make_atac_prelude() -> (RadPrelude, TagMap) {
     let hdr = RadHeader {
+        major_version: 0,
+        minor_version: 0,
         is_paired: 1,
         ref_count: REF_NAMES.len() as u64,
         ref_names: REF_NAMES.iter().map(|s| s.to_string()).collect(),
@@ -86,14 +88,17 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
 
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "cblen".to_string(),
         typeid: RadType::Int(RadIntId::U16),
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "known_rad_type".to_string(),
         typeid: RadType::String,
     });
     file_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "ref_lengths".to_string(),
         typeid: RadType::Array(
             RadIntId::U32,
@@ -103,6 +108,7 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
 
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
     read_tags.add_tag_desc(TagDesc {
+        role: libradicl::rad_types::TagRole::None,
         name: "b".to_string(),
         typeid: RadType::Int(RadIntId::U32),
     });
@@ -115,6 +121,7 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
         ("frag_len", RadType::Int(RadIntId::U16)),
     ] {
         aln_tags.add_tag_desc(TagDesc {
+            role: libradicl::rad_types::TagRole::None,
             name: name.to_string(),
             typeid,
         });
