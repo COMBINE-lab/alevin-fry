@@ -68,42 +68,16 @@ pub fn write_bed(
 pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     let parent = std::path::Path::new(dedup_opts.input_dir);
     let log = dedup_opts.log;
-    let collate_md_file =
-        File::open(parent.join("collate.json")).context("could not open the collate.json file.")?;
-    let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
-
-    // is the collated RAD file compressed?
-    let compressed_input = collate_md["compressed_output"]
-        .as_bool()
-        .context("could not read compressed_output field from collate metadata.")?;
-
-    if compressed_input {
-        let i_file =
-            File::open(parent.join("map.collated.rad.sz")).context("run collate before quant")?;
-        // let metadata = i_file.metadata()?;
-        let br = BufReader::new(snap::read::FrameDecoder::new(&i_file));
-        // let file_len = metadata.len();
-        info!(
-            log,
-            "quantifying from compressed, collated RAD file {:?}", i_file
-        );
-        // Ok(())
-        do_deduplicate(br, dedup_opts)
-    } else {
-        let i_file =
-            File::open(parent.join("map.collated.rad")).context("run collate before quant")?;
-        // let metadata = i_file.metadata()?;
-        // let file_len = metadata.len();
-        let br = BufReader::new(i_file);
-
-        info!(
-            log,
-            "quantifying from uncompressed, collated RAD file {:?}",
-            parent.join("map.collated.rad")
-        );
-
-        do_deduplicate(br, dedup_opts)
-    }
+    // The collated RAD now always uses per-chunk codec framing (like the scRNA
+    // paths): the header is uncompressed and the codec lives in a file tag, so we
+    // open the single `map.collated.rad` and let `do_deduplicate` read the codec
+    // from the tag section and decode each chunk. (The historical whole-file
+    // Snappy `.sz` stream is gone.)
+    let collated_path = parent.join("map.collated.rad");
+    let i_file = File::open(&collated_path).context("run collate before quant")?;
+    let br = BufReader::new(i_file);
+    info!(log, "quantifying from collated RAD file {:?}", collated_path);
+    do_deduplicate(br, dedup_opts)
 }
 
 pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
@@ -177,10 +151,14 @@ pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> any
     let bed_writer = Arc::new(Mutex::new(File::create(bed_path).unwrap()));
     let mut thread_handles: Vec<thread::JoinHandle<usize>> = Vec::with_capacity(n_workers);
 
+    // The collated RAD advertises its per-chunk codec via a file tag; the reader
+    // must be told, or it treats codec-compressed payloads as raw records.
+    let chunk_codec = libradicl::codec::chunk_codec_from_tag_map(&file_tag_map)?;
     let mut chunk_reader = libradicl::readers::ParallelChunkReader::<AtacSeqReadRecord>::new(
         &prelude,
         std::num::NonZeroUsize::new(n_workers).unwrap(),
-    );
+    )
+    .with_chunk_codec(chunk_codec);
 
     for _worker in 0..n_workers {
         let chunks = chunk_reader.chunk_iter();

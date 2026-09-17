@@ -612,3 +612,76 @@ fn atac_deduplicate_terminates_and_writes_fragments() {
         "a multi-mapping record leaked into the deduplicated output"
     );
 }
+
+/// The collated output now uses per-chunk codec framing (like scRNA), so the
+/// compressed (lz4) path must round-trip through `deduplicate` and yield exactly
+/// the same fragments as the uncompressed path. This also exercises the
+/// num_chunks backpatch under compression — impossible with the old whole-file
+/// Snappy stream, which silently over-reported chunks when empty cells dropped.
+#[test]
+fn atac_deduplicate_matches_across_compression() {
+    let log = make_test_logger();
+    let mix = CellMix {
+        good: 4,
+        unmapped: 2, // dropped cells force a num_chunks backpatch
+        multimapped: 1,
+    };
+    let num_cells = 12;
+
+    // Run collate (with the given compression) + deduplicate in `tmp`, returning
+    // the sorted BED lines.
+    let run = |compress: bool| -> Vec<String> {
+        let tmp = tempfile::tempdir().unwrap();
+        let (rad_dir, gpl_dir) = stage_permit_list(tmp.path(), num_cells, &mix, &log);
+
+        let gpl_c = gpl_dir.clone();
+        let clog = log.clone();
+        run_with_timeout("atac collate", move || {
+            collate(
+                gpl_c,
+                rad_dir,
+                2,
+                10_000,
+                compress,
+                "atac_integration_test",
+                TEST_VERSION,
+                &clog,
+            )
+        });
+
+        let gpl_d = gpl_dir.clone();
+        let dlog = log.clone();
+        run_with_timeout("atac deduplicate", move || {
+            let opts = DeduplicateOpts::builder()
+                .input_dir(&gpl_d)
+                .num_threads(4)
+                .rev(false)
+                .cmdline("atac_integration_test")
+                .version(TEST_VERSION)
+                .log(&dlog)
+                .build();
+            deduplicate(opts)
+        });
+
+        let bed =
+            std::fs::read_to_string(gpl_dir.join("map.bed")).expect("deduplicate wrote no BED");
+        // keep tmp alive until the BED is read
+        drop(tmp);
+        let mut lines: Vec<String> = bed.lines().map(|s| s.to_string()).collect();
+        lines.sort();
+        lines
+    };
+
+    let uncompressed = run(false);
+    let compressed = run(true);
+
+    assert_eq!(
+        uncompressed.len(),
+        num_cells * mix.good,
+        "every uniquely-mapped fragment should appear exactly once"
+    );
+    assert_eq!(
+        uncompressed, compressed,
+        "lz4 per-chunk collation produced different fragments than the uncompressed path"
+    );
+}

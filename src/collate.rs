@@ -663,7 +663,7 @@ fn write_chunk_index_from_offsets(
 /// Create the collated output file (`velo.map.collated.rad` in velo mode, else
 /// `map.collated.rad`), removing any stale file first, and return its path plus a
 /// shared buffered writer. Shared by all three collation drivers.
-fn create_collated_output(
+pub(crate) fn create_collated_output(
     parent: &Path,
     velo_mode: bool,
 ) -> anyhow::Result<(PathBuf, Arc<Mutex<BufWriter<File>>>)> {
@@ -688,7 +688,7 @@ fn create_collated_output(
 /// result to `owriter`, and return the written header length. The header is
 /// record-type-agnostic, so this is generic only over the reader — callable from
 /// the record-type-generic `do_collate_with_temp` without extra bounds.
-fn write_collated_output_header<A: Read + Seek>(
+pub(crate) fn write_collated_output_header<A: Read + Seek>(
     br: &mut BufReader<A>,
     input_rad_path: &Path,
     prelude: &RadPrelude,

@@ -55,7 +55,7 @@ use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 
 #[allow(clippy::too_many_arguments)]
@@ -328,12 +328,16 @@ where
         "collated rad file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
-    // because :
-    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if compress_out {
-        "map.collated.rad.sz"
+    // Per-chunk chunk codec, matching the scRNA collated output: `None` writes
+    // raw per-cell chunks, otherwise each chunk's payload is codec-compressed and
+    // the codec is recorded in a file tag so the reader is self-describing. This
+    // replaces the historical whole-file Snappy stream (and its `.sz` name), which
+    // — being one continuous stream — could not seek-patch `num_chunks` after
+    // empty cells were dropped.
+    let codec = if compress_out {
+        libradicl::ChunkCodec::Lz4
     } else {
-        "map.collated.rad"
+        libradicl::ChunkCodec::None
     };
 
     // writing the collate metadata
@@ -342,6 +346,7 @@ where
             "cmd" : cmdline,
             "version_str" : version,
             "compressed_output" : compress_out,
+            "chunk_codec" : codec.as_str(),
         });
         let cm_path = parent.join("collate.json");
 
@@ -355,15 +360,8 @@ where
             .context("cannot write to collate.json file")?;
     }
 
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)
-            .with_context(|| format!("could not remove {}", oname.display()))?;
-    }
-
-    let ofile = File::create(parent.join(cfname))
-        .with_context(|| format!("couldn't create directory {}", cfname))?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    // Always `map.collated.rad` now (the codec lives in a file tag, not the name).
+    let (oname, owriter) = crate::collate::create_collated_output(parent, false)?;
 
     let i_dir = std::path::Path::new(rad_dir.as_ref());
 
@@ -413,49 +411,19 @@ where
 
     let bct = rl_tags.tags[0].typeid;
 
-    // the exact position at the end of the header + file tags
-    let pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
-
-    // copy the header
-    {
-        // we want to copy up to the end of the header
-        // minus the num chunks (sizeof u64), and then
-        // write the actual number of chunks we expect.
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-
-        // This temporary file pointer and buffer will be dropped
-        // at the end of this block (scope).
-        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-
-        rfile
-            .read_exact(hdr_buf.get_mut())
-            .context("couldn't read input file header")?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf
-            .write_all(&expected_output_chunks.to_le_bytes())
-            .context("couldn't write num_chunks")?;
-        hdr_buf.set_position(0);
-
-        // compress the header buffer to a compressed buffer
-        if compress_out {
-            let mut compressed_buf =
-                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
-            compressed_buf
-                .write_all(hdr_buf.get_ref())
-                .context("could not compress the output header.")?;
-            hdr_buf = compressed_buf
-                .into_inner()
-                .context("couldn't unwrap the FrameEncoder.")?;
-            hdr_buf.set_position(0);
-        }
-
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref())
-                .context("could not write the output header.")?;
-        }
-    }
+    // Write the collated-output header via the shared scRNA helper: it copies the
+    // input header, patches `num_chunks` to the expected count, and appends the
+    // chunk-codec file tag — leaving the header uncompressed and seek-patchable
+    // (so the count can be corrected downward after empty cells are dropped).
+    let _header_len = crate::collate::write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
     let correct_map: Arc<AHashMap<u64, u64>> = if compact_path.exists() {
@@ -797,12 +765,10 @@ where
 
                     // Unified gather: group this bucket's records into per-cell
                     // chunks with the shared `collate_bucket` engine (retiring the
-                    // ATAC-specific `collate_temporary_bucket_twopass_atac`). The
-                    // engine emits the uncompressed `[nbytes][nrec][records]`
-                    // per-cell layout; we preserve the historical ATAC output
-                    // format by Snappy-framing the whole per-bucket buffer when
-                    // compression is requested (matching what `deduplicate`'s
-                    // whole-file `FrameDecoder` reads).
+                    // ATAC-specific `collate_temporary_bucket_twopass_atac`). Each
+                    // chunk's payload is framed with the per-chunk `codec` (as the
+                    // scRNA paths do), so the output is self-describing and the
+                    // header stays uncompressed/seek-patchable.
                     let mut out: Vec<u8> = Vec::new();
                     let nchunks = libradicl::collate_generic::collate_bucket::<
                         AtacSeqReadRecord,
@@ -811,17 +777,10 @@ where
                         &mut treader,
                         temp_bucket.1 as usize,
                         &ctx,
-                        libradicl::ChunkCodec::None,
+                        codec,
                         &mut out,
                     )
                     .expect("atac gather (collate_bucket) failed");
-                    if compress_out {
-                        let mut enc =
-                            snap::write::FrameEncoder::new(Vec::<u8>::with_capacity(out.len()));
-                        enc.write_all(&out)
-                            .expect("could not compress the collated atac output chunk.");
-                        out = enc.into_inner().expect("couldn't finalize the snappy frame.");
-                    }
                     owriter
                         .lock()
                         .unwrap()
@@ -921,9 +880,11 @@ where
     // other reader trust this field to decide how many chunks to parse, so a
     // header that overstates it walks them off the end of the file.
     //
-    // Snappy output is a stream, so there is nothing to seek back into; in that
-    // case the count written up front is all we have.
-    if !compress_out && num_output_chunks != expected_output_chunks {
+    // With per-chunk codec framing the header is uncompressed regardless of the
+    // codec, so num_chunks is always seek-patchable here — unlike the old
+    // whole-file Snappy stream, which could not correct an overcount and so
+    // silently over-reported chunks when empty cells were dropped.
+    if num_output_chunks != expected_output_chunks {
         let chunk_bytes = std::mem::size_of::<u64>() as u64;
         let nc_pos = end_header_pos - chunk_bytes;
         let mut ofile = std::fs::OpenOptions::new().write(true).open(&oname)?;
