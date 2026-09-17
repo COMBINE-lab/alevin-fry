@@ -654,6 +654,8 @@ fn main() -> anyhow::Result<()> {
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
+        // cr-like Hamming-1 UMI correction level (ygao61 d92869f wiring): 0 = off.
+        let mut crlike_umi_edit: u32 = 0;
 
         match umi_edit_dist {
             0 => {
@@ -674,10 +676,13 @@ fn main() -> anyhow::Result<()> {
             }
             1 => {
                 match resolution {
-                    ResolutionStrategy::Trivial
-                    | ResolutionStrategy::CellRangerLike
-                    | ResolutionStrategy::CellRangerLikeEm => {
-                        // these methods don't currently support 1 edit UMIs
+                    ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm => {
+                        // ygao61 (d92869f): Cell Ranger-style Hamming-1 UMI correction
+                        // per (cell, gene) before winner-take-all resolution.
+                        crlike_umi_edit = 1;
+                    }
+                    ResolutionStrategy::Trivial => {
+                        // trivial still has no 1-edit UMI support
                         crit!(
                             log,
                             "\n\nResolution strategy {:?} doesn't currently support 1-edit UMI resolution",
@@ -703,6 +708,17 @@ fn main() -> anyhow::Result<()> {
                 );
                 bail!("Invalid command line option");
             }
+        }
+
+        // The Hamming-1 UMI correction operates on raw gene ids; in USA
+        // (prefer-ambiguity) mode those are spliced/unspliced variants, so the
+        // correction is not meaningful there. Reject rather than silently no-op.
+        if crlike_umi_edit >= 1 && sa_model == SplicedAmbiguityModel::PreferAmbiguity {
+            crit!(
+                log,
+                "\n\n--umi-edit-dist 1 (cr-like Hamming-1 UMI correction) is not supported with --sa-model prefer-ambiguity"
+            );
+            bail!("Invalid command line option");
         }
 
         if dump_eq && (resolution == ResolutionStrategy::Trivial) {
@@ -752,6 +768,7 @@ fn main() -> anyhow::Result<()> {
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)
+            .crlike_umi_edit(crlike_umi_edit)
             .cmdline(&cmdline)
             .version(VERSION)
             .log(&log)

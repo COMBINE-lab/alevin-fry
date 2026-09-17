@@ -34,6 +34,9 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub dump_eq: bool,
     pub resolution: ResolutionStrategy,
     pub pug_exact_umi: bool,
+    /// cr-like only: collapse UMIs within Hamming distance 1 of a higher-count UMI (same cell, same gene)
+    #[builder(default = 0)]
+    pub crlike_umi_edit: u32,
     pub sa_model: SplicedAmbiguityModel,
     pub small_thresh: usize,
     pub large_graph_thresh: usize,
