@@ -1460,26 +1460,24 @@ where
     // refuse a run whose permit list requested orientation filtering (fw/rc) —
     // silently keeping all alignments would diverge from the fast path. This lifts
     // once orientation is available via a declared role (#64).
-    let meta_file = File::open(parent.join("generate_permit_list.json"))
-        .context("could not open generate_permit_list.json")?;
-    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_file))?;
-    let expected_ori =
-        get_orientation(&mdata).map_err(|e| anyhow!("could not read strand: {e}"))?;
-    if !matches!(expected_ori, Strand::Unknown) {
-        anyhow::bail!(
-            "generic collation does not yet apply orientation filtering; \
-             re-run generate-permit-list with --expected-ori both (or use the specialized path)"
-        );
-    }
-
-    // Bridge: locate the barcode collation-key tag by name (RAD-declared roles
-    // will replace this — #64). Build the parse context (with the key index) and
-    // the validated gather context from the same tag sections.
+    use libradicl::rad_types::TagRole;
     let read_tags = prelude.read_tags.clone();
     let aln_tags = prelude.aln_tags.clone();
 
-    // Prefer the RAD's own declared roles; fall back to the name bridge for
-    // un-annotated (legacy) files.
+    // Orientation / UMI from declared roles (if any). The orientation field lets
+    // the generic scatter filter alignments by strand (see the generic record's
+    // `retain_ori`); the UMI role is recorded for a future generic quant path.
+    let ori_tag_idx = aln_tags
+        .tags
+        .iter()
+        .position(|t| matches!(t.role, TagRole::Orientation));
+    let umi_tag_idx = read_tags
+        .tags
+        .iter()
+        .position(|t| matches!(t.role, TagRole::Umi));
+
+    // Collation key: prefer the RAD's own declared roles; fall back to the name
+    // bridge for un-annotated (legacy) files.
     let (key_tag_idx, collate_ctx) =
         if let Some(collate_ctx) = GenericCollateCtx::from_roles(&read_tags, &aln_tags)? {
             // Role-declared key. This single-barcode driver handles exactly one
@@ -1488,7 +1486,7 @@ where
                 .tags
                 .iter()
                 .enumerate()
-                .filter(|(_, t)| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
+                .filter(|(_, t)| matches!(t.role, TagRole::Barcode { .. }))
                 .map(|(i, _)| i)
                 .collect();
             if barcode_tags.len() != 1 {
@@ -1513,10 +1511,35 @@ where
             let collate_ctx = GenericCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
             (key_tag_idx, collate_ctx)
         };
+
+    // Orientation gate: the generic scatter can filter by strand only if the
+    // orientation field is declared. If a filtering orientation is expected but no
+    // Orientation role is present, refuse rather than silently keep all alignments.
+    let meta_file = File::open(parent.join("generate_permit_list.json"))
+        .context("could not open generate_permit_list.json")?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_file))?;
+    let expected_ori =
+        get_orientation(&mdata).map_err(|e| anyhow!("could not read strand: {e}"))?;
+    if !matches!(expected_ori, Strand::Unknown) && ori_tag_idx.is_none() {
+        anyhow::bail!(
+            "generic collation needs a declared Orientation role to filter by strand; \
+             this RAD declares none — re-run generate-permit-list with --expected-ori both, \
+             or stamp the orientation role on the alignment field"
+        );
+    }
+    if ori_tag_idx.is_some() && !matches!(expected_ori, Strand::Unknown) {
+        info!(
+            log,
+            "filtering alignments by orientation via the declared role"
+        );
+    }
+
     let parse_ctx = GenericReadRecordContext {
         read_tags: read_tags.clone(),
         aln_tags: aln_tags.clone(),
         key_tag_idx: Some(key_tag_idx),
+        ori_tag_idx,
+        umi_tag_idx,
     };
 
     do_collate_with_temp::<_, _, _, u64, GenericReadRecord>(

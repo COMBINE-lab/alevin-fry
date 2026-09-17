@@ -2,7 +2,7 @@
 // read-level tag with a Barcode collation role — for validating the role-driven
 // generic collation path end-to-end. Chunk data is copied verbatim.
 //
-// Usage: stamp_roles <in.rad> <out.rad> <read_tag_name> <barcode_level>
+// Usage: stamp_roles <in.rad> <out.rad> <read_tag_name> <barcode_level> [ori_aln_tag]
 use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagRole;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
@@ -13,6 +13,7 @@ fn main() -> anyhow::Result<()> {
     let outp = a.next().expect("out.rad");
     let tag = a.next().expect("read_tag_name");
     let level: u8 = a.next().expect("barcode_level").parse()?;
+    let ori_tag = a.next(); // optional alignment tag to stamp as Orientation
 
     let mut br = BufReader::new(std::fs::File::open(&inp)?);
     let mut prelude = RadPrelude::from_bytes(&mut br)?;
@@ -32,6 +33,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(stamped, "read tag `{tag}` not found");
+    if let Some(ot) = ori_tag {
+        let mut ok = false;
+        for t in &mut prelude.aln_tags.tags {
+            if t.name == ot {
+                t.role = TagRole::Orientation;
+                ok = true;
+            }
+        }
+        anyhow::ensure!(ok, "alignment tag `{ot}` not found");
+    }
 
     let mut out = std::io::BufWriter::new(std::fs::File::create(&outp)?);
     prelude.write(&mut out)?; // v2 header (magic+version) + descriptors (with roles)
