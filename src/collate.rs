@@ -1837,7 +1837,22 @@ where
                 num_bc,
                 cell_bc_len,
             );
-            let parsing_context = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+            // Prefer the RAD's declared roles (self-describing, #64/#66) for the
+            // composite key layout; fall back to the `b0`/`b1`/`u` name bridge for
+            // un-annotated (legacy) files. The role-driven context lets a
+            // multi-barcode RAD with non-conventional tag names collate through the
+            // same hierarchical engine.
+            let parsing_context =
+                match MultiBarcodeRecordContext::from_roles(&prelude.read_tags)? {
+                    Some(ctx) => {
+                        info!(
+                            log,
+                            "using RAD-declared tag roles for the composite collation key"
+                        );
+                        ctx
+                    }
+                    None => prelude.get_record_context::<MultiBarcodeRecordContext>()?,
+                };
             info!(log, "Using the optimized libradicl collator");
             do_collate_multi_bc_fast(
                 input_dir,

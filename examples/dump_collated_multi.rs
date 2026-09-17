@@ -20,7 +20,12 @@ fn main() -> anyhow::Result<()> {
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     let codec = chunk_codec_from_tag_map(&file_tag_map)?;
-    let ctx = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+    // Prefer the RAD's declared roles (so a role-annotated / renamed-tag file is
+    // read correctly); fall back to the b0/b1/u name bridge for legacy output.
+    let ctx = match MultiBarcodeRecordContext::from_roles(&prelude.read_tags)? {
+        Some(ctx) => ctx,
+        None => prelude.get_record_context::<MultiBarcodeRecordContext>()?,
+    };
     let num_chunks = prelude.hdr.num_chunks as usize;
 
     let mut lines: Vec<(u64, u64, u32, u64)> = Vec::with_capacity(num_chunks);
