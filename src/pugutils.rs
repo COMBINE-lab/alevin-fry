@@ -788,7 +788,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
 // d92869f rather than folded into edition-2024 let-chains, to keep the body
 // verbatim against Cell Ranger's mark_dups.rs (see the doc comment above).
 #[allow(clippy::collapsible_if)]
-pub fn correct_umis_cellranger(v: &mut Vec<(u64, u32, u32)>) {
+pub fn correct_umis_cellranger(v: &mut Vec<(u64, u32, u32)>, umi_len: u32) {
     if v.len() < 2 {
         return;
     }
@@ -812,8 +812,15 @@ pub fn correct_umis_cellranger(v: &mut Vec<(u64, u32, u32)>) {
     let mut corr: HashMap<(u64, u32), u64, RandomState> = HashMap::with_hasher(RandomState::new());
     for &(u, g, c) in &raw {
         let mut best = (c, u);
-        // 2-bit positions 0..32; positions beyond the UMI length never hit a stored UMI
-        for pos in 0..32u32 {
+        // 2-bit positions 0..umi_len (bases). Positions at or beyond the real UMI
+        // length are guaranteed hashmap misses (no stored UMI has bits set there),
+        // so capping the scan at umi_len is exactly output-identical while probing
+        // ~umi_len instead of a fixed 32 bases.
+        debug_assert!(
+            umi_len <= 32,
+            "umi_len ({umi_len}) exceeds the 32-base capacity of the u64 UMI packing; the neighbour-flip shift x << (2*pos) would overflow"
+        );
+        for pos in 0..umi_len {
             for x in 1u64..=3 {
                 let n = u ^ (x << (2 * pos));
                 if let Some(&nc) = counts.get(&(n, g)) {
@@ -895,6 +902,7 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     sa_model: SplicedAmbiguityModel,
     scratch: &mut CrLikeScratch,
     umi_edit: u32,
+    umi_len: u32,
     _log: &slog::Logger,
 ) where
     B: ConvertiblePrimitiveInteger,
@@ -931,7 +939,7 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before the
     // winner-take-all resolution, when --umi-edit-dist >= 1 for cr-like.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec);
+        correct_umis_cellranger(umi_gene_count_vec, umi_len);
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
@@ -955,6 +963,7 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     sa_model: SplicedAmbiguityModel,
     scratch: &mut CrLikeScratch,
     umi_edit: u32,
+    umi_len: u32,
     _log: &slog::Logger,
 ) {
     // Disjoint borrows of the two reusable buffers; both cleared before use so
@@ -999,7 +1008,7 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before the
     // winner-take-all resolution, when --umi-edit-dist >= 1 for cr-like.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec);
+        correct_umis_cellranger(umi_gene_count_vec, umi_len);
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
@@ -1586,7 +1595,7 @@ mod cellranger_umi_tests {
     #[test]
     fn greater_count_neighbour_and_low_support() {
         let mut v = vec![(AAAA, 0, 3), (AAAT, 0, 2), (AAAA, 1, 1), (AATT, 1, 1)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert_eq!(v, vec![(AAAA, 0, 5), (AATT, 1, 1)]);
     }
 
@@ -1594,7 +1603,7 @@ mod cellranger_umi_tests {
     #[test]
     fn equal_count_lexicographic_tiebreak() {
         let mut v = vec![(CCCC, 0, 1), (CGCC, 0, 1)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert_eq!(v, vec![(CGCC, 0, 2)]);
     }
 
@@ -1606,7 +1615,7 @@ mod cellranger_umi_tests {
         let b = AAAT;
         let c = AATT; // a~b and b~c are Hamming-1, a~c is Hamming-2
         let mut v = vec![(a, 0, 1), (b, 0, 2), (c, 0, 3)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert_eq!(v, vec![(b, 0, 1), (c, 0, 5)]);
     }
 
@@ -1614,7 +1623,7 @@ mod cellranger_umi_tests {
     #[test]
     fn correction_is_within_gene() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 1, 5)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert_eq!(v, vec![(AAAA, 0, 1), (AAAT, 1, 5)]);
     }
 
@@ -1651,7 +1660,7 @@ mod cellranger_umi_tests {
     #[test]
     fn all_low_support_gives_empty_vec() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert!(v.is_empty());
     }
 }
@@ -1671,7 +1680,7 @@ mod umi_ham_merge_tests {
         const AAAA: u64 = 0b0000_0000;
         const AAAT: u64 = 0b0000_0011;
         let mut v = vec![(AAAA, 0u32, 1u32), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v);
+        correct_umis_cellranger(&mut v, 32);
         assert!(v.is_empty(), "all keys low-support -> empty");
 
         let mut h: HashMap<Vec<u32>, BasicEqClassPayload, ahash::RandomState> =

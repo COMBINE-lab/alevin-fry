@@ -396,6 +396,8 @@ struct WorkerConfig {
     pug_exact_umi: bool,
     /// cr-like Hamming-1 UMI correction level (0 = off).
     crlike_umi_edit: u32,
+    /// UMI length in bases (RAD "ulen" tag); caps the Hamming-1 neighbour scan.
+    umi_len: u32,
     sa_model: SplicedAmbiguityModel,
     num_bootstraps: u32,
     init_uniform: bool,
@@ -873,6 +875,7 @@ where
                                     config.sa_model,
                                     &mut crlike_scratch,
                                     config.crlike_umi_edit,
+                                    config.umi_len,
                                     &log,
                                 );
                             } else {
@@ -885,6 +888,7 @@ where
                                     config.sa_model,
                                     &mut crlike_scratch,
                                     config.crlike_umi_edit,
+                                    config.umi_len,
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1065,6 +1069,7 @@ where
                         config.sa_model,
                         &mut crlike_scratch,
                         config.crlike_umi_edit,
+                        config.umi_len,
                         &log,
                     );
                     // USA-mode
@@ -1815,6 +1820,15 @@ where
         log,
     )?;
 
+    // UMI length in bases from the RAD file-level "ulen" tag (chemistry/header,
+    // NOT data-derived); caps the Hamming-1 neighbour scan in cr-like UMI
+    // correction. Same source convert.rs reads.
+    let umi_len_bases: u16 = file_tag_map
+        .get("ulen")
+        .expect("tag map must contain ulen for UMI length")
+        .try_into()?;
+    let umi_len: u32 = umi_len_bases as u32;
+
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
@@ -2040,6 +2054,7 @@ where
             large_graph_thresh,
             pug_exact_umi,
             crlike_umi_edit,
+            umi_len,
             sa_model,
             num_bootstraps,
             init_uniform,
