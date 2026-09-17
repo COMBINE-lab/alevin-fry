@@ -41,8 +41,8 @@ use crossbeam_queue::ArrayQueue;
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
-use libradicl::record::AtacSeqReadRecord;
-use libradicl::schema::{CollateKey, TempCellInfo};
+use libradicl::record::{AtacSeqReadRecord, AtacSeqRecordContext};
+use libradicl::schema::CollateKey;
 
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
@@ -763,11 +763,6 @@ where
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
-        // the output cache and correction map
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
-        // alternative strategy
-        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
 
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
@@ -788,24 +783,51 @@ where
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
             // processed
+            // Collation context for the unified gather: the scATAC record has a
+            // fixed `[na][bc][aln]` layout keyed on the barcode (no UMI).
+            let ctx = AtacSeqRecordContext::from_bct(bc_type);
             while buckets_remaining.load(Ordering::SeqCst) > 0 {
                 if let Some(temp_bucket) = in_q.pop() {
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
 
                     let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
                     // create a new handle for reading
                     let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
                     let mut treader = BufReader::new(tfile);
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_atac(
+                    // Unified gather: group this bucket's records into per-cell
+                    // chunks with the shared `collate_bucket` engine (retiring the
+                    // ATAC-specific `collate_temporary_bucket_twopass_atac`). The
+                    // engine emits the uncompressed `[nbytes][nrec][records]`
+                    // per-cell layout; we preserve the historical ATAC output
+                    // format by Snappy-framing the whole per-bucket buffer when
+                    // compression is requested (matching what `deduplicate`'s
+                    // whole-file `FrameDecoder` reads).
+                    let mut out: Vec<u8> = Vec::new();
+                    let nchunks = libradicl::collate_generic::collate_bucket::<
+                        AtacSeqReadRecord,
+                        _,
+                    >(
                         &mut treader,
-                        &bc_type,
-                        temp_bucket.1,
-                        &owriter,
-                        compress_out,
-                        &mut cmap,
-                    ) as u64;
+                        temp_bucket.1 as usize,
+                        &ctx,
+                        libradicl::ChunkCodec::None,
+                        &mut out,
+                    )
+                    .expect("atac gather (collate_bucket) failed");
+                    if compress_out {
+                        let mut enc =
+                            snap::write::FrameEncoder::new(Vec::<u8>::with_capacity(out.len()));
+                        enc.write_all(&out)
+                            .expect("could not compress the collated atac output chunk.");
+                        out = enc.into_inner().expect("couldn't finalize the snappy frame.");
+                    }
+                    owriter
+                        .lock()
+                        .unwrap()
+                        .write_all(&out)
+                        .expect("could not write the collated atac output.");
+                    local_chunks += nchunks as u64;
 
                     // we don't need the file or reader anymore
                     drop(treader);
