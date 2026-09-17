@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     ] {
         println!("--- {label} tags ---");
         for t in &sec.tags {
-            println!("   {} : {:?}", t.name, t.typeid);
+            println!("   {} : {:?}  role={:?}", t.name, t.typeid, t.role);
         }
     }
     println!("file tag values: {:?}", ftm);

@@ -1477,17 +1477,47 @@ where
     // the validated gather context from the same tag sections.
     let read_tags = prelude.read_tags.clone();
     let aln_tags = prelude.aln_tags.clone();
-    let key_tag_idx = read_tags
-        .tags
-        .iter()
-        .position(|t| t.name == key_tag_name)
-        .with_context(|| format!("collation key tag `{key_tag_name}` not found in read tags"))?;
+
+    // Prefer the RAD's own declared roles; fall back to the name bridge for
+    // un-annotated (legacy) files.
+    let (key_tag_idx, collate_ctx) =
+        if let Some(collate_ctx) = GenericCollateCtx::from_roles(&read_tags, &aln_tags)? {
+            // Role-declared key. This single-barcode driver handles exactly one
+            // Barcode role; a composite (multi-level) key is a follow-up (#66).
+            let barcode_tags: Vec<usize> = read_tags
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
+                .map(|(i, _)| i)
+                .collect();
+            if barcode_tags.len() != 1 {
+                anyhow::bail!(
+                    "generic collation currently supports a single barcode level, but the RAD \
+                 declares {} barcode roles; composite/hierarchical generic collation is a \
+                 follow-up (COMBINE-lab/libradicl#66)",
+                    barcode_tags.len()
+                );
+            }
+            info!(log, "using RAD-declared tag roles for the collation key");
+            (barcode_tags[0], collate_ctx)
+        } else {
+            // Bridge: locate the barcode key tag by name.
+            let key_tag_idx = read_tags
+                .tags
+                .iter()
+                .position(|t| t.name == key_tag_name)
+                .with_context(|| {
+                    format!("collation key tag `{key_tag_name}` not found in read tags")
+                })?;
+            let collate_ctx = GenericCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
+            (key_tag_idx, collate_ctx)
+        };
     let parse_ctx = GenericReadRecordContext {
         read_tags: read_tags.clone(),
         aln_tags: aln_tags.clone(),
         key_tag_idx: Some(key_tag_idx),
     };
-    let collate_ctx = GenericCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
 
     do_collate_with_temp::<_, _, _, u64, GenericReadRecord>(
         input_dir,

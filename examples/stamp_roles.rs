@@ -1,0 +1,46 @@
+// Rewrite a legacy RAD's prelude into a versioned (spec-major-2) one, stamping a
+// read-level tag with a Barcode collation role — for validating the role-driven
+// generic collation path end-to-end. Chunk data is copied verbatim.
+//
+// Usage: stamp_roles <in.rad> <out.rad> <read_tag_name> <barcode_level>
+use libradicl::header::RadPrelude;
+use libradicl::rad_types::TagRole;
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+
+fn main() -> anyhow::Result<()> {
+    let mut a = std::env::args().skip(1);
+    let inp = a.next().expect("in.rad");
+    let outp = a.next().expect("out.rad");
+    let tag = a.next().expect("read_tag_name");
+    let level: u8 = a.next().expect("barcode_level").parse()?;
+
+    let mut br = BufReader::new(std::fs::File::open(&inp)?);
+    let mut prelude = RadPrelude::from_bytes(&mut br)?;
+    // byte offset in the original file just past the tag *descriptor* sections
+    // (i.e. where the file-tag values begin) — everything from here is copied.
+    // BufReader::stream_position() already reports the logical (consumed) position.
+    let desc_end = br.stream_position()?;
+
+    // stamp: versioned header + the named read tag gets a Barcode role
+    prelude.hdr.major_version = libradicl::constants::RAD_SPEC_MAJOR;
+    prelude.hdr.minor_version = libradicl::constants::RAD_SPEC_MINOR;
+    let mut stamped = false;
+    for t in &mut prelude.read_tags.tags {
+        if t.name == tag {
+            t.role = TagRole::Barcode { level };
+            stamped = true;
+        }
+    }
+    anyhow::ensure!(stamped, "read tag `{tag}` not found");
+
+    let mut out = std::io::BufWriter::new(std::fs::File::create(&outp)?);
+    prelude.write(&mut out)?; // v2 header (magic+version) + descriptors (with roles)
+
+    // copy the remainder of the original file (file-tag values + all chunks)
+    let mut rest = std::fs::File::open(&inp)?;
+    rest.seek(SeekFrom::Start(desc_end))?;
+    std::io::copy(&mut rest, &mut out)?;
+    out.flush()?;
+    eprintln!("stamped `{tag}` as Barcode{{level:{level}}} → {outp}");
+    Ok(())
+}
