@@ -756,124 +756,228 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     }
 }
 
-/// Cell Ranger-style UMI correction within one cell. Ported VERBATIM from
-/// ygao61's `pugutils::correct_umis_cellranger` (branch umi_ham_edit_1, commit
-/// d92869f), which mirrors cellranger's
-/// `lib/rust/tx_annotation/src/mark_dups.rs` (`correct_umis` +
-/// `determine_low_support_umigenes`, `BarcodeDupMarker::new`). The ONLY deviation
-/// from d92869f is the final write-back (`v.clear(); v.extend(out)` instead of
-/// `*v = out`), to preserve the reused `CrLikeScratch` Vec's capacity that
-/// 0.18.2's #190 keeps on the worker to avoid per-cell reallocation.
+/// Reused working buffers for [`correct_umis_cellranger`], held per worker (on
+/// [`CrLikeScratch`]) so the correction allocates nothing across cells. Every
+/// buffer is `clear()`ed at the start of each call, keeping its capacity.
+#[derive(Default)]
+pub struct CorrScratch {
+    /// `(umi, gene, count)` triplets after dedup-summing, sorted by `(umi, gene)`.
+    raw: Vec<(u64, u32, u32)>,
+    /// `(umi, gene) -> index into `raw``.
+    key_index: HashMap<(u64, u32), u32, RandomState>,
+    /// distinct-UMI count per gene (to skip single-UMI genes).
+    gene_umi_count: HashMap<u32, u32, RandomState>,
+    /// indices into `raw`, ordered by `(gene, umi)` for the per-gene search.
+    idx_by_gene: Vec<u32>,
+    /// `dest[i]` = index into `raw` of `raw[i]`'s correction target (self if none).
+    dest: Vec<u32>,
+    /// intermediate one-read-moved counts (drop path only).
+    inter: Vec<u32>,
+    /// low-support flag per `raw` index (drop path only).
+    low: Vec<bool>,
+    /// merged read count per destination `raw` index.
+    merged: Vec<u32>,
+}
+
+/// Cell Ranger-style Hamming-1 UMI correction within one cell, on `(umi, gene,
+/// read count)` triplets (duplicate `(umi, gene)` pairs are summed first).
+/// Mirrors cellranger's `mark_dups.rs` (`correct_umis` +
+/// `determine_low_support_umigenes`).
 ///
-/// Input/output: (umi, gene, read count) triplets; duplicate (umi, gene) pairs
-/// are summed first. UMIs are 2-bit packed MSB-first with A<C<G<T, so integer
-/// order equals lexicographic order.
+/// UMIs are 2-bit packed MSB-first with A<C<G<T, so integer order equals
+/// lexicographic order. `umi_len` MUST be the *packed* width (the RAD `ulen`
+/// tag): the neighbour scan and the tie-break rely on it. Any producer padding of
+/// short UMIs is a constant low-bit suffix at equal length, so it never creates a
+/// spurious neighbour and never changes the relative order — no masking needed.
 ///
-/// 1. Correction: for each (umi, gene) the destination is the maximum of {self}
-///    and all Hamming-1 neighbours *of the same gene*, ordered by (read count,
-///    lexicographically larger UMI). Decided simultaneously on the raw counts:
-///    one step, no chaining.
-/// 2. Low-support ("chimeric") keys are determined on an intermediate table in
-///    which each corrected UMI has moved exactly ONE read to its destination
-///    (Cell Ranger 3 compatibility quirk that Cell Ranger keeps). Within a UMI,
-///    every gene below the maximum count is low-support; if the maximum is tied,
-///    every gene is low-support.
-/// 3. Each raw key is relabelled to (dest, gene); a relabelled key is kept iff it
-///    is not low-support, with its fully merged read count. At most one gene
-///    survives per UMI, so the downstream winner-take-all resolution just counts
-///    the survivors.
+/// Steps:
+/// 1. Correction: each `(umi, gene)` is relabelled to the best of {self} and its
+///    Hamming-1 neighbours *of the same gene*, ordered by `(read count,
+///    lexicographically larger UMI)`. Decided on raw counts (one step, no
+///    chaining).
+/// 2. Low-support ("chimeric") determination on an intermediate table where each
+///    corrected UMI has moved exactly ONE read to its destination (Cell Ranger 3
+///    quirk). Within a UMI, every gene below the per-UMI max count is
+///    low-support; if the max is tied, every gene is.
+/// 3. Relabel + merge into the destination bucket.
 ///
-/// Not meaningful in USA mode (gene ids there are spliced/unspliced variants).
-// The nested `if let ... { if ... }` blocks are kept as ported from ygao61's
-// d92869f rather than folded into edition-2024 let-chains, to keep the body
-// verbatim against Cell Ranger's mark_dups.rs (see the doc comment above).
-#[allow(clippy::collapsible_if)]
-pub fn correct_umis_cellranger(v: &mut Vec<(u64, u32, u32)>, umi_len: u32) {
+/// `drop_low_support` selects the downstream semantics:
+/// - `true` (cr-like / winner-take-all): run all three steps and DROP low-support
+///   keys, so at most one gene survives per UMI — output-identical to Cell Ranger.
+/// - `false` (cr-like-em): run step 1 (correction) and step 3 (relabel + merge)
+///   but SKIP the step-2 drop, so a multi-gene UMI survives as several
+///   `(dest, gene)` keys and reaches the EM as an equivalence class. Only
+///   Hamming-1 UMIs are merged; no molecule is discarded.
+///
+/// Not meaningful in USA mode (gene ids there are spliced/unspliced variants);
+/// callers reject `--umi-edit-dist >= 1` there. Genes with a single distinct UMI
+/// in the cell are skipped (no same-gene neighbour can exist) — the dominant
+/// saving on real data.
+// The all-pairs step-1 loops index `idx_by_gene` by position (needed for the
+// self-skip and to map back into `raw`), so the range-loop form is intentional.
+#[allow(clippy::needless_range_loop)]
+pub fn correct_umis_cellranger(
+    v: &mut Vec<(u64, u32, u32)>,
+    umi_len: u32,
+    drop_low_support: bool,
+    cs: &mut CorrScratch,
+) {
     if v.len() < 2 {
         return;
     }
+    debug_assert!(
+        umi_len <= 32,
+        "umi_len ({umi_len}) exceeds the 32-base capacity of the u64 UMI packing; the neighbour-flip shift x << (2*pos) would overflow"
+    );
+    // Below this per-gene group size, all-pairs Hamming via 2-bit popcount beats
+    // probing the 3*umi_len bit-flip neighbourhood against the key index.
+    const SMALL_GENE_GROUP: usize = 64;
+
+    let CorrScratch {
+        raw,
+        key_index,
+        gene_umi_count,
+        idx_by_gene,
+        dest,
+        inter,
+        low,
+        merged,
+    } = cs;
+
     v.sort_unstable();
-    let mut raw: Vec<(u64, u32, u32)> = Vec::with_capacity(v.len());
+    // dedup-sum identical (umi, gene) into `raw` (stays sorted by (umi, gene)).
+    raw.clear();
     for &t in v.iter() {
-        if let Some(l) = raw.last_mut() {
-            if l.0 == t.0 && l.1 == t.1 {
-                l.2 += t.2;
-                continue;
-            }
+        if let Some(l) = raw.last_mut()
+            && l.0 == t.0
+            && l.1 == t.1
+        {
+            l.2 += t.2;
+            continue;
         }
         raw.push(t);
     }
-    let mut counts: HashMap<(u64, u32), u32, RandomState> =
-        HashMap::with_capacity_and_hasher(raw.len(), RandomState::new());
-    for &(u, g, c) in &raw {
-        counts.insert((u, g), c);
+    let n = raw.len();
+
+    key_index.clear();
+    for (i, &(u, g, _)) in raw.iter().enumerate() {
+        key_index.insert((u, g), i as u32);
     }
-    // step 1: corrections, decided on raw counts
-    let mut corr: HashMap<(u64, u32), u64, RandomState> = HashMap::with_hasher(RandomState::new());
-    for &(u, g, c) in &raw {
-        let mut best = (c, u);
-        // 2-bit positions 0..umi_len (bases). Positions at or beyond the real UMI
-        // length are guaranteed hashmap misses (no stored UMI has bits set there),
-        // so capping the scan at umi_len is exactly output-identical while probing
-        // ~umi_len instead of a fixed 32 bases.
-        debug_assert!(
-            umi_len <= 32,
-            "umi_len ({umi_len}) exceeds the 32-base capacity of the u64 UMI packing; the neighbour-flip shift x << (2*pos) would overflow"
-        );
-        for pos in 0..umi_len {
-            for x in 1u64..=3 {
-                let n = u ^ (x << (2 * pos));
-                if let Some(&nc) = counts.get(&(n, g)) {
-                    if (nc, n) > best {
-                        best = (nc, n);
+    gene_umi_count.clear();
+    for &(_, g, _) in raw.iter() {
+        *gene_umi_count.entry(g).or_insert(0) += 1;
+    }
+
+    dest.clear();
+    dest.extend(0..n as u32);
+
+    idx_by_gene.clear();
+    idx_by_gene.extend(0..n as u32);
+    idx_by_gene.sort_unstable_by_key(|&i| {
+        let (u, g, _) = raw[i as usize];
+        (g, u)
+    });
+
+    // step 1: per-gene correction (single-UMI genes skipped).
+    let mut p = 0usize;
+    while p < n {
+        let g = raw[idx_by_gene[p] as usize].1;
+        let mut q = p;
+        while q < n && raw[idx_by_gene[q] as usize].1 == g {
+            q += 1;
+        }
+        let k = q - p;
+        if k >= 2 {
+            if k <= SMALL_GENE_GROUP {
+                // all-pairs Hamming-1 via 2-bit popcount (no hashing)
+                for a in p..q {
+                    let ia = idx_by_gene[a] as usize;
+                    let (ua, _, ca) = raw[ia];
+                    let mut best = (ca, ua);
+                    for b in p..q {
+                        if b == a {
+                            continue;
+                        }
+                        let ib = idx_by_gene[b] as usize;
+                        let (ub, _, cb) = raw[ib];
+                        if afutils::count_diff_2_bit_packed(ua, ub) == 1 && (cb, ub) > best {
+                            best = (cb, ub);
+                        }
+                    }
+                    if best.1 != ua {
+                        dest[ia] = key_index[&(best.1, g)];
+                    }
+                }
+            } else {
+                // probe the 3*umi_len bit-flip neighbourhood against the index
+                for a in p..q {
+                    let ia = idx_by_gene[a] as usize;
+                    let (ua, _, ca) = raw[ia];
+                    let mut best = (ca, ua);
+                    for pos in 0..umi_len {
+                        for x in 1u64..=3 {
+                            let neigh = ua ^ (x << (2 * pos));
+                            if let Some(&j) = key_index.get(&(neigh, g)) {
+                                let (uj, _, cj) = raw[j as usize];
+                                if (cj, uj) > best {
+                                    best = (cj, uj);
+                                }
+                            }
+                        }
+                    }
+                    if best.1 != ua {
+                        dest[ia] = key_index[&(best.1, g)];
                     }
                 }
             }
         }
-        if best.1 != u {
-            corr.insert((u, g), best.1);
-        }
+        p = q;
     }
-    // step 2: low-support keys on the one-read-moved intermediate table
-    let mut inter = counts.clone();
-    for (&(u, g), &d) in &corr {
-        *inter.get_mut(&(u, g)).unwrap() -= 1;
-        *inter.get_mut(&(d, g)).unwrap() += 1;
-    }
-    let mut iv: Vec<(u64, u32, u32)> = inter.iter().map(|(&(u, g), &c)| (u, g, c)).collect();
-    iv.sort_unstable();
-    let mut low: HashSet<(u64, u32), RandomState> = HashSet::with_hasher(RandomState::new());
-    let mut i = 0usize;
-    while i < iv.len() {
-        let mut j = i;
-        while j < iv.len() && iv[j].0 == iv[i].0 {
-            j += 1;
-        }
-        let max_count = iv[i..j].iter().map(|t| t.2).max().unwrap();
-        let tied = iv[i..j].iter().filter(|t| t.2 == max_count).count() >= 2;
-        for &(u, g, c) in &iv[i..j] {
-            if tied || c < max_count {
-                low.insert((u, g));
+
+    // step 2: low-support determination (drop path only).
+    low.clear();
+    low.resize(n, false);
+    if drop_low_support {
+        inter.clear();
+        inter.extend(raw.iter().map(|t| t.2));
+        for i in 0..n {
+            let d = dest[i] as usize;
+            if d != i {
+                inter[i] -= 1;
+                inter[d] += 1;
             }
         }
-        i = j;
+        // UMI runs are contiguous in `raw` (sorted by (umi, gene)).
+        let mut i = 0usize;
+        while i < n {
+            let u = raw[i].0;
+            let mut j = i;
+            while j < n && raw[j].0 == u {
+                j += 1;
+            }
+            let maxc = (i..j).map(|k| inter[k]).max().unwrap();
+            let tied = (i..j).filter(|&k| inter[k] == maxc).count() >= 2;
+            for k in i..j {
+                if tied || inter[k] < maxc {
+                    low[k] = true;
+                }
+            }
+            i = j;
+        }
     }
-    // step 3: relabel, merge, drop low-support keys
-    let mut fin: HashMap<(u64, u32), u32, RandomState> =
-        HashMap::with_capacity_and_hasher(raw.len(), RandomState::new());
-    for &(u, g, c) in &raw {
-        let d = corr.get(&(u, g)).copied().unwrap_or(u);
-        *fin.entry((d, g)).or_insert(0) += c;
+
+    // step 3: relabel + merge; emit surviving buckets in (umi, gene) order.
+    merged.clear();
+    merged.resize(n, 0);
+    for i in 0..n {
+        merged[dest[i] as usize] += raw[i].2;
     }
-    let mut out: Vec<(u64, u32, u32)> = fin
-        .into_iter()
-        .filter(|(k, _)| !low.contains(k))
-        .map(|((u, g), c)| (u, g, c))
-        .collect();
-    out.sort_unstable();
-    // DEVIATION from d92869f (`*v = out`): keep the reused scratch Vec's capacity.
     v.clear();
-    v.extend(out);
+    for b in 0..n {
+        if merged[b] > 0 && !low[b] {
+            v.push((raw[b].0, raw[b].1, merged[b]));
+        }
+    }
 }
 
 /// Per-worker scratch buffers reused by the cr-like resolvers across cells.
@@ -891,6 +995,8 @@ pub struct CrLikeScratch {
     umi_gene_count_vec: Vec<(u64, u32, u32)>,
     /// Deduplicated gene ids for one equivalence class / record.
     gset: Vec<u32>,
+    /// Reused buffers for the cr-like Hamming-1 UMI correction.
+    corr: CorrScratch,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -903,6 +1009,7 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     scratch: &mut CrLikeScratch,
     umi_edit: u32,
     umi_len: u32,
+    drop_low_support: bool,
     _log: &slog::Logger,
 ) where
     B: ConvertiblePrimitiveInteger,
@@ -912,11 +1019,12 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     <R as MappedRecord>::ParsingContext: Clone,
     <R as MappedRecord>::ParsingContext: Send,
 {
-    // Disjoint borrows of the two reusable buffers; both cleared before use so
-    // prior capacity is kept without carrying stale contents.
+    // Disjoint borrows of the reusable buffers; cleared before use so prior
+    // capacity is kept without carrying stale contents.
     let CrLikeScratch {
         umi_gene_count_vec,
         gset,
+        corr,
     } = scratch;
     umi_gene_count_vec.clear();
     umi_gene_count_vec.reserve(cell_chunk.nrec as usize);
@@ -936,10 +1044,12 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
             umi_gene_count_vec.push((umi, *g, 1));
         }
     }
-    // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before the
-    // winner-take-all resolution, when --umi-edit-dist >= 1 for cr-like.
+    // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before
+    // resolution, when --umi-edit-dist >= 1. `drop_low_support` keeps the full
+    // Cell Ranger chimera drop for cr-like (winner-take-all) and skips it for
+    // cr-like-em so multi-gene UMIs survive as eqclasses for the EM.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec, umi_len);
+        correct_umis_cellranger(umi_gene_count_vec, umi_len, drop_low_support, corr);
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
@@ -964,13 +1074,15 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     scratch: &mut CrLikeScratch,
     umi_edit: u32,
     umi_len: u32,
+    drop_low_support: bool,
     _log: &slog::Logger,
 ) {
-    // Disjoint borrows of the two reusable buffers; both cleared before use so
-    // prior capacity is kept without carrying stale contents.
+    // Disjoint borrows of the reusable buffers; cleared before use so prior
+    // capacity is kept without carrying stale contents.
     let CrLikeScratch {
         umi_gene_count_vec,
         gset,
+        corr,
     } = scratch;
     umi_gene_count_vec.clear();
 
@@ -1005,10 +1117,12 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
             }
         }
     }
-    // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before the
-    // winner-take-all resolution, when --umi-edit-dist >= 1 for cr-like.
+    // Cell Ranger-style Hamming-1 UMI correction (per cell, per gene) before
+    // resolution, when --umi-edit-dist >= 1. `drop_low_support` keeps the full
+    // Cell Ranger chimera drop for cr-like (winner-take-all) and skips it for
+    // cr-like-em so multi-gene UMIs survive as eqclasses for the EM.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec, umi_len);
+        correct_umis_cellranger(umi_gene_count_vec, umi_len, drop_low_support, corr);
     }
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
@@ -1580,9 +1694,10 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
 #[cfg(test)]
 mod cellranger_umi_tests {
-    // Ported VERBATIM from ygao61's branch umi_ham_edit_1 (commit d92869f); these
-    // include Cell Ranger's own mark_dups.rs test_correct_umis cases.
-    use super::correct_umis_cellranger;
+    // Ported from ygao61's branch umi_ham_edit_1 (commit d92869f); these
+    // include Cell Ranger's own mark_dups.rs test_correct_umis cases. They
+    // exercise the drop path (`drop_low_support = true`, i.e. cr-like).
+    use super::{CorrScratch, correct_umis_cellranger};
     // 4-nt UMIs, 2-bit MSB-first, A=0 C=1 G=2 T=3
     const AAAA: u64 = 0b0000_0000;
     const AAAT: u64 = 0b0000_0011;
@@ -1595,7 +1710,7 @@ mod cellranger_umi_tests {
     #[test]
     fn greater_count_neighbour_and_low_support() {
         let mut v = vec![(AAAA, 0, 3), (AAAT, 0, 2), (AAAA, 1, 1), (AATT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert_eq!(v, vec![(AAAA, 0, 5), (AATT, 1, 1)]);
     }
 
@@ -1603,7 +1718,7 @@ mod cellranger_umi_tests {
     #[test]
     fn equal_count_lexicographic_tiebreak() {
         let mut v = vec![(CCCC, 0, 1), (CGCC, 0, 1)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert_eq!(v, vec![(CGCC, 0, 2)]);
     }
 
@@ -1615,7 +1730,7 @@ mod cellranger_umi_tests {
         let b = AAAT;
         let c = AATT; // a~b and b~c are Hamming-1, a~c is Hamming-2
         let mut v = vec![(a, 0, 1), (b, 0, 2), (c, 0, 3)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert_eq!(v, vec![(b, 0, 1), (c, 0, 5)]);
     }
 
@@ -1623,7 +1738,7 @@ mod cellranger_umi_tests {
     #[test]
     fn correction_is_within_gene() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 1, 5)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert_eq!(v, vec![(AAAA, 0, 1), (AAAT, 1, 5)]);
     }
 
@@ -1660,7 +1775,7 @@ mod cellranger_umi_tests {
     #[test]
     fn all_low_support_gives_empty_vec() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert!(v.is_empty());
     }
 }
@@ -1680,7 +1795,7 @@ mod umi_ham_merge_tests {
         const AAAA: u64 = 0b0000_0000;
         const AAAT: u64 = 0b0000_0011;
         let mut v = vec![(AAAA, 0u32, 1u32), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32);
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
         assert!(v.is_empty(), "all keys low-support -> empty");
 
         let mut h: HashMap<Vec<u32>, BasicEqClassPayload, ahash::RandomState> =
@@ -1688,5 +1803,186 @@ mod umi_ham_merge_tests {
         // Must return via the empty guard, leaving the eqclass hash empty.
         resolve_num_molecules_crlike_from_vec(&mut v, &mut h);
         assert!(h.is_empty(), "empty cell yields no molecules");
+    }
+}
+
+#[cfg(test)]
+mod umi_correction_optimization_tests {
+    //! Guards for the gene-aware, allocation-free `correct_umis_cellranger`
+    //! rewrite (advisor items C1 + performance): a naive reference of the exact
+    //! three-step algorithm, a property test that the optimized version matches
+    //! it in both modes, the cr-like-em multi-gene-survival semantics, and the
+    //! needletail encoding-order invariant the tie-break relies on.
+    use super::{CorrScratch, correct_umis_cellranger};
+    use std::collections::{HashMap, HashSet};
+
+    /// Straightforward, obviously-correct reference implementation of the three
+    /// steps, parameterized by `drop_low_support`. No optimization; used only to
+    /// validate the optimized `correct_umis_cellranger`.
+    fn naive_correct(v: &mut Vec<(u64, u32, u32)>, umi_len: u32, drop_low_support: bool) {
+        if v.len() < 2 {
+            return;
+        }
+        v.sort_unstable();
+        let mut raw: Vec<(u64, u32, u32)> = Vec::new();
+        for &t in v.iter() {
+            if let Some(l) = raw.last_mut()
+                && l.0 == t.0
+                && l.1 == t.1
+            {
+                l.2 += t.2;
+                continue;
+            }
+            raw.push(t);
+        }
+        let mut counts: HashMap<(u64, u32), u32> = HashMap::new();
+        for &(u, g, c) in &raw {
+            counts.insert((u, g), c);
+        }
+        // step 1: corrections on raw counts
+        let mut corr: HashMap<(u64, u32), u64> = HashMap::new();
+        for &(u, g, c) in &raw {
+            let mut best = (c, u);
+            for pos in 0..umi_len {
+                for x in 1u64..=3 {
+                    let n = u ^ (x << (2 * pos));
+                    if let Some(&nc) = counts.get(&(n, g))
+                        && (nc, n) > best
+                    {
+                        best = (nc, n);
+                    }
+                }
+            }
+            if best.1 != u {
+                corr.insert((u, g), best.1);
+            }
+        }
+        // step 2: low support on the one-read-moved table (drop path only)
+        let mut low: HashSet<(u64, u32)> = HashSet::new();
+        if drop_low_support {
+            let mut inter = counts.clone();
+            for (&(u, g), &d) in &corr {
+                *inter.get_mut(&(u, g)).unwrap() -= 1;
+                *inter.get_mut(&(d, g)).unwrap() += 1;
+            }
+            let mut iv: Vec<(u64, u32, u32)> =
+                inter.iter().map(|(&(u, g), &c)| (u, g, c)).collect();
+            iv.sort_unstable();
+            let mut i = 0;
+            while i < iv.len() {
+                let mut j = i;
+                while j < iv.len() && iv[j].0 == iv[i].0 {
+                    j += 1;
+                }
+                let maxc = iv[i..j].iter().map(|t| t.2).max().unwrap();
+                let tied = iv[i..j].iter().filter(|t| t.2 == maxc).count() >= 2;
+                for &(u, g, c) in &iv[i..j] {
+                    if tied || c < maxc {
+                        low.insert((u, g));
+                    }
+                }
+                i = j;
+            }
+        }
+        // step 3: relabel, merge, (drop)
+        let mut fin: HashMap<(u64, u32), u32> = HashMap::new();
+        for &(u, g, c) in &raw {
+            let d = corr.get(&(u, g)).copied().unwrap_or(u);
+            *fin.entry((d, g)).or_insert(0) += c;
+        }
+        let mut out: Vec<(u64, u32, u32)> = fin
+            .into_iter()
+            .filter(|(k, _)| !low.contains(k))
+            .map(|((u, g), c)| (u, g, c))
+            .collect();
+        out.sort_unstable();
+        v.clear();
+        v.extend(out);
+    }
+
+    /// The optimized `correct_umis_cellranger` must match `naive_correct` for both
+    /// `drop_low_support` values, over many random small cells (covers the
+    /// all-pairs small-gene-group path) plus a large single-gene case (covers the
+    /// neighbour-enumeration path).
+    #[test]
+    fn optimized_matches_naive_reference() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut rng = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut scratch = CorrScratch::default();
+        for _ in 0..3000 {
+            let nkeys = (rng() % 38 + 2) as usize;
+            let mut input: Vec<(u64, u32, u32)> = Vec::with_capacity(nkeys);
+            for _ in 0..nkeys {
+                let umi = rng() % 256; // 4-mer packed in the low 8 bits
+                let gene = (rng() % 4) as u32; // few genes -> real per-gene groups
+                let cnt = (rng() % 4 + 1) as u32;
+                input.push((umi, gene, cnt));
+            }
+            for &drop in &[true, false] {
+                let mut opt = input.clone();
+                correct_umis_cellranger(&mut opt, 4, drop, &mut scratch);
+                let mut nai = input.clone();
+                naive_correct(&mut nai, 4, drop);
+                assert_eq!(opt, nai, "mismatch drop={drop} input={input:?}");
+            }
+        }
+        // 100 distinct UMIs in one gene forces the >SMALL_GENE_GROUP path.
+        let big: Vec<(u64, u32, u32)> =
+            (0u64..100).map(|u| (u, 0u32, (u as u32 % 5) + 1)).collect();
+        for &drop in &[true, false] {
+            let mut opt = big.clone();
+            correct_umis_cellranger(&mut opt, 4, drop, &mut scratch);
+            let mut nai = big.clone();
+            naive_correct(&mut nai, 4, drop);
+            assert_eq!(opt, nai, "large-group mismatch drop={drop}");
+        }
+    }
+
+    /// cr-like drops a fully-chimeric UMI set to nothing (the winner-take-all
+    /// behaviour), but cr-like-em must PRESERVE the corrected multi-gene UMI as
+    /// keys in both genes so the EM can resolve it.
+    #[test]
+    fn crlike_em_preserves_multigene_umi_that_crlike_drops() {
+        const AAAA: u64 = 0b0000_0000;
+        const AAAT: u64 = 0b0000_0011; // Hamming-1 of AAAA
+        let input = vec![(AAAA, 0u32, 1u32), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
+
+        // cr-like (drop): every key is tied/chimeric on the intermediate table -> empty.
+        let mut dropv = input.clone();
+        correct_umis_cellranger(&mut dropv, 4, true, &mut CorrScratch::default());
+        assert!(dropv.is_empty(), "cr-like drops the all-chimeric cell");
+
+        // cr-like-em (no drop): AAAA corrects into AAAT in both genes, and the
+        // resulting multi-gene UMI AAAT survives (genes 0 and 1) for the EM.
+        let mut keepv = input;
+        correct_umis_cellranger(&mut keepv, 4, false, &mut CorrScratch::default());
+        assert_eq!(keepv, vec![(AAAT, 0, 2), (AAAT, 1, 2)]);
+    }
+
+    /// The tie-break compares packed UMIs as integers and relies on the *actual*
+    /// needletail encoding (MSB-first, A<C<G<T) making integer order ==
+    /// lexicographic order. This exercises `BitNuclKmer`, not an in-test packer.
+    #[test]
+    fn needletail_packing_order_is_lexicographic() {
+        fn pack(s: &str) -> u64 {
+            let (_, bk, _) =
+                needletail::bitkmer::BitNuclKmer::new(s.as_bytes(), s.len() as u8, false)
+                    .next()
+                    .unwrap();
+            bk.0
+        }
+        let umis = [
+            "AAAA", "AAAT", "ACGT", "CAAA", "GTTT", "TAAA", "TTTA", "TTTT", "CGCC", "CCCC",
+        ];
+        for a in umis {
+            for b in umis {
+                assert_eq!(pack(a).cmp(&pack(b)), a.cmp(b), "{a} vs {b}");
+            }
+        }
     }
 }

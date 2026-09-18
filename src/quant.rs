@@ -876,6 +876,7 @@ where
                                     &mut crlike_scratch,
                                     config.crlike_umi_edit,
                                     config.umi_len,
+                                    config.resolution == ResolutionStrategy::CellRangerLike,
                                     &log,
                                 );
                             } else {
@@ -889,6 +890,7 @@ where
                                     &mut crlike_scratch,
                                     config.crlike_umi_edit,
                                     config.umi_len,
+                                    config.resolution == ResolutionStrategy::CellRangerLike,
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1070,6 +1072,7 @@ where
                         &mut crlike_scratch,
                         config.crlike_umi_edit,
                         config.umi_len,
+                        config.resolution == ResolutionStrategy::CellRangerLike,
                         &log,
                     );
                     // USA-mode
@@ -1822,12 +1825,24 @@ where
 
     // UMI length in bases from the RAD file-level "ulen" tag (chemistry/header,
     // NOT data-derived); caps the Hamming-1 neighbour scan in cr-like UMI
-    // correction. Same source convert.rs reads.
-    let umi_len_bases: u16 = file_tag_map
-        .get("ulen")
-        .expect("tag map must contain ulen for UMI length")
-        .try_into()?;
-    let umi_len: u32 = umi_len_bases as u32;
+    // correction. Only required when the correction is requested: a RAD without
+    // `ulen` (older salmon/piscem-cpp output, third-party writers) must still
+    // quant with --umi-edit-dist 0. `umi_len` must be the *packed* width.
+    let umi_len: u32 = if crlike_umi_edit > 0 {
+        let umi_len_bases: u16 = file_tag_map
+            .get("ulen")
+            .context(
+                "--umi-edit-dist >= 1 (cr-like Hamming-1 UMI correction) requires the `ulen` file-level tag",
+            )?
+            .try_into()?;
+        anyhow::ensure!(
+            umi_len_bases <= 32,
+            "ulen ({umi_len_bases}) exceeds the 32-base capacity of the u64 UMI packing"
+        );
+        umi_len_bases as u32
+    } else {
+        0
+    };
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
