@@ -1469,17 +1469,13 @@ where
     let read_tags = prelude.read_tags.clone();
     let aln_tags = prelude.aln_tags.clone();
 
-    // Orientation / UMI from declared roles (if any). The orientation field lets
-    // the generic scatter filter alignments by strand (see the generic record's
-    // `retain_ori`); the UMI role is recorded for a future generic quant path.
+    // Orientation from a declared role (if any): the orientation field lets the
+    // generic scatter filter alignments by strand (see the generic record's
+    // `retain_ori`).
     let ori_tag_idx = aln_tags
         .tags
         .iter()
         .position(|t| matches!(t.role, TagRole::Orientation));
-    let umi_tag_idx = read_tags
-        .tags
-        .iter()
-        .position(|t| matches!(t.role, TagRole::Umi { .. }));
 
     // Collation key: prefer the RAD's own declared roles; fall back to the name
     // bridge for un-annotated (legacy) files.
@@ -1544,7 +1540,6 @@ where
         aln_tags: aln_tags.clone(),
         key_tag_idx: Some(key_tag_idx),
         ori_tag_idx,
-        umi_tag_idx,
     };
 
     do_collate_with_temp::<_, _, _, u64, GenericReadRecord>(
