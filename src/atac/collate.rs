@@ -50,7 +50,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -410,6 +410,22 @@ where
     info!(log, "File-level tag values {:?}", file_tag_map);
 
     let bct = rl_tags.tags[0].typeid;
+
+    // Field-completeness self-check on the first chunk (mirrors the scRNA path):
+    // catch undeclared per-record fields early. The ATAC input map.rad is
+    // uncompressed (raw records), so no codec guard is needed here. Runs on a
+    // fresh reader so `br` (used by the header copy below) is undisturbed.
+    if prelude.hdr.num_chunks > 0 {
+        let first_chunk_pos = br.stream_position()?;
+        let mut chk = BufReader::new(File::open(&input_rad_path)?);
+        chk.seek(SeekFrom::Start(first_chunk_pos))?;
+        libradicl::chunk::validate_first_chunk_layout(
+            &mut chk,
+            &prelude.read_tags,
+            &prelude.aln_tags,
+        )
+        .context("RAD field-completeness check failed on the first chunk")?;
+    }
 
     // Write the collated-output header via the shared scRNA helper: it copies the
     // input header, patches `num_chunks` to the expected count, and appends the

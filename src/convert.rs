@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::{Context, bail};
+use anyhow::bail;
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 
@@ -648,17 +648,22 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag map {:?}", file_tag_map);
 
-    // Prefer the RAD's declared role lengths (#64), falling back to the
-    // cblen/ulen file tags for un-annotated (legacy) files.
-    let barcode_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
-        .map(u16::from)
-        .or_else(|| file_tag_map.get("cblen").and_then(|v| v.try_into().ok()))
-        .context("tag map must contain a barcode length (Barcode-role len, or cblen)")?;
-
-    let umi_len: u16 = umi_len_from_roles(&prelude.read_tags)
-        .map(u16::from)
-        .or_else(|| file_tag_map.get("ulen").and_then(|v| v.try_into().ok()))
-        .context("tag map must contain a UMI length (Umi-role len, or ulen)")?;
+    // Barcode/UMI lengths: role-declared if present, else the cblen/ulen file tags
+    // (shared resolver, prefers role and warns on disagreement).
+    let barcode_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["cblen"],
+        "barcode",
+        log,
+    )?;
+    let umi_len: u16 = crate::utils::resolve_declared_len(
+        umi_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["ulen"],
+        "UMI",
+        log,
+    )?;
 
     let mut num_reads: u64 = 0;
     let record_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;

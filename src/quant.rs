@@ -1764,20 +1764,16 @@ where
     //let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    // Get the (cell) barcode length. Prefer the innermost Barcode role's declared
-    // `len` (#64/#66), so a role-only RAD needs no length file tag; fall back to
-    // the "cblen" (single) / "b{N-1}len" (multi) file-tag conventions for legacy
-    // files. `cell_bc_len_from_roles` returns the highest-level Barcode role's
-    // length, which for a single-barcode file is simply its one barcode.
-    let barcode_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
-        .map(u16::from)
-        .or_else(|| {
-            file_tag_map
-                .get("cblen")
-                .or_else(|| file_tag_map.get("b1len").or_else(|| file_tag_map.get("b0len")))
-                .and_then(|v| v.try_into().ok())
-        })
-        .context("tag map must contain a cell barcode length (Barcode-role len, or cblen/bNlen)")?;
+    // Get the (cell) barcode length: role-declared if present, else the
+    // cblen/b{1,0}len file-tag conventions (single/multi legacy). One shared
+    // resolver defines the precedence.
+    let barcode_len: u16 = afutils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["cblen", "b1len", "b0len"],
+        "cell barcode",
+        log,
+    )?;
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
@@ -2295,7 +2291,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
 
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {

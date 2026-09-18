@@ -114,6 +114,12 @@ lto = "thin"
 
 [features]
 default = []
+# Validation/dev hooks not meant for production: currently the
+# AF_FORCE_GENERIC_COLLATE env override that forces the tag-driven generic
+# collation path even on a file the fast engine could handle (to prove the two
+# paths are equivalent). Off by default so a production build can never flip
+# collation behavior from the environment.
+dev-tools = []
 # Enable zstd as a selectable collated-RAD chunk codec (`--compress zstd`). Off by
 # default so the standard build stays pure-Rust (lz4); this pulls in libradicl's
 # zstd feature, which compiles the C zstd-sys.

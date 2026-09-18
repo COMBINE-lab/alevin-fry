@@ -74,6 +74,15 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     // from the tag section and decode each chunk. (The historical whole-file
     // Snappy `.sz` stream is gone.)
     let collated_path = parent.join("map.collated.rad");
+    // Migration diagnostic: a stale `.sz` from before the per-chunk-codec change is
+    // no longer readable — say so rather than "run collate".
+    if !collated_path.exists() && parent.join("map.collated.rad.sz").exists() {
+        anyhow::bail!(
+            "found a legacy whole-file-Snappy collated RAD (map.collated.rad.sz) but no \
+             map.collated.rad; the collated output format changed to per-chunk codec — \
+             re-run `collate` to regenerate it"
+        );
+    }
     let i_file = File::open(&collated_path).context("run collate before quant")?;
     let br = BufReader::new(i_file);
     info!(log, "quantifying from collated RAD file {:?}", collated_path);

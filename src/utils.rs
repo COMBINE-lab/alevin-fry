@@ -311,99 +311,128 @@ pub(crate) enum KnownRecordType {
     RnaShortMultiBC(u16, u16),
 }
 
+/// The (cell) barcode nucleotide length for classification: prefer the innermost
+/// Barcode role's declared `len` (#64/#66; works for single- and multi-barcode
+/// layouts), falling back to the named file tag (`cblen`/`b{N-1}len`) for
+/// un-annotated files. Errors — rather than panicking — when neither is present.
+fn classify_bc_len(
+    prelude: &RadPrelude,
+    file_tag_map: &TagMap,
+    fallback_tag: &str,
+) -> anyhow::Result<u16> {
+    MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
+        .map(u16::from)
+        .or_else(|| file_tag_map.get(fallback_tag).and_then(|v| v.try_into().ok()))
+        .with_context(|| {
+            format!(
+                "RAD is missing a barcode length (declare it on the Barcode role's `len`, \
+                 or provide a `{fallback_tag}` file tag)"
+            )
+        })
+}
+
+/// Resolve a barcode/UMI nucleotide length from the RAD, preferring the declared
+/// role length (#64/#66) and falling back to the named file tag(s) for
+/// un-annotated files. Per the format policy, this never forbids a tag name and
+/// never errors on disagreement: if both a role length and a file tag are present
+/// and differ, the role wins and we warn (a partially-stamped file). Errors only
+/// when neither source provides a length. One helper for every read-path site so
+/// the precedence is defined in exactly one place.
+pub(crate) fn resolve_declared_len(
+    role_len: Option<u8>,
+    file_tag_map: &TagMap,
+    fallback_tags: &[&str],
+    what: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<u16> {
+    let tag_len: Option<u16> = fallback_tags
+        .iter()
+        .find_map(|n| file_tag_map.get(n).and_then(|v| v.try_into().ok()));
+    match (role_len.map(u16::from), tag_len) {
+        (Some(r), Some(t)) if r != t => {
+            slog::warn!(
+                log,
+                "{} length disagreement: the declared role says {}, a file tag says {}; \
+                 using the role-declared length",
+                what,
+                r,
+                t
+            );
+            Ok(r)
+        }
+        (Some(r), _) => Ok(r),
+        (None, Some(t)) => Ok(t),
+        (None, None) => anyhow::bail!(
+            "could not determine the {what} length: no role `len` and none of the {fallback_tags:?} file tags"
+        ),
+    }
+}
+
 pub(crate) fn get_record_type_from_prelude(
     prelude: &RadPrelude,
     file_tag_map: &TagMap,
-) -> KnownRecordType {
-    // Check for multi-barcode first (presence of num_barcodes file-level tag)
+) -> anyhow::Result<KnownRecordType> {
+    // Canonical multi-barcode (Flex): the `num_barcodes` file tag.
     if let Some(num_bc_val) = file_tag_map.get("num_barcodes") {
         let num_bc: u16 = num_bc_val
             .try_into()
-            .expect("should be able to parse \"num_barcodes\" as a u16");
+            .context("could not parse the `num_barcodes` file tag as a u16")?;
         if num_bc > 1 {
-            // Multi-barcode: the cell BC length is the last barcode level
-            // (b{N-1}len), or we can use the innermost barcode length.
-            let cell_bc_tag = format!("b{}len", num_bc - 1);
-            let cell_bc_len: u16 = file_tag_map
-                .get(&cell_bc_tag)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "multi-barcode RAD file should have a \"{}\" file-level tag",
-                        cell_bc_tag
-                    )
-                })
-                .try_into()
-                .unwrap_or_else(|_| panic!("should be able to parse \"{}\" as a u16", cell_bc_tag));
-            return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc);
+            let cell_bc_len = classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc - 1))?;
+            return Ok(KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc));
         }
     }
 
-    // Role-based multi-barcode detection: a self-describing RAD (#64/#66) that
-    // declares >= 2 Barcode roles is multi-barcode even without the `num_barcodes`
-    // / `bN` / `bNlen` name conventions. The innermost (cell) barcode length comes
-    // from that role's `len`, falling back to a `b{N-1}len` file tag if the role
-    // left it unspecified.
-    {
-        let num_bc_roles = prelude
-            .read_tags
-            .tags
-            .iter()
-            .filter(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
-            .count();
-        if num_bc_roles > 1 {
-            let cell_bc_len: u16 =
-                MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
-                    .map(u16::from)
-                    .or_else(|| {
-                        file_tag_map
-                            .get(&format!("b{}len", num_bc_roles - 1))
-                            .and_then(|v| v.try_into().ok())
-                    })
-                    .expect(
-                        "multi-barcode RAD declares >= 2 Barcode roles but no cell barcode length; \
-                         set `len` on the innermost Barcode role or provide a b{N-1}len file tag",
-                    );
-            return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc_roles as u16);
-        }
-    }
-
+    // Positively-identified single-cell layouts are recognized by their alignment
+    // tag signatures *before* the role-based multi check, so e.g. a long-read RAD
+    // that happens to declare barcode roles is still classified as long-read.
     let aln_tags = &prelude.aln_tags;
     if aln_tags.has_tag("as") && aln_tags.has_tag("start") && aln_tags.has_tag("end") {
-        // long-read single cell
-        let bc_len: u16 = file_tag_map
-            .get("cblen")
-            .expect("lr-scRNA seq RAD file should have a \"cblen\" file-level tag")
-            .try_into()
-            .expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::RnaLong(bc_len)
+        return Ok(KnownRecordType::RnaLong(classify_bc_len(
+            prelude,
+            file_tag_map,
+            "cblen",
+        )?));
     } else if aln_tags.has_tag("pos") {
-        // alevin-fry with positions
-        let bc_len: u16 = file_tag_map
-            .get("cblen")
-            .expect("scRNA seq (with position) RAD file should have a \"cblen\" file-level tag")
-            .try_into()
-            .expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::RnaShortPos(bc_len)
+        return Ok(KnownRecordType::RnaShortPos(classify_bc_len(
+            prelude,
+            file_tag_map,
+            "cblen",
+        )?));
     } else if aln_tags.has_tag("type")
         && aln_tags.has_tag("start_pos")
         && aln_tags.has_tag("frag_len")
     {
-        // ATAC seq
-        let bc_len: u16 = file_tag_map
-            .get("cblen")
-            .expect("scATAC seq RAD file should have a \"cblen\" file-level tag")
-            .try_into()
-            .expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::AtacSeq(bc_len)
-    } else {
-        // classic alevin-fry
-        let bc_len: u16 = file_tag_map
-            .get("cblen")
-            .expect("scRNA seq RAD file should have a \"cblen\" file-level tag")
-            .try_into()
-            .expect("should be able to parse \"cblen\" as a u16");
-        KnownRecordType::RnaShort(bc_len)
+        return Ok(KnownRecordType::AtacSeq(classify_bc_len(
+            prelude,
+            file_tag_map,
+            "cblen",
+        )?));
     }
+
+    // Role-based multi-barcode detection: a self-describing RAD (#64/#66) with >= 2
+    // Barcode roles is multi-barcode even without the num_barcodes/bN/bNlen name
+    // conventions. Checked after the aln-signature types above.
+    let num_bc_roles = prelude
+        .read_tags
+        .tags
+        .iter()
+        .filter(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
+        .count();
+    if num_bc_roles > 1 {
+        let cell_bc_len = classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc_roles - 1))?;
+        return Ok(KnownRecordType::RnaShortMultiBC(
+            cell_bc_len,
+            num_bc_roles as u16,
+        ));
+    }
+
+    // classic single-barcode alevin-fry (also the fallback bucket)
+    Ok(KnownRecordType::RnaShort(classify_bc_len(
+        prelude,
+        file_tag_map,
+        "cblen",
+    )?))
 }
 
 pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {

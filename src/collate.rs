@@ -1667,8 +1667,10 @@ where
     // records exactly fill the payload under the declared tag layout, catching
     // undeclared on-disk fields early and clearly rather than as a deep parse
     // panic. Run on a fresh reader so `br` (used by the collation below) is
-    // undisturbed; skipped automatically for variable-width tag layouts.
-    if prelude.hdr.num_chunks > 0 {
+    // undisturbed; skipped automatically for variable-width tag layouts, and for
+    // a per-chunk-codec-compressed input (the payload isn't raw records).
+    let input_codec = libradicl::codec::chunk_codec_from_tag_map(&file_tag_map)?;
+    if prelude.hdr.num_chunks > 0 && input_codec == libradicl::ChunkCodec::None {
         let first_chunk_pos = br.stream_position()?;
         let mut chk = BufReader::new(File::open(&input_rad_path)?);
         chk.seek(SeekFrom::Start(first_chunk_pos))?;
@@ -1680,7 +1682,7 @@ where
         .context("RAD field-completeness check failed on the first chunk")?;
     }
 
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(bc_len) => {
@@ -1753,16 +1755,18 @@ where
             // Routing to the tag-driven generic collation path. `RnaShort` is the
             // fallback bucket: a RAD lands here when it matches none of the
             // positively-identified fast layouts. We take the generic path when:
-            //   * AF_FORCE_GENERIC_COLLATE is set — a validation/preview override
-            //     that forces generic even on a file the fast engine could handle
-            //     (used to prove the two paths are equivalent), or
+            //   * the dev-tools validation override is active (forces generic even
+            //     on a file the fast engine could handle, to prove the two paths are
+            //     equivalent) — only compiled in with `--features dev-tools`, so it
+            //     can never silently flip behavior in a production build, or
             //   * the file is unknown to the fast engine (it lacks the `b`/`u`
             //     bridge tags the fast context requires) but declares a `Barcode`
             //     role, so it can describe how to collate itself despite using
             //     non-conventional tag names (COMBINE-lab/libradicl#64).
             // Positively-identified fast layouts keep their specialized engine;
             // declared roles there are optional validation only.
-            let forced = std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok();
+            let forced =
+                cfg!(feature = "dev-tools") && std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok();
             let has_bridge = prelude.read_tags.has_tag("b") && prelude.read_tags.has_tag("u");
             let has_barcode_role = prelude
                 .read_tags

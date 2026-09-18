@@ -677,7 +677,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut ifile).unwrap();
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {
@@ -1212,21 +1212,16 @@ fn do_generate_permit_list_multi_bc(
     let mut sample_info_entries = Vec::new();
     let mut cell_correction_scopes = Vec::with_capacity(num_samples);
 
-    // Cell barcode length: prefer the innermost Barcode role's declared `len`
-    // (#64/#66), falling back to the `b{N-1}len` file tag for un-annotated files.
-    let cell_bc_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
-        .map(u16::from)
-        .or_else(|| {
-            let cell_bc_tag = format!("b{}len", num_barcodes - 1);
-            file_tag_map.get(&cell_bc_tag).and_then(|v| v.try_into().ok())
-        })
-        .ok_or_else(|| {
-            anyhow!(
-                "multi-barcode RAD has no cell barcode length: set `len` on the innermost \
-                 Barcode role, or provide a b{}len file tag",
-                num_barcodes - 1
-            )
-        })?;
+    // Cell barcode length: role-declared if present, else the `b{N-1}len` file tag
+    // (shared resolver, prefers role and warns on disagreement).
+    let cell_bc_tag = format!("b{}len", num_barcodes - 1);
+    let cell_bc_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &[&cell_bc_tag],
+        "cell barcode",
+        log,
+    )?;
     let cell_spec = gpl_opts.cell_correction_spec(cell_bc_len as u8, true);
     warn_for_shift_frequency(cell_spec, "cell", log);
     let cell_correction_start = Instant::now();
