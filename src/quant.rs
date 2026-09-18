@@ -1537,8 +1537,11 @@ where
     }
     bounds.push(num_chunks);
 
+    // Prefer the collated RAD's declared tag roles (#64) so a role-annotated file
+    // whose tags use non-conventional names still quantifies; falls back to the
+    // b/b0/u name bridge for un-annotated (legacy) files.
     let record_context = prelude
-        .get_record_context::<<R as MappedRecord>::ParsingContext>()
+        .get_record_context_prefer_roles::<<R as MappedRecord>::ParsingContext>()
         .map_err(|e| anyhow::anyhow!("could not get record context: {e}"))?;
 
     std::thread::scope(|s| {

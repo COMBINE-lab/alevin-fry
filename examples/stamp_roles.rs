@@ -40,6 +40,23 @@ fn main() -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(stamped, "read tag `{tag}` not found");
+    // Optionally stamp a Umi role on a read tag (STAMP_UMI=<name>) and rename it
+    // (STAMP_RENAME_UMI=<new>), so the single-barcode context can be built from
+    // roles alone (a Barcode role requires a matching Umi role).
+    if let Ok(umi_name) = std::env::var("STAMP_UMI") {
+        let rename_umi = std::env::var("STAMP_RENAME_UMI").ok();
+        let mut ok = false;
+        for t in &mut prelude.read_tags.tags {
+            if t.name == umi_name {
+                t.role = TagRole::Umi;
+                if let Some(n) = &rename_umi {
+                    t.name = n.clone();
+                }
+                ok = true;
+            }
+        }
+        anyhow::ensure!(ok, "umi read tag `{umi_name}` not found");
+    }
     if let Some(ot) = ori_tag {
         let mut ok = false;
         for t in &mut prelude.aln_tags.tags {
