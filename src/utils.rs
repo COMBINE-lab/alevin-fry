@@ -1339,4 +1339,196 @@ mod tests {
         pm.add_probs(&[0.2, 0.1, 0.05, 0.65]);
         std::hint::black_box(&pm[2][2]);
     }
+
+    // ---- role-awareness / declared-length tests (PR #195) ----
+    //
+    // These exercise the self-describing "tag roles" read paths added in this PR:
+    // `resolve_declared_len` (role length preferred over the file tag, with a
+    // fallback) and the role-based record classification in
+    // `get_record_type_from_prelude`.
+
+    use libradicl::header::{RadHeader, RadPrelude, SpecVersion};
+    use libradicl::rad_types::{
+        RadIntId, RadType, TagDesc, TagMap, TagRole, TagSection, TagSectionLabel, TagValue,
+    };
+
+    fn discard_logger() -> slog::Logger {
+        slog::Logger::root(slog::Discard, slog::o!())
+    }
+
+    fn file_tag_map_with(entries: &[(&str, u16)]) -> TagMap {
+        let mut fts = TagSection::new_with_label(TagSectionLabel::FileTags);
+        for (name, _) in entries {
+            fts.add_tag_desc(TagDesc::new(*name, RadType::Int(RadIntId::U16)));
+        }
+        let mut m = TagMap::with_keyset(&fts.tags);
+        for (_, v) in entries {
+            m.add(TagValue::U16(*v));
+        }
+        m
+    }
+
+    /// A role-declared length wins over a disagreeing `cblen` file tag (the file is
+    /// only partially stamped); `resolve_declared_len` returns the role length.
+    #[test]
+    fn resolve_declared_len_prefers_role_on_mismatch() {
+        let log = discard_logger();
+        let ftm = file_tag_map_with(&[("cblen", 12)]);
+        let got =
+            super::resolve_declared_len(Some(16), &ftm, &["cblen"], "cell barcode", &log).unwrap();
+        // Role says 16, the file tag says 12; the role wins (and a warning is
+        // emitted, which we don't capture here).
+        assert_eq!(got, 16);
+    }
+
+    /// With no role length, `resolve_declared_len` falls back to the file tag.
+    #[test]
+    fn resolve_declared_len_falls_back_to_file_tag() {
+        let log = discard_logger();
+        let ftm = file_tag_map_with(&[("cblen", 14)]);
+        let got =
+            super::resolve_declared_len(None, &ftm, &["cblen"], "cell barcode", &log).unwrap();
+        assert_eq!(got, 14);
+    }
+
+    /// A role length with no file tag at all resolves to the role length — this is
+    /// exactly the role-only RAD case that fix 2 makes usable.
+    #[test]
+    fn resolve_declared_len_role_only_no_file_tag() {
+        let log = discard_logger();
+        let ftm = file_tag_map_with(&[]);
+        let got =
+            super::resolve_declared_len(Some(16), &ftm, &["cblen"], "cell barcode", &log).unwrap();
+        assert_eq!(got, 16);
+    }
+
+    /// Neither a role length nor a matching file tag is an error, not a panic.
+    #[test]
+    fn resolve_declared_len_errors_when_absent() {
+        let log = discard_logger();
+        let ftm = file_tag_map_with(&[("something_else", 8)]);
+        assert!(super::resolve_declared_len(None, &ftm, &["cblen"], "cell barcode", &log).is_err());
+    }
+
+    fn int_tag(name: &str, id: RadIntId, role: TagRole) -> TagDesc {
+        TagDesc::new(name, RadType::Int(id)).with_role(role)
+    }
+
+    fn make_prelude(read_tags: Vec<TagDesc>, aln_tags: Vec<TagDesc>) -> RadPrelude {
+        let hdr = RadHeader {
+            version: SpecVersion::current(),
+            is_paired: 0,
+            ref_count: 1,
+            ref_names: vec!["gene0".to_string()],
+            num_chunks: 1,
+        };
+        let file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
+        let mut rts = TagSection::new_with_label(TagSectionLabel::ReadTags);
+        for t in read_tags {
+            rts.add_tag_desc(t);
+        }
+        let mut ats = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
+        for t in aln_tags {
+            ats.add_tag_desc(t);
+        }
+        RadPrelude::from_header_and_tag_sections(hdr, file_tags, rts, ats)
+    }
+
+    /// A role-only single-barcode layout (non-conventional tag names, no `cblen`
+    /// file tag, a single Barcode role carrying its length) classifies as
+    /// `RnaShort` with the role-declared barcode length. This is the file shape
+    /// that fix 2 lets flow through generate-permit-list and collate's role
+    /// auto-route.
+    #[test]
+    fn classify_role_only_single_barcode_is_rnashort() {
+        let prelude = make_prelude(
+            vec![
+                int_tag(
+                    "cell_bc",
+                    RadIntId::U32,
+                    TagRole::Barcode { level: 0, len: 16 },
+                ),
+                int_tag("umi_tag", RadIntId::U32, TagRole::Umi { len: 12 }),
+            ],
+            vec![int_tag("ori_ref", RadIntId::U32, TagRole::None)],
+        );
+        let ftm = file_tag_map_with(&[]);
+        match super::get_record_type_from_prelude(&prelude, &ftm).unwrap() {
+            super::KnownRecordType::RnaShort(bc_len) => assert_eq!(bc_len, 16),
+            other => panic!("expected RnaShort, got {other:?}"),
+        }
+    }
+
+    /// Two Barcode roles (no positional aln signature) classify as multi-barcode
+    /// via the role-based detection, using the innermost (highest-level) Barcode
+    /// role's length.
+    #[test]
+    fn classify_two_barcode_roles_is_multi_bc() {
+        let prelude = make_prelude(
+            vec![
+                int_tag(
+                    "sample_bc",
+                    RadIntId::U32,
+                    TagRole::Barcode { level: 0, len: 8 },
+                ),
+                int_tag(
+                    "cell_bc",
+                    RadIntId::U32,
+                    TagRole::Barcode { level: 1, len: 16 },
+                ),
+                int_tag("umi_tag", RadIntId::U32, TagRole::Umi { len: 12 }),
+            ],
+            vec![int_tag("ori_ref", RadIntId::U32, TagRole::None)],
+        );
+        let ftm = file_tag_map_with(&[]);
+        match super::get_record_type_from_prelude(&prelude, &ftm).unwrap() {
+            super::KnownRecordType::RnaShortMultiBC(cell_len, num_bc) => {
+                assert_eq!(cell_len, 16);
+                assert_eq!(num_bc, 2);
+            }
+            other => panic!("expected RnaShortMultiBC, got {other:?}"),
+        }
+    }
+
+    /// A file with >= 2 Barcode roles AND a positional (`pos`) alignment tag is
+    /// classified as `RnaShortPos` (the aln signature is checked first). Building
+    /// the single-barcode record context from its roles must then fail with a
+    /// CLEAN error — a single-barcode record expects exactly one Barcode role — so
+    /// the ambiguous layout can never be silently misread.
+    #[test]
+    fn two_barcode_roles_with_pos_errors_cleanly() {
+        let prelude = make_prelude(
+            vec![
+                int_tag(
+                    "sample_bc",
+                    RadIntId::U32,
+                    TagRole::Barcode { level: 0, len: 8 },
+                ),
+                int_tag(
+                    "cell_bc",
+                    RadIntId::U32,
+                    TagRole::Barcode { level: 1, len: 16 },
+                ),
+                int_tag("umi_tag", RadIntId::U32, TagRole::Umi { len: 12 }),
+            ],
+            vec![
+                int_tag("pos", RadIntId::U32, TagRole::None),
+                int_tag("ori_ref", RadIntId::U32, TagRole::None),
+            ],
+        );
+        let ftm = file_tag_map_with(&[]);
+        // The positional aln signature wins the classification.
+        assert!(matches!(
+            super::get_record_type_from_prelude(&prelude, &ftm).unwrap(),
+            super::KnownRecordType::RnaShortPos(_)
+        ));
+        // ...but the single-barcode context cannot be built from two Barcode
+        // roles: a clean error, not a silent misread or panic.
+        let ctx =
+            prelude.get_record_context_prefer_roles::<libradicl::record::AlevinFryRecordContext>();
+        assert!(
+            ctx.is_err(),
+            "expected a clean error building a single-barcode context from two Barcode roles"
+        );
+    }
 }
