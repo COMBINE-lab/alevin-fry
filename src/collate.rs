@@ -57,7 +57,7 @@ const COLLATE_INPUT_BUF_BYTES: usize = 4 * 1024 * 1024;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -1278,6 +1278,13 @@ where
     // the number of cells left to process
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
+    // Shared "a gather worker failed" flag. A worker sets it before returning its
+    // `Err`; the producer's push loop and the sibling workers check it so a single
+    // worker exiting on error can't leave the bounded queue full forever (the CLI
+    // thread floor of 2 often means exactly one gather worker, so an unchecked
+    // busy-wait producer would spin forever once the 2-slot queue fills).
+    let gather_failed = Arc::new(AtomicBool::new(false));
+
     let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
     pbar_gather.set_style(sty);
     pbar_gather.tick();
@@ -1305,53 +1312,70 @@ where
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
         let collation_ctx = collation_ctx.clone();
+        let gather_failed = gather_failed.clone();
         // now, make the worker threads
         let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
-            let collation_ctx = collation_ctx;
-            let mut local_chunks = 0u64;
-            let parent = std::path::Path::new(&input_dir);
-            // pop from the work queue until everything is
-            // processed
-            while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some(temp_bucket) = in_q.pop() {
-                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-
-                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    // Collate this temp bucket through the unified streaming gather
-                    // (bounded memory: streams the input in two passes, holds only
-                    // the collated output), then record its chunk offsets and
-                    // append it under one lock so the index stays in file order.
-                    let tfile = std::fs::File::open(&fname)
-                        .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
-                    let mut treader = BufReader::new(tfile);
-                    let mut collated = Vec::new();
-                    local_chunks += collate_bucket::<R, _>(
-                        &mut treader,
-                        temp_bucket.1 as usize,
-                        &collation_ctx,
-                        codec,
-                        &mut collated,
-                    )
-                    .context("collate_bucket failed")? as u64;
-                    {
-                        let mut w = owriter
-                            .lock()
-                            .map_err(|_| anyhow!("collated output mutex was poisoned"))?;
-                        chunk_index
-                            .lock()
-                            .map_err(|_| anyhow!("chunk index mutex was poisoned"))?
-                            .record_bucket(&collated);
-                        w.write_all(&collated)
-                            .context("could not write the collated bucket")?;
+            // Run the fallible body and, on any error, set the shared failed flag
+            // before returning so the producer stops pushing and sibling workers
+            // stop popping (the join below still surfaces the error via `?`).
+            let result = (|| -> anyhow::Result<u64> {
+                let collation_ctx = collation_ctx;
+                let mut local_chunks = 0u64;
+                let parent = std::path::Path::new(&input_dir);
+                // pop from the work queue until everything is
+                // processed
+                while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                    // a sibling worker failed: stop early so we don't spin on an
+                    // empty queue that the producer has stopped feeding.
+                    if gather_failed.load(Ordering::Relaxed) {
+                        break;
                     }
-                    drop(treader);
-                    std::fs::remove_file(&fname)
-                        .with_context(|| format!("could not delete temporary bucket {fname:?}"))?;
+                    if let Some(temp_bucket) = in_q.pop() {
+                        buckets_remaining.fetch_sub(1, Ordering::SeqCst);
 
-                    pbar_gather.inc(1);
+                        let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                        // Collate this temp bucket through the unified streaming gather
+                        // (bounded memory: streams the input in two passes, holds only
+                        // the collated output), then record its chunk offsets and
+                        // append it under one lock so the index stays in file order.
+                        let tfile = std::fs::File::open(&fname)
+                            .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
+                        let mut treader = BufReader::new(tfile);
+                        let mut collated = Vec::new();
+                        local_chunks += collate_bucket::<R, _>(
+                            &mut treader,
+                            temp_bucket.1 as usize,
+                            &collation_ctx,
+                            codec,
+                            &mut collated,
+                        )
+                        .context("collate_bucket failed")?
+                            as u64;
+                        {
+                            let mut w = owriter
+                                .lock()
+                                .map_err(|_| anyhow!("collated output mutex was poisoned"))?;
+                            chunk_index
+                                .lock()
+                                .map_err(|_| anyhow!("chunk index mutex was poisoned"))?
+                                .record_bucket(&collated);
+                            w.write_all(&collated)
+                                .context("could not write the collated bucket")?;
+                        }
+                        drop(treader);
+                        std::fs::remove_file(&fname).with_context(|| {
+                            format!("could not delete temporary bucket {fname:?}")
+                        })?;
+
+                        pbar_gather.inc(1);
+                    }
                 }
+                Ok(local_chunks)
+            })();
+            if result.is_err() {
+                gather_failed.store(true, Ordering::Relaxed);
             }
-            Ok(local_chunks)
+            result
         });
         gather_handles.push(handle);
     } // for each worker
@@ -1360,11 +1384,22 @@ where
     // by the worker threads.
     for temp_bucket in temp_buckets {
         let mut bclone = temp_bucket.clone();
-        // keep trying until we can push this payload
+        // keep trying until we can push this payload, unless a gather worker has
+        // failed — in which case we stop pushing so the join below can surface the
+        // worker's error instead of the producer spinning on a full queue forever.
         while let Err(t) = fq.push(bclone) {
             bclone = t;
-            // no point trying to push if the queue is full
-            while fq.is_full() {}
+            if gather_failed.load(Ordering::Relaxed) {
+                break;
+            }
+            // no point trying to push if the queue is full; yield rather than
+            // busy-spinning, and bail out the moment a worker fails.
+            while fq.is_full() && !gather_failed.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+        }
+        if gather_failed.load(Ordering::Relaxed) {
+            break;
         }
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);

@@ -55,7 +55,7 @@ use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 #[allow(clippy::too_many_arguments)]
@@ -741,6 +741,12 @@ where
     // the number of cells left to process
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
+    // Shared "a gather worker failed" flag; see the scRNA collate path for the
+    // rationale. Without it, a single failing gather worker (the CLI thread floor
+    // of 2 often means exactly one) leaves the bounded queue full and the busy-wait
+    // producer spins forever.
+    let gather_failed = Arc::new(AtomicBool::new(false));
+
     let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
     pbar_gather.set_style(sty);
     pbar_gather.tick();
@@ -766,56 +772,71 @@ where
         let owriter = owriter.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
+        let gather_failed = gather_failed.clone();
 
         // now, make the worker threads
         let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
-            let mut local_chunks = 0u64;
-            let parent = std::path::Path::new(&input_dir);
-            // pop from the work queue until everything is
-            // processed
-            // Collation context for the unified gather: the scATAC record has a
-            // fixed `[na][bc][aln]` layout keyed on the barcode (no UMI).
-            let ctx = AtacSeqRecordContext::from_bct(bc_type);
-            while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some(temp_bucket) = in_q.pop() {
-                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
+            // Run the fallible body and, on any error, set the shared failed flag
+            // before returning so the producer stops pushing and sibling workers
+            // stop popping (the join below still surfaces the error via `?`).
+            let result = (|| -> anyhow::Result<u64> {
+                let mut local_chunks = 0u64;
+                let parent = std::path::Path::new(&input_dir);
+                // pop from the work queue until everything is
+                // processed
+                // Collation context for the unified gather: the scATAC record has a
+                // fixed `[na][bc][aln]` layout keyed on the barcode (no UMI).
+                let ctx = AtacSeqRecordContext::from_bct(bc_type);
+                while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                    // a sibling worker failed: stop early so we don't spin on an
+                    // empty queue that the producer has stopped feeding.
+                    if gather_failed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Some(temp_bucket) = in_q.pop() {
+                        buckets_remaining.fetch_sub(1, Ordering::SeqCst);
 
-                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    let tfile = std::fs::File::open(&fname)
-                        .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
-                    let mut treader = BufReader::new(tfile);
+                        let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                        let tfile = std::fs::File::open(&fname)
+                            .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
+                        let mut treader = BufReader::new(tfile);
 
-                    // Unified gather: group this bucket's records into per-cell
-                    // chunks with the shared `collate_bucket` engine (retiring the
-                    // ATAC-specific `collate_temporary_bucket_twopass_atac`). Each
-                    // chunk's payload is framed with the per-chunk `codec` (as the
-                    // scRNA paths do), so the output is self-describing and the
-                    // header stays uncompressed/seek-patchable.
-                    let mut out: Vec<u8> = Vec::new();
-                    let nchunks = libradicl::bucket_gather::collate_bucket::<AtacSeqReadRecord, _>(
-                        &mut treader,
-                        temp_bucket.1 as usize,
-                        &ctx,
-                        codec,
-                        &mut out,
-                    )
-                    .context("atac gather (collate_bucket) failed")?;
-                    owriter
-                        .lock()
-                        .map_err(|_| anyhow!("collated atac output mutex was poisoned"))?
-                        .write_all(&out)
-                        .context("could not write the collated atac output")?;
-                    local_chunks += nchunks as u64;
+                        // Unified gather: group this bucket's records into per-cell
+                        // chunks with the shared `collate_bucket` engine (retiring the
+                        // ATAC-specific `collate_temporary_bucket_twopass_atac`). Each
+                        // chunk's payload is framed with the per-chunk `codec` (as the
+                        // scRNA paths do), so the output is self-describing and the
+                        // header stays uncompressed/seek-patchable.
+                        let mut out: Vec<u8> = Vec::new();
+                        let nchunks = libradicl::bucket_gather::collate_bucket::<
+                            AtacSeqReadRecord,
+                            _,
+                        >(
+                            &mut treader, temp_bucket.1 as usize, &ctx, codec, &mut out
+                        )
+                        .context("atac gather (collate_bucket) failed")?;
+                        owriter
+                            .lock()
+                            .map_err(|_| anyhow!("collated atac output mutex was poisoned"))?
+                            .write_all(&out)
+                            .context("could not write the collated atac output")?;
+                        local_chunks += nchunks as u64;
 
-                    // we don't need the file or reader anymore
-                    drop(treader);
-                    std::fs::remove_file(&fname)
-                        .with_context(|| format!("could not delete temporary bucket {fname:?}"))?;
+                        // we don't need the file or reader anymore
+                        drop(treader);
+                        std::fs::remove_file(&fname).with_context(|| {
+                            format!("could not delete temporary bucket {fname:?}")
+                        })?;
 
-                    pbar_gather.inc(1);
+                        pbar_gather.inc(1);
+                    }
                 }
+                Ok(local_chunks)
+            })();
+            if result.is_err() {
+                gather_failed.store(true, Ordering::Relaxed);
             }
-            Ok(local_chunks)
+            result
         });
         gather_handles.push(handle);
     } // for each worker
@@ -824,11 +845,22 @@ where
     // by the worker threads.
     for temp_bucket in temp_buckets {
         let mut bclone = temp_bucket.clone();
-        // keep trying until we can push this payload
+        // keep trying until we can push this payload, unless a gather worker has
+        // failed — in which case we stop pushing so the join below can surface the
+        // worker's error instead of the producer spinning on a full queue forever.
         while let Err(t) = fq.push(bclone) {
             bclone = t;
-            // no point trying to push if the queue is full
-            while fq.is_full() {}
+            if gather_failed.load(Ordering::Relaxed) {
+                break;
+            }
+            // no point trying to push if the queue is full; yield rather than
+            // busy-spinning, and bail out the moment a worker fails.
+            while fq.is_full() && !gather_failed.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+        }
+        if gather_failed.load(Ordering::Relaxed) {
+            break;
         }
         // `temp_bucket.1` was reconciled against the records actually written
         // before the buckets were queued, so these must now agree.
