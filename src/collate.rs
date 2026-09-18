@@ -21,7 +21,7 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
-use libradicl::bucket_gather::{CollationScan, GenericCollateCtx, collate_bucket};
+use libradicl::bucket_gather::{CollationScan, TagDrivenCollateCtx, collate_bucket};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -31,7 +31,7 @@ use libradicl::multi_collation::{
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordWithPositionT, AlevinFryRecordContext, CollatableMappedRecord,
-    ConvertiblePrimitiveInteger, GenericReadRecord, GenericReadRecordContext, KnownSize,
+    ConvertiblePrimitiveInteger, TagDrivenReadRecord, TagDrivenReadRecordContext, KnownSize,
     MappedRecord, MultiBarcodeRecordContext, ScLongReadRecordContext, ScLongReadRecordT,
 };
 use libradicl::single_collation::{
@@ -920,7 +920,7 @@ pub fn do_collate_with_temp<
     rec_context: <R as MappedRecord>::ParsingContext,
     // The collation (gather) context. For the fast records this is the same value
     // as `rec_context` (their `CollationScan::Ctx == ParsingContext`); for the
-    // generic record it is a distinct, validated `GenericCollateCtx`. Kept separate
+    // generic record it is a distinct, validated `TagDrivenCollateCtx`. Kept separate
     // so the parse context stays collation-agnostic (a RAD need not be collatable
     // to be read) and so composite/generic keys are not forced into the parse ctx.
     collation_ctx: <R as CollationScan>::Ctx,
@@ -1429,7 +1429,7 @@ where
 }
 
 /// Collate a single-barcode RAD through the tag-driven generic record, exercising
-/// the unified engine's `GenericReadRecord` path (spec-driven scatter + gather)
+/// the unified engine's `TagDrivenReadRecord` path (spec-driven scatter + gather)
 /// instead of a specialized fast record. This is the interim, single-barcode
 /// generic collation: the collation key tag is named by `key_tag_name` (the
 /// bridge; RAD-declared roles will supply it later — COMBINE-lab/libradicl#64),
@@ -1480,7 +1480,7 @@ where
     // Collation key: prefer the RAD's own declared roles; fall back to the name
     // bridge for un-annotated (legacy) files.
     let (key_tag_idx, collate_ctx) =
-        if let Some(collate_ctx) = GenericCollateCtx::from_roles(&read_tags, &aln_tags)? {
+        if let Some(collate_ctx) = TagDrivenCollateCtx::from_roles(&read_tags, &aln_tags)? {
             // Role-declared key. This single-barcode driver handles exactly one
             // Barcode role; a composite (multi-level) key is a follow-up (#66).
             let barcode_tags: Vec<usize> = read_tags
@@ -1509,7 +1509,7 @@ where
                 .with_context(|| {
                     format!("collation key tag `{key_tag_name}` not found in read tags")
                 })?;
-            let collate_ctx = GenericCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
+            let collate_ctx = TagDrivenCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
             (key_tag_idx, collate_ctx)
         };
 
@@ -1535,14 +1535,14 @@ where
         );
     }
 
-    let parse_ctx = GenericReadRecordContext {
+    let parse_ctx = TagDrivenReadRecordContext {
         read_tags: read_tags.clone(),
         aln_tags: aln_tags.clone(),
         key_tag_idx: Some(key_tag_idx),
         ori_tag_idx,
     };
 
-    do_collate_with_temp::<_, _, _, u64, GenericReadRecord>(
+    do_collate_with_temp::<_, _, _, u64, TagDrivenReadRecord>(
         input_dir,
         rad_dir,
         parse_ctx,
