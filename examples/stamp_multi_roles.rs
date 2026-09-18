@@ -24,13 +24,15 @@ fn main() -> anyhow::Result<()> {
     prelude.hdr.minor_version = libradicl::constants::RAD_SPEC_MINOR;
 
     for t in &mut prelude.read_tags.tags {
+        // Carry the nucleotide length in the role (10x Flex: 8bp sample, 16bp cell),
+        // so a role-only RAD needs no b0len/b1len file tags.
         match t.name.as_str() {
             "b0" => {
-                t.role = TagRole::Barcode { level: 0 };
+                t.role = TagRole::Barcode { level: 0, len: 8 };
                 t.name = "sample_bc".to_string();
             }
             "b1" => {
-                t.role = TagRole::Barcode { level: 1 };
+                t.role = TagRole::Barcode { level: 1, len: 16 };
                 t.name = "cell_bc".to_string();
             }
             "u" => {

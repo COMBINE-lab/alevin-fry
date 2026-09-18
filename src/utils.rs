@@ -16,7 +16,8 @@ use libradicl::header::RadPrelude;
 use libradicl::rad_types::TagMap;
 use libradicl::record::{
     AlevinFryReadRecordT, AlevinFryReadRecordWithPositionT, AtacSeqReadRecord,
-    ConvertiblePrimitiveInteger, MultiBarcodeReadRecordT, ScLongReadRecordT,
+    ConvertiblePrimitiveInteger, MultiBarcodeReadRecordT, MultiBarcodeRecordContext,
+    ScLongReadRecordT,
 };
 use libradicl::utils::SPLICE_MASK_U32;
 use needletail::bitkmer::*;
@@ -334,6 +335,35 @@ pub(crate) fn get_record_type_from_prelude(
                 .try_into()
                 .unwrap_or_else(|_| panic!("should be able to parse \"{}\" as a u16", cell_bc_tag));
             return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc);
+        }
+    }
+
+    // Role-based multi-barcode detection: a self-describing RAD (#64/#66) that
+    // declares >= 2 Barcode roles is multi-barcode even without the `num_barcodes`
+    // / `bN` / `bNlen` name conventions. The innermost (cell) barcode length comes
+    // from that role's `len`, falling back to a `b{N-1}len` file tag if the role
+    // left it unspecified.
+    {
+        let num_bc_roles = prelude
+            .read_tags
+            .tags
+            .iter()
+            .filter(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
+            .count();
+        if num_bc_roles > 1 {
+            let cell_bc_len: u16 =
+                MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
+                    .map(u16::from)
+                    .or_else(|| {
+                        file_tag_map
+                            .get(&format!("b{}len", num_bc_roles - 1))
+                            .and_then(|v| v.try_into().ok())
+                    })
+                    .expect(
+                        "multi-barcode RAD declares >= 2 Barcode roles but no cell barcode length; \
+                         set `len` on the innermost Barcode role or provide a b{N-1}len file tag",
+                    );
+            return KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc_roles as u16);
         }
     }
 

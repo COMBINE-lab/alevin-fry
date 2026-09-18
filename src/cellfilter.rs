@@ -806,8 +806,10 @@ fn do_generate_permit_list_multi_bc(
         )
     })?;
 
-    // Parse the record context for multi-barcode records
-    let rec_ctx = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+    // Parse the record context for multi-barcode records, preferring the RAD's
+    // declared roles (#64/#66) so a role-only RAD with non-conventional tag names
+    // works; falls back to the b0/b1/u name bridge for legacy files.
+    let rec_ctx = prelude.get_record_context_prefer_roles::<MultiBarcodeRecordContext>()?;
     info!(
         log,
         "Multi-barcode record context: {} barcode levels",
@@ -1210,13 +1212,21 @@ fn do_generate_permit_list_multi_bc(
     let mut sample_info_entries = Vec::new();
     let mut cell_correction_scopes = Vec::with_capacity(num_samples);
 
-    // Get the cell barcode length from file tags
-    let cell_bc_tag = format!("b{}len", num_barcodes - 1);
-    let cell_bc_len: u16 = file_tag_map
-        .get(&cell_bc_tag)
-        .unwrap_or_else(|| panic!("expected '{}' file-level tag", cell_bc_tag))
-        .try_into()
-        .unwrap_or_else(|_| panic!("couldn't parse '{}' as u16", cell_bc_tag));
+    // Cell barcode length: prefer the innermost Barcode role's declared `len`
+    // (#64/#66), falling back to the `b{N-1}len` file tag for un-annotated files.
+    let cell_bc_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
+        .map(u16::from)
+        .or_else(|| {
+            let cell_bc_tag = format!("b{}len", num_barcodes - 1);
+            file_tag_map.get(&cell_bc_tag).and_then(|v| v.try_into().ok())
+        })
+        .ok_or_else(|| {
+            anyhow!(
+                "multi-barcode RAD has no cell barcode length: set `len` on the innermost \
+                 Barcode role, or provide a b{}len file tag",
+                num_barcodes - 1
+            )
+        })?;
     let cell_spec = gpl_opts.cell_correction_spec(cell_bc_len as u8, true);
     warn_for_shift_frequency(cell_spec, "cell", log);
     let cell_correction_start = Instant::now();

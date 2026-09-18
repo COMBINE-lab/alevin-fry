@@ -34,7 +34,8 @@ use libradicl::rad_types::TagMap;
 use libradicl::record::{
     AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
     CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
-    MultiBarcodeReadRecord, RecordContext, ScLongReadRecord, UmiTaggedRecord,
+    MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext, ScLongReadRecord,
+    UmiTaggedRecord,
 };
 
 use std::fmt;
@@ -1763,18 +1764,20 @@ where
     //let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    // Get barcode length: standard files use "cblen", multi-barcode files
-    // use "b{N-1}len" where N is the number of barcodes. Try both.
-    let barcode_tag = file_tag_map
-        .get("cblen")
+    // Get the (cell) barcode length. Prefer the innermost Barcode role's declared
+    // `len` (#64/#66), so a role-only RAD needs no length file tag; fall back to
+    // the "cblen" (single) / "b{N-1}len" (multi) file-tag conventions for legacy
+    // files. `cell_bc_len_from_roles` returns the highest-level Barcode role's
+    // length, which for a single-barcode file is simply its one barcode.
+    let barcode_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
+        .map(u16::from)
         .or_else(|| {
-            // Multi-barcode: try b1len, b0len, etc.
             file_tag_map
-                .get("b1len")
-                .or_else(|| file_tag_map.get("b0len"))
+                .get("cblen")
+                .or_else(|| file_tag_map.get("b1len").or_else(|| file_tag_map.get("b0len")))
+                .and_then(|v| v.try_into().ok())
         })
-        .expect("tag map must contain cblen or bNlen for barcode length");
-    let barcode_len: u16 = barcode_tag.try_into()?;
+        .context("tag map must contain a cell barcode length (Barcode-role len, or cblen/bNlen)")?;
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;

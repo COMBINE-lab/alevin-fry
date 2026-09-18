@@ -29,10 +29,18 @@ fn main() -> anyhow::Result<()> {
     // carries the `b` bridge name and is thus unknown to the fast engine —
     // exercising the role-driven auto-routing of unknown record types.
     let rename_bc = std::env::var("STAMP_RENAME_BC").ok();
+    // Barcode nucleotide length carried by the role (STAMP_BC_LEN, default 16).
+    let bc_len: u8 = std::env::var("STAMP_BC_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16);
     let mut stamped = false;
     for t in &mut prelude.read_tags.tags {
         if t.name == tag {
-            t.role = TagRole::Barcode { level };
+            t.role = TagRole::Barcode {
+                level,
+                len: bc_len,
+            };
             if let Some(new_name) = &rename_bc {
                 t.name = new_name.clone();
             }
