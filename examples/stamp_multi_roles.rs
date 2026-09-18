@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
                 t.name = "cell_bc".to_string();
             }
             "u" => {
-                t.role = TagRole::Umi;
+                t.role = TagRole::Umi { len: 12 };
                 t.name = "umi".to_string();
             }
             _ => {}

@@ -1474,7 +1474,7 @@ where
     let umi_tag_idx = read_tags
         .tags
         .iter()
-        .position(|t| matches!(t.role, TagRole::Umi));
+        .position(|t| matches!(t.role, TagRole::Umi { .. }));
 
     // Collation key: prefer the RAD's own declared roles; fall back to the name
     // bridge for un-annotated (legacy) files.

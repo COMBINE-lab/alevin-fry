@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         let mut ok = false;
         for t in &mut prelude.read_tags.tags {
             if t.name == umi_name {
-                t.role = TagRole::Umi;
+                t.role = TagRole::Umi { len: 12 };
                 if let Some(n) = &rename_umi {
                     t.name = n.clone();
                 }

@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 
@@ -27,7 +27,9 @@ use libradicl::utils::MASK_LOWER_31_U32;
 use libradicl::{
     chunk,
     header::{RadHeader, RadPrelude},
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+    record::{
+        AlevinFryReadRecord, AlevinFryRecordContext, MultiBarcodeRecordContext, umi_len_from_roles,
+    },
 };
 
 use needletail::bitkmer::*;
@@ -646,16 +648,20 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag map {:?}", file_tag_map);
 
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .expect("tag map must contain cblen");
-    let barcode_len: u16 = barcode_tag.try_into()?;
+    // Prefer the RAD's declared role lengths (#64), falling back to the
+    // cblen/ulen file tags for un-annotated (legacy) files.
+    let barcode_len: u16 = MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
+        .map(u16::from)
+        .or_else(|| file_tag_map.get("cblen").and_then(|v| v.try_into().ok()))
+        .context("tag map must contain a barcode length (Barcode-role len, or cblen)")?;
 
-    let umi_tag = file_tag_map.get("ulen").expect("tag map must contain ulen");
-    let umi_len: u16 = umi_tag.try_into()?;
+    let umi_len: u16 = umi_len_from_roles(&prelude.read_tags)
+        .map(u16::from)
+        .or_else(|| file_tag_map.get("ulen").and_then(|v| v.try_into().ok()))
+        .context("tag map must contain a UMI length (Umi-role len, or ulen)")?;
 
     let mut num_reads: u64 = 0;
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+    let record_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();

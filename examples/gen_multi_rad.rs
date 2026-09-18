@@ -76,7 +76,7 @@ fn main() -> anyhow::Result<()> {
                 len: CELL_LEN as u8,
             },
         ));
-        read_tags.add_tag_desc(desc("umi", u32i(), TagRole::Umi));
+        read_tags.add_tag_desc(desc("umi", u32i(), TagRole::Umi { len: 12 }));
         aln_tags.add_tag_desc(desc("compressed_ori_refid", u32i(), TagRole::Orientation));
     } else {
         for (n, t) in [
