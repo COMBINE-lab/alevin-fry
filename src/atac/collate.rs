@@ -54,8 +54,8 @@ use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 #[allow(clippy::too_many_arguments)]
@@ -792,10 +792,7 @@ where
                     // scRNA paths do), so the output is self-describing and the
                     // header stays uncompressed/seek-patchable.
                     let mut out: Vec<u8> = Vec::new();
-                    let nchunks = libradicl::bucket_gather::collate_bucket::<
-                        AtacSeqReadRecord,
-                        _,
-                    >(
+                    let nchunks = libradicl::bucket_gather::collate_bucket::<AtacSeqReadRecord, _>(
                         &mut treader,
                         temp_bucket.1 as usize,
                         &ctx,

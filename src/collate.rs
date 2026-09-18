@@ -19,9 +19,9 @@ use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
+use libradicl::bucket_gather::{CollationScan, TagDrivenCollateCtx, collate_bucket};
 use libradicl::chunk;
 use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
-use libradicl::bucket_gather::{CollationScan, TagDrivenCollateCtx, collate_bucket};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -31,8 +31,8 @@ use libradicl::multi_collation::{
 use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordWithPositionT, AlevinFryRecordContext, CollatableMappedRecord,
-    ConvertiblePrimitiveInteger, TagDrivenReadRecord, TagDrivenReadRecordContext, KnownSize,
-    MappedRecord, MultiBarcodeRecordContext, ScLongReadRecordContext, ScLongReadRecordT,
+    ConvertiblePrimitiveInteger, KnownSize, MappedRecord, MultiBarcodeRecordContext,
+    ScLongReadRecordContext, ScLongReadRecordT, TagDrivenReadRecord, TagDrivenReadRecordContext,
 };
 use libradicl::single_collation::{
     SingleBarcodeCollationOptions, SingleBarcodeCollationPlan, collate_single_barcode,
@@ -1689,7 +1689,8 @@ where
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
             info!(log, "long read single-cell");
-            let parsing_context = prelude.get_record_context_prefer_roles::<ScLongReadRecordContext>()?;
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<ScLongReadRecordContext>()?;
             // fast record: collation context == parsing context
             let collation_ctx = parsing_context.clone();
             do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(
@@ -1718,7 +1719,8 @@ where
         KnownRecordType::RnaShortPos(bc_len) => {
             // alevin-fry with positions
             info!(log, "short read single-cell with position");
-            let parsing_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
                     // fast record: collation context == parsing context
@@ -1804,7 +1806,8 @@ where
                     log,
                 );
             }
-            let parsing_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
                     do_collate_single_barcode(
@@ -1846,17 +1849,16 @@ where
             // un-annotated (legacy) files. The role-driven context lets a
             // multi-barcode RAD with non-conventional tag names collate through the
             // same hierarchical engine.
-            let parsing_context =
-                match MultiBarcodeRecordContext::from_roles(&prelude.read_tags)? {
-                    Some(ctx) => {
-                        info!(
-                            log,
-                            "using RAD-declared tag roles for the composite collation key"
-                        );
-                        ctx
-                    }
-                    None => prelude.get_record_context::<MultiBarcodeRecordContext>()?,
-                };
+            let parsing_context = match MultiBarcodeRecordContext::from_roles(&prelude.read_tags)? {
+                Some(ctx) => {
+                    info!(
+                        log,
+                        "using RAD-declared tag roles for the composite collation key"
+                    );
+                    ctx
+                }
+                None => prelude.get_record_context::<MultiBarcodeRecordContext>()?,
+            };
             info!(log, "Using the optimized libradicl collator");
             do_collate_multi_bc_fast(
                 input_dir,

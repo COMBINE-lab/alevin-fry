@@ -54,7 +54,10 @@ fn fixture(root: &Path, cells_per_sample: usize, ambiguous_only: bool) -> Fixtur
         read_tags.add_tag_desc(TagDesc::new(name, RadType::Int(RadIntId::U32)));
     }
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
-    aln_tags.add_tag_desc(TagDesc::new("compressed_ori_refid", RadType::Int(RadIntId::U32)));
+    aln_tags.add_tag_desc(TagDesc::new(
+        "compressed_ori_refid",
+        RadType::Int(RadIntId::U32),
+    ));
     let prelude = RadPrelude {
         hdr: RadHeader {
             version: libradicl::header::SpecVersion::Legacy,

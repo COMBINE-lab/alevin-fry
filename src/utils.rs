@@ -322,7 +322,11 @@ fn classify_bc_len(
 ) -> anyhow::Result<u16> {
     MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags)
         .map(u16::from)
-        .or_else(|| file_tag_map.get(fallback_tag).and_then(|v| v.try_into().ok()))
+        .or_else(|| {
+            file_tag_map
+                .get(fallback_tag)
+                .and_then(|v| v.try_into().ok())
+        })
         .with_context(|| {
             format!(
                 "RAD is missing a barcode length (declare it on the Barcode role's `len`, \
@@ -378,7 +382,8 @@ pub(crate) fn get_record_type_from_prelude(
             .try_into()
             .context("could not parse the `num_barcodes` file tag as a u16")?;
         if num_bc > 1 {
-            let cell_bc_len = classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc - 1))?;
+            let cell_bc_len =
+                classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc - 1))?;
             return Ok(KnownRecordType::RnaShortMultiBC(cell_bc_len, num_bc));
         }
     }
@@ -420,7 +425,8 @@ pub(crate) fn get_record_type_from_prelude(
         .filter(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }))
         .count();
     if num_bc_roles > 1 {
-        let cell_bc_len = classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc_roles - 1))?;
+        let cell_bc_len =
+            classify_bc_len(prelude, file_tag_map, &format!("b{}len", num_bc_roles - 1))?;
         return Ok(KnownRecordType::RnaShortMultiBC(
             cell_bc_len,
             num_bc_roles as u16,

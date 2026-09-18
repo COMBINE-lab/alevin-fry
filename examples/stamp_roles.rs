@@ -36,10 +36,7 @@ fn main() -> anyhow::Result<()> {
     let mut stamped = false;
     for t in &mut prelude.read_tags.tags {
         if t.name == tag {
-            t.role = TagRole::Barcode {
-                level,
-                len: bc_len,
-            };
+            t.role = TagRole::Barcode { level, len: bc_len };
             if let Some(new_name) = &rename_bc {
                 t.name = new_name.clone();
             }

@@ -85,7 +85,10 @@ pub fn deduplicate(dedup_opts: DeduplicateOpts) -> anyhow::Result<()> {
     }
     let i_file = File::open(&collated_path).context("run collate before quant")?;
     let br = BufReader::new(i_file);
-    info!(log, "quantifying from collated RAD file {:?}", collated_path);
+    info!(
+        log,
+        "quantifying from collated RAD file {:?}", collated_path
+    );
     do_deduplicate(br, dedup_opts)
 }
 

@@ -8,7 +8,7 @@ use libradicl::rad_types::{
     RadAtomicId, RadIntId, RadType, TagDesc, TagMap, TagSection, TagSectionLabel, TagValue,
 };
 use libradicl::record::{AtacSeqReadRecord, AtacSeqRecordContext, RecordContext};
-use libradicl::{chunk::Chunk, RadFileWriter};
+use libradicl::{RadFileWriter, chunk::Chunk};
 use std::fs::File;
 use std::io::Write;
 
@@ -38,7 +38,10 @@ fn make_prelude() -> (RadPrelude, TagMap) {
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
     file_tags.add_tag_desc(TagDesc::new("cblen", RadType::Int(RadIntId::U16)));
     file_tags.add_tag_desc(TagDesc::new("known_rad_type", RadType::String));
-    file_tags.add_tag_desc(TagDesc::new("ref_lengths", RadType::Array(RadIntId::U32, RadAtomicId::Int(RadIntId::U32))));
+    file_tags.add_tag_desc(TagDesc::new(
+        "ref_lengths",
+        RadType::Array(RadIntId::U32, RadAtomicId::Int(RadIntId::U32)),
+    ));
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
     read_tags.add_tag_desc(TagDesc::new("b", RadType::Int(RadIntId::U32)));
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
@@ -90,8 +93,8 @@ fn main() -> anyhow::Result<()> {
             let ref_id = (r % REF_NAMES.len()) as u32;
             // Keep positions well within the reference (gpl bins by position).
             let span = REF_LENGTHS[ref_id as usize] as u64 - 200_000;
-            let start =
-                1_000 + (((cell as u64).wrapping_mul(977) + (r as u64).wrapping_mul(131)) % span) as u32;
+            let start = 1_000
+                + (((cell as u64).wrapping_mul(977) + (r as u64).wrapping_mul(131)) % span) as u32;
             reads.push(AtacSeqReadRecord {
                 bc,
                 start_pos: vec![start],
@@ -111,8 +114,7 @@ fn main() -> anyhow::Result<()> {
         }
         for r in 0..multi {
             let span = REF_LENGTHS[0] as u64 - 200_000;
-            let start =
-                50_000 + (((cell as u64).wrapping_mul(13) + (r as u64) * 7) % span) as u32;
+            let start = 50_000 + (((cell as u64).wrapping_mul(13) + (r as u64) * 7) % span) as u32;
             reads.push(AtacSeqReadRecord {
                 bc,
                 start_pos: vec![start, start + 250],

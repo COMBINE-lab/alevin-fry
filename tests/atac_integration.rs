@@ -86,12 +86,18 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
     };
 
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
-    file_tags.add_tag_desc(TagDesc::new("cblen".to_string(), RadType::Int(RadIntId::U16)));
+    file_tags.add_tag_desc(TagDesc::new(
+        "cblen".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
     file_tags.add_tag_desc(TagDesc::new("known_rad_type".to_string(), RadType::String));
-    file_tags.add_tag_desc(TagDesc::new("ref_lengths".to_string(), RadType::Array(
+    file_tags.add_tag_desc(TagDesc::new(
+        "ref_lengths".to_string(),
+        RadType::Array(
             RadIntId::U32,
             libradicl::rad_types::RadAtomicId::Int(RadIntId::U32),
-        )));
+        ),
+    ));
 
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
     read_tags.add_tag_desc(TagDesc::new("b".to_string(), RadType::Int(RadIntId::U32)));

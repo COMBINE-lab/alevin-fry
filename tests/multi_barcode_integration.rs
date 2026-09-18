@@ -58,10 +58,22 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
 
     // File-level tags: num_barcodes, b0len, b1len, ulen, known_rad_type
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
-    file_tags.add_tag_desc(TagDesc::new("num_barcodes".to_string(), RadType::Int(RadIntId::U16)));
-    file_tags.add_tag_desc(TagDesc::new("b0len".to_string(), RadType::Int(RadIntId::U16)));
-    file_tags.add_tag_desc(TagDesc::new("b1len".to_string(), RadType::Int(RadIntId::U16)));
-    file_tags.add_tag_desc(TagDesc::new("ulen".to_string(), RadType::Int(RadIntId::U16)));
+    file_tags.add_tag_desc(TagDesc::new(
+        "num_barcodes".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
+    file_tags.add_tag_desc(TagDesc::new(
+        "b0len".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
+    file_tags.add_tag_desc(TagDesc::new(
+        "b1len".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
+    file_tags.add_tag_desc(TagDesc::new(
+        "ulen".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
     file_tags.add_tag_desc(TagDesc::new("known_rad_type".to_string(), RadType::String));
 
     // Read-level tags: b0 (sample), b1 (cell), u (UMI)
@@ -72,7 +84,10 @@ fn make_multi_bc_prelude() -> (RadPrelude, TagMap) {
 
     // Alignment-level tags
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
-    aln_tags.add_tag_desc(TagDesc::new("compressed_ori_refid".to_string(), RadType::Int(RadIntId::U32)));
+    aln_tags.add_tag_desc(TagDesc::new(
+        "compressed_ori_refid".to_string(),
+        RadType::Int(RadIntId::U32),
+    ));
 
     let prelude = RadPrelude {
         hdr,

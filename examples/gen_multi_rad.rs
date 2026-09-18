@@ -12,7 +12,7 @@ use libradicl::rad_types::{
     RadIntId, RadType, TagDesc, TagMap, TagRole, TagSection, TagSectionLabel, TagValue,
 };
 use libradicl::record::{MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext};
-use libradicl::{chunk::Chunk, RadFileWriter};
+use libradicl::{RadFileWriter, chunk::Chunk};
 use smallvec::smallvec;
 use std::fs::File;
 use std::io::Write;

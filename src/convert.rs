@@ -345,7 +345,10 @@ where
 
         // alignment-level
         let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
-        aln_tags.add_tag_desc(TagDesc::new("compressed_ori_refid", RadType::Int(RadIntId::U32)));
+        aln_tags.add_tag_desc(TagDesc::new(
+            "compressed_ori_refid",
+            RadType::Int(RadIntId::U32),
+        ));
         aln_tags.write(&mut data, 0)?;
 
         // done with tag descriptions
