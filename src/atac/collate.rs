@@ -406,7 +406,10 @@ where
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
     let rl_tags = &prelude.read_tags;
 
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
+    // Propagate a file-tag parse error (with `?`) rather than only logging it:
+    // a failure here would otherwise leave `br` mispositioned for the
+    // first-chunk self-check and header copy below. Mirrors the scRNA path.
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
     // The scATAC record reader is positional: the barcode is the first read tag,

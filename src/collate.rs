@@ -677,6 +677,19 @@ pub(crate) fn create_collated_output(
         std::fs::remove_file(&path)
             .with_context(|| format!("could not remove {}", path.display()))?;
     }
+    // Remove any stale legacy `.sz` sidecar (the pre-per-chunk-codec whole-file
+    // Snappy stream). scRNA quant prefers `map.collated.rad.sz` when present, so a
+    // directory re-collated by this path (which writes the uncompressed/per-chunk
+    // `map.collated.rad`) but still holding an old `.sz` would otherwise quantify
+    // STALE data. Drop the sidecar for both the target name and its `velo.`/plain
+    // counterpart so no re-collate can leave one behind.
+    for sz_name in [name, "map.collated.rad", "velo.map.collated.rad"] {
+        let sz_path = parent.join(format!("{sz_name}.sz"));
+        if sz_path.exists() {
+            std::fs::remove_file(&sz_path)
+                .with_context(|| format!("could not remove stale {}", sz_path.display()))?;
+        }
+    }
     let file =
         File::create(&path).with_context(|| format!("couldn't create {}", path.display()))?;
     let writer = Arc::new(Mutex::new(BufWriter::with_capacity(1024 * 1024, file)));
@@ -1465,12 +1478,13 @@ where
 
 /// Collate a single-barcode RAD through the tag-driven generic record, exercising
 /// the unified engine's `TagDrivenReadRecord` path (spec-driven scatter + gather)
-/// instead of a specialized fast record. This is the interim, single-barcode
-/// generic collation: the collation key tag is named by `key_tag_name` (the
-/// bridge; RAD-declared roles will supply it later — COMBINE-lab/libradicl#64),
-/// and orientation filtering is not yet applied, so it is gated to
-/// non-orientation-filtering runs. Composite/hierarchical generic keys are a
-/// follow-up (COMBINE-lab/libradicl#66).
+/// instead of a specialized fast record. The collation key is taken from the RAD's
+/// declared `Barcode` role when present (self-describing, #64/#66), falling back to
+/// the `key_tag_name` name bridge for un-annotated (legacy) files. Orientation
+/// filtering IS applied when the alignment layout declares an `Orientation` role:
+/// a filtering `--expected-ori` on a RAD with no such role is refused rather than
+/// silently keeping all alignments. This driver handles exactly one barcode level;
+/// composite/hierarchical generic keys are a follow-up (COMBINE-lab/libradicl#66).
 #[allow(clippy::too_many_arguments)]
 fn do_bucket_gather<P1, P2, A: Read + Seek>(
     input_dir: P1,
@@ -1496,10 +1510,10 @@ where
     let input_dir = input_dir.into();
     let parent = input_dir.as_path();
 
-    // Gate: the generic record does not yet filter alignments by orientation, so
-    // refuse a run whose permit list requested orientation filtering (fw/rc) —
-    // silently keeping all alignments would diverge from the fast path. This lifts
-    // once orientation is available via a declared role (#64).
+    // The generic record filters alignments by orientation when an Orientation
+    // role is declared (see the orientation gate below and the record's
+    // `retain_ori`); a filtering `--expected-ori` on a RAD lacking that role is
+    // refused rather than silently keeping all alignments.
     use libradicl::rad_types::TagRole;
     let read_tags = prelude.read_tags.clone();
     let aln_tags = prelude.aln_tags.clone();
@@ -1780,10 +1794,17 @@ where
                     )
                 }
                 RadIntId::U128 => {
-                    unimplemented!()
+                    anyhow::bail!(
+                        "collation of a position (RnaShortPos) RAD with a 128-bit barcode key is \
+                         not supported; the collation scatter is u64-keyed and cannot rewrite a \
+                         u128 barcode"
+                    )
                 }
-                _ => {
-                    unimplemented!()
+                t => {
+                    anyhow::bail!(
+                        "unsupported barcode tag type {t:?} for a position (RnaShortPos) RAD; \
+                         only integer barcode types (u8..u64) are supported"
+                    )
                 }
             }
         }
@@ -1865,10 +1886,17 @@ where
                     )
                 }
                 RadIntId::U128 => {
-                    unimplemented!()
+                    anyhow::bail!(
+                        "collation of a single-barcode (RnaShort) RAD with a 128-bit barcode key \
+                         is not supported; the collation scatter is u64-keyed and cannot rewrite a \
+                         u128 barcode"
+                    )
                 }
-                _ => {
-                    unimplemented!()
+                t => {
+                    anyhow::bail!(
+                        "unsupported barcode tag type {t:?} for a single-barcode (RnaShort) RAD; \
+                         only integer barcode types (u8..u64) are supported"
+                    )
                 }
             }
         }
