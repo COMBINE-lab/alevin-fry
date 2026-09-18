@@ -409,6 +409,8 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
     info!(log, "File-level tag values {:?}", file_tag_map);
 
+    // The scATAC record reader is positional: the barcode is the first read tag,
+    // whatever its name or role, so reading tags[0] here is by-design (not a name bridge).
     let bct = rl_tags.tags[0].typeid;
 
     // Field-completeness self-check on the first chunk (mirrors the scRNA path):

@@ -406,6 +406,8 @@ where
     let barcode_tag = binding.get("cblen").expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
+    // The scATAC record reader is positional: the barcode is the first read tag,
+    // whatever its name or role, so reading tags[0] here is by-design (not a name bridge).
     let bct = rl_tags.tags[0].typeid;
 
     // the exact position at the end of the header + file tags

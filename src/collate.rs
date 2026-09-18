@@ -1689,7 +1689,7 @@ where
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
             info!(log, "long read single-cell");
-            let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
+            let parsing_context = prelude.get_record_context_prefer_roles::<ScLongReadRecordContext>()?;
             // fast record: collation context == parsing context
             let collation_ctx = parsing_context.clone();
             do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(
@@ -1718,7 +1718,7 @@ where
         KnownRecordType::RnaShortPos(bc_len) => {
             // alevin-fry with positions
             info!(log, "short read single-cell with position");
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+            let parsing_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
                     // fast record: collation context == parsing context
@@ -1804,7 +1804,7 @@ where
                     log,
                 );
             }
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+            let parsing_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
                     do_collate_single_barcode(
