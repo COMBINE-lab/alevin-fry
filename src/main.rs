@@ -318,7 +318,7 @@ fn main() -> anyhow::Result<()> {
         .value_parser(value_parser!(SplicedAmbiguityModel))
         .default_value("winner-take-all")
         .hide(true))
-    .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction")
+    .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction; for cr-like/cr-like-em, 1 enables Cell Ranger-style Hamming-1 UMI collapsing (not supported in USA mode)")
         .value_parser(value_parser!(u32))
         .default_value_ifs([
             ("resolution", "cr-like", Some("0")),
