@@ -21,7 +21,7 @@ use crossbeam_queue::ArrayQueue;
 
 use libradicl::chunk;
 use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
-use libradicl::collate_generic::{CollationScan, GenericCollateCtx, collate_bucket};
+use libradicl::bucket_gather::{CollationScan, GenericCollateCtx, collate_bucket};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -1437,7 +1437,7 @@ where
 /// non-orientation-filtering runs. Composite/hierarchical generic keys are a
 /// follow-up (COMBINE-lab/libradicl#66).
 #[allow(clippy::too_many_arguments)]
-fn do_collate_generic<P1, P2, A: Read + Seek>(
+fn do_bucket_gather<P1, P2, A: Read + Seek>(
     input_dir: P1,
     rad_dir: P2,
     prelude: RadPrelude,
@@ -1786,7 +1786,7 @@ where
                          auto-routing to the tag-driven generic collation path"
                     );
                 }
-                return do_collate_generic(
+                return do_bucket_gather(
                     input_dir,
                     &rad_dir,
                     prelude,

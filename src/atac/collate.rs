@@ -792,7 +792,7 @@ where
                     // scRNA paths do), so the output is self-describing and the
                     // header stays uncompressed/seek-patchable.
                     let mut out: Vec<u8> = Vec::new();
-                    let nchunks = libradicl::collate_generic::collate_bucket::<
+                    let nchunks = libradicl::bucket_gather::collate_bucket::<
                         AtacSeqReadRecord,
                         _,
                     >(
