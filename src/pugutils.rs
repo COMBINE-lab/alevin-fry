@@ -763,11 +763,20 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
 pub struct CorrScratch {
     /// `(umi, gene, count)` triplets after dedup-summing, sorted by `(umi, gene)`.
     raw: Vec<(u64, u32, u32)>,
-    /// `(umi, gene) -> index into `raw``.
+    /// `(umi, gene) -> index into `raw``. Built lazily — only when some gene
+    /// group is large enough to use the neighbour-enumeration probe.
     key_index: HashMap<(u64, u32), u32, RandomState>,
-    /// distinct-UMI count per gene (to skip single-UMI genes).
-    gene_umi_count: HashMap<u32, u32, RandomState>,
-    /// indices into `raw`, ordered by `(gene, umi)` for the per-gene search.
+    /// gene id -> dense bucket id, for the O(n) counting sort that groups
+    /// `idx_by_gene` by gene.
+    gene_slot: HashMap<u32, u32, RandomState>,
+    /// distinct gene ids in first-seen order (bucket id -> gene id).
+    genes: Vec<u32>,
+    /// per-bucket group size (number of distinct UMIs in that gene).
+    counts: Vec<u32>,
+    /// per-bucket running write offset during the counting-sort scatter.
+    cursor: Vec<u32>,
+    /// indices into `raw`, grouped by gene (ascending UMI within a gene, since
+    /// `raw` is sorted by `(umi, gene)`).
     idx_by_gene: Vec<u32>,
     /// `dest[i]` = index into `raw` of `raw[i]`'s correction target (self if none).
     dest: Vec<u32>,
@@ -836,7 +845,10 @@ pub fn correct_umis_cellranger(
     let CorrScratch {
         raw,
         key_index,
-        gene_umi_count,
+        gene_slot,
+        genes,
+        counts,
+        cursor,
         idx_by_gene,
         dest,
         inter,
@@ -859,79 +871,113 @@ pub fn correct_umis_cellranger(
     }
     let n = raw.len();
 
-    key_index.clear();
-    for (i, &(u, g, _)) in raw.iter().enumerate() {
-        key_index.insert((u, g), i as u32);
-    }
-    gene_umi_count.clear();
-    for &(_, g, _) in raw.iter() {
-        *gene_umi_count.entry(g).or_insert(0) += 1;
-    }
-
     dest.clear();
     dest.extend(0..n as u32);
 
-    idx_by_gene.clear();
-    idx_by_gene.extend(0..n as u32);
-    idx_by_gene.sort_unstable_by_key(|&i| {
-        let (u, g, _) = raw[i as usize];
-        (g, u)
-    });
-
-    // step 1: per-gene correction (single-UMI genes skipped).
-    let mut p = 0usize;
-    while p < n {
-        let g = raw[idx_by_gene[p] as usize].1;
-        let mut q = p;
-        while q < n && raw[idx_by_gene[q] as usize].1 == g {
-            q += 1;
+    // O(n) counting sort that groups `idx_by_gene` by gene. Because `raw` is
+    // sorted by (umi, gene), scattering in raw order leaves each gene's entries
+    // in ascending-UMI order (identical to a (gene, umi) comparison sort) —
+    // step 1 only needs the grouping, and steps 2/3 read `raw` order.
+    gene_slot.clear();
+    genes.clear();
+    counts.clear();
+    for &(_, g, _) in raw.iter() {
+        let slot = *gene_slot.entry(g).or_insert_with(|| {
+            genes.push(g);
+            counts.push(0);
+            (genes.len() - 1) as u32
+        });
+        counts[slot as usize] += 1;
+    }
+    // prefix-sum group sizes into write offsets, and note if any group is large.
+    cursor.clear();
+    cursor.resize(genes.len(), 0);
+    let mut acc = 0u32;
+    let mut any_large = false;
+    for b in 0..genes.len() {
+        cursor[b] = acc;
+        acc += counts[b];
+        if counts[b] as usize > SMALL_GENE_GROUP {
+            any_large = true;
         }
-        let k = q - p;
-        if k >= 2 {
-            if k <= SMALL_GENE_GROUP {
-                // all-pairs Hamming-1 via 2-bit popcount (no hashing)
-                for a in p..q {
-                    let ia = idx_by_gene[a] as usize;
-                    let (ua, _, ca) = raw[ia];
-                    let mut best = (ca, ua);
-                    for b in p..q {
-                        if b == a {
-                            continue;
-                        }
-                        let ib = idx_by_gene[b] as usize;
-                        let (ub, _, cb) = raw[ib];
-                        if afutils::count_diff_2_bit_packed(ua, ub) == 1 && (cb, ub) > best {
-                            best = (cb, ub);
-                        }
+    }
+    idx_by_gene.clear();
+    idx_by_gene.resize(n, 0);
+    for i in 0..n {
+        let b = gene_slot[&raw[i].1] as usize;
+        idx_by_gene[cursor[b] as usize] = i as u32;
+        cursor[b] += 1;
+    }
+
+    // `key_index` is only needed for the large-group neighbour-enumeration
+    // probe; build it lazily. On Flex/scRNA every gene group is tiny, so this is
+    // skipped entirely and the small-group path tracks the winner's index.
+    if any_large {
+        key_index.clear();
+        for (i, &(u, g, _)) in raw.iter().enumerate() {
+            key_index.insert((u, g), i as u32);
+        }
+    }
+
+    // step 1: per-gene correction; groups are contiguous in `idx_by_gene`, with
+    // boundaries straight from the prefix offsets (single-UMI genes skipped).
+    let mut start = 0usize;
+    for b in 0..genes.len() {
+        let k = counts[b] as usize;
+        let p = start;
+        let q = start + k;
+        start = q;
+        if k < 2 {
+            continue;
+        }
+        let g = genes[b];
+        if k <= SMALL_GENE_GROUP {
+            // all-pairs Hamming-1 via 2-bit popcount (no hashing); the winner is
+            // an in-group entry whose index we already know.
+            for a in p..q {
+                let ia = idx_by_gene[a] as usize;
+                let (ua, _, ca) = raw[ia];
+                let mut best = (ca, ua);
+                let mut best_idx = ia;
+                for bb in p..q {
+                    if bb == a {
+                        continue;
                     }
-                    if best.1 != ua {
-                        dest[ia] = key_index[&(best.1, g)];
+                    let ib = idx_by_gene[bb] as usize;
+                    let (ub, _, cb) = raw[ib];
+                    if afutils::count_diff_2_bit_packed(ua, ub) == 1 && (cb, ub) > best {
+                        best = (cb, ub);
+                        best_idx = ib;
                     }
                 }
-            } else {
-                // probe the 3*umi_len bit-flip neighbourhood against the index
-                for a in p..q {
-                    let ia = idx_by_gene[a] as usize;
-                    let (ua, _, ca) = raw[ia];
-                    let mut best = (ca, ua);
-                    for pos in 0..umi_len {
-                        for x in 1u64..=3 {
-                            let neigh = ua ^ (x << (2 * pos));
-                            if let Some(&j) = key_index.get(&(neigh, g)) {
-                                let (uj, _, cj) = raw[j as usize];
-                                if (cj, uj) > best {
-                                    best = (cj, uj);
-                                }
+                if best_idx != ia {
+                    dest[ia] = best_idx as u32;
+                }
+            }
+        } else {
+            // probe the 3*umi_len bit-flip neighbourhood against the index
+            for a in p..q {
+                let ia = idx_by_gene[a] as usize;
+                let (ua, _, ca) = raw[ia];
+                let mut best = (ca, ua);
+                let mut best_idx = ia;
+                for pos in 0..umi_len {
+                    for x in 1u64..=3 {
+                        let neigh = ua ^ (x << (2 * pos));
+                        if let Some(&j) = key_index.get(&(neigh, g)) {
+                            let (uj, _, cj) = raw[j as usize];
+                            if (cj, uj) > best {
+                                best = (cj, uj);
+                                best_idx = j as usize;
                             }
                         }
                     }
-                    if best.1 != ua {
-                        dest[ia] = key_index[&(best.1, g)];
-                    }
+                }
+                if best_idx != ia {
+                    dest[ia] = best_idx as u32;
                 }
             }
         }
-        p = q;
     }
 
     // step 2: low-support determination (drop path only).
