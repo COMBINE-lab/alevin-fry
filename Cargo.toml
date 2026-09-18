@@ -130,3 +130,34 @@ zstd = ["libradicl/zstd"]
 # TEMP: build against local libradicl unified-collate branch; remove before release.
 [patch.crates-io]
 libradicl = { path = "../libradicl/libradicl" }
+
+# Dev/validation-only examples (fixture generators & RAD manipulators). Gated
+# behind `dev-tools` so a normal `cargo build --examples` skips them; build with
+# `cargo build --examples --features dev-tools` to use them.
+[[example]]
+name = "stamp_roles"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "stamp_multi_roles"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "rename_read_tags"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "subset_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "gen_multi_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "gen_atac_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "convert_sclong"
+required-features = ["dev-tools"]
