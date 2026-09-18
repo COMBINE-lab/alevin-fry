@@ -47,30 +47,17 @@ fn fixture(root: &Path, cells_per_sample: usize, ambiguous_only: bool) -> Fixtur
 
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
     for name in ["num_barcodes", "b0len", "b1len", "ulen"] {
-        file_tags.add_tag_desc(TagDesc {
-            role: libradicl::rad_types::TagRole::None,
-            name: name.into(),
-            typeid: RadType::Int(RadIntId::U16),
-        });
+        file_tags.add_tag_desc(TagDesc::new(name, RadType::Int(RadIntId::U16)));
     }
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
     for name in ["b0", "b1", "u"] {
-        read_tags.add_tag_desc(TagDesc {
-            role: libradicl::rad_types::TagRole::None,
-            name: name.into(),
-            typeid: RadType::Int(RadIntId::U32),
-        });
+        read_tags.add_tag_desc(TagDesc::new(name, RadType::Int(RadIntId::U32)));
     }
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
-    aln_tags.add_tag_desc(TagDesc {
-        role: libradicl::rad_types::TagRole::None,
-        name: "compressed_ori_refid".into(),
-        typeid: RadType::Int(RadIntId::U32),
-    });
+    aln_tags.add_tag_desc(TagDesc::new("compressed_ori_refid", RadType::Int(RadIntId::U32)));
     let prelude = RadPrelude {
         hdr: RadHeader {
-            major_version: 0,
-            minor_version: 0,
+            version: libradicl::header::SpecVersion::Legacy,
             is_paired: 0,
             ref_count: NUM_GENES as u64,
             ref_names: (0..NUM_GENES).map(|i| format!("tx{i}")).collect(),

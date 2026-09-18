@@ -16,8 +16,8 @@ fn main() -> anyhow::Result<()> {
     let pos = br.stream_position()?;
     println!(
         "{path}: major={} minor={} num_chunks={} read_tags={} aln_tags={} first_chunk@{pos}",
-        prelude.hdr.major_version,
-        prelude.hdr.minor_version,
+        prelude.hdr.version.major(),
+        prelude.hdr.version.minor(),
         prelude.hdr.num_chunks,
         prelude.read_tags.tags.len(),
         prelude.aln_tags.tags.len(),

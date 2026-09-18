@@ -23,8 +23,7 @@ fn main() -> anyhow::Result<()> {
     let desc_end = br.stream_position()?;
 
     // stamp: versioned header + the named read tag gets a Barcode role
-    prelude.hdr.major_version = libradicl::constants::RAD_SPEC_MAJOR;
-    prelude.hdr.minor_version = libradicl::constants::RAD_SPEC_MINOR;
+    prelude.hdr.version = libradicl::header::SpecVersion::current();
     // Optionally rename the barcode tag (STAMP_RENAME_BC) so the file no longer
     // carries the `b` bridge name and is thus unknown to the fast engine —
     // exercising the role-driven auto-routing of unknown record types.

@@ -34,11 +34,7 @@ fn to_nuc(p: u64, len: usize) -> String {
 }
 
 fn desc(name: &str, typeid: RadType, role: TagRole) -> TagDesc {
-    TagDesc {
-        role,
-        name: name.to_string(),
-        typeid,
-    }
+    TagDesc::new(name, typeid).with_role(role)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -95,8 +91,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     let hdr = RadHeader {
-        major_version: if roles { 2 } else { 0 },
-        minor_version: 0,
+        version: if roles {
+            libradicl::header::SpecVersion::current()
+        } else {
+            libradicl::header::SpecVersion::Legacy
+        },
         is_paired: 0,
         ref_count: REF_NAMES.len() as u64,
         ref_names: REF_NAMES.iter().map(|s| s.to_string()).collect(),

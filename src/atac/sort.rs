@@ -386,13 +386,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.major_version)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need

@@ -20,8 +20,7 @@ fn main() -> anyhow::Result<()> {
     let mut prelude = RadPrelude::from_bytes(&mut br)?;
     let desc_end = br.stream_position()?;
 
-    prelude.hdr.major_version = libradicl::constants::RAD_SPEC_MAJOR;
-    prelude.hdr.minor_version = libradicl::constants::RAD_SPEC_MINOR;
+    prelude.hdr.version = libradicl::header::SpecVersion::current();
 
     for t in &mut prelude.read_tags.tags {
         // Carry the nucleotide length in the role (10x Flex: 8bp sample, 16bp cell),
