@@ -1287,6 +1287,10 @@ where
     // the chunk-offset sidecar quant's parallel reader uses.
     let chunk_index = Arc::new(Mutex::new(ChunkIndexBuilder::default()));
 
+    // Gather workers return a Result so an I/O / collation error surfaces as an
+    // error rather than a process-aborting thread panic.
+    let mut gather_handles: Vec<std::thread::JoinHandle<anyhow::Result<u64>>> =
+        Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -1302,7 +1306,7 @@ where
         let pbar_gather = pbar_gather.clone();
         let collation_ctx = collation_ctx.clone();
         // now, make the worker threads
-        let handle = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
             let collation_ctx = collation_ctx;
             let mut local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
@@ -1317,7 +1321,8 @@ where
                     // (bounded memory: streams the input in two passes, holds only
                     // the collated output), then record its chunk offsets and
                     // append it under one lock so the index stays in file order.
-                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+                    let tfile = std::fs::File::open(&fname)
+                        .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
                     let mut treader = BufReader::new(tfile);
                     let mut collated = Vec::new();
                     local_chunks += collate_bucket::<R, _>(
@@ -1327,25 +1332,28 @@ where
                         codec,
                         &mut collated,
                     )
-                    .expect("collate_bucket failed") as u64;
+                    .context("collate_bucket failed")? as u64;
                     {
-                        let mut w = owriter.lock().expect("output mutex poisoned");
+                        let mut w = owriter
+                            .lock()
+                            .map_err(|_| anyhow!("collated output mutex was poisoned"))?;
                         chunk_index
                             .lock()
-                            .expect("chunk index mutex poisoned")
+                            .map_err(|_| anyhow!("chunk index mutex was poisoned"))?
                             .record_bucket(&collated);
                         w.write_all(&collated)
-                            .expect("could not write collated bucket");
+                            .context("could not write the collated bucket")?;
                     }
                     drop(treader);
-                    std::fs::remove_file(fname).expect("could not delete temporary file.");
+                    std::fs::remove_file(&fname)
+                        .with_context(|| format!("could not delete temporary bucket {fname:?}"))?;
 
                     pbar_gather.inc(1);
                 }
             }
-            local_chunks
+            Ok(local_chunks)
         });
-        thread_handles.push(handle);
+        gather_handles.push(handle);
     } // for each worker
 
     // push the temporary buckets onto the work queue to be dispatched
@@ -1363,16 +1371,13 @@ where
         assert_eq!(expected, observed);
     }
 
-    // wait for all of the workers to finish
+    // wait for all of the workers to finish, propagating any gather error.
     let mut num_output_chunks = 0u64;
-    for h in thread_handles.drain(0..) {
+    for h in gather_handles.drain(0..) {
         match h.join() {
-            Ok(c) => {
-                num_output_chunks += c;
-            }
-            Err(_e) => {
-                info!(log, "thread panicked");
-            }
+            Ok(Ok(c)) => num_output_chunks += c,
+            Ok(Err(e)) => return Err(e).context("a collation gather worker failed"),
+            Err(_e) => anyhow::bail!("a collation gather worker thread panicked"),
         }
     }
     pbar_gather.finish_with_message("gathered all temp files.");

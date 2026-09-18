@@ -743,6 +743,10 @@ where
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
+    // Gather workers return a Result so an I/O / collation error surfaces rather
+    // than aborting the process with a thread panic.
+    let mut gather_handles: Vec<thread::JoinHandle<anyhow::Result<u64>>> =
+        Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -762,7 +766,7 @@ where
         let pbar_gather = pbar_gather.clone();
 
         // now, make the worker threads
-        let handle = std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
             let mut local_chunks = 0u64;
             let parent = std::path::Path::new(&input_dir);
             // pop from the work queue until everything is
@@ -775,8 +779,8 @@ where
                     buckets_remaining.fetch_sub(1, Ordering::SeqCst);
 
                     let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    // create a new handle for reading
-                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
+                    let tfile = std::fs::File::open(&fname)
+                        .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
                     let mut treader = BufReader::new(tfile);
 
                     // Unified gather: group this bucket's records into per-cell
@@ -796,24 +800,25 @@ where
                         codec,
                         &mut out,
                     )
-                    .expect("atac gather (collate_bucket) failed");
+                    .context("atac gather (collate_bucket) failed")?;
                     owriter
                         .lock()
-                        .unwrap()
+                        .map_err(|_| anyhow!("collated atac output mutex was poisoned"))?
                         .write_all(&out)
-                        .expect("could not write the collated atac output.");
+                        .context("could not write the collated atac output")?;
                     local_chunks += nchunks as u64;
 
                     // we don't need the file or reader anymore
                     drop(treader);
-                    std::fs::remove_file(fname).expect("could not delete temporary file.");
+                    std::fs::remove_file(&fname)
+                        .with_context(|| format!("could not delete temporary bucket {fname:?}"))?;
 
                     pbar_gather.inc(1);
                 }
             }
-            local_chunks
+            Ok(local_chunks)
         });
-        thread_handles.push(handle);
+        gather_handles.push(handle);
     } // for each worker
 
     // push the temporary buckets onto the work queue to be dispatched
@@ -833,16 +838,13 @@ where
         assert_eq!(expected, observed);
     }
 
-    // wait for all of the workers to finish
+    // wait for all of the workers to finish, propagating any gather error.
     let mut num_output_chunks = 0u64;
-    for h in thread_handles.drain(0..) {
+    for h in gather_handles.drain(0..) {
         match h.join() {
-            Ok(c) => {
-                num_output_chunks += c;
-            }
-            Err(_e) => {
-                info!(log, "thread panicked");
-            }
+            Ok(Ok(c)) => num_output_chunks += c,
+            Ok(Err(e)) => return Err(e).context("an atac collation gather worker failed"),
+            Err(_e) => anyhow::bail!("an atac collation gather worker thread panicked"),
         }
     }
     pbar_gather.finish_with_message("gathered all temp files.");
