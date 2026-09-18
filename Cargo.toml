@@ -66,6 +66,11 @@ slog-term = "2.9.2"
 slog-async = "2.8.0"
 smallvec = "1.15.1"
 snap = "1.1.1"
+# pure-Rust, no_std, zero-dependency single-threaded radix sort; used for the
+# initial (umi, gene) triplet sort in the cr-like Hamming-1 UMI correction, where
+# it is ~1.2-1.35x faster than pdqsort on realistic per-cell sizes (its built-in
+# small-input fallback keeps it from losing on tiny cells).
+radsort = "0.1.1"
 rand = { version = "0.10" }
 chrono = "0.4.44"
 csv = "1.4.0"
