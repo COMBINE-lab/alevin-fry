@@ -1650,8 +1650,7 @@ where
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let crlike_umi_edit = quant_opts.crlike_umi_edit;
     let mut sa_model = quant_opts.sa_model;
-    // ADDED over ygao61's d92869f (which left the tiny-cell fast path a no-op for
-    // UMI correction): when the correction is on, DISABLE the tiny-cell fast path by
+    // When the cr-like UMI correction is on, DISABLE the tiny-cell fast path by
     // forcing the threshold to 0, so every cell is resolved by the cr-like resolver
     // (which runs correct_umis_cellranger) instead of quantify_small_cell_sparse,
     // which exact-dedups and would bypass the correction. Announced below (not silent).

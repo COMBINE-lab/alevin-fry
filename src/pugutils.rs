@@ -838,6 +838,14 @@ pub fn correct_umis_cellranger(
         umi_len <= 32,
         "umi_len ({umi_len}) exceeds the 32-base capacity of the u64 UMI packing; the neighbour-flip shift x << (2*pos) would overflow"
     );
+    // Both the radix key packing (in the caller's sort branch) and the all-pairs
+    // `count_diff_2_bit_packed` (which counts over all 64 bits) assume UMIs carry
+    // no set bits above `2 * umi_len`, which holds for RAD-packed UMIs of the
+    // declared length. Guard it in debug builds.
+    debug_assert!(
+        umi_len >= 32 || v.iter().all(|&(u, _, _)| u >> (2 * umi_len) == 0),
+        "a UMI has bits set above 2*umi_len ({umi_len}); it is not packed to the declared length"
+    );
     // Below this per-gene group size, all-pairs Hamming via 2-bit popcount beats
     // probing the 3*umi_len bit-flip neighbourhood against the key index.
     const SMALL_GENE_GROUP: usize = 64;
@@ -1749,8 +1757,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
 
 #[cfg(test)]
 mod cellranger_umi_tests {
-    // Ported from ygao61's branch umi_ham_edit_1 (commit d92869f); these
-    // include Cell Ranger's own mark_dups.rs test_correct_umis cases. They
+    // These include Cell Ranger's own mark_dups.rs test_correct_umis cases and
     // exercise the drop path (`drop_low_support = true`, i.e. cr-like).
     use super::{CorrScratch, correct_umis_cellranger};
     // 4-nt UMIs, 2-bit MSB-first, A=0 C=1 G=2 T=3
@@ -1837,10 +1844,9 @@ mod cellranger_umi_tests {
 
 #[cfg(test)]
 mod umi_ham_merge_tests {
-    //! Merge-specific integration test (not in d92869f): the empty vector that
+    //! Merge-specific integration test: the empty vector that
     //! `correct_umis_cellranger` can produce must flow through the resolver's
-    //! empty guard without panicking on `.first().expect(...)`. This is the test
-    //! that would catch a misplaced guard (advisor item 1).
+    //! empty guard without panicking on `.first().expect(...)`.
     use super::*;
     use crate::utils::BasicEqClassPayload;
 
@@ -1864,7 +1870,7 @@ mod umi_ham_merge_tests {
 #[cfg(test)]
 mod umi_correction_optimization_tests {
     //! Guards for the gene-aware, allocation-free `correct_umis_cellranger`
-    //! rewrite (advisor items C1 + performance): a naive reference of the exact
+    //! rewrite: a naive reference of the exact
     //! three-step algorithm, a property test that the optimized version matches
     //! it in both modes, the cr-like-em multi-gene-survival semantics, and the
     //! needletail encoding-order invariant the tie-break relies on.

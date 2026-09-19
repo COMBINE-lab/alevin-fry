@@ -1328,9 +1328,12 @@ where
         let gather_failed = gather_failed.clone();
         // now, make the worker threads
         let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
-            // Run the fallible body and, on any error, set the shared failed flag
-            // before returning so the producer stops pushing and sibling workers
-            // stop popping (the join below still surfaces the error via `?`).
+            // Trip the shared failed flag on any non-success exit — an `Err`
+            // return OR a panic — so the producer stops pushing and sibling
+            // workers stop popping (the join below still surfaces the error/panic).
+            // The guard is disarmed only on a clean `Ok`; a panic unwinds past the
+            // disarm and its `Drop` sets the flag, closing the panic-hang hole.
+            let mut fail_guard = crate::utils::FailFlagGuard::new(&gather_failed);
             let result = (|| -> anyhow::Result<u64> {
                 let collation_ctx = collation_ctx;
                 let mut local_chunks = 0u64;
@@ -1385,8 +1388,10 @@ where
                 }
                 Ok(local_chunks)
             })();
-            if result.is_err() {
-                gather_failed.store(true, Ordering::Relaxed);
+            // Clean success: disarm so the guard leaves the flag alone. An `Err`
+            // return (or a panic) leaves it armed, so `Drop` sets `gather_failed`.
+            if result.is_ok() {
+                fail_guard.disarm();
             }
             result
         });

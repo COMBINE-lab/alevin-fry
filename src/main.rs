@@ -654,7 +654,7 @@ fn main() -> anyhow::Result<()> {
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
         let mut pug_exact_umi = false;
-        // cr-like Hamming-1 UMI correction level (ygao61 d92869f wiring): 0 = off.
+        // cr-like Hamming-1 UMI correction level: 0 = off.
         let mut crlike_umi_edit: u32 = 0;
 
         match umi_edit_dist {
@@ -677,8 +677,8 @@ fn main() -> anyhow::Result<()> {
             1 => {
                 match resolution {
                     ResolutionStrategy::CellRangerLike | ResolutionStrategy::CellRangerLikeEm => {
-                        // ygao61 (d92869f): Cell Ranger-style Hamming-1 UMI correction
-                        // per (cell, gene) before winner-take-all resolution.
+                        // Cell Ranger-style Hamming-1 UMI correction per
+                        // (cell, gene) before winner-take-all resolution.
                         crlike_umi_edit = 1;
                     }
                     ResolutionStrategy::Trivial => {
