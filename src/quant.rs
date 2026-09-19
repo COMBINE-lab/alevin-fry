@@ -394,6 +394,10 @@ struct WorkerConfig {
     em_init_type: EmInitType,
     large_graph_thresh: usize,
     pug_exact_umi: bool,
+    /// cr-like Hamming-1 UMI correction level (0 = off).
+    crlike_umi_edit: u32,
+    /// UMI length in bases (RAD "ulen" tag); caps the Hamming-1 neighbour scan.
+    umi_len: u32,
     sa_model: SplicedAmbiguityModel,
     num_bootstraps: u32,
     init_uniform: bool,
@@ -870,6 +874,9 @@ where
                                     &mut gene_eqc,
                                     config.sa_model,
                                     &mut crlike_scratch,
+                                    config.crlike_umi_edit,
+                                    config.umi_len,
+                                    config.resolution == ResolutionStrategy::CellRangerLike,
                                     &log,
                                 );
                             } else {
@@ -881,6 +888,9 @@ where
                                     &mut gene_eqc,
                                     config.sa_model,
                                     &mut crlike_scratch,
+                                    config.crlike_umi_edit,
+                                    config.umi_len,
+                                    config.resolution == ResolutionStrategy::CellRangerLike,
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1060,6 +1070,9 @@ where
                         &mut gene_eqc,
                         config.sa_model,
                         &mut crlike_scratch,
+                        config.crlike_umi_edit,
+                        config.umi_len,
+                        config.resolution == ResolutionStrategy::CellRangerLike,
                         &log,
                     );
                     // USA-mode
@@ -1635,11 +1648,32 @@ where
     let dump_eq = quant_opts.dump_eq;
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
+    let crlike_umi_edit = quant_opts.crlike_umi_edit;
     let mut sa_model = quant_opts.sa_model;
-    let tiny_cell_thresh = quant_opts.small_thresh;
+    // ADDED over ygao61's d92869f (which left the tiny-cell fast path a no-op for
+    // UMI correction): when the correction is on, DISABLE the tiny-cell fast path by
+    // forcing the threshold to 0, so every cell is resolved by the cr-like resolver
+    // (which runs correct_umis_cellranger) instead of quantify_small_cell_sparse,
+    // which exact-dedups and would bypass the correction. Announced below (not silent).
+    let tiny_cell_thresh = if crlike_umi_edit > 0 {
+        0
+    } else {
+        quant_opts.small_thresh
+    };
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
     let log = quant_opts.log;
+    // The tiny-cell fast-path override above changes a user-visible flag; announce it
+    // (mirroring the sa-model reset log) so --small-thresh is not silently ignored
+    // when the cr-like UMI correction is on.
+    if crlike_umi_edit > 0 && quant_opts.small_thresh != 0 {
+        info!(
+            log,
+            "cr-like UMI correction (--umi-edit-dist {}) is enabled, so the tiny-cell fast path (--small-thresh {}) is disabled (threshold forced to 0); every cell is resolved by the corrected cr-like resolver.",
+            crlike_umi_edit,
+            quant_opts.small_thresh
+        );
+    }
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
 
@@ -1694,6 +1728,20 @@ where
             tid_to_gid = v;
             usa_mode = us;
             if usa_mode {
+                // The Cell Ranger-style Hamming-1 UMI correction
+                // (correct_umis_cellranger) operates on raw gene ids. In USA mode
+                // those ids are spliced/unspliced/ambiguous variants, so a
+                // per-(cell, gene-variant) correction is not the Cell Ranger
+                // operation and can silently drop molecules (a UMI with one spliced
+                // and one unspliced read of the same gene reads as a tie -> both
+                // low-support -> dropped). usa_mode is auto-detected from a 3-column
+                // tg-map, so the main.rs prefer-ambiguity guard does not catch the
+                // default winner-take-all USA invocation; fail loud here.
+                if crlike_umi_edit >= 1 {
+                    anyhow::bail!(
+                        "--umi-edit-dist 1 (cr-like Hamming-1 UMI correction) is not supported in USA mode (a spliced+unspliced tg-map); it is only meaningful for a spliced-only reference"
+                    );
+                }
                 assert_eq!(
                     num_bootstraps, 0,
                     "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
@@ -1774,6 +1822,27 @@ where
         "cell barcode",
         log,
     )?;
+
+    // UMI length in bases from the RAD file-level "ulen" tag (chemistry/header,
+    // NOT data-derived); caps the Hamming-1 neighbour scan in cr-like UMI
+    // correction. Only required when the correction is requested: a RAD without
+    // `ulen` (older salmon/piscem-cpp output, third-party writers) must still
+    // quant with --umi-edit-dist 0. `umi_len` must be the *packed* width.
+    let umi_len: u32 = if crlike_umi_edit > 0 {
+        let umi_len_bases: u16 = file_tag_map
+            .get("ulen")
+            .context(
+                "--umi-edit-dist >= 1 (cr-like Hamming-1 UMI correction) requires the `ulen` file-level tag",
+            )?
+            .try_into()?;
+        anyhow::ensure!(
+            umi_len_bases <= 32,
+            "ulen ({umi_len_bases}) exceeds the 32-base capacity of the u64 UMI packing"
+        );
+        umi_len_bases as u32
+    } else {
+        0
+    };
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
@@ -1999,6 +2068,8 @@ where
             },
             large_graph_thresh,
             pug_exact_umi,
+            crlike_umi_edit,
+            umi_len,
             sa_model,
             num_bootstraps,
             init_uniform,
