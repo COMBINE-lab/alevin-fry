@@ -449,6 +449,39 @@ pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A guard that flips a shared "failed" flag if it is dropped while still armed.
+///
+/// The collation gather producer busy-waits on a bounded queue and stops only
+/// when a shared `AtomicBool` is set. A worker that returns `Err` sets the flag
+/// explicitly, but a worker that **panics** would unwind without doing so,
+/// leaving the producer spinning forever (acute at the 2-thread floor, where
+/// there is a single gather worker). Hold one of these at the top of each worker
+/// and `disarm()` it only on a normal (`Ok`) return: an `Err` return or a panic
+/// both leave it armed, so its `Drop` trips the flag and the producer stops. The
+/// thread boundary still turns the panic into a `join()` error afterwards.
+pub(crate) struct FailFlagGuard<'a> {
+    flag: &'a std::sync::atomic::AtomicBool,
+    armed: bool,
+}
+
+impl<'a> FailFlagGuard<'a> {
+    pub(crate) fn new(flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        Self { flag, armed: true }
+    }
+    /// Disarm the guard so dropping it will not set the flag. Call on success.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FailFlagGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
 pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
@@ -1220,6 +1253,49 @@ impl FromStr for InternalVersionInfo {
             minor: versions[1],
             patch: versions[2],
         })
+    }
+}
+
+#[cfg(test)]
+mod fail_flag_guard_tests {
+    use super::FailFlagGuard;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn disarmed_guard_leaves_flag_unset() {
+        let flag = AtomicBool::new(false);
+        {
+            let mut g = FailFlagGuard::new(&flag);
+            g.disarm();
+        }
+        assert!(!flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn armed_guard_sets_flag_on_drop() {
+        let flag = AtomicBool::new(false);
+        {
+            let _g = FailFlagGuard::new(&flag);
+        }
+        assert!(flag.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn panic_while_armed_sets_flag() {
+        // The load-bearing case: a gather worker that PANICS (not just returns
+        // Err) must still trip the shared flag so the producer stops.
+        let flag = AtomicBool::new(false);
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {})); // silence the expected panic
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = FailFlagGuard::new(&flag);
+            panic!("simulated worker panic");
+        }));
+        std::panic::set_hook(prev);
+        assert!(
+            flag.load(Ordering::Relaxed),
+            "a panic while the guard is armed must set the flag"
+        );
     }
 }
 
