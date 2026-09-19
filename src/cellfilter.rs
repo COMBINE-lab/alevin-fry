@@ -370,6 +370,7 @@ fn process_unfiltered(
     hm: DashMap<u64, u64, ahash::RandomState>,
     unmatched_bc: HashMap<u64, u64, ahash::RandomState>,
     file_tag_map: &rad_types::TagMap,
+    read_tags: &TagSection,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &PathBuf,
@@ -392,10 +393,16 @@ fn process_unfiltered(
             unimplemented!();
         }
     };
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .expect("tag map must contain cblen");
-    let barcode_len: u16 = barcode_tag.try_into()?;
+    // Cell barcode length: prefer the declared Barcode role's `len`, falling back
+    // to the `cblen` file tag (shared resolver, warns on disagreement). Replaces a
+    // bare `expect` so a role-only RAD without a `cblen` tag is usable.
+    let barcode_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(read_tags),
+        file_tag_map,
+        &["cblen"],
+        "cell barcode",
+        log,
+    )?;
 
     let mut observed_counts: HashMap<u64, u64, ahash::RandomState> = HashMap::default();
     let mut kept_barcodes = Vec::new();
@@ -517,6 +524,7 @@ fn process_unfiltered(
 fn process_filtered(
     hm: DashMap<u64, u64, ahash::RandomState>,
     file_tag_map: &rad_types::TagMap,
+    read_tags: &TagSection,
     filter_meth: &CellFilterMethod,
     expected_ori: Strand,
     output_dir: &PathBuf,
@@ -528,10 +536,16 @@ fn process_filtered(
     gpl_opts: &GenPermitListOpts,
 ) -> anyhow::Result<u64> {
     let hm: HashMap<u64, u64, ahash::RandomState> = hm.into_iter().collect();
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .expect("tag map must contain cblen");
-    let barcode_len: u16 = barcode_tag.try_into()?;
+    // Cell barcode length: prefer the declared Barcode role's `len`, falling back
+    // to the `cblen` file tag (shared resolver, warns on disagreement). Replaces a
+    // bare `expect` so a role-only RAD without a `cblen` tag is usable.
+    let barcode_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(read_tags),
+        file_tag_map,
+        &["cblen"],
+        "cell barcode",
+        log,
+    )?;
     let mut valid_barcodes = select_retained_barcodes(&hm, filter_meth, 0, barcode_len, log);
     valid_barcodes.sort_unstable();
     valid_barcodes.dedup();
@@ -677,7 +691,7 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
 
     let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut ifile).unwrap();
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {
@@ -806,8 +820,10 @@ fn do_generate_permit_list_multi_bc(
         )
     })?;
 
-    // Parse the record context for multi-barcode records
-    let rec_ctx = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+    // Parse the record context for multi-barcode records, preferring the RAD's
+    // declared roles (#64/#66) so a role-only RAD with non-conventional tag names
+    // works; falls back to the b0/b1/u name bridge for legacy files.
+    let rec_ctx = prelude.get_record_context_prefer_roles::<MultiBarcodeRecordContext>()?;
     info!(
         log,
         "Multi-barcode record context: {} barcode levels",
@@ -1210,13 +1226,16 @@ fn do_generate_permit_list_multi_bc(
     let mut sample_info_entries = Vec::new();
     let mut cell_correction_scopes = Vec::with_capacity(num_samples);
 
-    // Get the cell barcode length from file tags
+    // Cell barcode length: role-declared if present, else the `b{N-1}len` file tag
+    // (shared resolver, prefers role and warns on disagreement).
     let cell_bc_tag = format!("b{}len", num_barcodes - 1);
-    let cell_bc_len: u16 = file_tag_map
-        .get(&cell_bc_tag)
-        .unwrap_or_else(|| panic!("expected '{}' file-level tag", cell_bc_tag))
-        .try_into()
-        .unwrap_or_else(|_| panic!("couldn't parse '{}' as u16", cell_bc_tag));
+    let cell_bc_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &[&cell_bc_tag],
+        "cell barcode",
+        log,
+    )?;
     let cell_spec = gpl_opts.cell_correction_spec(cell_bc_len as u8, true);
     warn_for_shift_frequency(cell_spec, "cell", log);
     let cell_correction_start = Instant::now();
@@ -2009,6 +2028,7 @@ fn log_rad_header_info<R: MappedRecord, F: std::io::BufRead + std::io::Seek>(
 
 // Validate that barcode and UMI tags are present and of correct type
 fn validate_tag_types(rl_tags: &TagSection, log: &slog::Logger) -> anyhow::Result<()> {
+    use libradicl::rad_types::TagRole;
     const BNAME: &str = "b";
     const UNAME: &str = "u";
 
@@ -2016,26 +2036,38 @@ fn validate_tag_types(rl_tags: &TagSection, log: &slog::Logger) -> anyhow::Resul
     let mut umit: Option<RadType> = None;
 
     for rt in &rl_tags.tags {
-        if rt.name == BNAME || rt.name == UNAME {
+        // A read tag satisfies the barcode/UMI requirement either by the legacy
+        // `b`/`u` name bridge or by carrying a declared Barcode/Umi role — so a
+        // self-describing RAD (#64/#66) using non-conventional tag names is
+        // accepted just as the multi-barcode gpl path already is.
+        let is_barcode = rt.name == BNAME || matches!(rt.role, TagRole::Barcode { .. });
+        let is_umi = rt.name == UNAME || matches!(rt.role, TagRole::Umi { .. });
+        if is_barcode || is_umi {
             if !rt.typeid.is_int_type() {
                 crit!(
                     log,
-                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
+                    "currently only RAD types 1--4 are supported for barcode and UMI tags."
                 );
                 std::process::exit(exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
             }
 
-            if rt.name == BNAME {
+            if is_barcode {
                 bct = Some(rt.typeid);
             }
-            if rt.name == UNAME {
+            if is_umi {
                 umit = Some(rt.typeid);
             }
         }
     }
 
-    anyhow::ensure!(bct.is_some(), "barcode type tag must be present");
-    anyhow::ensure!(umit.is_some(), "umi type tag must be present");
+    anyhow::ensure!(
+        bct.is_some(),
+        "barcode type tag must be present (a `b`-named tag or a declared Barcode role)"
+    );
+    anyhow::ensure!(
+        umit.is_some(),
+        "umi type tag must be present (a `u`-named tag or a declared Umi role)"
+    );
 
     Ok(())
 }
@@ -2115,6 +2147,7 @@ where
         hmu,
         unmatched_bc,
         &rad_reader.file_tag_map,
+        &rad_reader.prelude.read_tags,
         &gpl_opts.fmeth,
         expected_ori,
         gpl_opts.output_dir,
@@ -2171,6 +2204,7 @@ where
     process_filtered(
         hm,
         &rad_reader.file_tag_map,
+        &rad_reader.prelude.read_tags,
         &gpl_opts.fmeth,
         expected_ori,
         gpl_opts.output_dir,

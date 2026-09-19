@@ -41,8 +41,8 @@ use crossbeam_queue::ArrayQueue;
 use libradicl::chunk;
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::rad_types;
-use libradicl::record::AtacSeqReadRecord;
-use libradicl::schema::{CollateKey, TempCellInfo};
+use libradicl::record::{AtacSeqReadRecord, AtacSeqRecordContext};
+use libradicl::schema::CollateKey;
 
 use num_format::{Locale, ToFormattedString};
 use scroll::{Pread, Pwrite};
@@ -50,12 +50,12 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
 #[allow(clippy::too_many_arguments)]
@@ -328,12 +328,16 @@ where
         "collated rad file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
-    // because :
-    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if compress_out {
-        "map.collated.rad.sz"
+    // Per-chunk chunk codec, matching the scRNA collated output: `None` writes
+    // raw per-cell chunks, otherwise each chunk's payload is codec-compressed and
+    // the codec is recorded in a file tag so the reader is self-describing. This
+    // replaces the historical whole-file Snappy stream (and its `.sz` name), which
+    // — being one continuous stream — could not seek-patch `num_chunks` after
+    // empty cells were dropped.
+    let codec = if compress_out {
+        libradicl::ChunkCodec::Lz4
     } else {
-        "map.collated.rad"
+        libradicl::ChunkCodec::None
     };
 
     // writing the collate metadata
@@ -342,6 +346,7 @@ where
             "cmd" : cmdline,
             "version_str" : version,
             "compressed_output" : compress_out,
+            "chunk_codec" : codec.as_str(),
         });
         let cm_path = parent.join("collate.json");
 
@@ -355,15 +360,8 @@ where
             .context("cannot write to collate.json file")?;
     }
 
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)
-            .with_context(|| format!("could not remove {}", oname.display()))?;
-    }
-
-    let ofile = File::create(parent.join(cfname))
-        .with_context(|| format!("couldn't create directory {}", cfname))?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    // Always `map.collated.rad` now (the codec lives in a file tag, not the name).
+    let (oname, owriter) = crate::collate::create_collated_output(parent, false)?;
 
     let i_dir = std::path::Path::new(rad_dir.as_ref());
 
@@ -395,67 +393,58 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need
     let prelude = RadPrelude::from_header_and_tag_sections(hdr, fl_tags, rl_tags, al_tags);
     let rl_tags = &prelude.read_tags;
 
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br);
+    // Propagate a file-tag parse error (with `?`) rather than only logging it:
+    // a failure here would otherwise leave `br` mispositioned for the
+    // first-chunk self-check and header copy below. Mirrors the scRNA path.
+    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
+    // The scATAC record reader is positional: the barcode is the first read tag,
+    // whatever its name or role, so reading tags[0] here is by-design (not a name bridge).
     let bct = rl_tags.tags[0].typeid;
 
-    // the exact position at the end of the header + file tags
-    let pos = br.get_ref().stream_position().unwrap() - (br.buffer().len() as u64);
-
-    // copy the header
-    {
-        // we want to copy up to the end of the header
-        // minus the num chunks (sizeof u64), and then
-        // write the actual number of chunks we expect.
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-
-        // This temporary file pointer and buffer will be dropped
-        // at the end of this block (scope).
-        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-
-        rfile
-            .read_exact(hdr_buf.get_mut())
-            .context("couldn't read input file header")?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf
-            .write_all(&expected_output_chunks.to_le_bytes())
-            .context("couldn't write num_chunks")?;
-        hdr_buf.set_position(0);
-
-        // compress the header buffer to a compressed buffer
-        if compress_out {
-            let mut compressed_buf =
-                snap::write::FrameEncoder::new(Cursor::new(Vec::<u8>::with_capacity(pos as usize)));
-            compressed_buf
-                .write_all(hdr_buf.get_ref())
-                .context("could not compress the output header.")?;
-            hdr_buf = compressed_buf
-                .into_inner()
-                .context("couldn't unwrap the FrameEncoder.")?;
-            hdr_buf.set_position(0);
-        }
-
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(hdr_buf.get_ref())
-                .context("could not write the output header.")?;
-        }
+    // Field-completeness self-check on the first chunk (mirrors the scRNA path):
+    // catch undeclared per-record fields early. The ATAC input map.rad is
+    // uncompressed (raw records), so no codec guard is needed here. Runs on a
+    // fresh reader so `br` (used by the header copy below) is undisturbed.
+    if prelude.hdr.num_chunks > 0 {
+        let first_chunk_pos = br.stream_position()?;
+        let mut chk = BufReader::new(File::open(&input_rad_path)?);
+        chk.seek(SeekFrom::Start(first_chunk_pos))?;
+        libradicl::chunk::validate_first_chunk_layout(
+            &mut chk,
+            &prelude.read_tags,
+            &prelude.aln_tags,
+        )
+        .context("RAD field-completeness check failed on the first chunk")?;
     }
+
+    // Write the collated-output header via the shared scRNA helper: it copies the
+    // input header, patches `num_chunks` to the expected count, and appends the
+    // chunk-codec file tag — leaving the header uncompressed and seek-patchable
+    // (so the count can be corrected downward after empty cells are dropped).
+    let _header_len = crate::collate::write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     let compact_path = parent.join(CORRECTION_PLAN_FILENAME);
     let correct_map: Arc<AHashMap<u64, u64>> = if compact_path.exists() {
@@ -755,19 +744,24 @@ where
     // the number of cells left to process
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
+    // Shared "a gather worker failed" flag; see the scRNA collate path for the
+    // rationale. Without it, a single failing gather worker (the CLI thread floor
+    // of 2 often means exactly one) leaves the bounded queue full and the busy-wait
+    // producer spins forever.
+    let gather_failed = Arc::new(AtomicBool::new(false));
+
     let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
+    // Gather workers return a Result so an I/O / collation error surfaces rather
+    // than aborting the process with a thread panic.
+    let mut gather_handles: Vec<thread::JoinHandle<anyhow::Result<u64>>> =
+        Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
-        // the output cache and correction map
-        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-        let mut cmap = HashMap::<u64, TempCellInfo, ahash::RandomState>::with_hasher(s);
-        // alternative strategy
-        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
 
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
@@ -781,53 +775,95 @@ where
         let owriter = owriter.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
+        let gather_failed = gather_failed.clone();
 
         // now, make the worker threads
-        let handle = std::thread::spawn(move || {
-            let mut local_chunks = 0u64;
-            let parent = std::path::Path::new(&input_dir);
-            // pop from the work queue until everything is
-            // processed
-            while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some(temp_bucket) = in_q.pop() {
-                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
+        let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
+            // Run the fallible body and, on any error, set the shared failed flag
+            // before returning so the producer stops pushing and sibling workers
+            // stop popping (the join below still surfaces the error via `?`).
+            let result = (|| -> anyhow::Result<u64> {
+                let mut local_chunks = 0u64;
+                let parent = std::path::Path::new(&input_dir);
+                // pop from the work queue until everything is
+                // processed
+                // Collation context for the unified gather: the scATAC record has a
+                // fixed `[na][bc][aln]` layout keyed on the barcode (no UMI).
+                let ctx = AtacSeqRecordContext::from_bct(bc_type);
+                while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                    // a sibling worker failed: stop early so we don't spin on an
+                    // empty queue that the producer has stopped feeding.
+                    if gather_failed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Some(temp_bucket) = in_q.pop() {
+                        buckets_remaining.fetch_sub(1, Ordering::SeqCst);
 
-                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    // create a new handle for reading
-                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
-                    let mut treader = BufReader::new(tfile);
+                        let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                        let tfile = std::fs::File::open(&fname)
+                            .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
+                        let mut treader = BufReader::new(tfile);
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_atac(
-                        &mut treader,
-                        &bc_type,
-                        temp_bucket.1,
-                        &owriter,
-                        compress_out,
-                        &mut cmap,
-                    ) as u64;
+                        // Unified gather: group this bucket's records into per-cell
+                        // chunks with the shared `collate_bucket` engine (retiring the
+                        // ATAC-specific `collate_temporary_bucket_twopass_atac`). Each
+                        // chunk's payload is framed with the per-chunk `codec` (as the
+                        // scRNA paths do), so the output is self-describing and the
+                        // header stays uncompressed/seek-patchable.
+                        let mut out: Vec<u8> = Vec::new();
+                        let nchunks = libradicl::bucket_gather::collate_bucket::<
+                            AtacSeqReadRecord,
+                            _,
+                        >(
+                            &mut treader, temp_bucket.1 as usize, &ctx, codec, &mut out
+                        )
+                        .context("atac gather (collate_bucket) failed")?;
+                        owriter
+                            .lock()
+                            .map_err(|_| anyhow!("collated atac output mutex was poisoned"))?
+                            .write_all(&out)
+                            .context("could not write the collated atac output")?;
+                        local_chunks += nchunks as u64;
 
-                    // we don't need the file or reader anymore
-                    drop(treader);
-                    std::fs::remove_file(fname).expect("could not delete temporary file.");
+                        // we don't need the file or reader anymore
+                        drop(treader);
+                        std::fs::remove_file(&fname).with_context(|| {
+                            format!("could not delete temporary bucket {fname:?}")
+                        })?;
 
-                    pbar_gather.inc(1);
+                        pbar_gather.inc(1);
+                    }
                 }
+                Ok(local_chunks)
+            })();
+            if result.is_err() {
+                gather_failed.store(true, Ordering::Relaxed);
             }
-            local_chunks
+            result
         });
-        thread_handles.push(handle);
+        gather_handles.push(handle);
     } // for each worker
 
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
     for temp_bucket in temp_buckets {
         let mut bclone = temp_bucket.clone();
-        // keep trying until we can push this payload
+        // keep trying until we can push this payload, unless a gather worker has
+        // failed — in which case we stop pushing so the join below can surface the
+        // worker's error instead of the producer spinning on a full queue forever.
         while let Err(t) = fq.push(bclone) {
             bclone = t;
-            // no point trying to push if the queue is full
-            while fq.is_full() {}
+            if gather_failed.load(Ordering::Relaxed) {
+                break;
+            }
+            // no point trying to push if the queue is full; yield rather than
+            // busy-spinning, and bail out the moment a worker fails.
+            while fq.is_full() && !gather_failed.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+        }
+        if gather_failed.load(Ordering::Relaxed) {
+            break;
         }
         // `temp_bucket.1` was reconciled against the records actually written
         // before the buckets were queued, so these must now agree.
@@ -836,16 +872,13 @@ where
         assert_eq!(expected, observed);
     }
 
-    // wait for all of the workers to finish
+    // wait for all of the workers to finish, propagating any gather error.
     let mut num_output_chunks = 0u64;
-    for h in thread_handles.drain(0..) {
+    for h in gather_handles.drain(0..) {
         match h.join() {
-            Ok(c) => {
-                num_output_chunks += c;
-            }
-            Err(_e) => {
-                info!(log, "thread panicked");
-            }
+            Ok(Ok(c)) => num_output_chunks += c,
+            Ok(Err(e)) => return Err(e).context("an atac collation gather worker failed"),
+            Err(_e) => anyhow::bail!("an atac collation gather worker thread panicked"),
         }
     }
     pbar_gather.finish_with_message("gathered all temp files.");
@@ -899,9 +932,11 @@ where
     // other reader trust this field to decide how many chunks to parse, so a
     // header that overstates it walks them off the end of the file.
     //
-    // Snappy output is a stream, so there is nothing to seek back into; in that
-    // case the count written up front is all we have.
-    if !compress_out && num_output_chunks != expected_output_chunks {
+    // With per-chunk codec framing the header is uncompressed regardless of the
+    // codec, so num_chunks is always seek-patchable here — unlike the old
+    // whole-file Snappy stream, which could not correct an overcount and so
+    // silently over-reported chunks when empty cells were dropped.
+    if num_output_chunks != expected_output_chunks {
         let chunk_bytes = std::mem::size_of::<u64>() as u64;
         let nc_pos = end_header_pos - chunk_bytes;
         let mut ofile = std::fs::OpenOptions::new().write(true).open(&oname)?;

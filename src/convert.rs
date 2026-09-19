@@ -27,7 +27,9 @@ use libradicl::utils::MASK_LOWER_31_U32;
 use libradicl::{
     chunk,
     header::{RadHeader, RadPrelude},
-    record::{AlevinFryReadRecord, AlevinFryRecordContext},
+    record::{
+        AlevinFryReadRecord, AlevinFryRecordContext, MultiBarcodeRecordContext, umi_len_from_roles,
+    },
 };
 
 use needletail::bitkmer::*;
@@ -280,16 +282,10 @@ where
     {
         // file-level
         let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
-        file_tags.add_tag_desc(TagDesc {
-            name: "cblen".to_owned(),
-            typeid: RadType::Int(RadIntId::U16),
-        });
-        file_tags.add_tag_desc(TagDesc {
-            name: "ulen".to_owned(),
-            typeid: RadType::Int(RadIntId::U16),
-        });
+        file_tags.add_tag_desc(TagDesc::new("cblen", RadType::Int(RadIntId::U16)));
+        file_tags.add_tag_desc(TagDesc::new("ulen", RadType::Int(RadIntId::U16)));
 
-        file_tags.write(&mut data)?;
+        file_tags.write(&mut data, 0)?;
 
         // read-level
         let flag_data = rec.data();
@@ -343,23 +339,17 @@ where
         };
 
         let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
-        read_tags.add_tag_desc(TagDesc {
-            name: "b".to_owned(),
-            typeid: bc_typeid,
-        });
-        read_tags.add_tag_desc(TagDesc {
-            name: "u".to_owned(),
-            typeid: umi_typeid,
-        });
-        read_tags.write(&mut data)?;
+        read_tags.add_tag_desc(TagDesc::new("b", bc_typeid));
+        read_tags.add_tag_desc(TagDesc::new("u", umi_typeid));
+        read_tags.write(&mut data, 0)?;
 
         // alignment-level
         let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
-        aln_tags.add_tag_desc(TagDesc {
-            name: "compressed_ori_refid".to_owned(),
-            typeid: RadType::Int(RadIntId::U32),
-        });
-        aln_tags.write(&mut data)?;
+        aln_tags.add_tag_desc(TagDesc::new(
+            "compressed_ori_refid",
+            RadType::Int(RadIntId::U32),
+        ));
+        aln_tags.write(&mut data, 0)?;
 
         // done with tag descriptions
         // now write the values associated with the file-level tags
@@ -641,16 +631,25 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag map {:?}", file_tag_map);
 
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .expect("tag map must contain cblen");
-    let barcode_len: u16 = barcode_tag.try_into()?;
-
-    let umi_tag = file_tag_map.get("ulen").expect("tag map must contain ulen");
-    let umi_len: u16 = umi_tag.try_into()?;
+    // Barcode/UMI lengths: role-declared if present, else the cblen/ulen file tags
+    // (shared resolver, prefers role and warns on disagreement).
+    let barcode_len: u16 = crate::utils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["cblen"],
+        "barcode",
+        log,
+    )?;
+    let umi_len: u16 = crate::utils::resolve_declared_len(
+        umi_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["ulen"],
+        "UMI",
+        log,
+    )?;
 
     let mut num_reads: u64 = 0;
-    let record_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+    let record_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();

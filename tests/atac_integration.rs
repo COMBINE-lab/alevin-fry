@@ -78,6 +78,7 @@ fn packed_to_nuc(packed: u64, len: usize) -> String {
 /// alignment tags.
 fn make_atac_prelude() -> (RadPrelude, TagMap) {
     let hdr = RadHeader {
+        version: libradicl::header::SpecVersion::Legacy,
         is_paired: 1,
         ref_count: REF_NAMES.len() as u64,
         ref_names: REF_NAMES.iter().map(|s| s.to_string()).collect(),
@@ -85,27 +86,21 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
     };
 
     let mut file_tags = TagSection::new_with_label(TagSectionLabel::FileTags);
-    file_tags.add_tag_desc(TagDesc {
-        name: "cblen".to_string(),
-        typeid: RadType::Int(RadIntId::U16),
-    });
-    file_tags.add_tag_desc(TagDesc {
-        name: "known_rad_type".to_string(),
-        typeid: RadType::String,
-    });
-    file_tags.add_tag_desc(TagDesc {
-        name: "ref_lengths".to_string(),
-        typeid: RadType::Array(
+    file_tags.add_tag_desc(TagDesc::new(
+        "cblen".to_string(),
+        RadType::Int(RadIntId::U16),
+    ));
+    file_tags.add_tag_desc(TagDesc::new("known_rad_type".to_string(), RadType::String));
+    file_tags.add_tag_desc(TagDesc::new(
+        "ref_lengths".to_string(),
+        RadType::Array(
             RadIntId::U32,
             libradicl::rad_types::RadAtomicId::Int(RadIntId::U32),
         ),
-    });
+    ));
 
     let mut read_tags = TagSection::new_with_label(TagSectionLabel::ReadTags);
-    read_tags.add_tag_desc(TagDesc {
-        name: "b".to_string(),
-        typeid: RadType::Int(RadIntId::U32),
-    });
+    read_tags.add_tag_desc(TagDesc::new("b".to_string(), RadType::Int(RadIntId::U32)));
 
     let mut aln_tags = TagSection::new_with_label(TagSectionLabel::AlignmentTags);
     for (name, typeid) in [
@@ -114,10 +109,7 @@ fn make_atac_prelude() -> (RadPrelude, TagMap) {
         ("start_pos", RadType::Int(RadIntId::U32)),
         ("frag_len", RadType::Int(RadIntId::U16)),
     ] {
-        aln_tags.add_tag_desc(TagDesc {
-            name: name.to_string(),
-            typeid,
-        });
+        aln_tags.add_tag_desc(TagDesc::new(name, typeid));
     }
 
     let prelude = RadPrelude {
@@ -603,5 +595,78 @@ fn atac_deduplicate_terminates_and_writes_fragments() {
             start < 500_000
         }),
         "a multi-mapping record leaked into the deduplicated output"
+    );
+}
+
+/// The collated output now uses per-chunk codec framing (like scRNA), so the
+/// compressed (lz4) path must round-trip through `deduplicate` and yield exactly
+/// the same fragments as the uncompressed path. This also exercises the
+/// num_chunks backpatch under compression — impossible with the old whole-file
+/// Snappy stream, which silently over-reported chunks when empty cells dropped.
+#[test]
+fn atac_deduplicate_matches_across_compression() {
+    let log = make_test_logger();
+    let mix = CellMix {
+        good: 4,
+        unmapped: 2, // dropped cells force a num_chunks backpatch
+        multimapped: 1,
+    };
+    let num_cells = 12;
+
+    // Run collate (with the given compression) + deduplicate in `tmp`, returning
+    // the sorted BED lines.
+    let run = |compress: bool| -> Vec<String> {
+        let tmp = tempfile::tempdir().unwrap();
+        let (rad_dir, gpl_dir) = stage_permit_list(tmp.path(), num_cells, &mix, &log);
+
+        let gpl_c = gpl_dir.clone();
+        let clog = log.clone();
+        run_with_timeout("atac collate", move || {
+            collate(
+                gpl_c,
+                rad_dir,
+                2,
+                10_000,
+                compress,
+                "atac_integration_test",
+                TEST_VERSION,
+                &clog,
+            )
+        });
+
+        let gpl_d = gpl_dir.clone();
+        let dlog = log.clone();
+        run_with_timeout("atac deduplicate", move || {
+            let opts = DeduplicateOpts::builder()
+                .input_dir(&gpl_d)
+                .num_threads(4)
+                .rev(false)
+                .cmdline("atac_integration_test")
+                .version(TEST_VERSION)
+                .log(&dlog)
+                .build();
+            deduplicate(opts)
+        });
+
+        let bed =
+            std::fs::read_to_string(gpl_dir.join("map.bed")).expect("deduplicate wrote no BED");
+        // keep tmp alive until the BED is read
+        drop(tmp);
+        let mut lines: Vec<String> = bed.lines().map(|s| s.to_string()).collect();
+        lines.sort();
+        lines
+    };
+
+    let uncompressed = run(false);
+    let compressed = run(true);
+
+    assert_eq!(
+        uncompressed.len(),
+        num_cells * mix.good,
+        "every uniquely-mapped fragment should appear exactly once"
+    );
+    assert_eq!(
+        uncompressed, compressed,
+        "lz4 per-chunk collation produced different fragments than the uncompressed path"
     );
 }

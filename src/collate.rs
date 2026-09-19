@@ -19,8 +19,9 @@ use bio_types::strand::{Strand, StrandError};
 use crossbeam_queue::ArrayQueue;
 // use dashmap::DashMap;
 
+use libradicl::bucket_gather::{CollationScan, TagDrivenCollateCtx, collate_bucket};
 use libradicl::chunk;
-use libradicl::codec::ChunkCodec;
+use libradicl::codec::{ChunkCodec, ChunkIndexBuilder};
 use libradicl::collation::{CollationManifest, SampleGroup};
 use libradicl::header::{RadHeader, RadPrelude};
 use libradicl::multi_collation::{
@@ -31,9 +32,8 @@ use libradicl::rad_types::{self, RadIntId};
 use libradicl::record::{
     AlevinFryReadRecordWithPositionT, AlevinFryRecordContext, CollatableMappedRecord,
     ConvertiblePrimitiveInteger, KnownSize, MappedRecord, MultiBarcodeRecordContext,
-    ScLongReadRecordContext, ScLongReadRecordT,
+    ScLongReadRecordContext, ScLongReadRecordT, TagDrivenReadRecord, TagDrivenReadRecordContext,
 };
-use libradicl::schema::TempCellInfo;
 use libradicl::single_collation::{
     SingleBarcodeCollationOptions, SingleBarcodeCollationPlan, collate_single_barcode,
 };
@@ -44,7 +44,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::io::{BufWriter, Cursor, Read, Seek, Write};
+use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 
 /// Read-buffer capacity for the collate input RAD.
 ///
@@ -57,7 +57,7 @@ const COLLATE_INPUT_BUF_BYTES: usize = 4 * 1024 * 1024;
 use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -660,6 +660,118 @@ fn write_chunk_index_from_offsets(
     Ok(())
 }
 
+/// Create the collated output file (`velo.map.collated.rad` in velo mode, else
+/// `map.collated.rad`), removing any stale file first, and return its path plus a
+/// shared buffered writer. Shared by all three collation drivers.
+pub(crate) fn create_collated_output(
+    parent: &Path,
+    velo_mode: bool,
+) -> anyhow::Result<(PathBuf, Arc<Mutex<BufWriter<File>>>)> {
+    let name = if velo_mode {
+        "velo.map.collated.rad"
+    } else {
+        "map.collated.rad"
+    };
+    let path = parent.join(name);
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .with_context(|| format!("could not remove {}", path.display()))?;
+    }
+    // Remove any stale legacy `.sz` sidecar (the pre-per-chunk-codec whole-file
+    // Snappy stream). scRNA quant prefers `map.collated.rad.sz` when present, so a
+    // directory re-collated by this path (which writes the uncompressed/per-chunk
+    // `map.collated.rad`) but still holding an old `.sz` would otherwise quantify
+    // STALE data. Drop the sidecar for both the target name and its `velo.`/plain
+    // counterpart so no re-collate can leave one behind.
+    for sz_name in [name, "map.collated.rad", "velo.map.collated.rad"] {
+        let sz_path = parent.join(format!("{sz_name}.sz"));
+        if sz_path.exists() {
+            std::fs::remove_file(&sz_path)
+                .with_context(|| format!("could not remove stale {}", sz_path.display()))?;
+        }
+    }
+    let file =
+        File::create(&path).with_context(|| format!("couldn't create {}", path.display()))?;
+    let writer = Arc::new(Mutex::new(BufWriter::with_capacity(1024 * 1024, file)));
+    Ok((path, writer))
+}
+
+/// Copy the input RAD header, patch its `num_chunks` to `expected_output_chunks`,
+/// append the collated-RAD chunk-codec tag via [`collated_header_bytes`], write the
+/// result to `owriter`, and return the written header length. The header is
+/// record-type-agnostic, so this is generic only over the reader — callable from
+/// the record-type-generic `do_collate_with_temp` without extra bounds.
+pub(crate) fn write_collated_output_header<A: Read + Seek>(
+    br: &mut BufReader<A>,
+    input_rad_path: &Path,
+    prelude: &RadPrelude,
+    end_header_pos: u64,
+    expected_output_chunks: u64,
+    codec: ChunkCodec,
+    owriter: &Arc<Mutex<BufWriter<File>>>,
+) -> anyhow::Result<u64> {
+    // exact end of the header + file-tag values in the input stream
+    let pos = br.get_mut().stream_position()? - br.buffer().len() as u64;
+    // copy up to the end of the header minus num_chunks (sizeof u64), then write
+    // the actual number of chunks we expect.
+    let chunk_bytes = std::mem::size_of::<u64>() as u64;
+    let take_pos = end_header_pos - chunk_bytes;
+
+    let mut rfile = File::open(input_rad_path).context("couldn't open input RAD file")?;
+    let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
+    rfile
+        .read_exact(hdr_buf.get_mut())
+        .context("couldn't read input file header")?;
+    hdr_buf.set_position(take_pos);
+    hdr_buf
+        .write_all(&expected_output_chunks.to_le_bytes())
+        .context("couldn't write num_chunks")?;
+
+    let header =
+        collated_header_bytes(prelude, hdr_buf.into_inner(), expected_output_chunks, codec)?;
+    let header_len = header.len() as u64;
+    owriter
+        .lock()
+        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
+        .write_all(&header)
+        .context("could not write the output header")?;
+    Ok(header_len)
+}
+
+/// Write the `collate.json` metadata file. Callers supply the JSON value (its
+/// fields differ per collation mode); only the create+serialize is shared.
+fn write_collate_json(parent: &Path, meta: &serde_json::Value) -> anyhow::Result<()> {
+    let mut file =
+        File::create(parent.join("collate.json")).context("could not create collate.json")?;
+    serde_json::to_writer_pretty(&mut file, meta).context("could not write collate.json")?;
+    Ok(())
+}
+
+/// Emit the collated-RAD chunk-offset sidecar (`.chunkidx`) from the offsets
+/// captured during gather, so quant's parallel reader can engage. Optimization
+/// only — on failure it warns and leaves quant on its single-reader path. When
+/// `scan_fallback` is set, a failed direct write falls back to a post-hoc scan.
+fn emit_chunk_index(
+    rad_path: &Path,
+    header_len: u64,
+    offsets: &[u64],
+    scan_fallback: bool,
+    log: &slog::Logger,
+) {
+    let result = if scan_fallback {
+        write_chunk_index_from_offsets(rad_path, header_len, offsets, log)
+            .or_else(|_| write_collated_chunk_index(rad_path, log))
+    } else {
+        write_chunk_index_from_offsets(rad_path, header_len, offsets, log)
+    };
+    if let Err(e) = result {
+        warn!(
+            log,
+            "could not write collated chunk index ({e}); quant will use the single reader"
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_collate_single_barcode<P1, P2, A>(
     input_dir: P1,
@@ -702,19 +814,7 @@ where
     // Compressed output now uses per-chunk codec framing (chunk-seekable), so
     // the collated RAD keeps the `.rad` name; the codec lives in a header tag.
     let compress_out = codec != ChunkCodec::None;
-    let output_name = if velo_mode {
-        "velo.map.collated.rad"
-    } else {
-        "map.collated.rad"
-    };
-    let output_path = parent.join(output_name);
-    if output_path.exists() {
-        std::fs::remove_file(&output_path)?;
-    }
-    let output = Arc::new(Mutex::new(BufWriter::with_capacity(
-        1024 * 1024,
-        File::create(&output_path)?,
-    )));
+    let (output_path, output) = create_collated_output(parent, velo_mode)?;
 
     let corrections = load_single_corrections(parent, barcode_len, log)?;
     correct_unmapped_counts(
@@ -723,18 +823,15 @@ where
         parent,
     );
 
-    let header_end = br.get_mut().stream_position()? - br.buffer().len() as u64;
-    let mut header = vec![0_u8; header_end as usize];
-    File::open(&input_rad_path)?.read_exact(&mut header)?;
-    let chunk_count_offset = (end_header_pos - std::mem::size_of::<u64>() as u64) as usize;
-    header[chunk_count_offset..chunk_count_offset + 8]
-        .copy_from_slice(&expected_output_chunks.to_le_bytes());
-    let header = collated_header_bytes(&prelude, header, expected_output_chunks, codec)?;
-    let header_len = header.len() as u64;
-    output
-        .lock()
-        .map_err(|_| anyhow!("collated RAD output mutex was poisoned"))?
-        .write_all(&header)?;
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &output,
+    )?;
 
     let num_workers = (num_threads as usize).saturating_sub(1).max(1);
     let max_records_per_bucket = u64::from(max_records / num_workers as u32 + 1);
@@ -764,18 +861,17 @@ where
         bucket_records.len(),
     )?);
 
-    {
-        let collate_metadata = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
             "chunk_codec": codec.as_str(),
             "collation_mode": "optimized",
             "memory_budget_bytes": memory_budget_bytes,
-        });
-        let mut metadata_file = File::create(parent.join("collate.json"))?;
-        serde_json::to_writer_pretty(&mut metadata_file, &collate_metadata)?;
-    }
+        }),
+    )?;
 
     let stats = collate_single_barcode(
         &mut br,
@@ -820,19 +916,7 @@ where
         stats.spool_flush_limit / 1024,
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
-    // the offsets captured during gather (no re-scan). Optimization only; a
-    // failure leaves quant on its single-reader path. Fall back to the post-scan
-    // if the gather offsets are somehow unusable.
-    if let Err(e) =
-        write_chunk_index_from_offsets(&output_path, header_len, &stats.chunk_offsets, log)
-            .or_else(|_| write_collated_chunk_index(&output_path, log))
-    {
-        warn!(
-            log,
-            "could not write collated chunk index ({e}); quant will use the single reader"
-        );
-    }
+    emit_chunk_index(&output_path, header_len, &stats.chunk_offsets, true, log);
     Ok(())
 }
 
@@ -842,11 +926,17 @@ pub fn do_collate_with_temp<
     P2,
     A: Read + std::io::Seek,
     B: ConvertiblePrimitiveInteger + std::convert::From<u64>,
-    R: MappedRecord + KnownSize + CollatableMappedRecord<B>,
+    R: MappedRecord + KnownSize + CollatableMappedRecord<B> + CollationScan,
 >(
     input_dir: P1,
     rad_dir: P2,
     rec_context: <R as MappedRecord>::ParsingContext,
+    // The collation (gather) context. For the fast records this is the same value
+    // as `rec_context` (their `CollationScan::Ctx == ParsingContext`); for the
+    // generic record it is a distinct, validated `TagDrivenCollateCtx`. Kept separate
+    // so the parse context stays collation-agnostic (a RAD need not be collatable
+    // to be read) and so composite/generic keys are not forced into the parse ctx.
+    collation_ctx: <R as CollationScan>::Ctx,
     barcode_len: u8,
     prelude: RadPrelude,
     mut br: BufReader<A>,
@@ -868,6 +958,7 @@ where
     // can be used in the closure.
     <R as MappedRecord>::ParsingContext:
         std::marker::Sync + Send + std::clone::Clone + 'static + std::fmt::Debug,
+    <R as CollationScan>::Ctx: std::marker::Sync + Send + std::clone::Clone + 'static,
 {
     let i_dir = std::path::Path::new(rad_dir.as_ref());
     let input_rad_path = i_dir.join("map.rad");
@@ -930,43 +1021,17 @@ where
         "collated rad file {} be compressed",
         if compress_out { "will" } else { "will not" }
     );
-    // because :
-    // https://superuser.com/questions/865710/write-to-newfile-vs-overwriting-performance-issue
-    let cfname = if velo_mode {
-        "velo.map.collated.rad"
-    } else {
-        "map.collated.rad"
-    };
-
-    // writing the collate metadata
-    {
-        let collate_meta = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd" : cmdline,
             "version_str" : version,
             "compressed_output" : compress_out,
             "chunk_codec" : codec.as_str(),
-        });
+        }),
+    )?;
 
-        let cm_path = parent.join("collate.json");
-        let mut cm_file =
-            std::fs::File::create(cm_path).context("could not create metadata file.")?;
-
-        let cm_info_string =
-            serde_json::to_string_pretty(&collate_meta).context("could not format json.")?;
-        cm_file
-            .write_all(cm_info_string.as_bytes())
-            .context("cannot write to collate.json file")?;
-    }
-
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)
-            .with_context(|| format!("could not remove {}", oname.display()))?;
-    }
-
-    let ofile = File::create(parent.join(cfname))
-        .with_context(|| format!("couldn't create directory {}", cfname))?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let (oname, owriter) = create_collated_output(parent, velo_mode)?;
 
     let correct_map = Arc::new(load_single_corrections(parent, barcode_len, log)?);
 
@@ -981,40 +1046,15 @@ where
         correct_map.len().to_formatted_string(&Locale::en)
     );
 
-    // the exact position at the end of the header + file tags
-    let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
-
-    // copy the header
-    {
-        // we want to copy up to the end of the header
-        // minus the num chunks (sizeof u64), and then
-        // write the actual number of chunks we expect.
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-
-        // This temporary file pointer and buffer will be dropped
-        // at the end of this block (scope).
-        let mut rfile = File::open(&input_rad_path).context("Couldn't open input RAD file")?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-
-        rfile
-            .read_exact(hdr_buf.get_mut())
-            .context("couldn't read input file header")?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf
-            .write_all(&expected_output_chunks.to_le_bytes())
-            .context("couldn't write num_chunks")?;
-        let header = collated_header_bytes(
-            &prelude,
-            hdr_buf.into_inner(),
-            expected_output_chunks,
-            codec,
-        )?;
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(&header)
-                .context("could not write the output header.")?;
-        }
-    }
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     // TODO: see if we can do this without the Arc
     let mut output_cache = Arc::new(HashMap::<u64, Arc<libradicl::TempBucket>>::new());
@@ -1251,94 +1291,141 @@ where
     // the number of cells left to process
     let buckets_to_process = Arc::new(AtomicUsize::new(temp_buckets.len()));
 
+    // Shared "a gather worker failed" flag. A worker sets it before returning its
+    // `Err`; the producer's push loop and the sibling workers check it so a single
+    // worker exiting on error can't leave the bounded queue full forever (the CLI
+    // thread floor of 2 often means exactly one gather worker, so an unchecked
+    // busy-wait producer would spin forever once the 2-slot queue fills).
+    let gather_failed = Arc::new(AtomicBool::new(false));
+
     let pbar_gather = ProgressBar::new(temp_buckets.len() as u64);
     pbar_gather.set_style(sty);
     pbar_gather.tick();
 
+    // Records each output chunk's offset as gather workers append collated
+    // buckets (under the output write lock, so offsets stay in file order), for
+    // the chunk-offset sidecar quant's parallel reader uses.
+    let chunk_index = Arc::new(Mutex::new(ChunkIndexBuilder::default()));
+
+    // Gather workers return a Result so an I/O / collation error surfaces as an
+    // error rather than a process-aborting thread panic.
+    let mut gather_handles: Vec<std::thread::JoinHandle<anyhow::Result<u64>>> =
+        Vec::with_capacity(n_workers);
     // for each worker, spawn off a thread
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = fq.clone();
-        // the output cache and correction map
-        // Byte-accounting map keyed on a single u64 barcode, hit once per
-        // record: use libradicl's fixed u64 hasher instead of the randomized
-        // AES hasher (see libradicl::schema::U64BuildHasher).
-        let mut cmap = libradicl::schema::U64Map::<TempCellInfo>::default();
-        // alternative strategy
-        // let mut cmap = HashMap::<u64, libradicl::CorrectedCbChunk, ahash::RandomState>::with_hasher(s);
-
         // the number of chunks remaining to be processed
         let buckets_remaining = buckets_to_process.clone();
         // have access to the input directory
         let input_dir: PathBuf = input_dir.clone();
         // the output file
         let owriter = owriter.clone();
+        let chunk_index = chunk_index.clone();
         // and the progress bar
         let pbar_gather = pbar_gather.clone();
-        let rec_context = rec_context.clone();
+        let collation_ctx = collation_ctx.clone();
+        let gather_failed = gather_failed.clone();
         // now, make the worker threads
-        let handle = std::thread::spawn(move || {
-            let ctx = rec_context;
-            let mut local_chunks = 0u64;
-            let parent = std::path::Path::new(&input_dir);
-            // pop from the work queue until everything is
-            // processed
-            while buckets_remaining.load(Ordering::SeqCst) > 0 {
-                if let Some(temp_bucket) = in_q.pop() {
-                    buckets_remaining.fetch_sub(1, Ordering::SeqCst);
-                    cmap.clear();
+        let handle = std::thread::spawn(move || -> anyhow::Result<u64> {
+            // Run the fallible body and, on any error, set the shared failed flag
+            // before returning so the producer stops pushing and sibling workers
+            // stop popping (the join below still surfaces the error via `?`).
+            let result = (|| -> anyhow::Result<u64> {
+                let collation_ctx = collation_ctx;
+                let mut local_chunks = 0u64;
+                let parent = std::path::Path::new(&input_dir);
+                // pop from the work queue until everything is
+                // processed
+                while buckets_remaining.load(Ordering::SeqCst) > 0 {
+                    // a sibling worker failed: stop early so we don't spin on an
+                    // empty queue that the producer has stopped feeding.
+                    if gather_failed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if let Some(temp_bucket) = in_q.pop() {
+                        buckets_remaining.fetch_sub(1, Ordering::SeqCst);
 
-                    let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
-                    // create a new handle for reading
-                    let tfile = std::fs::File::open(&fname).expect("couldn't open temporary file.");
-                    let mut treader = BufReader::new(tfile);
+                        let fname = parent.join(format!("bucket_{}.tmp", temp_bucket.2.bucket_id));
+                        // Collate this temp bucket through the unified streaming gather
+                        // (bounded memory: streams the input in two passes, holds only
+                        // the collated output), then record its chunk offsets and
+                        // append it under one lock so the index stays in file order.
+                        let tfile = std::fs::File::open(&fname)
+                            .with_context(|| format!("couldn't open temporary bucket {fname:?}"))?;
+                        let mut treader = BufReader::new(tfile);
+                        let mut collated = Vec::new();
+                        local_chunks += collate_bucket::<R, _>(
+                            &mut treader,
+                            temp_bucket.1 as usize,
+                            &collation_ctx,
+                            codec,
+                            &mut collated,
+                        )
+                        .context("collate_bucket failed")?
+                            as u64;
+                        {
+                            let mut w = owriter
+                                .lock()
+                                .map_err(|_| anyhow!("collated output mutex was poisoned"))?;
+                            chunk_index
+                                .lock()
+                                .map_err(|_| anyhow!("chunk index mutex was poisoned"))?
+                                .record_bucket(&collated);
+                            w.write_all(&collated)
+                                .context("could not write the collated bucket")?;
+                        }
+                        drop(treader);
+                        std::fs::remove_file(&fname).with_context(|| {
+                            format!("could not delete temporary bucket {fname:?}")
+                        })?;
 
-                    local_chunks += libradicl::collate_temporary_bucket_twopass_generic::<B, _, _, R>(
-                        &mut treader,
-                        &ctx,
-                        temp_bucket.1,
-                        &owriter,
-                        codec,
-                        &mut cmap,
-                    ) as u64;
-
-                    // we don't need the file or reader anymore
-                    drop(treader);
-                    std::fs::remove_file(fname).expect("could not delete temporary file.");
-
-                    pbar_gather.inc(1);
+                        pbar_gather.inc(1);
+                    }
                 }
+                Ok(local_chunks)
+            })();
+            if result.is_err() {
+                gather_failed.store(true, Ordering::Relaxed);
             }
-            local_chunks
+            result
         });
-        thread_handles.push(handle);
+        gather_handles.push(handle);
     } // for each worker
 
     // push the temporary buckets onto the work queue to be dispatched
     // by the worker threads.
     for temp_bucket in temp_buckets {
         let mut bclone = temp_bucket.clone();
-        // keep trying until we can push this payload
+        // keep trying until we can push this payload, unless a gather worker has
+        // failed — in which case we stop pushing so the join below can surface the
+        // worker's error instead of the producer spinning on a full queue forever.
         while let Err(t) = fq.push(bclone) {
             bclone = t;
-            // no point trying to push if the queue is full
-            while fq.is_full() {}
+            if gather_failed.load(Ordering::Relaxed) {
+                break;
+            }
+            // no point trying to push if the queue is full; yield rather than
+            // busy-spinning, and bail out the moment a worker fails.
+            while fq.is_full() && !gather_failed.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+        }
+        if gather_failed.load(Ordering::Relaxed) {
+            break;
         }
         let expected = temp_bucket.1;
         let observed = temp_bucket.2.num_records_written.load(Ordering::SeqCst);
         assert_eq!(expected, observed);
     }
 
-    // wait for all of the workers to finish
+    // wait for all of the workers to finish, propagating any gather error.
     let mut num_output_chunks = 0u64;
-    for h in thread_handles.drain(0..) {
+    for h in gather_handles.drain(0..) {
         match h.join() {
-            Ok(c) => {
-                num_output_chunks += c;
-            }
-            Err(_e) => {
-                info!(log, "thread panicked");
-            }
+            Ok(Ok(c)) => num_output_chunks += c,
+            Ok(Err(e)) => return Err(e).context("a collation gather worker failed"),
+            Err(_e) => anyhow::bail!("a collation gather worker thread panicked"),
         }
     }
     pbar_gather.finish_with_message("gathered all temp files.");
@@ -1368,12 +1455,160 @@ where
     );
 
     owriter.lock().unwrap().flush()?;
+
+    // Emit the chunk-offset sidecar from the offsets recorded during gather, so
+    // quant's parallel reader engages for this (position/long/u128) path too.
+    {
+        // Workers are all joined here, so the Arc is uniquely held.
+        let offsets = Arc::try_unwrap(chunk_index)
+            .map_err(|_| anyhow!("chunk index still shared after gather"))?
+            .into_inner()
+            .map_err(|_| anyhow!("chunk index mutex poisoned"))?
+            .into_offsets();
+        emit_chunk_index(&oname, header_len, &offsets, false, log);
+    }
+
     info!(
         log,
         "finished collating input rad file {:?}.",
         i_dir.join("map.rad")
     );
     Ok(())
+}
+
+/// Collate a single-barcode RAD through the tag-driven generic record, exercising
+/// the unified engine's `TagDrivenReadRecord` path (spec-driven scatter + gather)
+/// instead of a specialized fast record. The collation key is taken from the RAD's
+/// declared `Barcode` role when present (self-describing, #64/#66), falling back to
+/// the `key_tag_name` name bridge for un-annotated (legacy) files. Orientation
+/// filtering IS applied when the alignment layout declares an `Orientation` role:
+/// a filtering `--expected-ori` on a RAD with no such role is refused rather than
+/// silently keeping all alignments. This driver handles exactly one barcode level;
+/// composite/hierarchical generic keys are a follow-up (COMBINE-lab/libradicl#66).
+#[allow(clippy::too_many_arguments)]
+fn do_bucket_gather<P1, P2, A: Read + Seek>(
+    input_dir: P1,
+    rad_dir: P2,
+    prelude: RadPrelude,
+    br: BufReader<A>,
+    end_header_pos: u64,
+    num_threads: u32,
+    max_records: u32,
+    tsv_map: Vec<(u64, u64)>,
+    total_to_collate: u64,
+    barcode_len: u8,
+    key_tag_name: &str,
+    codec: ChunkCodec,
+    cmdline: &str,
+    version: &str,
+    log: &slog::Logger,
+) -> anyhow::Result<()>
+where
+    P1: Into<PathBuf>,
+    P2: AsRef<Path>,
+{
+    let input_dir = input_dir.into();
+    let parent = input_dir.as_path();
+
+    // The generic record filters alignments by orientation when an Orientation
+    // role is declared (see the orientation gate below and the record's
+    // `retain_ori`); a filtering `--expected-ori` on a RAD lacking that role is
+    // refused rather than silently keeping all alignments.
+    use libradicl::rad_types::TagRole;
+    let read_tags = prelude.read_tags.clone();
+    let aln_tags = prelude.aln_tags.clone();
+
+    // Orientation from a declared role (if any): the orientation field lets the
+    // generic scatter filter alignments by strand (see the generic record's
+    // `retain_ori`).
+    let ori_tag_idx = aln_tags
+        .tags
+        .iter()
+        .position(|t| matches!(t.role, TagRole::Orientation));
+
+    // Collation key: prefer the RAD's own declared roles; fall back to the name
+    // bridge for un-annotated (legacy) files.
+    let (key_tag_idx, collate_ctx) =
+        if let Some(collate_ctx) = TagDrivenCollateCtx::from_roles(&read_tags, &aln_tags)? {
+            // Role-declared key. This single-barcode driver handles exactly one
+            // Barcode role; a composite (multi-level) key is a follow-up (#66).
+            let barcode_tags: Vec<usize> = read_tags
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| matches!(t.role, TagRole::Barcode { .. }))
+                .map(|(i, _)| i)
+                .collect();
+            if barcode_tags.len() != 1 {
+                anyhow::bail!(
+                    "generic collation currently supports a single barcode level, but the RAD \
+                 declares {} barcode roles; composite/hierarchical generic collation is a \
+                 follow-up (COMBINE-lab/libradicl#66)",
+                    barcode_tags.len()
+                );
+            }
+            info!(log, "using RAD-declared tag roles for the collation key");
+            (barcode_tags[0], collate_ctx)
+        } else {
+            // Bridge: locate the barcode key tag by name.
+            let key_tag_idx = read_tags
+                .tags
+                .iter()
+                .position(|t| t.name == key_tag_name)
+                .with_context(|| {
+                    format!("collation key tag `{key_tag_name}` not found in read tags")
+                })?;
+            let collate_ctx = TagDrivenCollateCtx::new(&read_tags, &aln_tags, &[key_tag_name])?;
+            (key_tag_idx, collate_ctx)
+        };
+
+    // Orientation gate: the generic scatter can filter by strand only if the
+    // orientation field is declared. If a filtering orientation is expected but no
+    // Orientation role is present, refuse rather than silently keep all alignments.
+    let meta_file = File::open(parent.join("generate_permit_list.json"))
+        .context("could not open generate_permit_list.json")?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(&meta_file))?;
+    let expected_ori =
+        get_orientation(&mdata).map_err(|e| anyhow!("could not read strand: {e}"))?;
+    if !matches!(expected_ori, Strand::Unknown) && ori_tag_idx.is_none() {
+        anyhow::bail!(
+            "generic collation needs a declared Orientation role to filter by strand; \
+             this RAD declares none — re-run generate-permit-list with --expected-ori both, \
+             or stamp the orientation role on the alignment field"
+        );
+    }
+    if ori_tag_idx.is_some() && !matches!(expected_ori, Strand::Unknown) {
+        info!(
+            log,
+            "filtering alignments by orientation via the declared role"
+        );
+    }
+
+    let parse_ctx = TagDrivenReadRecordContext {
+        read_tags: read_tags.clone(),
+        aln_tags: aln_tags.clone(),
+        key_tag_idx: Some(key_tag_idx),
+        ori_tag_idx,
+    };
+
+    do_collate_with_temp::<_, _, _, u64, TagDrivenReadRecord>(
+        input_dir,
+        rad_dir,
+        parse_ctx,
+        collate_ctx,
+        barcode_len,
+        prelude,
+        br,
+        end_header_pos,
+        num_threads,
+        max_records,
+        tsv_map,
+        total_to_collate,
+        codec,
+        cmdline,
+        version,
+        log,
+    )
 }
 
 /// Historical record-count-based collation entry point.
@@ -1462,13 +1697,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need
@@ -1477,18 +1712,41 @@ where
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    // Field-completeness self-check (best-effort): confirm the first chunk's
+    // records exactly fill the payload under the declared tag layout, catching
+    // undeclared on-disk fields early and clearly rather than as a deep parse
+    // panic. Run on a fresh reader so `br` (used by the collation below) is
+    // undisturbed; skipped automatically for variable-width tag layouts, and for
+    // a per-chunk-codec-compressed input (the payload isn't raw records).
+    let input_codec = libradicl::codec::chunk_codec_from_tag_map(&file_tag_map)?;
+    if prelude.hdr.num_chunks > 0 && input_codec == libradicl::ChunkCodec::None {
+        let first_chunk_pos = br.stream_position()?;
+        let mut chk = BufReader::new(File::open(&input_rad_path)?);
+        chk.seek(SeekFrom::Start(first_chunk_pos))?;
+        libradicl::chunk::validate_first_chunk_layout(
+            &mut chk,
+            &prelude.read_tags,
+            &prelude.aln_tags,
+        )
+        .context("RAD field-completeness check failed on the first chunk")?;
+    }
+
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(bc_len) => {
             info!(log, "record type is long read single-cell RNA-seq");
             // long-read single cell
             info!(log, "long read single-cell");
-            let parsing_context = prelude.get_record_context::<ScLongReadRecordContext>()?;
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<ScLongReadRecordContext>()?;
+            // fast record: collation context == parsing context
+            let collation_ctx = parsing_context.clone();
             do_collate_with_temp::<_, _, _, u64, ScLongReadRecordT<u64>>(
                 input_dir,
                 &rad_dir,
                 parsing_context,
+                collation_ctx,
                 bc_len as u8,
                 prelude,
                 br,
@@ -1510,13 +1768,17 @@ where
         KnownRecordType::RnaShortPos(bc_len) => {
             // alevin-fry with positions
             info!(log, "short read single-cell with position");
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
+                    // fast record: collation context == parsing context
+                    let collation_ctx = parsing_context.clone();
                     do_collate_with_temp::<_, _, _, u64, AlevinFryReadRecordWithPositionT<u64>>(
                         input_dir,
                         &rad_dir,
                         parsing_context,
+                        collation_ctx,
                         bc_len as u8,
                         prelude,
                         br,
@@ -1532,16 +1794,76 @@ where
                     )
                 }
                 RadIntId::U128 => {
-                    unimplemented!()
+                    anyhow::bail!(
+                        "collation of a position (RnaShortPos) RAD with a 128-bit barcode key is \
+                         not supported; the collation scatter is u64-keyed and cannot rewrite a \
+                         u128 barcode"
+                    )
                 }
-                _ => {
-                    unimplemented!()
+                t => {
+                    anyhow::bail!(
+                        "unsupported barcode tag type {t:?} for a position (RnaShortPos) RAD; \
+                         only integer barcode types (u8..u64) are supported"
+                    )
                 }
             }
         }
         KnownRecordType::RnaShort(bc_len) => {
             info!(log, "short read single-cell without poisition");
-            let parsing_context = prelude.get_record_context::<AlevinFryRecordContext>()?;
+            // Routing to the tag-driven generic collation path. `RnaShort` is the
+            // fallback bucket: a RAD lands here when it matches none of the
+            // positively-identified fast layouts. We take the generic path when:
+            //   * the dev-tools validation override is active (forces generic even
+            //     on a file the fast engine could handle, to prove the two paths are
+            //     equivalent) — only compiled in with `--features dev-tools`, so it
+            //     can never silently flip behavior in a production build, or
+            //   * the file is unknown to the fast engine (it lacks the `b`/`u`
+            //     bridge tags the fast context requires) but declares a `Barcode`
+            //     role, so it can describe how to collate itself despite using
+            //     non-conventional tag names (COMBINE-lab/libradicl#64).
+            // Positively-identified fast layouts keep their specialized engine;
+            // declared roles there are optional validation only.
+            let forced =
+                cfg!(feature = "dev-tools") && std::env::var("AF_FORCE_GENERIC_COLLATE").is_ok();
+            let has_bridge = prelude.read_tags.has_tag("b") && prelude.read_tags.has_tag("u");
+            let has_barcode_role = prelude
+                .read_tags
+                .tags
+                .iter()
+                .any(|t| matches!(t.role, libradicl::rad_types::TagRole::Barcode { .. }));
+            if forced || (!has_bridge && has_barcode_role) {
+                if forced {
+                    info!(
+                        log,
+                        "AF_FORCE_GENERIC_COLLATE set: using the tag-driven generic collation path"
+                    );
+                } else {
+                    info!(
+                        log,
+                        "record layout is unknown to the fast engine but declares a barcode role; \
+                         auto-routing to the tag-driven generic collation path"
+                    );
+                }
+                return do_bucket_gather(
+                    input_dir,
+                    &rad_dir,
+                    prelude,
+                    br,
+                    end_header_pos,
+                    num_threads,
+                    max_records,
+                    tsv_map.clone(),
+                    total_to_collate,
+                    bc_len as u8,
+                    "b",
+                    codec,
+                    cmdline,
+                    version,
+                    log,
+                );
+            }
+            let parsing_context =
+                prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
             match parsing_context.bct {
                 RadIntId::U64 | RadIntId::U32 | RadIntId::U16 | RadIntId::U8 => {
                     do_collate_single_barcode(
@@ -1564,10 +1886,17 @@ where
                     )
                 }
                 RadIntId::U128 => {
-                    unimplemented!()
+                    anyhow::bail!(
+                        "collation of a single-barcode (RnaShort) RAD with a 128-bit barcode key \
+                         is not supported; the collation scatter is u64-keyed and cannot rewrite a \
+                         u128 barcode"
+                    )
                 }
-                _ => {
-                    unimplemented!()
+                t => {
+                    anyhow::bail!(
+                        "unsupported barcode tag type {t:?} for a single-barcode (RnaShort) RAD; \
+                         only integer barcode types (u8..u64) are supported"
+                    )
                 }
             }
         }
@@ -1578,7 +1907,21 @@ where
                 num_bc,
                 cell_bc_len,
             );
-            let parsing_context = prelude.get_record_context::<MultiBarcodeRecordContext>()?;
+            // Prefer the RAD's declared roles (self-describing, #64/#66) for the
+            // composite key layout; fall back to the `b0`/`b1`/`u` name bridge for
+            // un-annotated (legacy) files. The role-driven context lets a
+            // multi-barcode RAD with non-conventional tag names collate through the
+            // same hierarchical engine.
+            let parsing_context = match MultiBarcodeRecordContext::from_roles(&prelude.read_tags)? {
+                Some(ctx) => {
+                    info!(
+                        log,
+                        "using RAD-declared tag roles for the composite collation key"
+                    );
+                    ctx
+                }
+                None => prelude.get_record_context::<MultiBarcodeRecordContext>()?,
+            };
             info!(log, "Using the optimized libradicl collator");
             do_collate_multi_bc_fast(
                 input_dir,
@@ -1847,14 +2190,13 @@ where
         total_to_collate.to_formatted_string(&Locale::en),
     );
 
-    // Create output file. Compressed output uses per-chunk codec framing
-    // (chunk-seekable), keeping the `.rad` name; the codec lives in a header tag.
+    // Compressed output uses per-chunk codec framing (chunk-seekable), keeping
+    // the `.rad` name; the codec lives in a header tag.
     let compress_out = codec != ChunkCodec::None;
-    let cfname = "map.collated.rad";
 
-    // Write collate metadata
-    {
-        let collate_meta = json!({
+    write_collate_json(
+        parent,
+        &json!({
             "cmd": cmdline,
             "version_str": version,
             "compressed_output": compress_out,
@@ -1863,43 +2205,20 @@ where
             "num_samples": num_samples,
             "collation_mode": "optimized",
             "memory_budget_bytes": memory_budget_bytes,
-        });
-        let cm_path = parent.join("collate.json");
-        let mut cm_file = File::create(cm_path)?;
-        let cm_str = serde_json::to_string_pretty(&collate_meta)?;
-        cm_file.write_all(cm_str.as_bytes())?;
-    }
+        }),
+    )?;
 
-    let oname = parent.join(cfname);
-    if oname.exists() {
-        std::fs::remove_file(&oname)?;
-    }
-    let ofile = File::create(&oname)?;
-    let owriter = Arc::new(Mutex::new(BufWriter::with_capacity(1048576, ofile)));
+    let (oname, owriter) = create_collated_output(parent, false)?;
 
-    // Copy header with updated num_chunks
-    let pos = br.get_mut().stream_position().unwrap() - (br.buffer().len() as u64);
-    let header_len;
-    {
-        let chunk_bytes = std::mem::size_of::<u64>() as u64;
-        let take_pos = end_header_pos - chunk_bytes;
-        let mut rfile = File::open(&input_rad_path)?;
-        let mut hdr_buf = Cursor::new(vec![0u8; pos as usize]);
-        rfile.read_exact(hdr_buf.get_mut())?;
-        hdr_buf.set_position(take_pos);
-        hdr_buf.write_all(&expected_output_chunks.to_le_bytes())?;
-
-        let header = collated_header_bytes(
-            &prelude,
-            hdr_buf.into_inner(),
-            expected_output_chunks,
-            codec,
-        )?;
-        header_len = header.len() as u64;
-        if let Ok(mut oput) = owriter.lock() {
-            oput.write_all(&header)?;
-        }
-    }
+    let header_len = write_collated_output_header(
+        &mut br,
+        &input_rad_path,
+        &prelude,
+        end_header_pos,
+        expected_output_chunks,
+        codec,
+        &owriter,
+    )?;
 
     // Partition corrected sample/cell groups into logical gather buckets.
     // Physical temporary storage is owned by libradicl and is bounded by the
@@ -2109,22 +2428,7 @@ where
         total_output_chunks.to_formatted_string(&Locale::en),
     );
 
-    // Emit the chunk-offset sidecar so quant can read this RAD in parallel, from
-    // the offsets captured during gather (no re-scan). Optimization only; a
-    // failure leaves quant on its single-reader path. Fall back to the post-scan
-    // if the gather offsets are somehow unusable.
-    {
-        let rad_path = parent.join("map.collated.rad");
-        if let Err(e) =
-            write_chunk_index_from_offsets(&rad_path, header_len, &engine_stats.chunk_offsets, log)
-                .or_else(|_| write_collated_chunk_index(&rad_path, log))
-        {
-            warn!(
-                log,
-                "could not write collated chunk index ({e}); quant will use the single reader"
-            );
-        }
-    }
+    emit_chunk_index(&oname, header_len, &engine_stats.chunk_offsets, true, log);
 
     Ok(())
 }
@@ -2260,13 +2564,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} alignemnt-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need

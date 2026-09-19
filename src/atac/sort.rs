@@ -386,13 +386,13 @@ where
     );
 
     // file-level
-    let fl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let fl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} file-level tags", fl_tags.tags.len());
     // read-level
-    let rl_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let rl_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} read-level tags", rl_tags.tags.len());
     // alignment-level
-    let al_tags = rad_types::TagSection::from_bytes(&mut br)?;
+    let al_tags = rad_types::TagSection::from_bytes(&mut br, hdr.version.major())?;
     info!(log, "read {:?} alignment-level tags", al_tags.tags.len());
 
     // create the prelude and rebind the variables we need
@@ -406,6 +406,8 @@ where
     let barcode_tag = binding.get("cblen").expect("tag map must contain cblen");
     let barcode_len: u16 = barcode_tag.try_into()?;
 
+    // The scATAC record reader is positional: the barcode is the first read tag,
+    // whatever its name or role, so reading tags[0] here is by-design (not a name bridge).
     let bct = rl_tags.tags[0].typeid;
 
     // the exact position at the end of the header + file tags

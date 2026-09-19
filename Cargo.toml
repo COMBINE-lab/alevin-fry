@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = "0.19.1"
+libradicl = "0.20.0"
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = { version = "0.8.12", features = ["serde"] }
@@ -86,7 +86,7 @@ clap = { version = "4.6.0", features = [
   "error-context",
 ] }
 
-# libradicl 0.18 depends on noodles 0.115; a mismatch here yields two
+# libradicl 0.20 depends on noodles 0.115; a mismatch here yields two
 # incompatible `sam::Header` types at the `RadHeader::from_bam_header` call in
 # src/convert.rs. Keep these in lockstep.
 noodles = { version = "0.115.0", features = ["bam", "bgzf", "sam"] }
@@ -114,9 +114,44 @@ lto = "thin"
 
 [features]
 default = []
+# Validation/dev hooks not meant for production: currently the
+# AF_FORCE_GENERIC_COLLATE env override that forces the tag-driven generic
+# collation path even on a file the fast engine could handle (to prove the two
+# paths are equivalent). Off by default so a production build can never flip
+# collation behavior from the environment.
+dev-tools = []
 # Enable zstd as a selectable collated-RAD chunk codec (`--compress zstd`). Off by
 # default so the standard build stays pure-Rust (lz4); this pulls in libradicl's
 # zstd feature, which compiles the C zstd-sys.
 zstd = ["libradicl/zstd"]
 
+# Dev/validation-only examples (fixture generators & RAD manipulators). Gated
+# behind `dev-tools` so a normal `cargo build --examples` skips them; build with
+# `cargo build --examples --features dev-tools` to use them.
+[[example]]
+name = "stamp_roles"
+required-features = ["dev-tools"]
 
+[[example]]
+name = "stamp_multi_roles"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "rename_read_tags"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "subset_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "gen_multi_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "gen_atac_rad"
+required-features = ["dev-tools"]
+
+[[example]]
+name = "convert_sclong"
+required-features = ["dev-tools"]

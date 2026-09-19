@@ -236,7 +236,10 @@ mod tests {
         }
     }
 
-    fn parse_matrix(bytes: &[u8]) -> ((usize, usize, usize), Vec<(usize, usize, f32)>) {
+    // (nrows, ncols, nnz) header triple plus the parsed (row, col, value) entries.
+    type ParsedMatrix = ((usize, usize, usize), Vec<(usize, usize, f32)>);
+
+    fn parse_matrix(bytes: &[u8]) -> ParsedMatrix {
         let text = std::str::from_utf8(bytes).unwrap();
         assert!(text.starts_with(BANNER));
         let mut lines = text.lines().filter(|line| !line.starts_with('%'));

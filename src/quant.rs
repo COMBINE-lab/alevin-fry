@@ -34,7 +34,8 @@ use libradicl::rad_types::TagMap;
 use libradicl::record::{
     AlevinFryReadRecord, AlevinFryReadRecordWithPosition, CollatableMappedRecord,
     CollatableRecordHeader, ConvertiblePrimitiveInteger, KnownSize, MappedRecord,
-    MultiBarcodeReadRecord, RecordContext, ScLongReadRecord, UmiTaggedRecord,
+    MultiBarcodeReadRecord, MultiBarcodeRecordContext, RecordContext, ScLongReadRecord,
+    UmiTaggedRecord,
 };
 
 use std::fmt;
@@ -1537,8 +1538,11 @@ where
     }
     bounds.push(num_chunks);
 
+    // Prefer the collated RAD's declared tag roles (#64) so a role-annotated file
+    // whose tags use non-conventional names still quantifies; falls back to the
+    // b/b0/u name bridge for un-annotated (legacy) files.
     let record_context = prelude
-        .get_record_context::<<R as MappedRecord>::ParsingContext>()
+        .get_record_context_prefer_roles::<<R as MappedRecord>::ParsingContext>()
         .map_err(|e| anyhow::anyhow!("could not get record context: {e}"))?;
 
     std::thread::scope(|s| {
@@ -1760,18 +1764,16 @@ where
     //let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
     info!(log, "File-level tag values {:?}", file_tag_map);
 
-    // Get barcode length: standard files use "cblen", multi-barcode files
-    // use "b{N-1}len" where N is the number of barcodes. Try both.
-    let barcode_tag = file_tag_map
-        .get("cblen")
-        .or_else(|| {
-            // Multi-barcode: try b1len, b0len, etc.
-            file_tag_map
-                .get("b1len")
-                .or_else(|| file_tag_map.get("b0len"))
-        })
-        .expect("tag map must contain cblen or bNlen for barcode length");
-    let barcode_len: u16 = barcode_tag.try_into()?;
+    // Get the (cell) barcode length: role-declared if present, else the
+    // cblen/b{1,0}len file-tag conventions (single/multi legacy). One shared
+    // resolver defines the precedence.
+    let barcode_len: u16 = afutils::resolve_declared_len(
+        MultiBarcodeRecordContext::cell_bc_len_from_roles(&prelude.read_tags),
+        &file_tag_map,
+        &["cblen", "b1len", "b0len"],
+        "cell barcode",
+        log,
+    )?;
 
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
@@ -2289,7 +2291,7 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     let prelude = RadPrelude::from_bytes(&mut br)?;
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
 
-    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {
