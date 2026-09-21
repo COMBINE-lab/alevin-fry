@@ -242,7 +242,14 @@ where
         // SAM file and so isn't meaningful as written here.
         // Also, the num_chunks will be 0 in this header
         // currently.
-        let rad_header = RadHeader::from_bam_header(&hdrv);
+        // libradicl no longer depends on noodles (>= 0.21); extract the
+        // reference names from the BAM/SAM header here and hand them to the
+        // data-only `RadHeader::from_ref_names`.
+        let rad_header = RadHeader::from_ref_names(
+            hdrv.reference_sequences()
+                .iter()
+                .map(|(k, _)| k.to_string()),
+        );
         rad_header.write(&mut data)?;
     }
 

@@ -35,7 +35,7 @@ keywords = [
 categories = ["command-line-utilities", "science"]
 
 [dependencies]
-libradicl = "0.20.0"
+libradicl = "0.21"
 anyhow = "1.0.102"
 arrayvec = "0.7.6"
 ahash = { version = "0.8.12", features = ["serde"] }
