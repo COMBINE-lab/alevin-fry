@@ -64,6 +64,10 @@ fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> us
         *first as f64
     };
 
+    if max_y <= 0.0 {
+        return 0;
+    }
+
     let p1 = Point {
         x: 0.0f64,
         y: (*first as f64) / max_y,
@@ -97,6 +101,13 @@ fn get_max_distance_index(sorted_frequencies: &[u64], is_cumulative: bool) -> us
 /// farthest from the line defined by the end-points.  The algorithm is taken from
 /// [here](https://github.com/CGATOxford/UMI-tools/blob/master/umi_tools/whitelist_methods.py#L248).
 pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) -> usize {
+    if freq.is_empty() {
+        return 0;
+    }
+    if freq.len() == 1 {
+        return 1;
+    }
+
     // get the cumulative frequency from the frequency
     let cfreq: Vec<u64> = freq
         .iter()
@@ -105,9 +116,20 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
             Some(*acc)
         })
         .collect();
+
+    // If the total frequency is 0, no cells have reads
+    if *cfreq.last().unwrap_or(&0) == 0 {
+        return 0;
+    }
+
     // get the guess about the max distance point
     let mut prev_max = 0;
     let mut max_idx = get_max_distance_index(&cfreq[..], true);
+
+    // if there are only 2 frequencies, no further refinement chord can be constructed
+    if cfreq.len() <= 2 {
+        return max_idx.max(1);
+    }
 
     // if we think we should include no cells, something is probably wrong.
     assert_ne!(
@@ -118,7 +140,7 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
     let mut iterations = 0;
     let iter_slack = 5;
     // while our algorithm hasn't converged
-    while max_idx - prev_max != 0 {
+    while max_idx != prev_max {
         info!(log, "max_idx = {}", max_idx);
         prev_max = max_idx;
         iterations += 1;
@@ -128,7 +150,7 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
         if iterations > max_iterations {
             break;
         }
-        let last_idx = std::cmp::min(cfreq.len() - 1, max_idx * iter_slack);
+        let last_idx = std::cmp::max(2, std::cmp::min(cfreq.len(), max_idx * iter_slack));
         max_idx = get_max_distance_index(&cfreq[0..last_idx], true);
         assert_ne!(
             max_idx, 0,
@@ -136,4 +158,50 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
         );
     }
     max_idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_knee_short_frequencies() {
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let freq_empty: [u64; 0] = [];
+        assert_eq!(get_knee(&freq_empty, 100, &log), 0);
+
+        let freq_single = [500u64];
+        assert_eq!(get_knee(&freq_single, 100, &log), 1);
+
+        let freq_two = [1000u64, 50u64];
+        let knee = get_knee(&freq_two, 100, &log);
+        assert_eq!(knee, 1);
+    }
+
+    #[test]
+    fn test_knee_convergence_and_subtraction_safety() {
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        // Synthetic distribution with a distinct knee around 100 cells
+        let mut freqs = Vec::new();
+        for _ in 0..100 {
+            freqs.push(1000u64);
+        }
+        for _ in 0..500 {
+            freqs.push(10u64);
+        }
+        let knee = get_knee(&freqs, 100, &log);
+        assert!(
+            knee >= 50 && knee <= 150,
+            "knee {} should be near 100",
+            knee
+        );
+    }
+
+    #[test]
+    fn test_knee_all_zero_frequencies() {
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let zero_freqs = [0u64, 0u64, 0u64];
+        let knee = get_knee(&zero_freqs, 100, &log);
+        assert_eq!(knee, 0);
+    }
 }

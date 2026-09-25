@@ -34,7 +34,7 @@ use crate::utils::{self as afutils, EqClassPayload};
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PugEdgeType {
     NoEdge,
     BiDirected,
@@ -48,6 +48,33 @@ pub struct PugResolutionStatistics {
     pub total_mccs: u64,
     pub ambiguous_mccs: u64,
     pub trivial_mccs: u64,
+}
+
+/// Given 2 pairs (UMI, count), determine if an edge exists
+/// between them, and if so, what type.
+pub fn determine_pug_edge_type(x: &(u64, u32), y: &(u64, u32), pug_exact_umi: bool) -> PugEdgeType {
+    let hdist = if pug_exact_umi {
+        if x.0 == y.0 { 0 } else { usize::MAX }
+    } else {
+        afutils::count_diff_2_bit_packed(x.0, y.0)
+    };
+
+    if hdist == 0 {
+        return PugEdgeType::BiDirected;
+    }
+
+    if hdist < 2 {
+        let cx = x.1 as u64;
+        let cy = y.1 as u64;
+        return if cx >= 2 * cy && cx > cy {
+            PugEdgeType::XToY
+        } else if cy >= 2 * cx && cy > cx {
+            PugEdgeType::YToX
+        } else {
+            PugEdgeType::BiDirected
+        };
+    }
+    PugEdgeType::NoEdge
 }
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -74,28 +101,26 @@ pub fn extract_graph(
     // given 2 pairs (UMI, count), determine if an edge exists
     // between them, and if so, what type.
     let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
-        let hdist = if pug_exact_umi {
-            if x.0 == y.0 { 0 } else { usize::MAX }
-        } else {
-            afutils::count_diff_2_bit_packed(x.0, y.0)
-        };
-
-        if hdist == 0 {
-            zero_edit += 1;
-            return PugEdgeType::BiDirected;
+        let edge_type = determine_pug_edge_type(x, y, pug_exact_umi);
+        match edge_type {
+            PugEdgeType::BiDirected => {
+                let hdist = if pug_exact_umi {
+                    if x.0 == y.0 { 0 } else { usize::MAX }
+                } else {
+                    afutils::count_diff_2_bit_packed(x.0, y.0)
+                };
+                if hdist == 0 {
+                    zero_edit += 1;
+                } else {
+                    one_edit += 1;
+                }
+            }
+            PugEdgeType::XToY | PugEdgeType::YToX => {
+                one_edit += 1;
+            }
+            PugEdgeType::NoEdge => {}
         }
-
-        if hdist < 2 {
-            one_edit += 1;
-            return if x.1 > (2 * y.1 - 1) {
-                PugEdgeType::XToY
-            } else if y.1 > (2 * x.1 - 1) {
-                PugEdgeType::YToX
-            } else {
-                PugEdgeType::BiDirected
-            };
-        }
-        PugEdgeType::NoEdge
+        edge_type
     };
 
     let mut _bidirected = 0u64;
@@ -1432,4 +1457,75 @@ pub fn get_num_molecules<P: EqClassPayload>(
     }
     */
     //identified_txps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pug_edge_zero_count_safety() {
+        // Differ by 1 edit: UMI 0 vs UMI 1 (bit pattern 00 vs 01)
+        let x_zero = (0u64, 0u32);
+        let y_zero = (1u64, 0u32);
+        assert_eq!(
+            determine_pug_edge_type(&x_zero, &y_zero, false),
+            PugEdgeType::BiDirected
+        );
+
+        let x_nonzero = (0u64, 5u32);
+        assert_eq!(
+            determine_pug_edge_type(&x_nonzero, &y_zero, false),
+            PugEdgeType::XToY
+        );
+
+        assert_eq!(
+            determine_pug_edge_type(&y_zero, &x_nonzero, false),
+            PugEdgeType::YToX
+        );
+    }
+
+    #[test]
+    fn test_pug_edge_directional_ratios() {
+        let x_10 = (0u64, 10u32);
+        let y_5 = (1u64, 5u32);
+        // 10 >= 2 * 5 -> XToY
+        assert_eq!(
+            determine_pug_edge_type(&x_10, &y_5, false),
+            PugEdgeType::XToY
+        );
+
+        let x_9 = (0u64, 9u32);
+        // 9 < 2 * 5 and 5 < 2 * 9 -> BiDirected
+        assert_eq!(
+            determine_pug_edge_type(&x_9, &y_5, false),
+            PugEdgeType::BiDirected
+        );
+
+        let x_2 = (0u64, 2u32);
+        let y_1 = (1u64, 1u32);
+        // 2 >= 2 * 1 -> XToY
+        assert_eq!(
+            determine_pug_edge_type(&x_2, &y_1, false),
+            PugEdgeType::XToY
+        );
+
+        let x_1 = (0u64, 1u32);
+        // 1 < 2 * 1 -> BiDirected
+        assert_eq!(
+            determine_pug_edge_type(&x_1, &y_1, false),
+            PugEdgeType::BiDirected
+        );
+    }
+
+    #[test]
+    fn test_pug_edge_large_count_overflow_safety() {
+        // Counts >= 2^31 would overflow 2 * y in u32
+        let x_large = (0u64, 3_000_000_000u32);
+        let y_large = (1u64, 1_000_000_000u32);
+        assert_eq!(
+            determine_pug_edge_type(&x_large, &y_large, false),
+            PugEdgeType::XToY
+        );
+    }
 }
