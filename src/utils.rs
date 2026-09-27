@@ -1024,6 +1024,10 @@ pub fn extract_usa_eqmap<P: EqClassPayload>(
 }
 
 pub fn get_bit_mask(nt_index: usize, fill_with: u64) -> u64 {
+    assert!(
+        (1..=32).contains(&nt_index),
+        "nt_index must be between 1 and 32 inclusive"
+    );
     let mut mask: u64 = fill_with;
     mask <<= 2 * (nt_index - 1);
     mask
@@ -1031,12 +1035,17 @@ pub fn get_bit_mask(nt_index: usize, fill_with: u64) -> u64 {
 
 pub fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
-        bc <= 2u64.pow(2 * bc_length as u32),
-        "the barcode id is larger than possible (based on barcode length)"
-    );
-    assert!(
         bc_length <= 32,
         "barcode length greater than 32 not supported"
+    );
+    let max_val = if bc_length == 32 {
+        u64::MAX
+    } else {
+        (1u64 << (2 * bc_length)) - 1
+    };
+    assert!(
+        bc <= max_val,
+        "the barcode id is larger than possible (based on barcode length)"
     );
 
     let mut snps: Vec<u64> = Vec::with_capacity(3 * bc_length);
@@ -1059,13 +1068,22 @@ pub fn get_all_snps(bc: u64, bc_length: usize) -> Vec<u64> {
 
 pub fn get_all_indels(bc: u64, bc_length: usize) -> Vec<u64> {
     assert!(
-        bc <= 2u64.pow(2 * bc_length as u32),
-        "the barcode id is larger than possible (based on barcode length)"
-    );
-    assert!(
         bc_length <= 32,
         "barcode length greater than 32 not supported"
     );
+    let max_val = if bc_length == 32 {
+        u64::MAX
+    } else {
+        (1u64 << (2 * bc_length)) - 1
+    };
+    assert!(
+        bc <= max_val,
+        "the barcode id is larger than possible (based on barcode length)"
+    );
+
+    if bc_length == 0 {
+        return Vec::new();
+    }
 
     let mut indels: Vec<u64> = Vec::with_capacity(8 * (bc_length - 1));
 
@@ -1123,7 +1141,7 @@ pub fn generate_whitelist_set(
     // reserved space for 3*length SNP
     // + 4 * (length -1) insertion
     // + 4 * (length -1) deletion
-    neighbors.reserve(3 * bc_length + 8 * (bc_length - 1));
+    neighbors.reserve(3 * bc_length + 8 * bc_length.saturating_sub(1));
 
     for bc in whitelist_bcs {
         get_all_one_edit_neighbors(*bc, bc_length, &mut neighbors)?;
@@ -1153,7 +1171,8 @@ pub fn generate_permitlist_map(
     // reserved space for 3*length SNP
     // + 4 * (length -1) insertion
     // + 4 * (length -1) deletion
-    let mut neighbors: HashSet<u64> = HashSet::with_capacity(3 * bc_length + 8 * (bc_length - 1));
+    let mut neighbors: HashSet<u64> =
+        HashSet::with_capacity(3 * bc_length + 8 * bc_length.saturating_sub(1));
 
     for bc in permit_bcs {
         get_all_one_edit_neighbors(*bc, bc_length, &mut neighbors)?;
@@ -1606,5 +1625,28 @@ mod tests {
             ctx.is_err(),
             "expected a clean error building a single-barcode context from two Barcode roles"
         );
+    }
+
+    #[test]
+    fn test_32mer_barcode_boundary() {
+        let snps = get_all_snps(0, 32);
+        assert_eq!(snps.len(), 3 * 32);
+        let indels = get_all_indels(0, 32);
+        assert!(!indels.is_empty());
+    }
+
+    #[test]
+    fn test_zero_length_barcode_boundary() {
+        let indels = get_all_indels(0, 0);
+        assert!(indels.is_empty());
+        let mut neighbors = HashSet::new();
+        get_all_one_edit_neighbors(0, 0, &mut neighbors).unwrap();
+        assert!(neighbors.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "nt_index must be between 1 and 32 inclusive")]
+    fn test_get_bit_mask_zero_panics() {
+        let _ = get_bit_mask(0, 3);
     }
 }

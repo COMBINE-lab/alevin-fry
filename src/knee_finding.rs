@@ -118,7 +118,11 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
     let mut iterations = 0;
     let iter_slack = 5;
     // while our algorithm hasn't converged
-    while max_idx - prev_max != 0 {
+    //
+    // `!=` rather than `max_idx - prev_max != 0`: the index can move down as well
+    // as up between iterations, and the subtraction then underflows. Release
+    // builds wrapped, which behaves exactly like `!=`; debug builds panicked.
+    while max_idx != prev_max {
         info!(log, "max_idx = {}", max_idx);
         prev_max = max_idx;
         iterations += 1;
@@ -136,4 +140,23 @@ pub(crate) fn get_knee(freq: &[u64], max_iterations: usize, log: &slog::Logger) 
         );
     }
     max_idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn discard_logger() -> slog::Logger {
+        slog::Logger::root(slog::Discard, slog::o!())
+    }
+
+    /// Here the knee index moves *down* between iterations (4 -> 2 on the
+    /// sub-chord), which made `max_idx - prev_max` underflow and panic in debug
+    /// builds. Release builds wrapped and returned 2; that is the answer the
+    /// loop must still give.
+    #[test]
+    fn knee_index_can_decrease_between_iterations() {
+        let log = discard_logger();
+        assert_eq!(get_knee(&[100, 100, 100, 100], 100, &log), 2);
+    }
 }

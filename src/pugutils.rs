@@ -34,7 +34,7 @@ use crate::utils::{self as afutils, EqClassPayload};
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PugEdgeType {
     NoEdge,
     BiDirected,
@@ -48,6 +48,25 @@ pub struct PugResolutionStatistics {
     pub total_mccs: u64,
     pub ambiguous_mccs: u64,
     pub trivial_mccs: u64,
+}
+
+/// Direction of the edge between two UMIs one edit apart, from their read
+/// counts: from x to y when x has at least twice y's reads (y is then likely a
+/// sequencing error of x), the reverse symmetrically, and both ways otherwise.
+///
+/// For counts >= 1, which every observed UMI has, `x >= 2y` is exactly the
+/// historical `x > 2y - 1`. Widening to u64 means neither side can overflow
+/// (`2y` for y > 2^31) or underflow (`2y - 1` for y = 0).
+#[inline(always)]
+fn one_edit_edge_direction(x_count: u32, y_count: u32) -> PugEdgeType {
+    let (cx, cy) = (x_count as u64, y_count as u64);
+    if cx >= 2 * cy {
+        PugEdgeType::XToY
+    } else if cy >= 2 * cx {
+        PugEdgeType::YToX
+    } else {
+        PugEdgeType::BiDirected
+    }
 }
 
 /// Extracts the parsimonious UMI graphs (PUGs) from the
@@ -87,13 +106,7 @@ pub fn extract_graph(
 
         if hdist < 2 {
             one_edit += 1;
-            return if x.1 > (2 * y.1 - 1) {
-                PugEdgeType::XToY
-            } else if y.1 > (2 * x.1 - 1) {
-                PugEdgeType::YToX
-            } else {
-                PugEdgeType::BiDirected
-            };
+            return one_edit_edge_direction(x.1, y.1);
         }
         PugEdgeType::NoEdge
     };
@@ -2053,5 +2066,77 @@ mod umi_correction_optimization_tests {
                 assert_eq!(pack(a).cmp(&pack(b)), a.cmp(b), "{a} vs {b}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod one_edit_direction_tests {
+    use super::*;
+
+    /// The historical rule, computed wide enough that it cannot wrap, for
+    /// comparison on counts where it was well defined (>= 1).
+    fn historical(x: u32, y: u32) -> PugEdgeType {
+        let (x, y) = (x as i64, y as i64);
+        if x > 2 * y - 1 {
+            PugEdgeType::XToY
+        } else if y > 2 * x - 1 {
+            PugEdgeType::YToX
+        } else {
+            PugEdgeType::BiDirected
+        }
+    }
+
+    /// Identical to the historical rule on every pair of valid counts.
+    #[test]
+    fn matches_historical_rule_on_valid_counts() {
+        for x in 1..=300u32 {
+            for y in 1..=300u32 {
+                assert_eq!(
+                    one_edit_edge_direction(x, y),
+                    historical(x, y),
+                    "x={x} y={y}"
+                );
+            }
+        }
+        for &(x, y) in &[
+            (u32::MAX, u32::MAX),
+            (u32::MAX, 1),
+            (1 << 31, 1 << 30),
+            (1 << 31, (1 << 30) + 1),
+        ] {
+            assert_eq!(
+                one_edit_edge_direction(x, y),
+                historical(x, y),
+                "x={x} y={y}"
+            );
+            assert_eq!(
+                one_edit_edge_direction(y, x),
+                historical(y, x),
+                "x={y} y={x}"
+            );
+        }
+    }
+
+    /// The boundary: exactly twice the reads directs the edge; one fewer does not.
+    #[test]
+    fn twice_the_reads_is_the_threshold() {
+        assert_eq!(one_edit_edge_direction(10, 5), PugEdgeType::XToY);
+        assert_eq!(one_edit_edge_direction(9, 5), PugEdgeType::BiDirected);
+        assert_eq!(one_edit_edge_direction(5, 10), PugEdgeType::YToX);
+        assert_eq!(one_edit_edge_direction(1, 1), PugEdgeType::BiDirected);
+        assert_eq!(one_edit_edge_direction(2, 1), PugEdgeType::XToY);
+    }
+
+    /// Counts past 2^31 no longer wrap in `2 * y`.
+    #[test]
+    fn large_counts_do_not_overflow() {
+        assert_eq!(
+            one_edit_edge_direction(u32::MAX, (1 << 31) + 1),
+            PugEdgeType::BiDirected
+        );
+        assert_eq!(
+            one_edit_edge_direction(u32::MAX, 1 << 30),
+            PugEdgeType::XToY
+        );
     }
 }
