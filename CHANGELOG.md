@@ -17,11 +17,12 @@ Changelog for alevin-fry
   gene-ambiguous, or dropped as low-support). Supported by every resolution
   strategy, in USA mode, and for multi-sample input
   ([#200](https://github.com/COMBINE-lab/alevin-fry/issues/200)).
-* Each quant worker encodes and compresses its own Parquet row groups, and only
-  appending finished row groups to the file is serialized. On a 10x 3' v3 PBMC
-  5k run (33M molecules, 32 threads) the table cost no measurable wall time and
-  about 20 MiB of peak memory per thread, and the file was about 460 MB.
-  Without the flag, quant output is unchanged.
+* Each quant worker encodes and LZ4-compresses its own Parquet row groups, and
+  only appending finished row groups to the file is serialized. On a 10x 3' v3
+  PBMC 5k collation (32 threads), writing the table added about 8% to quant wall
+  time (2.24 to 2.42 s for 33M molecules; 5.05 to 5.45 s for 70M molecules in
+  USA mode) and about 1 GB of peak memory; the files were 457 MB and 832 MB.
+  Without the flag, quant output and speed are unchanged.
 
 ## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
 

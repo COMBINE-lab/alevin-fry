@@ -1403,11 +1403,11 @@ dependencies = [
  "chrono",
  "half",
  "hashbrown 0.17.1",
+ "lz4_flex",
  "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "seq-macro",
- "snap",
  "twox-hash",
 ]
 

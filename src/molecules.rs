@@ -23,6 +23,9 @@
 //! `n_umis` is the number of distinct observed UMIs collapsed into the row and
 //! `reads` the number of reads supporting it (see [`schema`]).
 //!
+//! The file is LZ4-compressed (Parquet `LZ4_RAW`), which pyarrow >= 10,
+//! polars, DuckDB and recent R `arrow` read.
+//!
 //! Writing is parallel: each quant worker buffers rows for its own cells,
 //! encodes and compresses a whole row group without holding any lock, and only
 //! the splice of the finished column chunks into the shared file is serialized.
@@ -290,7 +293,10 @@ impl MoleculeTableWriter {
         let file =
             File::create(path).with_context(|| format!("could not create {}", path.display()))?;
         let props = WriterProperties::builder()
-            .set_compression(Compression::SNAPPY)
+            // LZ4 (Parquet's LZ4_RAW), the codec of collated RAD chunks: on 10x
+            // PBMC data it wrote ~2% faster than Snappy and loaded as fast,
+            // at equal size (standard reference) or ~10% larger (USA mode).
+            .set_compression(Compression::LZ4_RAW)
             // UMIs are close to unique within a row group, so a dictionary only
             // costs memory and space before Parquet falls back to plain encoding.
             .set_column_dictionary_enabled(ColumnPath::from("rep_umi"), false)
