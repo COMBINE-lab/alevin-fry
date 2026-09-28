@@ -29,6 +29,7 @@ use libradicl::record::{
 use slog::{crit, info, warn};
 
 use crate::eq_class::{EqMap, EqMapType};
+use crate::molecules::CellMolecules;
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
 
@@ -518,6 +519,7 @@ fn collapse_vertices_weighted(
 fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    mut mols: Option<&mut CellMolecules>,
 ) {
     // A cell whose every (UMI, gene) key was dropped (all low-support) has nothing to resolve.
     if umi_gene_count_vec.is_empty() {
@@ -560,6 +562,9 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
                 .entry(best_genes.clone())
                 .or_insert(P::new(best_genes.len()))
                 .inc();
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(curr_umi, &best_genes, max_count, 1);
+            }
 
             // the next umi and gene
             curr_umi = umi;
@@ -653,14 +658,25 @@ fn resolve_num_molecules_crlike_from_vec_prefer_ambig<P: EqClassPayload>(
                 .entry(best_genes.clone())
                 .or_insert(P::new(best_genes.len()))
                 .inc();
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(curr_umi, &best_genes, max_count, 1);
+            }
         }
     }
 }
 
 #[inline]
+///
+/// When `mols` is given, every UMI is also recorded there with its winning
+/// gene(s) and the reads supporting them. `n_umis`, when non-empty, runs
+/// parallel to `umi_gene_count_vec` (which must then already be sorted with
+/// unique keys, as `correct_umis_cellranger` leaves it) and gives the number of
+/// observed UMIs merged into each key; otherwise every molecule is one UMI.
 fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     umi_gene_count_vec: &mut [(u64, u32, u32)],
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    mut mols: Option<&mut CellMolecules>,
+    n_umis: &[u32],
 ) {
     // A cell whose every (UMI, gene) key was dropped (all low-support) has nothing to resolve.
     if umi_gene_count_vec.is_empty() {
@@ -670,7 +686,20 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
     // first on umi
     // then on gene_id
     // then on count
+    // With `n_umis` the vector is already sorted with unique keys, so this
+    // sort is the identity and `n_umis` stays aligned with it.
+    debug_assert!(
+        n_umis.is_empty()
+            || (n_umis.len() == umi_gene_count_vec.len()
+                && umi_gene_count_vec
+                    .windows(2)
+                    .all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)))
+    );
     umi_gene_count_vec.sort_unstable();
+    // Observed UMIs merged into the winning key, for the molecule table.
+    let merged_umis = |idx: usize| n_umis.get(idx).copied().unwrap_or(1);
+    // index of the (first) winning key of the current UMI
+    let mut best_idx = 0usize;
 
     // hold the current umi and gene we are examining
     let mut curr_umi = umi_gene_count_vec.first().expect("cell with no UMIs").0;
@@ -698,6 +727,9 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
                 .entry(best_genes.clone())
                 .or_insert(P::new(best_genes.len()))
                 .inc();
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(curr_umi, &best_genes, max_count, merged_umis(best_idx));
+            }
 
             // the next umi and gene
             curr_umi = umi;
@@ -711,6 +743,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
             // count aggr = max count = ct
             count_aggr = ct;
             max_count = ct;
+            best_idx = cidx;
         } else {
             // the umi was the same
 
@@ -730,6 +763,7 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
             match count_aggr.cmp(&max_count) {
                 Ordering::Greater => {
                     max_count = count_aggr;
+                    best_idx = cidx;
                     // we want to avoid the case that we are just
                     // updating the count of the best gene above and
                     // here we clear out the vector and populate it
@@ -765,6 +799,9 @@ fn resolve_num_molecules_crlike_from_vec<P: EqClassPayload>(
                 .entry(best_genes.clone())
                 .or_insert(P::new(best_genes.len()))
                 .inc();
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(curr_umi, &best_genes, max_count, merged_umis(best_idx));
+            }
         }
     }
 }
@@ -799,6 +836,13 @@ pub struct CorrScratch {
     low: Vec<bool>,
     /// merged read count per destination `raw` index.
     merged: Vec<u32>,
+    /// observed UMIs merged into each destination `raw` index (molecule table only).
+    merged_umis: Vec<u32>,
+    /// genes of a UMI dropped entirely as low-support (molecule table only).
+    dropped_genes: Vec<u32>,
+    /// observed UMIs merged into each surviving output key, parallel to the
+    /// corrected vector; filled only when molecules are being recorded.
+    pub(crate) n_umis: Vec<u32>,
 }
 
 /// Cell Ranger-style Hamming-1 UMI correction within one cell, on `(umi, gene,
@@ -831,6 +875,12 @@ pub struct CorrScratch {
 ///   `(dest, gene)` keys and reaches the EM as an equivalence class. Only
 ///   Hamming-1 UMIs are merged; no molecule is discarded.
 ///
+/// With `mols`, every UMI whose keys are *all* removed as low-support (a tie, or
+/// a chimera with no surviving gene) is recorded there once, with its
+/// best-supported gene(s); and `cs.n_umis` is filled parallel to the output
+/// with the number of observed UMIs merged into each surviving key. Losing keys
+/// of a UMI that keeps a winner are not molecules and are not recorded.
+///
 /// Not meaningful in USA mode (gene ids there are spliced/unspliced variants);
 /// callers reject `--umi-edit-dist >= 1` there. Genes with a single distinct UMI
 /// in the cell are skipped (no same-gene neighbour can exist) — the dominant
@@ -843,8 +893,14 @@ pub fn correct_umis_cellranger(
     umi_len: u32,
     drop_low_support: bool,
     cs: &mut CorrScratch,
+    mut mols: Option<&mut CellMolecules>,
 ) {
+    cs.n_umis.clear();
     if v.len() < 2 {
+        // nothing to merge: the input is already its own (sorted, unique) output
+        if mols.is_some() {
+            cs.n_umis.resize(v.len(), 1);
+        }
         return;
     }
     debug_assert!(
@@ -875,6 +931,9 @@ pub fn correct_umis_cellranger(
         inter,
         low,
         merged,
+        merged_umis,
+        dropped_genes,
+        n_umis,
     } = cs;
 
     // Sort by (umi, gene). For the common case (umi_len <= 16, i.e. umi fits in
@@ -1048,11 +1107,47 @@ pub fn correct_umis_cellranger(
     for i in 0..n {
         merged[dest[i] as usize] += raw[i].2;
     }
-    v.clear();
-    for b in 0..n {
-        if merged[b] > 0 && !low[b] {
-            v.push((raw[b].0, raw[b].1, merged[b]));
+    let track = mols.is_some();
+    if track {
+        merged_umis.clear();
+        merged_umis.resize(n, 0);
+        for &d in dest.iter() {
+            merged_umis[d as usize] += 1;
         }
+    }
+    v.clear();
+    // UMI runs are contiguous in `raw` (sorted by (umi, gene)).
+    let mut i = 0usize;
+    while i < n {
+        let u = raw[i].0;
+        let mut j = i;
+        while j < n && raw[j].0 == u {
+            j += 1;
+        }
+        let mut kept = false;
+        for b in i..j {
+            if merged[b] > 0 && !low[b] {
+                v.push((u, raw[b].1, merged[b]));
+                if track {
+                    n_umis.push(merged_umis[b]);
+                }
+                kept = true;
+            }
+        }
+        // A UMI that still holds reads but lost every gene is a dropped molecule.
+        if !kept
+            && let Some(m) = mols.as_deref_mut()
+            && let Some(max_reads) = (i..j).map(|b| merged[b]).max().filter(|&c| c > 0)
+        {
+            dropped_genes.clear();
+            let mut umis = 0u32;
+            for b in (i..j).filter(|&b| merged[b] == max_reads) {
+                dropped_genes.push(raw[b].1);
+                umis = umis.max(merged_umis[b]);
+            }
+            m.push_low_support(u, dropped_genes, max_reads, umis);
+        }
+        i = j;
     }
 }
 
@@ -1086,6 +1181,7 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     umi_edit: u32,
     umi_len: u32,
     drop_low_support: bool,
+    mut mols: Option<&mut CellMolecules>,
     _log: &slog::Logger,
 ) where
     B: ConvertiblePrimitiveInteger,
@@ -1125,16 +1221,33 @@ pub fn get_num_molecules_cell_ranger_like_small<B, R, P: EqClassPayload>(
     // Cell Ranger chimera drop for cr-like (winner-take-all) and skips it for
     // cr-like-em so multi-gene UMIs survive as eqclasses for the EM.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec, umi_len, drop_low_support, corr);
+        correct_umis_cellranger(
+            umi_gene_count_vec,
+            umi_len,
+            drop_low_support,
+            corr,
+            mols.as_deref_mut(),
+        );
     }
+    let n_umis: &[u32] = if umi_edit >= 1 && mols.is_some() {
+        &corr.n_umis
+    } else {
+        &[]
+    };
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(umi_gene_count_vec, gene_eqclass_hash);
+            resolve_num_molecules_crlike_from_vec(
+                umi_gene_count_vec,
+                gene_eqclass_hash,
+                mols,
+                n_umis,
+            );
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
                 umi_gene_count_vec,
                 gene_eqclass_hash,
+                mols,
             );
         }
     }
@@ -1151,6 +1264,7 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     umi_edit: u32,
     umi_len: u32,
     drop_low_support: bool,
+    mut mols: Option<&mut CellMolecules>,
     _log: &slog::Logger,
 ) {
     // Disjoint borrows of the reusable buffers; cleared before use so prior
@@ -1198,31 +1312,53 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     // Cell Ranger chimera drop for cr-like (winner-take-all) and skips it for
     // cr-like-em so multi-gene UMIs survive as eqclasses for the EM.
     if umi_edit >= 1 {
-        correct_umis_cellranger(umi_gene_count_vec, umi_len, drop_low_support, corr);
+        correct_umis_cellranger(
+            umi_gene_count_vec,
+            umi_len,
+            drop_low_support,
+            corr,
+            mols.as_deref_mut(),
+        );
     }
+    let n_umis: &[u32] = if umi_edit >= 1 && mols.is_some() {
+        &corr.n_umis
+    } else {
+        &[]
+    };
     match sa_model {
         SplicedAmbiguityModel::WinnerTakeAll => {
-            resolve_num_molecules_crlike_from_vec(umi_gene_count_vec, gene_eqclass_hash);
+            resolve_num_molecules_crlike_from_vec(
+                umi_gene_count_vec,
+                gene_eqclass_hash,
+                mols,
+                n_umis,
+            );
         }
         SplicedAmbiguityModel::PreferAmbiguity => {
             resolve_num_molecules_crlike_from_vec_prefer_ambig(
                 umi_gene_count_vec,
                 gene_eqclass_hash,
+                mols,
             );
         }
     }
 }
 
+/// With `mols`, each distinct (UMI, gene) of a gene-unique equivalence class is
+/// recorded as a molecule with the reads summed over classes, and each UMI of a
+/// gene-ambiguous class as a multi-gene molecule with that class's reads.
 pub fn get_num_molecules_trivial_discard_all_ambig(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
+    mut mols: Option<&mut CellMolecules>,
     _log: &slog::Logger,
 ) -> (Vec<f32>, f64) {
     let mut counts = vec![0.0f32; num_genes];
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut gene_map: std::collections::HashMap<u32, Vec<u64>, ahash::RandomState> =
+    let mut gene_map: std::collections::HashMap<u32, Vec<(u64, u32)>, ahash::RandomState> =
         HashMap::with_hasher(s);
+    let mut gset: Vec<u32> = Vec::new();
 
     let mut total_umis = 0u64;
     let mut multi_gene_umis = 0u64;
@@ -1247,6 +1383,15 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
         total_umis += umis.len() as u64;
         if multi_gene {
             multi_gene_umis += umis.len() as u64;
+            if let Some(m) = mols.as_deref_mut() {
+                gset.clear();
+                gset.extend(tset.iter().map(|t| tid_to_gid[*t as usize]));
+                gset.sort_unstable();
+                gset.dedup();
+                for &(umi, reads) in umis {
+                    m.push(umi, &gset, reads, 1);
+                }
+            }
         }
 
         // if the read is single-gene
@@ -1256,7 +1401,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
             gene_map
                 .entry(prev_gene_id)
                 .or_default()
-                .extend(umis.iter().map(|x| x.0));
+                .extend(umis.iter().copied());
         }
     }
 
@@ -1264,10 +1409,21 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
     // equivalence classes that still map to the same
     // gene.
     for (k, v) in gene_map.iter_mut() {
-        v.sort_unstable();
-        v.dedup();
+        v.sort_unstable_by_key(|x| x.0);
+        v.dedup_by(|next, kept| {
+            let same = next.0 == kept.0;
+            if same {
+                kept.1 += next.1;
+            }
+            same
+        });
         // the count is the number of distinct UMIs.
         counts[*k as usize] += v.len() as f32;
+        if let Some(m) = mols.as_deref_mut() {
+            for &(umi, reads) in v.iter() {
+                m.push(umi, &[*k], reads, 1);
+            }
+        }
     }
 
     // return the counts
@@ -1277,6 +1433,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
 /// given the connected component (subgraph) of `g` defined by the
 /// vertices in `vertex_ids`, apply the cell-ranger-like algorithm
 /// within this subgraph.
+#[allow(clippy::too_many_arguments)]
 fn get_num_molecules_large_component<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eq_map: &EqMap,
@@ -1284,6 +1441,7 @@ fn get_num_molecules_large_component<P: EqClassPayload>(
     tid_to_gid: &[u32],
     hasher_state: &ahash::RandomState,
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    mols: Option<&mut CellMolecules>,
     _log: &slog::Logger,
 ) {
     let gene_level_eq_map = match eq_map.map_type {
@@ -1342,7 +1500,35 @@ fn get_num_molecules_large_component<P: EqClassPayload>(
         }
     }
 
-    resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash);
+    resolve_num_molecules_crlike_from_vec(&mut umi_gene_count_vec, gene_eqclass_hash, mols, &[]);
+}
+
+/// Record the molecule explained by the covering arborescence `mcc` (vertex
+/// indices of `g`) grown from `root`: its representative UMI is the root's, its
+/// reads are those of every covered vertex, and `n_umis` counts the distinct
+/// UMIs among them.
+fn record_covered_molecule(
+    mols: &mut CellMolecules,
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    root: u32,
+    mcc: &[u32],
+    genes: &[u32],
+) {
+    let umi_of = |vertex: u32| {
+        let (eq_id, umi_id) = g.from_index(vertex as usize);
+        eqmap.eqc_info[eq_id as usize].umis[umi_id as usize]
+    };
+    let mut umis: SmallVec<[u64; 8]> = SmallVec::with_capacity(mcc.len());
+    let mut reads = 0u32;
+    for &vertex in mcc {
+        let (umi, count) = umi_of(vertex);
+        umis.push(umi);
+        reads += count;
+    }
+    umis.sort_unstable();
+    umis.dedup();
+    mols.push(umi_of(root).0, genes, reads, umis.len() as u32);
 }
 
 /// Given the digraph `g` representing the PUGs within the current
@@ -1350,6 +1536,7 @@ fn get_num_molecules_large_component<P: EqClassPayload>(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
+#[allow(clippy::too_many_arguments)]
 pub fn get_num_molecules<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
@@ -1357,6 +1544,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
+    mut mols: Option<&mut CellMolecules>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
@@ -1424,6 +1612,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     tid_to_gid,
                     hasher_state,
                     gene_eqclass_hash,
+                    mols.as_deref_mut(),
                     log,
                 );
                 warn!(
@@ -1465,6 +1654,9 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 // the transcript that is responsible for the
                 // best mcc covering
                 let mut best_covering_txp = u32::MAX;
+                // the vertex the best mcc was grown from: the root of its
+                // arborescence, and the molecule's representative UMI
+                let mut best_root = u32::MAX;
 
                 // in the long-read case
                 let mut best_mcc_prob: f64 = 0.0;
@@ -1489,6 +1681,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     if P::HAS_PROBS {
                         if best_mcc_prob < cand_prob {
                             best_mcc = cand_mcc;
+                            best_root = *v;
                             best_mcc_prob = cand_prob;
                             best_covering_txp = cand_txp;
                             best_mcc_txp_probs = eq_txs_prob;
@@ -1498,6 +1691,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                         // it becomes the new best
                         if best_mcc.len() < mcc_len {
                             best_mcc = cand_mcc;
+                            best_root = *v;
                             best_covering_txp = cand_txp;
                         }
                     }
@@ -1605,6 +1799,10 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     "can't find representative gene(s) for a molecule"
                 );
 
+                if let Some(m) = mols.as_deref_mut() {
+                    record_covered_molecule(m, g, eqmap, best_root, &best_mcc, &global_genes);
+                }
+
                 // in our hash, increment the count of this equivalence class
                 // by 1 (and insert it if we've not seen it yet).
                 let eq_label_len = global_genes.len();
@@ -1672,6 +1870,12 @@ pub fn get_num_molecules<P: EqClassPayload>(
             pug_stats.trivial_mccs += 1;
             if global_genes.len() > 1 {
                 pug_stats.ambiguous_mccs += 1;
+            }
+
+            if let Some(m) = mols.as_deref_mut() {
+                let (eq_id, umi_id) = g.from_index(*tv as usize);
+                let (umi, reads) = eqmap.eqc_info[eq_id as usize].umis[umi_id as usize];
+                m.push(umi, &global_genes, reads, 1);
             }
 
             // incrementing the count of the eqclass label by 1
@@ -1785,7 +1989,7 @@ mod cellranger_umi_tests {
     #[test]
     fn greater_count_neighbour_and_low_support() {
         let mut v = vec![(AAAA, 0, 3), (AAAT, 0, 2), (AAAA, 1, 1), (AATT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert_eq!(v, vec![(AAAA, 0, 5), (AATT, 1, 1)]);
     }
 
@@ -1793,7 +1997,7 @@ mod cellranger_umi_tests {
     #[test]
     fn equal_count_lexicographic_tiebreak() {
         let mut v = vec![(CCCC, 0, 1), (CGCC, 0, 1)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert_eq!(v, vec![(CGCC, 0, 2)]);
     }
 
@@ -1805,7 +2009,7 @@ mod cellranger_umi_tests {
         let b = AAAT;
         let c = AATT; // a~b and b~c are Hamming-1, a~c is Hamming-2
         let mut v = vec![(a, 0, 1), (b, 0, 2), (c, 0, 3)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert_eq!(v, vec![(b, 0, 1), (c, 0, 5)]);
     }
 
@@ -1813,7 +2017,7 @@ mod cellranger_umi_tests {
     #[test]
     fn correction_is_within_gene() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 1, 5)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert_eq!(v, vec![(AAAA, 0, 1), (AAAT, 1, 5)]);
     }
 
@@ -1850,8 +2054,74 @@ mod cellranger_umi_tests {
     #[test]
     fn all_low_support_gives_empty_vec() {
         let mut v = vec![(AAAA, 0, 1), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert!(v.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod molecule_recording_tests {
+    //! What `--dump-molecules` records from the cr-like correction and resolver.
+    use super::*;
+    use crate::utils::BasicEqClassPayload;
+    const AAAA: u64 = 0b0000_0000;
+    const AAAT: u64 = 0b0000_0011;
+    const AATT: u64 = 0b0000_1111;
+
+    fn rows(m: &CellMolecules) -> Vec<(u64, Vec<u32>, u32, u32, bool)> {
+        m.iter()
+            .map(|(u, l, r, n, low)| (u, l.to_vec(), r, n, low))
+            .collect()
+    }
+
+    /// AAAT(g0) merges into AAAA(g0); (AAAA, g1) loses to (AAAA, g0), so UMI AAAA
+    /// keeps a winner and its losing key is not a molecule of its own.
+    #[test]
+    fn merged_umis_are_counted_and_losing_keys_are_not_rows() {
+        let mut v = vec![(AAAA, 0, 3), (AAAT, 0, 2), (AAAA, 1, 1), (AATT, 1, 1)];
+        let mut cs = CorrScratch::default();
+        let mut mols = CellMolecules::default();
+        correct_umis_cellranger(&mut v, 32, true, &mut cs, Some(&mut mols));
+        assert_eq!(v, vec![(AAAA, 0, 5), (AATT, 1, 1)]);
+        assert_eq!(cs.n_umis, vec![2, 1]);
+        assert!(mols.is_empty());
+
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut h: HashMap<Vec<u32>, BasicEqClassPayload, ahash::RandomState> =
+            HashMap::with_hasher(s);
+        resolve_num_molecules_crlike_from_vec(&mut v, &mut h, Some(&mut mols), &cs.n_umis);
+        assert_eq!(
+            rows(&mols),
+            vec![(AAAA, vec![0], 5, 2, false), (AATT, vec![1], 1, 1, false)]
+        );
+    }
+
+    /// Both UMIs collapse into AAAT, which then ties between genes 0 and 1 and
+    /// is dropped: one low-support row for the molecule, none for AAAA (whose
+    /// reads all moved to AAAT).
+    #[test]
+    fn a_fully_dropped_umi_is_one_low_support_row() {
+        let mut v = vec![(AAAA, 0, 1), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
+        let mut cs = CorrScratch::default();
+        let mut mols = CellMolecules::default();
+        correct_umis_cellranger(&mut v, 32, true, &mut cs, Some(&mut mols));
+        assert!(v.is_empty());
+        assert_eq!(rows(&mols), vec![(AAAT, vec![0, 1], 2, 2, true)]);
+    }
+
+    /// cr-like-em keeps every key, so ties survive to the resolver and become
+    /// one multi-gene molecule.
+    #[test]
+    fn em_keeps_ties_as_one_multi_gene_molecule() {
+        let mut v = vec![(AAAA, 0, 2), (AAAA, 1, 2)];
+        let mut cs = CorrScratch::default();
+        let mut mols = CellMolecules::default();
+        correct_umis_cellranger(&mut v, 32, false, &mut cs, Some(&mut mols));
+        let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+        let mut h: HashMap<Vec<u32>, BasicEqClassPayload, ahash::RandomState> =
+            HashMap::with_hasher(s);
+        resolve_num_molecules_crlike_from_vec(&mut v, &mut h, Some(&mut mols), &cs.n_umis);
+        assert_eq!(rows(&mols), vec![(AAAA, vec![0, 1], 2, 1, false)]);
     }
 }
 
@@ -1869,13 +2139,13 @@ mod umi_ham_merge_tests {
         const AAAA: u64 = 0b0000_0000;
         const AAAT: u64 = 0b0000_0011;
         let mut v = vec![(AAAA, 0u32, 1u32), (AAAT, 0, 1), (AAAA, 1, 1), (AAAT, 1, 1)];
-        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut v, 32, true, &mut CorrScratch::default(), None);
         assert!(v.is_empty(), "all keys low-support -> empty");
 
         let mut h: HashMap<Vec<u32>, BasicEqClassPayload, ahash::RandomState> =
             HashMap::with_hasher(ahash::RandomState::with_seeds(2, 7, 1, 8));
         // Must return via the empty guard, leaving the eqclass hash empty.
-        resolve_num_molecules_crlike_from_vec(&mut v, &mut h);
+        resolve_num_molecules_crlike_from_vec(&mut v, &mut h, None, &[]);
         assert!(h.is_empty(), "empty cell yields no molecules");
     }
 }
@@ -2003,7 +2273,7 @@ mod umi_correction_optimization_tests {
                 }
                 for &drop in &[true, false] {
                     let mut opt = input.clone();
-                    correct_umis_cellranger(&mut opt, umi_len, drop, &mut scratch);
+                    correct_umis_cellranger(&mut opt, umi_len, drop, &mut scratch, None);
                     let mut nai = input.clone();
                     naive_correct(&mut nai, umi_len, drop);
                     assert_eq!(
@@ -2018,7 +2288,7 @@ mod umi_correction_optimization_tests {
             (0u64..100).map(|u| (u, 0u32, (u as u32 % 5) + 1)).collect();
         for &drop in &[true, false] {
             let mut opt = big.clone();
-            correct_umis_cellranger(&mut opt, 4, drop, &mut scratch);
+            correct_umis_cellranger(&mut opt, 4, drop, &mut scratch, None);
             let mut nai = big.clone();
             naive_correct(&mut nai, 4, drop);
             assert_eq!(opt, nai, "large-group mismatch drop={drop}");
@@ -2036,13 +2306,13 @@ mod umi_correction_optimization_tests {
 
         // cr-like (drop): every key is tied/chimeric on the intermediate table -> empty.
         let mut dropv = input.clone();
-        correct_umis_cellranger(&mut dropv, 4, true, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut dropv, 4, true, &mut CorrScratch::default(), None);
         assert!(dropv.is_empty(), "cr-like drops the all-chimeric cell");
 
         // cr-like-em (no drop): AAAA corrects into AAAT in both genes, and the
         // resulting multi-gene UMI AAAT survives (genes 0 and 1) for the EM.
         let mut keepv = input;
-        correct_umis_cellranger(&mut keepv, 4, false, &mut CorrScratch::default());
+        correct_umis_cellranger(&mut keepv, 4, false, &mut CorrScratch::default(), None);
         assert_eq!(keepv, vec![(AAAT, 0, 2), (AAAT, 1, 2)]);
     }
 

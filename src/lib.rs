@@ -22,6 +22,7 @@ pub mod eq_class;
 pub mod infer;
 pub mod knee_finding;
 mod matrix_market;
+pub mod molecules;
 pub mod multinomial;
 pub mod prog_opts;
 pub mod pugutils;
