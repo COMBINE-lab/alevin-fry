@@ -6,6 +6,23 @@ Changelog for alevin-fry
 > releases 0.10.0 through 0.17.0 are not recorded here. See the git history and
 > the GitHub releases page for that range.
 
+## Unreleased
+
+### Features
+
+* `quant --dump-molecules` writes `alevin/molecules.parquet`: one row per
+  molecule produced by UMI resolution, before molecules are summed into the
+  count matrix (cell barcode, representative UMI, number of observed UMIs
+  collapsed into it, feature, supporting reads, and whether it was counted,
+  gene-ambiguous, or dropped as low-support). Supported by every resolution
+  strategy, in USA mode, and for multi-sample input
+  ([#200](https://github.com/COMBINE-lab/alevin-fry/issues/200)).
+* Each quant worker encodes and compresses its own Parquet row groups, and only
+  appending finished row groups to the file is serialized. On a 10x 3' v3 PBMC
+  5k run (33M molecules, 32 threads) the table cost no measurable wall time and
+  about 20 MiB of peak memory per thread, and the file was about 460 MB.
+  Without the flag, quant output is unchanged.
+
 ## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
 
 ### Performance

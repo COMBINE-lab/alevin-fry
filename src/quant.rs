@@ -50,6 +50,9 @@ use crate::em::{
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::matrix_market::{MATRIX_BUFFER_CAPACITY, MatrixBatch, MatrixMarketWriter};
+use crate::molecules::{
+    CellMolecules, FeatureLabeler, MOLECULE_TABLE_NAME, MoleculeBatch, MoleculeTableWriter,
+};
 use crate::prog_opts::QuantOpts;
 
 /// Shared closure that extracts a sample index from a record.
@@ -436,6 +439,8 @@ struct WorkerSharedState<R: MappedRecord> {
     sample_names: Option<Arc<Vec<String>>>,
     /// Extracts the sample index from a record. None for single-barcode types.
     sample_idx_extractor: Option<SampleIdxExtractor<R>>,
+    /// The molecule table, with `--dump-molecules`.
+    molecule_out: Option<Arc<MoleculeTableWriter>>,
 }
 
 /// Default threshold (in number of records) below which a cell uses the fast
@@ -475,6 +480,8 @@ fn quantify_small_cell_sparse<B, R>(
     gene_umi_buf: &mut Vec<(u32, u64)>,
     // Reusable scratch buffer for (umi, gene, count) triplets
     umi_gene_triplets: &mut Vec<(u64, u32, u32)>,
+    // With `--dump-molecules`, every UMI and its winning gene(s)
+    mut mols: Option<&mut CellMolecules>,
 ) where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -554,62 +561,66 @@ fn quantify_small_cell_sparse<B, R>(
     // Commit a resolved UMI to gene_umi_buf. For single-winner UMIs,
     // maps to slot and pushes. For multi-gene ties in USA mode, applies
     // splicing-aware resolution matching extract_counts in utils.rs.
-    let commit_umi = |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
-        match best.len() {
-            0 => {}
-            1 => {
-                buf.push((to_slot(best[0]), umi));
+    let mut commit_umi =
+        |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, reads: u32, buf: &mut Vec<(u32, u64)>| {
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(umi, best, reads, 1);
             }
-            _ if !usa_mode => {
-                // Non-USA: multi-gene tie → discard
-            }
-            2 => {
-                // USA: same logic as extract_counts len==2
-                let (g1, g2) = (best[0], best[1]);
-                if afutils::same_gene(g1, g2, true) {
-                    // S+U of same gene → ambiguous slot
-                    buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
-                } else {
-                    // Different genes: prefer spliced
-                    match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
-                        (true, false) => buf.push(((g1 >> 1), umi)),
-                        (false, true) => buf.push(((g2 >> 1), umi)),
-                        _ => {} // both spliced or both unspliced → discard
-                    }
+            match best.len() {
+                0 => {}
+                1 => {
+                    buf.push((to_slot(best[0]), umi));
                 }
-            }
-            n if n <= 10 => {
-                // USA: same logic as extract_counts len==3..10
-                // Find spliced genes
-                let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
-                if let Some(&first_spliced) = spliced_iter.next() {
-                    if spliced_iter.next().is_some() {
-                        // 2+ spliced genes → gene-ambiguous, discard
+                _ if !usa_mode => {
+                    // Non-USA: multi-gene tie → discard
+                }
+                2 => {
+                    // USA: same logic as extract_counts len==2
+                    let (g1, g2) = (best[0], best[1]);
+                    if afutils::same_gene(g1, g2, true) {
+                        // S+U of same gene → ambiguous slot
+                        buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
                     } else {
-                        // Exactly 1 spliced gene. Check if its unspliced
-                        // counterpart is also in the set.
-                        let has_unspliced_partner = best.iter().any(|&g| {
-                            g != first_spliced && afutils::same_gene(first_spliced, g, true)
-                        });
-                        if has_unspliced_partner {
-                            buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
-                        } else {
-                            buf.push(((first_spliced >> 1), umi));
+                        // Different genes: prefer spliced
+                        match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
+                            (true, false) => buf.push(((g1 >> 1), umi)),
+                            (false, true) => buf.push(((g2 >> 1), umi)),
+                            _ => {} // both spliced or both unspliced → discard
                         }
                     }
                 }
-                // No spliced genes at all → discard
+                n if n <= 10 => {
+                    // USA: same logic as extract_counts len==3..10
+                    // Find spliced genes
+                    let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
+                    if let Some(&first_spliced) = spliced_iter.next() {
+                        if spliced_iter.next().is_some() {
+                            // 2+ spliced genes → gene-ambiguous, discard
+                        } else {
+                            // Exactly 1 spliced gene. Check if its unspliced
+                            // counterpart is also in the set.
+                            let has_unspliced_partner = best.iter().any(|&g| {
+                                g != first_spliced && afutils::same_gene(first_spliced, g, true)
+                            });
+                            if has_unspliced_partner {
+                                buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
+                            } else {
+                                buf.push(((first_spliced >> 1), umi));
+                            }
+                        }
+                    }
+                    // No spliced genes at all → discard
+                }
+                _ => {} // >10 labels → discard
             }
-            _ => {} // >10 labels → discard
-        }
-    };
+        };
 
     for idx in 0..umi_gene_triplets.len() {
         let (umi, gn, ct) = umi_gene_triplets[idx];
 
         if umi != curr_umi {
             // Commit previous UMI
-            commit_umi(&best_genes, curr_umi, gene_umi_buf);
+            commit_umi(&best_genes, curr_umi, max_count, gene_umi_buf);
 
             // Reset for new UMI
             curr_umi = umi;
@@ -648,7 +659,7 @@ fn quantify_small_cell_sparse<B, R>(
 
         // Commit last UMI
         if idx == umi_gene_triplets.len() - 1 {
-            commit_umi(&best_genes, curr_umi, gene_umi_buf);
+            commit_umi(&best_genes, curr_umi, max_count, gene_umi_buf);
         }
     }
 
@@ -701,6 +712,11 @@ where
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
+    // With `--dump-molecules`: this cell's molecules, and this worker's
+    // buffered rows of the molecule table.
+    let mut cell_mols = CellMolecules::default();
+    let mut mol_batch = shared.molecule_out.clone().map(MoleculeBatch::new);
+    let dump_molecules = mol_batch.is_some();
 
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
@@ -743,6 +759,7 @@ where
                 break;
             }
             let cell_num = first_cell_in_chunk + cn;
+            cell_mols.clear();
 
             let nbytes = c.nbytes;
             let nrec = c.nrec;
@@ -810,6 +827,7 @@ where
                     config.num_rows,
                     &mut gene_umi_buf,
                     &mut umi_gene_triplets,
+                    dump_molecules.then_some(&mut cell_mols),
                 );
                 // gene_umi_buf is now sorted and deduped (gene_id, umi) pairs.
                 // Build expressed_vec/expressed_ind by run-length counting genes.
@@ -877,6 +895,7 @@ where
                                     config.crlike_umi_edit,
                                     config.umi_len,
                                     config.resolution == ResolutionStrategy::CellRangerLike,
+                                    dump_molecules.then_some(&mut cell_mols),
                                     &log,
                                 );
                             } else {
@@ -891,6 +910,7 @@ where
                                     config.crlike_umi_edit,
                                     config.umi_len,
                                     config.resolution == ResolutionStrategy::CellRangerLike,
+                                    dump_molecules.then_some(&mut cell_mols),
                                     &log,
                                 );
                                 eq_map.clear();
@@ -946,6 +966,7 @@ where
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 config.num_genes,
+                                dump_molecules.then_some(&mut cell_mols),
                                 &log,
                             );
                             counts = ct.0;
@@ -976,6 +997,7 @@ where
                                 &mut gene_eqc,
                                 &s,
                                 config.large_graph_thresh,
+                                dump_molecules.then_some(&mut cell_mols),
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -1073,6 +1095,7 @@ where
                         config.crlike_umi_edit,
                         config.umi_len,
                         config.resolution == ResolutionStrategy::CellRangerLike,
+                        dump_molecules.then_some(&mut cell_mols),
                         &log,
                     );
                     // USA-mode
@@ -1271,6 +1294,19 @@ where
                         .record_cell(row_index, &bootstraps, output)
                         .context("could not write bootstrap matrices")?;
                 }
+                if let Some(batch) = mol_batch.as_mut() {
+                    // The tiny-cell fast path is winner-take-all whatever `-r` is.
+                    let em = !used_fast_path
+                        && matches!(
+                            config.resolution,
+                            ResolutionStrategy::CellRangerLikeEm
+                                | ResolutionStrategy::ParsimonyEm
+                                | ResolutionStrategy::ParsimonyGeneEm
+                        );
+                    batch
+                        .add_cell(bc_str, sample_idx_from_rec, &cell_mols, em)
+                        .context("could not write molecule table")?;
+                }
                 Ok(row_index)
             })();
             let row_index = match cell_output {
@@ -1335,6 +1371,9 @@ where
                 boot_helper
                     .flush(output)
                     .context("could not flush bootstrap batches")?;
+            }
+            if let Some(batch) = mol_batch.as_mut() {
+                batch.flush().context("could not flush molecule table")?;
             }
             Ok(())
         })();
@@ -1646,6 +1685,7 @@ where
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
     let dump_eq = quant_opts.dump_eq;
+    let dump_molecules = quant_opts.dump_molecules;
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let crlike_umi_edit = quant_opts.crlike_umi_edit;
@@ -1843,6 +1883,17 @@ where
         0
     };
 
+    // The molecule table decodes UMIs to sequences, so it needs their length.
+    let molecule_umi_len: usize = if dump_molecules {
+        let umi_len_bases: u16 = file_tag_map
+            .get("ulen")
+            .context("--dump-molecules requires the `ulen` file-level tag (the UMI length)")?
+            .try_into()?;
+        umi_len_bases as usize
+    } else {
+        0
+    };
+
     // if we have a filter list, extract it here
     let mut retained_bc: Option<HashSet<u64, ahash::RandomState>> = None;
     if let Some(fname) = filter_list {
@@ -1971,6 +2022,32 @@ where
         None
     };
 
+    // The count-matrix column names (quants_mat_cols.txt): the gene names, or
+    // in USA mode the spliced, then unspliced (-U), then ambiguous (-A) names.
+    let feature_names: Arc<Vec<String>> = Arc::new(if usa_mode {
+        gene_names
+            .iter()
+            .cloned()
+            .chain(gene_names.iter().map(|g| format!("{g}-U")))
+            .chain(gene_names.iter().map(|g| format!("{g}-A")))
+            .collect()
+    } else {
+        gene_names.clone()
+    });
+
+    let molecule_out = if dump_molecules {
+        let path = output_matrix_path.join(MOLECULE_TABLE_NAME);
+        info!(log, "writing the molecule table to {}", path.display());
+        Some(Arc::new(MoleculeTableWriter::create(
+            &path,
+            sample_names.as_deref().map(Vec::as_slice),
+            FeatureLabeler::new(feature_names.clone(), usa_mode),
+            molecule_umi_len,
+        )?))
+    } else {
+        None
+    };
+
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, bc_file),
         feature_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, ff_file),
@@ -2094,6 +2171,7 @@ where
             unmapped_count,
             sample_names: sample_names.clone(),
             sample_idx_extractor: sample_bc_extractor.clone(),
+            molecule_out: molecule_out.clone(),
         };
 
         // now, make the worker thread
@@ -2256,28 +2334,28 @@ where
     let gn_file = File::create(gn_path).context("could not create gene name output")?;
     let mut gn_writer = BufWriter::new(gn_file);
 
-    // if we are not using unspliced then just write the gene names
-    if !usa_mode {
-        for g in gene_names {
-            writeln!(gn_writer, "{}", g)?;
-        }
-    } else {
-        // otherwise, we write the spliced names, the unspliced names, and then
-        // the ambiguous names
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}", g)?;
-        }
-        // unspliced
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}-U", g)?;
-        }
-        // ambiguous
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}-A", g)?;
-        }
+    for g in feature_names.iter() {
+        writeln!(gn_writer, "{}", g)?;
     }
 
     gn_writer.flush().context("could not flush gene names")?;
+
+    // Every worker has flushed its rows; write the footer.
+    let molecule_table = match &molecule_out {
+        Some(out) => {
+            let num_molecules = out.finish()?;
+            info!(
+                log,
+                "wrote molecule table: {} molecules",
+                num_molecules.to_formatted_string(&Locale::en)
+            );
+            json!({
+                "file": format!("alevin/{MOLECULE_TABLE_NAME}"),
+                "num_molecules": num_molecules,
+            })
+        }
+        None => serde_json::Value::Null,
+    };
 
     let pb_msg = format!(
         "finished quantifying {} cells.",
@@ -2320,6 +2398,7 @@ where
     "num_quantified_cells" : num_cells,
     "num_genes" : num_rows,
     "dump_eq" : dump_eq,
+    "molecule_table" : molecule_table,
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
     "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap(),

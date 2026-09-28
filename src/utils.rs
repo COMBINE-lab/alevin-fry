@@ -768,6 +768,74 @@ pub fn parse_tg_map(
 /// one gene, but only one *spliced* gene, then it is assigned to
 /// the spliced gene, unless there is too much multimapping
 /// (i.e. it is compatible with > 10 different loci).
+/// The USA-mode count-matrix column that a molecule with these (sorted) gene
+/// labels is counted in by the winner-take-all strategies, or `None` if it is
+/// discarded as gene-ambiguous.
+///
+/// Labels are interleaved spliced (even) / unspliced (odd) gene ids.
+/// * one label: its spliced or unspliced column;
+/// * two labels of the same gene: the gene's ambiguous column;
+/// * two to ten labels with exactly one spliced gene: that gene (its ambiguous
+///   column if its unspliced variant is also present) -- "prefer spliced";
+/// * otherwise: discarded.
+pub fn usa_label_column(
+    labels: &[u32],
+    unspliced_offset: usize,
+    ambig_offset: usize,
+) -> Option<usize> {
+    match labels.len() {
+        1 => {
+            let gid = labels[0];
+            Some(if is_spliced(gid) {
+                (gid >> 1) as usize
+            } else {
+                unspliced_offset + (gid >> 1) as usize
+            })
+        }
+        2 => {
+            // spliced & unspliced of the same gene, or something different?
+            let (g1, g2) = (labels[0], labels[1]);
+            if same_gene(g1, g2, true) {
+                Some(ambig_offset + (g1 >> 1) as usize)
+            } else {
+                // report spliced if we can
+                match (is_spliced(g1), is_spliced(g2)) {
+                    (true, false) => Some((g1 >> 1) as usize),
+                    (false, true) => Some((g2 >> 1) as usize),
+                    _ => None,
+                }
+            }
+        }
+        3..=10 => {
+            // if we don't have *too* many distinct genes matching this UMI
+            // then apply the prefer-spliced rule.
+
+            // See if there is precisely 1 spliced gene, and if so take it
+            // but assign the read as ambiguous if it is for this gene
+            let mut iter = labels.iter();
+            // search for the first spliced index
+            let sidx = iter.position(|&x| is_spliced(x))?;
+            // if there is a second spliced gene, this is gene ambiguous and
+            // we drop it.
+            if iter.position(|&x| is_spliced(x)).is_some() {
+                return None;
+            }
+            // we only had one spliced gene.  Check to see if the
+            // index following the spliced gene we found is its
+            // unspliced variant or not.  If so, add it as ambiguous
+            // otherwise, add it as spliced
+            let sg = labels[sidx];
+            if let Some(ng) = labels.get(sidx + 1)
+                && same_gene(sg, *ng, true)
+            {
+                return Some(ambig_offset + (sg >> 1) as usize);
+            }
+            Some((sg >> 1) as usize)
+        }
+        _ => None,
+    }
+}
+
 pub fn extract_counts<P: EqClassPayload>(
     gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
@@ -779,75 +847,8 @@ pub fn extract_counts<P: EqClassPayload>(
     let mut counts = vec![0_f32; num_counts];
 
     for (labels, payload) in gene_eqc {
-        let count = payload.count();
-        // the length of the label will tell us if this is a
-        // splicing-unique, gene-unique (but splicing ambiguous).
-        // or gene-ambiguous equivalence class label.
-        match labels.len() {
-            1 => {
-                // determine if spliced or unspliced
-                if let Some(gid) = labels.first() {
-                    let idx = if is_spliced(*gid) {
-                        (*gid >> 1) as usize
-                    } else {
-                        unspliced_offset + (*gid >> 1) as usize
-                    };
-                    counts[idx] += count as f32;
-                }
-            }
-            2 => {
-                // spliced & unspliced of the same gene, or something differnet?
-                if let (Some(g1), Some(g2)) = (labels.first(), labels.last()) {
-                    if same_gene(*g1, *g2, true) {
-                        let idx = ambig_offset + (*g1 >> 1) as usize;
-                        //eprintln!("ambig count {} at {}!", *count, idx);
-                        counts[idx] += count as f32;
-                    } else {
-                        // report spliced if we can
-                        match (is_spliced(*g1), is_spliced(*g2)) {
-                            (true, false) => {
-                                counts[(*g1 >> 1) as usize] += count as f32;
-                            }
-                            (false, true) => {
-                                counts[(*g2 >> 1) as usize] += count as f32;
-                            }
-                            _ => { /* do nothing */ }
-                        }
-                    }
-                }
-            }
-            3..=10 => {
-                // if we don't have *too* many distinct genes matching this UMI
-                // then apply the prefer-spliced rule.
-
-                // See if there is precisely 1 spliced gene, and if so take it
-                // but assign the read as ambiguous if it is for this gene
-                let mut iter = labels.iter();
-                // search for the first spliced index
-                if let Some(sidx) = iter.position(|&x| is_spliced(x)) {
-                    // if we found a spliced gene, check if there are any more
-                    if let Some(_sidx2) = iter.position(|&x| is_spliced(x)) {
-                        // in this case we had 2 spliced genes, so this is
-                        // gene ambiguous and we just drop it.
-                    } else {
-                        // we only had one spliced gene.  Check to see if the
-                        // index following the spliced gene we found is its
-                        // unspliced variant or not.  If so, add it as ambiguous
-                        // otherwise, add it as spliced
-                        if let Some(sg) = labels.get(sidx) {
-                            if let Some(ng) = labels.get(sidx + 1)
-                                && same_gene(*sg, *ng, true)
-                            {
-                                let idx = ambig_offset + (*sg >> 1) as usize;
-                                counts[idx] += count as f32;
-                                continue;
-                            }
-                            counts[(*sg >> 1) as usize] += count as f32;
-                        }
-                    }
-                }
-            }
-            _ => {}
+        if let Some(idx) = usa_label_column(labels, unspliced_offset, ambig_offset) {
+            counts[idx] += payload.count() as f32;
         }
     }
     counts

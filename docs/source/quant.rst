@@ -29,6 +29,8 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``-d, --dump-eqclasses`` : This flag will cause a gene-level, UMI-deduplicated, equivalence class counts file to be written to the output directory in addition to the gene-level count matrix.  This can be used for subsequent analyses where gene-ambiguous reads have been neither resovled nor discarded.
 
+* ``--dump-molecules`` : This flag writes ``alevin/molecules.parquet``, a table with one row per molecule produced by UMI resolution, before molecules are summed into the count matrix (similar in spirit to Cell Ranger's ``molecule_info.h5``). It is useful, for example, for examining the number of reads per UMI in highly saturated libraries. It is supported by every resolution strategy and requires the RAD file's ``ulen`` (UMI length) tag. See :ref:`molecule-table` below.
+
 * ``-b, --num-bootstraps`` : This flag will cause bootstrap inferential replicate information to be written to the output directory.  This provides a measure of the inferential uncertainty in the gene-level estimates provided by ``alevin-fry`` when run with a method using the EM algorithm for gene-level abundance estimation.  This information can be used with downstream testing, like differential expression testing using swish.  This flag is only meaningful with the ``cr-like-em`` or ``full`` resolution modes.
 
 * ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring much less storage space than the full bootstrap replicate information.  This flag is only meaningful when ``--num-bootstraps`` is meaningful.
@@ -46,11 +48,35 @@ There are also a few flags that are not immediately exposed:
 output
 ------
 
-The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``quants_mat.mtx``, ``quants_mat_cols.txt``, ``quant.json``, and ``featureDump.txt``.  The ``quant.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``featureDump.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
+The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``, ``quants_mat.mtx``, ``quants_mat_cols.txt``, ``quant.json``, and ``featureDump.txt`` (plus ``molecules.parquet`` with ``--dump-molecules``).  The ``quant.json`` file contains information about the quantification run, such as the method used for UMI resolution.  The ``featureDump.txt`` file contains cell-level information designed to be useful in post-quantification cell filtering (better determining "true" cells from background, noise, doublets etc.).  The other three files all correspond to quantification information.
 
 If ``quant`` was executed in USA mode, then the resulting count matrix will be of dimension ``C``x``3G`` where ``C`` is the number of quantified cells (barcodes) and ``G`` is the number of genes.  This is because, in USA mode, ``alevin-fry`` quantifies the UMI count attributable to each splicing state of each gene in each cell, where the splicing state is one of spliced (S), unspliced (U) or ambiguous (A).  If ``quant`` was run with a two-column transcript-to-gene map (not in USA-mode), then the resulting count matrix will be a ``C``x``G`` matrix, as splicing status is not tracked.  For more details on USA mode and its uses, please read the ``alevin-fry`` `paper <https://www.nature.com/articles/s41592-022-01408-3>`__ or `preprint <https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1>`__, or the `corresponding tutorial <https://combine-lab.github.io/alevin-fry-tutorials/2021/improving-txome-specificity/>`__.
 
 The ``quants_mat.mtx`` is a matrix market `coordinate format <https://math.nist.gov/MatrixMarket/formats.html>`__ file that stores the gene-by-cell expression matrix. The two other files provide the labels for the rows and columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that contains the names of the rows of the matrix, in the order in which it is written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a text file that contains the names of the columns of the matrix, in the order in which it is written, with one barcode name written per line.
+
+.. _molecule-table:
+
+molecule table
+~~~~~~~~~~~~~~
+
+With ``--dump-molecules``, ``quant`` also writes ``alevin/molecules.parquet``, an `Apache Parquet <https://parquet.apache.org/>`__ file readable with, e.g., ``pandas.read_parquet``, ``polars.read_parquet``, DuckDB or the R ``arrow`` package. Each row is one molecule, identified by a *representative* UMI. This is not always a single observed UMI:
+
+* ``cr-like`` / ``cr-like-em``: the UMI itself; with ``--umi-edit-dist 1``, the corrected UMI into which its Hamming-1 neighbours were merged.
+* ``parsimony``, ``parsimony-em``, ``parsimony-gene``, ``parsimony-gene-em``: the root of the arborescence that covers the molecule in the parsimonious UMI graph; every UMI it covers is collapsed into the row.
+* ``trivial``: the UMI itself.
+
+The columns are:
+
+* ``cell_barcode`` : the corrected cell barcode.
+* ``sample`` : the sample name (multi-sample input such as 10x Flex only).
+* ``rep_umi`` : the representative UMI sequence.
+* ``n_umis`` : the number of distinct observed UMIs collapsed into this molecule.
+* ``feature`` : the count-matrix column (a name from ``quants_mat_cols.txt``) the molecule was counted in; null when the molecule is compatible with several genes.
+* ``candidate_features`` : when ``feature`` is null, the list of features the molecule is compatible with.
+* ``reads`` : the number of reads supporting the molecule's assignment. For ``cr-like``, these are the reads of the (corrected) UMI that are compatible with the winning gene(s); for the parsimony strategies, the reads of every UMI in the covering arborescence.
+* ``status`` : ``assigned`` if the molecule was counted as one molecule of ``feature``; ``multi_gene`` if it is gene-ambiguous (discarded by the non-EM strategies, apportioned among ``candidate_features`` by the EM strategies); or ``low_support`` if ``cr-like --umi-edit-dist 1`` dropped it as a low-support (tied or chimeric) UMI.
+
+For the non-EM strategies, counting the ``assigned`` rows of each (cell, feature) reproduces ``quants_mat.mtx`` exactly. Cells resolved by the tiny-cell fast path (see ``--small-thresh``) are recorded with that path's ``cr-like`` semantics, just as they are counted. Rows of a cell are contiguous, but cells appear in no particular order.
 
 .. _alevin: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1670-y
 
