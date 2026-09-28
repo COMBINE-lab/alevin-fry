@@ -25,7 +25,8 @@ use smallvec::smallvec;
 
 /// Number of reference targets in test data
 const NUM_REFS: u64 = 10;
-const TEST_VERSION: &str = "0.12.0";
+// The real version: quant rejects multi-sample collations written before 0.15.0.
+const TEST_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Sample barcode length (bases)
 const SAMPLE_BC_LEN: u16 = 8;
 /// Cell barcode length (bases)

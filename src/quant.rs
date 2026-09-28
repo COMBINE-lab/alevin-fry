@@ -387,6 +387,43 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     }
 }
 
+/// First release whose multi-barcode collation stores the manifest ordinal of
+/// each record's sample in `barcodes[0]`; earlier releases stored the sparse
+/// plate index, which quant would map to the wrong sample name (see
+/// COMBINE-lab/simpleaf#195).
+const FIRST_ORDINAL_SAMPLE_COLLATE: (u64, u64, u64) = (0, 15, 0);
+
+/// Refuse a multi-barcode collation written before sample indices became
+/// manifest ordinals. A collation without a readable version is accepted.
+fn ensure_ordinal_sample_indices(collate_json: &std::path::Path) -> anyhow::Result<()> {
+    let Ok(file) = File::open(collate_json) else {
+        return Ok(());
+    };
+    let md: serde_json::Value =
+        serde_json::from_reader(BufReader::new(file)).context("could not parse collate.json")?;
+    let Some(version) = md.get("version_str").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Some(parsed) = parse_release_version(version) else {
+        return Ok(());
+    };
+    let (a, b, c) = FIRST_ORDINAL_SAMPLE_COLLATE;
+    anyhow::ensure!(
+        parsed >= FIRST_ORDINAL_SAMPLE_COLLATE,
+        "this multi-sample collation was written by alevin-fry {version}, which recorded plate positions rather than sample ordinals, so cells would be assigned to the wrong samples; re-run `alevin-fry collate` with alevin-fry {a}.{b}.{c} or later"
+    );
+    Ok(())
+}
+
+/// Parse the leading `major.minor.patch` of a version string.
+fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
 struct WorkerConfig {
     resolution: ResolutionStrategy,
     usa_mode: bool,
@@ -1218,8 +1255,25 @@ where
             // lock. Only row allocation and paired appends must be serialized.
             let bc_bytes = bitmer_to_bytes((bc.into(), config.barcode_len as u8));
             let bc_str = unsafe { std::str::from_utf8_unchecked(&bc_bytes) };
-            let sample_name = sample_idx_from_rec
-                .and_then(|si| shared.sample_names.as_ref()?.get(si).map(|s| s.as_str()));
+            // Every multi-sample record must name a sample in the manifest; an
+            // index outside it would otherwise drop the sample_name field and
+            // misalign this featureDump.txt row.
+            let sample_name = match (sample_idx_from_rec, shared.sample_names.as_ref()) {
+                (Some(si), Some(names)) => match names.get(si) {
+                    Some(name) => Some(name.as_str()),
+                    None => {
+                        output_error = Some(anyhow::anyhow!(
+                            "cell {} has sample index {}, but collation_manifest.bin names only {} samples; re-run `alevin-fry collate` on this input",
+                            bc_str,
+                            si,
+                            names.len()
+                        ));
+                        shared.output_failed.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                },
+                _ => None,
+            };
             barcode_buf.clear();
             feature_buf.clear();
             if let Some(sn) = sample_name {
@@ -1627,6 +1681,7 @@ where
     // The collation stores the integer sample index in barcodes[0] of each record,
     // so quant reads it directly and indexes into this Vec — no HashMap needed.
     let sample_names = if manifest_path.exists() {
+        ensure_ordinal_sample_indices(&parent.join("collate.json"))?;
         let manifest = CollationManifest::read_from_file(&manifest_path)?;
         let names: Vec<String> = manifest
             .sample_groups
@@ -2437,4 +2492,40 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
 pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
+}
+
+#[cfg(test)]
+mod collate_version_tests {
+    use super::{ensure_ordinal_sample_indices, parse_release_version};
+
+    #[test]
+    fn parses_release_versions() {
+        assert_eq!(parse_release_version("0.15.0"), Some((0, 15, 0)));
+        assert_eq!(parse_release_version("0.18.3-dev"), Some((0, 18, 3)));
+        assert_eq!(parse_release_version("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_release_version("0.15"), None);
+    }
+
+    #[test]
+    fn rejects_collations_that_stored_plate_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collate.json");
+        for (version, ok) in [
+            ("0.11.2", false),
+            ("0.14.9", false),
+            ("0.15.0", true),
+            ("0.18.3", true),
+        ] {
+            std::fs::write(&path, format!(r#"{{"version_str": "{version}"}}"#)).unwrap();
+            assert_eq!(
+                ensure_ordinal_sample_indices(&path).is_ok(),
+                ok,
+                "{version}"
+            );
+        }
+        // no collate.json, or no version: accepted
+        std::fs::write(&path, "{}").unwrap();
+        assert!(ensure_ordinal_sample_indices(&path).is_ok());
+        assert!(ensure_ordinal_sample_indices(&dir.path().join("missing.json")).is_ok());
+    }
 }

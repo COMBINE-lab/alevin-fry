@@ -56,6 +56,14 @@ routing.  ``--sample-bc-correction exact|unique|frequency`` selects its policy,
 defaults to Exact.  ``--sample-correction-mode exact|1-edit`` remains as a
 deprecated compatibility alias.
 
+The sample-barcode list may have one column (each barcode is its own sample),
+two (``barcode<TAB>name``), or three (``barcode<TAB>canonical_barcode<TAB>name``,
+the 10x Flex format grouping each sample's barcode variants).  Samples are named
+by the list's name column, or by their barcode when it has none.
+``--sample-names`` takes a ``barcode<TAB>name`` file whose names replace those:
+each line may use any barcode of a sample from the list, barcodes of the same
+sample must agree on its name, and no two samples may share a name.
+
 Sample Frequency can defer structurally ambiguous ``(sample, cell)`` pairs.
 ``--memory-limit`` sets the total bounded buffer budget (512 MiB by default),
 and ``--tmp-dir`` chooses where compressed temporary runs are written.
