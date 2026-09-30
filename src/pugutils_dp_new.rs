@@ -83,6 +83,7 @@ use petgraph::visit::NodeIndexable;
 use slog::{crit, warn};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
+use crate::umi_general_distance::umi_edit_distance_from_packed_shifted;
 
 use crate::eq_class::{EqMap, EqMapType};
 use crate::pugutils::{
@@ -91,6 +92,29 @@ use crate::pugutils::{
     PugResolutionStatistics,
 };
 use crate::utils::EqClassPayload;
+
+use petgraph::unionfind::UnionFind;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use crate::quant::EMMode;
+
+static ORACLE_CELLS: AtomicU64 = AtomicU64::new(0);
+static ORACLE_VERTICES: AtomicU64 = AtomicU64::new(0);
+static ORACLE_VNODES: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOLECULES: AtomicU64 = AtomicU64::new(0);
+static ORACLE_READS: AtomicU64 = AtomicU64::new(0);
+static ORACLE_CASE1_NODES: AtomicU64 = AtomicU64::new(0);
+static ORACLE_CASE2_GROUPS: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOL_CASE1: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOL_CASE2: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOL_BOTH: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOL_EITHER: AtomicU64 = AtomicU64::new(0);
+static ORACLE_MOL_NEITHER: AtomicU64 = AtomicU64::new(0);
+static ORACLE_NODES_CASE1: AtomicU64 = AtomicU64::new(0);
+static ORACLE_NODES_CASE2: AtomicU64 = AtomicU64::new(0);
+static ORACLE_NODES_BOTH: AtomicU64 = AtomicU64::new(0);
+static ORACLE_NODES_EITHER: AtomicU64 = AtomicU64::new(0);
 
 // ─────────────────────────────────────────────────────────────────────────
 // CHANGE 2 — Updated diagnostics
@@ -763,6 +787,1284 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
     if do_diag {//&& (diag.singleton_comps + diag.multi_vertex_comps) < 5000 {
         diag.report(cfg);
     }
+
+    pug_stats
+}
+
+
+
+
+
+pub fn get_num_molecules_true_umi_oracle<P: EqClassPayload>(
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    tid_to_gid: &[u32],
+    true_umi_table: &Vec<Vec<Vec<Vec<u8>>>>, // [eq_id][umi_idx] -> distinct true UMIs, sorted by frequency desc
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    log: &slog::Logger,
+) -> PugResolutionStatistics {
+    let gene_level_eq_map = match eqmap.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
+    };
+
+    let comps = weakly_connected_components(g);
+
+    let mut pug_stats = PugResolutionStatistics {
+        used_alternative_strategy: false,
+        total_mccs: 0u64,
+        ambiguous_mccs: 0u64,
+        trivial_mccs: 0u64,
+    };
+
+    // ── helper: transcript intersection across a set of vertices (global ids) ──
+    let intersect_txps = |verts: &[u32]| -> Option<Vec<u32>> {
+        let mut acc: Option<HashSet<u32>> = None;
+        for v in verts.iter() {
+            let (eq_id, _umi_idx) = g.from_index(*v as usize);
+            let label: HashSet<u32> = eqmap.refs_for_eqc(eq_id).iter().cloned().collect();
+            acc = Some(match acc {
+                None => label,
+                Some(mut a) => {
+                    a.retain(|t| label.contains(t));
+                    a
+                }
+            });
+        }
+        match acc {
+            Some(s) if !s.is_empty() => {
+                let mut v: Vec<u32> = s.into_iter().collect();
+                v.sort_unstable();
+                Some(v)
+            }
+            _ => None,
+        }
+    };
+
+    // ── helper: best-covering-transcript fallback (never returns None) ──
+    let best_covering_txps = |verts: &[u32]| -> Vec<u32> {
+        let mut support: HashMap<u32, u32> = HashMap::new();
+        for v in verts.iter() {
+            let (eq_id, _umi_idx) = g.from_index(*v as usize);
+            for t in eqmap.refs_for_eqc(eq_id).iter() {
+                *support.entry(*t).or_insert(0) += 1;
+            }
+        }
+        let max_support = support.values().max().cloned().unwrap_or(0);
+        let mut txps: Vec<u32> = support
+            .into_iter()
+            .filter(|(_, c)| *c == max_support)
+            .map(|(t, _)| t)
+            .collect();
+        txps.sort_unstable();
+        txps
+    };
+
+    // ── helper: emit one molecule ──
+    let mut emit = |verts_len: usize, global_txps: Vec<u32>, pug_stats: &mut PugResolutionStatistics| {
+        let mut global_genes: Vec<u32> = if gene_level_eq_map {
+            global_txps.clone()
+        } else {
+            let mut gs: Vec<u32> = global_txps.iter().map(|t| tid_to_gid[*t as usize]).collect();
+            gs.sort_unstable();
+            gs.dedup();
+            gs
+        };
+        global_genes.sort_unstable();
+
+        pug_stats.total_mccs += 1;
+        if global_genes.len() > 1 {
+            pug_stats.ambiguous_mccs += 1;
+        }
+        if verts_len == 1 {
+            pug_stats.trivial_mccs += 1;
+        }
+
+        let eq_label_len = global_genes.len();
+        let payload = gene_eqclass_hash
+            .entry(global_genes)
+            .or_insert(P::new(eq_label_len));
+        payload.inc();
+
+        if P::HAS_PROBS {
+            let n_t = global_txps.len();
+            let prob = if n_t == 1 { vec![1.0] } else { vec![1.0 / n_t as f64; n_t] };
+            payload.add_probs(&prob);
+        }
+    };
+
+    for (_comp_label, comp_verts) in comps.iter() {
+        let n = comp_verts.len();
+        let mut uf = UnionFind::new(n);
+
+        let mut local_idx: HashMap<u32, usize> = HashMap::with_capacity(n);
+        for (i, v) in comp_verts.iter().enumerate() {
+            local_idx.insert(*v, i);
+        }
+
+        // per-node candidate UMI lists (already sorted by frequency desc)
+        let node_candidates: Vec<&Vec<Vec<u8>>> = comp_verts
+            .iter()
+            .map(|v| {
+                let (eq_id, umi_idx) = g.from_index(*v as usize);
+                &true_umi_table[eq_id as usize][umi_idx as usize]
+            })
+            .collect();
+
+        // ── pass 1: union using each node's TOP candidate only ──
+        for (i, v) in comp_verts.iter().enumerate() {
+            for nv in g.neighbors_directed(g.from_index(*v as usize), Outgoing) {
+                let n_idx = g.to_index(nv) as u32;
+                if let Some(&j) = local_idx.get(&n_idx) {
+                    match (node_candidates[i].first(), node_candidates[j].first()) {
+                        (Some(a), Some(b)) if a == b => {
+                            uf.union(i, j);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            let root = uf.find(i);
+            groups.entry(root).or_default().push(i);
+        }
+
+        for (_root, group_local) in groups.iter() {
+            let group_verts: Vec<u32> = group_local.iter().map(|&i| comp_verts[i]).collect();
+
+            if let Some(txps) = intersect_txps(&group_verts) {
+                emit(group_verts.len(), txps, &mut pug_stats);
+                continue;
+            }
+
+            // ── repair attempt: try swapping one ambiguous node at a time
+            // to its second-choice UMI, re-cluster, and check if ALL
+            // resulting sub-groups get a valid intersection ──
+            let ambiguous: Vec<usize> = group_local
+                .iter()
+                .cloned()
+                .filter(|&i| node_candidates[i].len() > 1)
+                .collect();
+
+            let mut repaired = false;
+
+            for &amb in &ambiguous {
+                // assign top candidate to everyone except `amb`, which gets its 2nd choice
+                let assigned: HashMap<usize, &Vec<u8>> = group_local
+                    .iter()
+                    .filter_map(|&i| {
+                        let cand = if i == amb {
+                            node_candidates[i].get(1)
+                        } else {
+                            node_candidates[i].first()
+                        };
+                        cand.map(|c| (i, c))
+                    })
+                    .collect();
+
+                // re-cluster this group only, using the new assignment
+                let mut sub_uf = UnionFind::new(n);
+                let group_set: HashSet<usize> = group_local.iter().cloned().collect();
+                for &i in group_local.iter() {
+                    let v = comp_verts[i];
+                    for nv in g.neighbors_directed(g.from_index(v as usize), Outgoing) {
+                        let n_idx = g.to_index(nv) as u32;
+                        if let Some(&j) = local_idx.get(&n_idx) {
+                            if !group_set.contains(&j) {
+                                continue;
+                            }
+                            if let (Some(a), Some(b)) = (assigned.get(&i), assigned.get(&j)) {
+                                if a == b {
+                                    sub_uf.union(i, j);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut subgroups: HashMap<usize, Vec<u32>> = HashMap::new();
+                for &i in group_local.iter() {
+                    let root = sub_uf.find(i);
+                    subgroups.entry(root).or_default().push(comp_verts[i]);
+                }
+
+                // check: do ALL resulting sub-groups have a valid intersection?
+                let mut all_txps: Vec<(usize, Vec<u32>)> = Vec::new();
+                let mut all_valid = true;
+                for (root, sverts) in subgroups.iter() {
+                    match intersect_txps(sverts) {
+                        Some(t) => all_txps.push((*root, t)),
+                        None => {
+                            all_valid = false;
+                            break;
+                        }
+                    }
+                }
+
+                if all_valid {
+                    for (root, txps) in all_txps {
+                        let sverts_len = subgroups[&root].len();
+                        emit(sverts_len, txps, &mut pug_stats);
+                    }
+                    repaired = true;
+                    break; // greedy: accept first swap that fully resolves the group
+                }
+            }
+
+            if !repaired {
+                // safety net: never silently drop a molecule. Fall back to
+                // best-covering-transcript for the ORIGINAL (unsplit) group.
+                warn!(
+                    log,
+                    "true-UMI group ({} vertices) could not be resolved by intersection or single-node repair; using best-covering-transcript fallback",
+                    group_verts.len()
+                );
+                let txps = best_covering_txps(&group_verts);
+                emit(group_verts.len(), txps, &mut pug_stats);
+            }
+        }
+    }
+
+    pug_stats
+}
+
+
+
+
+
+
+//#==============================
+//pub fn get_num_molecules_true_umi_oracle_virtual_node<P: EqClassPayload>(
+//    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+//    eqmap: &EqMap,
+//    tid_to_gid: &[u32],
+//    read_to_true_umi: &HashMap<String, Vec<u8>>, // read_name -> true UMI bytes
+//    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+//    _log: &slog::Logger,
+//) -> PugResolutionStatistics {
+//    let gene_level_eq_map = match eqmap.map_type {
+//        EqMapType::GeneLevel => true,
+//        EqMapType::TranscriptLevel => false,
+//    };
+//
+//    let comps = weakly_connected_components(g);
+//
+//    let mut pug_stats = PugResolutionStatistics {
+//        used_alternative_strategy: false,
+//        total_mccs: 0u64,
+//        ambiguous_mccs: 0u64,
+//        trivial_mccs: 0u64,
+//    };
+//
+//    let mut emit = |num_reads: usize, global_txps: Vec<u32>, pug_stats: &mut PugResolutionStatistics| {
+//        let mut global_genes: Vec<u32> = if gene_level_eq_map {
+//            global_txps.clone()
+//        } else {
+//            let mut gs: Vec<u32> = global_txps.iter().map(|t| tid_to_gid[*t as usize]).collect();
+//            gs.sort_unstable();
+//            gs.dedup();
+//            gs
+//        };
+//        global_genes.sort_unstable();
+//
+//        pug_stats.total_mccs += 1;
+//        if global_genes.len() > 1 {
+//            pug_stats.ambiguous_mccs += 1;
+//        }
+//        if num_reads == 1 {
+//            pug_stats.trivial_mccs += 1;
+//        }
+//
+//        let eq_label_len = global_genes.len();
+//        let payload = gene_eqclass_hash
+//            .entry(global_genes)
+//            .or_insert(P::new(eq_label_len));
+//        payload.inc();
+//
+//        if P::HAS_PROBS {
+//            let n_t = global_txps.len();
+//            let prob = if n_t == 1 { vec![1.0] } else { vec![1.0 / n_t as f64; n_t] };
+//            payload.add_probs(&prob);
+//        }
+//    };
+//
+//    for (_comp_label, comp_verts) in comps.iter() {
+//        let n = comp_verts.len();
+//
+//        let mut local_idx: HashMap<u32, usize> = HashMap::with_capacity(n);
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            local_idx.insert(*v, i);
+//        }
+//
+//        // ── split each vertex into virtual per-true-UMI entries, weighted
+//        // by actual read count. A node with 7 reads of UMI A and 3 of UMI B
+//        // becomes two entries, so read-level UMI identity is always exact
+//        // -- no top-choice guessing, no repair swaps needed. ──
+//        struct VNode {
+//            eq_id: u32,
+//            umi: Option<Vec<u8>>,
+//            count: u32,
+//        }
+//        let mut vnodes: Vec<VNode> = Vec::new();
+//        let mut vnodes_by_vertex: Vec<Vec<usize>> = vec![Vec::new(); n];
+//
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            let (eq_id, umi_idx) = g.from_index(*v as usize);
+//            let qnames: &[String] = eqmap.eqc_info[eq_id as usize]
+//                .qnames
+//                .get(umi_idx as usize)
+//                .map(|x| x.as_slice())
+//                .unwrap_or(&[]);
+//
+//            let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
+//            let mut unmatched = 0u32;
+//            for qn in qnames {
+//                match read_to_true_umi.get(qn) {
+//                    Some(tu) => {
+//                        *counts.entry(tu.clone()).or_insert(0) += 1;
+//                    }
+//                    None => unmatched += 1,
+//                }
+//            }
+//
+//            for (umi, count) in counts {
+//                vnodes_by_vertex[i].push(vnodes.len());
+//                vnodes.push(VNode { eq_id, umi: Some(umi), count });
+//            }
+//            if unmatched > 0 || vnodes_by_vertex[i].is_empty() {
+//                // reads with no ground truth still get emitted, just never
+//                // merged with anything via UMI equality.
+//                vnodes_by_vertex[i].push(vnodes.len());
+//                vnodes.push(VNode { eq_id, umi: None, count: unmatched.max(1) });
+//            }
+//        }
+//
+//        let num_v = vnodes.len();
+//        let mut uf = UnionFind::new(num_v);
+//
+//        // union two virtual entries iff their parent vertices are edge-
+//        // connected in g AND their true UMIs are equal. This is the ONLY
+//        // criterion for grouping -- transcript compatibility plays no part
+//        // in deciding molecule membership, since true UMI is ground truth.
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            for nv in g.neighbors_directed(g.from_index(*v as usize), Outgoing) {
+//                let n_idx = g.to_index(nv) as u32;
+//                if let Some(&j) = local_idx.get(&n_idx) {
+//                    for &vi in &vnodes_by_vertex[i] {
+//                        for &vj in &vnodes_by_vertex[j] {
+//                            if let (Some(a), Some(b)) = (&vnodes[vi].umi, &vnodes[vj].umi) {
+//                                if a == b {
+//                                    uf.union(vi, vj);
+//                                }
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//
+//        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+//        for vi in 0..num_v {
+//            let root = uf.find(vi);
+//            groups.entry(root).or_default().push(vi);
+//        }
+//
+//        // ── one molecule per true-UMI group, ALWAYS -- never split by
+//        // transcript. Gene assignment uses best-covering-transcript
+//        // (majority vote across the group's reads, weighted by count),
+//        // with ties kept as gene-ambiguous. ──
+//        for (_root, members) in groups.iter() {
+//            let num_reads: usize = members.iter().map(|&vi| vnodes[vi].count as usize).sum();
+//
+//            let mut support: HashMap<u32, u32> = HashMap::new();
+//            for &vi in members.iter() {
+//                let weight = vnodes[vi].count;
+//                for t in eqmap.refs_for_eqc(vnodes[vi].eq_id).iter() {
+//                    *support.entry(*t).or_insert(0) += weight;
+//                }
+//            }
+//            let max_support = support.values().max().cloned().unwrap_or(0);
+//            let mut global_txps: Vec<u32> = support
+//                .into_iter()
+//                .filter(|(_, c)| *c == max_support)
+//                .map(|(t, _)| t)
+//                .collect();
+//            global_txps.sort_unstable();
+//
+//            emit(num_reads, global_txps, &mut pug_stats);
+//        }
+//    }
+//
+//    pug_stats
+//}
+
+//fn extract_blaze_umi(qname: &str) -> Option<&[u8]> {
+//    let (_, after_barcode) = qname.split_once('_')?;
+//    let (umi, _) = after_barcode.split_once('#')?;
+//
+//    if umi.is_empty() {
+//        None
+//    } else {
+//        Some(umi.as_bytes())
+//    }
+//}
+//
+//fn pack_umi(umi: &[u8]) -> Option<u64> {
+//    if umi.len() > 32 {
+//        return None;
+//    }
+//
+//    let mut packed = 0u64;
+//
+//    for &base in umi {
+//        let bits = match base.to_ascii_uppercase() {
+//            b'A' => 0u64,
+//            b'C' => 1u64,
+//            b'G' => 2u64,
+//            b'T' => 3u64,
+//            _ => return None,
+//        };
+//
+//        packed = (packed << 2) | bits;
+//    }
+//
+//    Some(packed)
+//}
+//
+//fn true_umi_diag_enabled() -> bool {
+//    std::env::var("TRUE_UMI_DIAG").map(|v| v == "1").unwrap_or(false)
+//}
+//
+//pub fn get_num_molecules_true_umi_oracle_virtual_node<P: EqClassPayload>(
+//    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+//    eqmap: &EqMap,
+//    tid_to_gid: &[u32],
+//    ref_names: &[String],
+//    read_to_true_umi: &HashMap<String, Vec<u8>>,
+//    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+//    log: &slog::Logger,
+//) -> PugResolutionStatistics {
+//    let gene_level_eq_map = match eqmap.map_type {
+//        EqMapType::GeneLevel => true,
+//        EqMapType::TranscriptLevel => false,
+//    };
+//
+//    let do_diag = true_umi_diag_enabled();
+//    let comps = weakly_connected_components(g);
+//
+//    let mut pug_stats = PugResolutionStatistics {
+//        used_alternative_strategy: false,
+//        total_mccs: 0u64,
+//        ambiguous_mccs: 0u64,
+//        trivial_mccs: 0u64,
+//    };
+//
+//    let mut emit = |num_reads: usize, global_txps: Vec<u32>, pug_stats: &mut PugResolutionStatistics| {
+//        let mut global_genes: Vec<u32> = if gene_level_eq_map {
+//            global_txps.clone()
+//        } else {
+//            let mut gs: Vec<u32> = global_txps.iter().map(|t| tid_to_gid[*t as usize]).collect();
+//            gs.sort_unstable();
+//            gs.dedup();
+//            gs
+//        };
+//        global_genes.sort_unstable();
+//
+//        pug_stats.total_mccs += 1;
+//        if global_genes.len() > 1 {
+//            pug_stats.ambiguous_mccs += 1;
+//        }
+//        if num_reads == 1 {
+//            pug_stats.trivial_mccs += 1;
+//        }
+//
+//        let eq_label_len = global_genes.len();
+//        let payload = gene_eqclass_hash
+//            .entry(global_genes)
+//            .or_insert(P::new(eq_label_len));
+//        payload.inc();
+//
+//        if P::HAS_PROBS {
+//            let n_t = global_txps.len();
+//            let prob = if n_t == 1 { vec![1.0] } else { vec![1.0 / n_t as f64; n_t] };
+//            payload.add_probs(&prob);
+//        }
+//    };
+//
+//    for (_comp_label, comp_verts) in comps.iter() {
+//        let n = comp_verts.len();
+//
+//        let mut local_idx: HashMap<u32, usize> = HashMap::with_capacity(n);
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            local_idx.insert(*v, i);
+//        }
+//
+//        // VNode now also carries the read names backing it, so diagnostics
+//        // can print exactly which reads landed where.
+//        struct VNode {
+//            eq_id: u32,
+//            umi_idx: u32,
+//            umi: Option<Vec<u8>>,
+//            count: u32,
+//            qnames: Vec<String>,
+//        }
+//        let mut vnodes: Vec<VNode> = Vec::new();
+//        let mut vnodes_by_vertex: Vec<Vec<usize>> = vec![Vec::new(); n];
+//
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            let (eq_id, umi_idx) = g.from_index(*v as usize);
+//            let qnames: &[String] = eqmap.eqc_info[eq_id as usize]
+//                .qnames
+//                .get(umi_idx as usize)
+//                .map(|x| x.as_slice())
+//                .unwrap_or(&[]);
+//
+//            let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
+//            let mut qnames_by_umi: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
+//            let mut unmatched_qnames: Vec<String> = Vec::new();
+//
+//            for qn in qnames {
+//                match read_to_true_umi.get(qn) {
+//                    Some(tu) => {
+//                        *counts.entry(tu.clone()).or_insert(0) += 1;
+//                        qnames_by_umi.entry(tu.clone()).or_default().push(qn.clone());
+//                    }
+//                    None => unmatched_qnames.push(qn.clone()),
+//                }
+//            }
+//
+//            for (umi, count) in counts.iter() {
+//                vnodes_by_vertex[i].push(vnodes.len());
+//                vnodes.push(VNode {
+//                    eq_id,
+//                    umi_idx,
+//                    umi: Some(umi.clone()),
+//                    count: *count,
+//                    qnames: qnames_by_umi.get(umi).cloned().unwrap_or_default(),
+//                });
+//            }
+//            if !unmatched_qnames.is_empty() || vnodes_by_vertex[i].is_empty() {
+//                let cnt = unmatched_qnames.len().max(1) as u32;
+//                vnodes_by_vertex[i].push(vnodes.len());
+//                vnodes.push(VNode {
+//                    eq_id,
+//                    umi_idx,
+//                    umi: None,
+//                    count: cnt,
+//                    qnames: unmatched_qnames,
+//                });
+//            }
+//
+//            // ── CASE 1 DIAGNOSTIC: this vertex/node had >1 distinct true UMI ──
+//            if do_diag && vnodes_by_vertex[i].len() > 1 {
+//                eprintln!(
+//                    "[CASE1] impure node: eq_id={} umi_idx={} split into {} distinct true UMIs",
+//                    eq_id, umi_idx, vnodes_by_vertex[i].len()
+//                );
+//
+//                for &vidx in &vnodes_by_vertex[i] {
+//                    let vn = &vnodes[vidx];
+//
+//                    // Use only the first read associated with this true UMI.
+//                    let first_read = vn.qnames.first();
+//
+//                    let blaze_umi = first_read
+//                        .and_then(|qname| extract_blaze_umi(qname));
+//
+//                    let true_umi = vn.umi.as_deref();
+//
+//                    let edit_distance: Option<usize> = true_umi
+//                        .zip(blaze_umi)
+//                        .and_then(|(true_umi, blaze_umi)| {
+//                            if true_umi.len() != blaze_umi.len() {
+//                                return None;
+//                            }
+//                        
+//                            let true_umi_packed = pack_umi(true_umi)?;
+//                            let blaze_umi_packed = pack_umi(blaze_umi)?;
+//                            let umi_len = u8::try_from(true_umi.len()).ok()?;
+//                        
+//                            Some(umi_edit_distance_from_packed_shifted(
+//                                blaze_umi_packed,
+//                                true_umi_packed,
+//                                umi_len,
+//                            ))
+//                        });
+//                    
+//                    let true_umi_str = true_umi
+//                        .map(|u| String::from_utf8_lossy(u).into_owned())
+//                        .unwrap_or_else(|| "<no ground truth>".to_string());
+//                    
+//                    let blaze_umi_str = blaze_umi
+//                        .map(|u| String::from_utf8_lossy(u).into_owned())
+//                        .unwrap_or_else(|| "<could not parse>".to_string());
+//                    
+//                    let edit_distance_str = edit_distance
+//                        .map(|d| d.to_string())
+//                        .unwrap_or_else(|| "NA".to_string());
+//                    
+//                    eprintln!(
+//                        "  [CASE1] true_umi={} blaze_umi={} edit_distance={} \
+//                         count={} reads={:?}",
+//                        true_umi_str,
+//                        blaze_umi_str,
+//                        edit_distance_str,
+//                        vn.count,
+//                        vn.qnames
+//                    );
+//                }
+//            }
+//        }
+//
+//        let num_v = vnodes.len();
+//        let mut uf = UnionFind::new(num_v);
+//
+//        for (i, v) in comp_verts.iter().enumerate() {
+//            for nv in g.neighbors_directed(g.from_index(*v as usize), Outgoing) {
+//                let n_idx = g.to_index(nv) as u32;
+//                if let Some(&j) = local_idx.get(&n_idx) {
+//                    for &vi in &vnodes_by_vertex[i] {
+//                        for &vj in &vnodes_by_vertex[j] {
+//                            if let (Some(a), Some(b)) = (&vnodes[vi].umi, &vnodes[vj].umi) {
+//                                if a == b {
+//                                    uf.union(vi, vj);
+//                                }
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//
+//        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+//        for vi in 0..num_v {
+//            let root = uf.find(vi);
+//            groups.entry(root).or_default().push(vi);
+//        }
+//
+//        for (_root, members) in groups.iter() {
+//            let num_reads: usize = members.iter().map(|&vi| vnodes[vi].count as usize).sum();
+//
+//            // ── CASE 2 DIAGNOSTIC: same-true-UMI group with no common transcript ──
+//            if do_diag && members.len() > 1 {
+//                let mut acc: Option<HashSet<u32>> = None;
+//                for &vi in members.iter() {
+//                    let label: HashSet<u32> = eqmap.refs_for_eqc(vnodes[vi].eq_id).iter().cloned().collect();
+//                    acc = Some(match acc {
+//                        None => label,
+//                        Some(mut a) => { a.retain(|t| label.contains(t)); a }
+//                    });
+//                }
+//                let empty_intersection = acc.map(|s| s.is_empty()).unwrap_or(true);
+//                if empty_intersection {
+//                    let umi_str = members.first()
+//                        .and_then(|&vi| vnodes[vi].umi.as_ref())
+//                        .map(|u| String::from_utf8_lossy(u).to_string())
+//                        .unwrap_or_else(|| "<mixed/none>".to_string());
+//                    eprintln!(
+//                        "[CASE2] true-UMI group ({} vertices, true_umi={}) has NO common transcript",
+//                        members.len(), umi_str
+//                    );
+//                    for &vi in members.iter() {
+//                        let vn = &vnodes[vi];
+//                        let labels = eqmap.refs_for_eqc(vn.eq_id);
+//
+//                        let transcript_names: Vec<&str> = labels
+//                            .iter()
+//                            .map(|&tid| {
+//                                ref_names
+//                                    .get(tid as usize)
+//                                    .map(String::as_str)
+//                                    .unwrap_or("<invalid transcript ID>")
+//                            })
+//                            .collect();
+//
+//                        eprintln!(
+//                            "  [CASE2]   eq_id={} umi_idx={} count={} labels={:?} transcript_names={:?} reads={:?}",
+//                            vn.eq_id, vn.umi_idx, vn.count, labels, transcript_names, vn.qnames
+//                        );
+//                    }
+//                }
+//            }
+//
+//            let mut support: HashMap<u32, u32> = HashMap::new();
+//            for &vi in members.iter() {
+//                let weight = vnodes[vi].count;
+//                for t in eqmap.refs_for_eqc(vnodes[vi].eq_id).iter() {
+//                    *support.entry(*t).or_insert(0) += weight;
+//                }
+//            }
+//            let max_support = support.values().max().cloned().unwrap_or(0);
+//            let mut global_txps: Vec<u32> = support
+//                .into_iter()
+//                .filter(|(_, c)| *c == max_support)
+//                .map(|(t, _)| t)
+//                .collect();
+//            global_txps.sort_unstable();
+//
+//            emit(num_reads, global_txps, &mut pug_stats);
+//        }
+//    }
+//
+//    pug_stats
+//}
+
+
+
+
+
+/// Print the run-wide oracle totals. Call once from do_quantify after all
+/// worker threads have joined.
+pub fn report_true_umi_oracle_totals() {
+    let l = |c: &AtomicU64| c.load(AtomicOrdering::Relaxed);
+    eprintln!("=== TRUE_UMI_ORACLE totals ===");
+    eprintln!("  barcodes processed  = {}", l(&ORACLE_CELLS));
+    eprintln!("  graph vertices      = {}", l(&ORACLE_VERTICES));
+    eprintln!("  virtual sub-nodes   = {}", l(&ORACLE_VNODES));
+    eprintln!("  molecules emitted   = {}", l(&ORACLE_MOLECULES));
+    eprintln!("  reads in molecules  = {}", l(&ORACLE_READS));
+    eprintln!("  CASE1 impure nodes  = {}", l(&ORACLE_CASE1_NODES));
+    eprintln!("  CASE2 groups        = {}", l(&ORACLE_CASE2_GROUPS));
+    eprintln!("  molecules w/ case1  = {}", l(&ORACLE_MOL_CASE1));
+    eprintln!("  molecules w/ case2  = {}", l(&ORACLE_MOL_CASE2));
+    eprintln!("  molecules w/ both   = {}", l(&ORACLE_MOL_BOTH));
+    eprintln!("  molecules w/ either = {}", l(&ORACLE_MOL_EITHER));
+    eprintln!("  molecules w/ neither= {}", l(&ORACLE_MOL_NEITHER));
+    eprintln!("  nodes in case1 mols = {}", l(&ORACLE_NODES_CASE1));
+    eprintln!("  nodes in case2 mols = {}", l(&ORACLE_NODES_CASE2));
+    eprintln!("  nodes in both mols  = {}", l(&ORACLE_NODES_BOTH));
+    eprintln!("  nodes in either mols= {}", l(&ORACLE_NODES_EITHER));
+    eprintln!("==============================");
+}
+
+fn extract_blaze_umi(qname: &str) -> Option<&[u8]> {
+    let (_, after_barcode) = qname.split_once('_')?;
+    let (umi, _) = after_barcode.split_once('#')?;
+    if umi.is_empty() {
+        None
+    } else {
+        Some(umi.as_bytes())
+    }
+}
+
+fn pack_umi(umi: &[u8]) -> Option<u64> {
+    if umi.len() > 32 {
+        return None;
+    }
+    let mut packed = 0u64;
+    for &base in umi {
+        let bits = match base.to_ascii_uppercase() {
+            b'A' => 0u64,
+            b'C' => 1u64,
+            b'G' => 2u64,
+            b'T' => 3u64,
+            _ => return None,
+        };
+        packed = (packed << 2) | bits;
+    }
+    Some(packed)
+}
+
+fn true_umi_diag_enabled() -> bool {
+    std::env::var("TRUE_UMI_DIAG").map(|v| v == "1").unwrap_or(false)
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// DirectCollapse oracle (virtual nodes).
+//
+// Each graph vertex is split into one virtual sub-node per distinct true UMI
+// among its reads, so read-level UMI identity is exact — no top-choice
+// guessing. Grouping is decided ONLY by true-UMI equality along existing
+// graph edges; transcript compatibility plays no part in membership.
+//
+// Transcript set per molecule:
+//   non-CASE2 → every transcript common to all members (the intersection)
+//   CASE2     → the full union of every member's labels
+//
+// If ground-truth transcripts are supplied, the highest-read-count true
+// transcript replaces the set entirely (probability 1.0). Otherwise the
+// probability vector follows prob_model.
+// ─────────────────────────────────────────────────────────────────────────
+
+pub fn get_num_molecules_true_umi_oracle_virtual_node<P: EqClassPayload>(
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    tid_to_gid: &[u32],
+    ref_names: &[String],
+    bc: u64,
+    read_to_true_umi: &HashMap<String, Vec<u8>>,
+    read_to_true_txp: Option<&Arc<HashMap<String, String>>>,
+    prob_model: EMMode,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    _log: &slog::Logger,
+) -> PugResolutionStatistics {
+    let gene_level_eq_map = match eqmap.map_type {
+        EqMapType::GeneLevel => true,
+        EqMapType::TranscriptLevel => false,
+    };
+
+    let do_diag = true_umi_diag_enabled();
+
+    // transcript name -> tid, only built when true transcripts are supplied
+    let txp_name_to_id: HashMap<&str, u32> = if read_to_true_txp.is_some() {
+        ref_names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.as_str(), i as u32))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let comps = weakly_connected_components(g);
+
+    let mut pug_stats = PugResolutionStatistics {
+        used_alternative_strategy: false,
+        total_mccs: 0u64,
+        ambiguous_mccs: 0u64,
+        trivial_mccs: 0u64,
+    };
+
+    // per-barcode counters
+    let mut cell_vertices = 0u64;
+    let mut cell_vnodes = 0u64;
+    let mut cell_molecules = 0u64;
+    let mut cell_reads = 0u64;
+    let mut cell_case1 = 0u64;
+    let mut cell_case2 = 0u64;
+    let mut cell_mol_case1 = 0u64;
+    let mut cell_mol_case2 = 0u64;
+    let mut cell_mol_both = 0u64;
+    let mut cell_mol_either = 0u64;
+    let mut cell_mol_neither = 0u64;
+    let mut cell_nodes_case1 = 0u64;
+    let mut cell_nodes_case2 = 0u64;
+    let mut cell_nodes_both = 0u64;
+    let mut cell_nodes_either = 0u64;
+
+    let mut emit = |num_reads: usize,
+                    global_txps: Vec<u32>,
+                    global_txp_prob: Vec<f64>,
+                    pug_stats: &mut PugResolutionStatistics| {
+        let mut global_genes: Vec<u32> = if gene_level_eq_map {
+            global_txps.clone()
+        } else {
+            let mut gs: Vec<u32> = global_txps.iter().map(|t| tid_to_gid[*t as usize]).collect();
+            gs.sort_unstable();
+            gs.dedup();
+            gs
+        };
+        global_genes.sort_unstable();
+
+        pug_stats.total_mccs += 1;
+        if global_genes.len() > 1 {
+            pug_stats.ambiguous_mccs += 1;
+        }
+        if num_reads == 1 {
+            pug_stats.trivial_mccs += 1;
+        }
+
+        let eq_label_len = global_genes.len();
+        let payload = gene_eqclass_hash
+            .entry(global_genes)
+            .or_insert(P::new(eq_label_len));
+        payload.inc();
+
+        if P::HAS_PROBS {
+            assert_eq!(global_txps.len(), global_txp_prob.len());
+            payload.add_probs(&global_txp_prob);
+        }
+    };
+
+    for (_comp_label, comp_verts) in comps.iter() {
+        let n = comp_verts.len();
+        cell_vertices += n as u64;
+
+        let mut local_idx: HashMap<u32, usize> = HashMap::with_capacity(n);
+        for (i, v) in comp_verts.iter().enumerate() {
+            local_idx.insert(*v, i);
+        }
+
+        struct VNode {
+            eq_id: u32,
+            umi_idx: u32,
+            umi: Option<Vec<u8>>,
+            count: u32,
+            qnames: Vec<String>,
+        }
+        let mut vnodes: Vec<VNode> = Vec::new();
+        let mut vnodes_by_vertex: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut vertex_is_impure: Vec<bool> = vec![false; n];
+
+        for (i, v) in comp_verts.iter().enumerate() {
+            let (eq_id, umi_idx) = g.from_index(*v as usize);
+            let qnames: &[String] = eqmap.eqc_info[eq_id as usize]
+                .qnames
+                .get(umi_idx as usize)
+                .map(|x| x.as_slice())
+                .unwrap_or(&[]);
+
+            let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
+            let mut qnames_by_umi: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
+            let mut unmatched_qnames: Vec<String> = Vec::new();
+
+            for qn in qnames {
+                match read_to_true_umi.get(qn) {
+                    Some(tu) => {
+                        *counts.entry(tu.clone()).or_insert(0) += 1;
+                        qnames_by_umi.entry(tu.clone()).or_default().push(qn.clone());
+                    }
+                    None => unmatched_qnames.push(qn.clone()),
+                }
+            }
+
+            for (umi, count) in counts.iter() {
+                vnodes_by_vertex[i].push(vnodes.len());
+                vnodes.push(VNode {
+                    eq_id,
+                    umi_idx,
+                    umi: Some(umi.clone()),
+                    count: *count,
+                    qnames: qnames_by_umi.get(umi).cloned().unwrap_or_default(),
+                });
+            }
+            if !unmatched_qnames.is_empty() || vnodes_by_vertex[i].is_empty() {
+                let cnt = unmatched_qnames.len().max(1) as u32;
+                vnodes_by_vertex[i].push(vnodes.len());
+                vnodes.push(VNode {
+                    eq_id,
+                    umi_idx,
+                    umi: None,
+                    count: cnt,
+                    qnames: unmatched_qnames,
+                });
+            }
+
+            // ── CASE 1: this vertex/node had >1 distinct true UMI ──
+            if vnodes_by_vertex[i].len() > 1 {
+                cell_case1 += 1;
+                vertex_is_impure[i] = true;
+
+                if do_diag {
+                    eprintln!(
+                        "[CASE1] bc={} impure node: eq_id={} umi_idx={} split into {} distinct true UMIs",
+                        bc, eq_id, umi_idx, vnodes_by_vertex[i].len()
+                    );
+                    for &vidx in &vnodes_by_vertex[i] {
+                        let vn = &vnodes[vidx];
+                        let first_read = vn.qnames.first();
+                        let blaze_umi = first_read.and_then(|qname| extract_blaze_umi(qname));
+                        let true_umi = vn.umi.as_deref();
+                        let edit_distance: Option<usize> =
+                            true_umi.zip(blaze_umi).and_then(|(true_umi, blaze_umi)| {
+                                if true_umi.len() != blaze_umi.len() {
+                                    return None;
+                                }
+                                let true_umi_packed = pack_umi(true_umi)?;
+                                let blaze_umi_packed = pack_umi(blaze_umi)?;
+                                let umi_len = u8::try_from(true_umi.len()).ok()?;
+                                Some(umi_edit_distance_from_packed_shifted(
+                                    blaze_umi_packed,
+                                    true_umi_packed,
+                                    umi_len,
+                                ))
+                            });
+
+                        let true_umi_str = true_umi
+                            .map(|u| String::from_utf8_lossy(u).into_owned())
+                            .unwrap_or_else(|| "<no ground truth>".to_string());
+                        let blaze_umi_str = blaze_umi
+                            .map(|u| String::from_utf8_lossy(u).into_owned())
+                            .unwrap_or_else(|| "<could not parse>".to_string());
+                        let edit_distance_str = edit_distance
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| "NA".to_string());
+
+                        eprintln!(
+                            "  [CASE1] bc={} true_umi={} blaze_umi={} edit_distance={} count={} reads={:?}",
+                            bc, true_umi_str, blaze_umi_str, edit_distance_str, vn.count, vn.qnames
+                        );
+                    }
+                }
+            }
+        }
+
+        let num_v = vnodes.len();
+        cell_vnodes += num_v as u64;
+
+        // virtual sub-node -> its parent vertex (local index)
+        let mut vnode_parent: Vec<usize> = vec![0usize; num_v];
+        for (i, vidxs) in vnodes_by_vertex.iter().enumerate() {
+            for &vidx in vidxs {
+                vnode_parent[vidx] = i;
+            }
+        }
+
+        // union two virtual entries iff their parent vertices are edge-connected
+        // in g AND their true UMIs are equal
+        let mut uf = UnionFind::new(num_v);
+        for (i, v) in comp_verts.iter().enumerate() {
+            for nv in g.neighbors_directed(g.from_index(*v as usize), Outgoing) {
+                let n_idx = g.to_index(nv) as u32;
+                if let Some(&j) = local_idx.get(&n_idx) {
+                    for &vi in &vnodes_by_vertex[i] {
+                        for &vj in &vnodes_by_vertex[j] {
+                            if let (Some(a), Some(b)) = (&vnodes[vi].umi, &vnodes[vj].umi) {
+                                if a == b {
+                                    uf.union(vi, vj);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for vi in 0..num_v {
+            let root = uf.find(vi);
+            groups.entry(root).or_default().push(vi);
+        }
+
+        for (_root, members) in groups.iter() {
+            let num_reads: usize = members.iter().map(|&vi| vnodes[vi].count as usize).sum();
+
+            // ── intersection across all members: drives resolution,
+            //    not just the diagnostic ──
+            let mut acc: Option<HashSet<u32>> = None;
+            for &vi in members.iter() {
+                let label: HashSet<u32> =
+                    eqmap.refs_for_eqc(vnodes[vi].eq_id).iter().cloned().collect();
+                acc = Some(match acc {
+                    None => label,
+                    Some(mut a) => {
+                        a.retain(|t| label.contains(t));
+                        a
+                    }
+                });
+            }
+            let mut common_txps: Vec<u32> =
+                acc.map(|s| s.into_iter().collect()).unwrap_or_default();
+            common_txps.sort_unstable();
+            let is_case2 = common_txps.is_empty();
+
+            // ── CASE 2: same-true-UMI group with no common transcript ──
+            if members.len() > 1 && is_case2 {
+                cell_case2 += 1;
+
+                if do_diag {
+                    let umi_str = members
+                        .first()
+                        .and_then(|&vi| vnodes[vi].umi.as_ref())
+                        .map(|u| String::from_utf8_lossy(u).to_string())
+                        .unwrap_or_else(|| "<mixed/none>".to_string());
+                    eprintln!(
+                        "[CASE2] bc={} true-UMI group ({} vertices, true_umi={}) has NO common transcript",
+                        bc, members.len(), umi_str
+                    );
+                    for &vi in members.iter() {
+                        let vn = &vnodes[vi];
+                        let labels = eqmap.refs_for_eqc(vn.eq_id);
+                        let transcript_names: Vec<&str> = labels
+                            .iter()
+                            .map(|&tid| {
+                                ref_names
+                                    .get(tid as usize)
+                                    .map(String::as_str)
+                                    .unwrap_or("<invalid transcript ID>")
+                            })
+                            .collect();
+                        eprintln!(
+                            "  [CASE2] bc={} eq_id={} umi_idx={} count={} labels={:?} transcript_names={:?} reads={:?}",
+                            bc, vn.eq_id, vn.umi_idx, vn.count, labels, transcript_names, vn.qnames
+                        );
+                    }
+                }
+            }
+
+            // ── transcript set ──
+            // non-CASE2: every transcript common to all members
+            // CASE2:     the full union of every member's labels
+            let mut global_txps: Vec<u32> = if !is_case2 {
+                common_txps
+            } else {
+                let mut v: Vec<u32> = members
+                    .iter()
+                    .flat_map(|&vi| eqmap.refs_for_eqc(vnodes[vi].eq_id).iter().cloned())
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            };
+
+            // ── ground-truth transcript override: highest read count wins ──
+            if let Some(lookup) = read_to_true_txp {
+                let mut txp_votes: HashMap<u32, u32> = HashMap::new();
+                for &vi in members.iter() {
+                    for qn in vnodes[vi].qnames.iter() {
+                        if let Some(name) = lookup.get(qn) {
+                            if let Some(&tid) = txp_name_to_id.get(name.as_str()) {
+                                *txp_votes.entry(tid).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+                if do_diag && txp_votes.len() > 1 {
+                    eprintln!(
+                        "[TRUE_TXP_SPLIT] bc={} {} distinct true transcripts in one true-UMI group: {:?}",
+                        bc,
+                        txp_votes.len(),
+                        txp_votes
+                            .iter()
+                            .map(|(t, c)| (
+                                ref_names.get(*t as usize).map(String::as_str).unwrap_or("?"),
+                                *c
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                // tie-break on the lowest transcript id so the result is
+                // deterministic across runs (HashMap iteration order is not)
+                if let Some((&tid, _)) = txp_votes
+                    .iter()
+                    .max_by_key(|(t, c)| (**c, std::cmp::Reverse(**t)))
+                {
+                    if do_diag && !global_txps.contains(&tid) {
+                        eprintln!(
+                            "[TRUE_TXP] bc={} molecule reassigned: set={:?} -> true={}",
+                            bc, global_txps, tid
+                        );
+                    }
+                    global_txps = vec![tid];
+                }
+            }
+
+            // ── probability vector ──
+            let global_txp_prob: Vec<f64> = if !P::HAS_PROBS {
+                Vec::new()
+            } else if global_txps.len() == 1 {
+                vec![1.0]
+            } else {
+                match prob_model {
+                    EMMode::Uniform => {
+                        vec![1.0 / global_txps.len() as f64; global_txps.len()]
+                    }
+                    EMMode::Likelihood => {
+                        // Per-transcript log-likelihood, averaged over the members
+                        // that carry that transcript. Computed directly rather than
+                        // via component_tx_log_scores, because on a CASE2 union no
+                        // transcript is present in every member. Averaging (not
+                        // summing) keeps transcripts with different member coverage
+                        // comparable -- a summed score penalises broad coverage,
+                        // since log-likelihoods are negative.
+                        let mut tx_scores: Vec<(u32, f64)> =
+                            Vec::with_capacity(global_txps.len());
+                        for &t in global_txps.iter() {
+                            let mut s = 0.0f64;
+                            let mut k = 0u32;
+                            for &vi in members.iter() {
+                                let labels = eqmap.refs_for_eqc(vnodes[vi].eq_id);
+                                if let Ok(ti) = labels.binary_search(&t) {
+                                    s += vertex_loglik_for_tx(
+                                        vnodes[vi].eq_id,
+                                        vnodes[vi].umi_idx,
+                                        ti,
+                                        eqmap,
+                                    );
+                                    k += 1;
+                                }
+                            }
+                            tx_scores.push((
+                                t,
+                                if k > 0 { s / k as f64 } else { f64::NEG_INFINITY },
+                            ));
+                        }
+
+                        let tx_weights = softmax_log_scores(&tx_scores);
+                        let mut kept: Vec<(u32, f64)> = tx_weights.to_vec();
+                        kept.sort_unstable_by_key(|(t, _)| *t);
+
+                        let sum_p: f64 = kept.iter().map(|(_, p)| *p).sum();
+                        if kept.len() == global_txps.len() && sum_p.is_finite() && sum_p > 0.0 {
+                            kept.iter().map(|(_, p)| *p / sum_p).collect()
+                        } else {
+                            if do_diag {
+                                eprintln!(
+                                    "[PROB_FALLBACK] bc={} case2={} n_txps={} scored={} -> uniform",
+                                    bc, is_case2, global_txps.len(), kept.len()
+                                );
+                            }
+                            vec![1.0 / global_txps.len() as f64; global_txps.len()]
+                        }
+                    }
+                }
+            };
+
+            // ── per-molecule accounting ──
+            let mut parents: Vec<usize> = members.iter().map(|&vi| vnode_parent[vi]).collect();
+            parents.sort_unstable();
+            parents.dedup();
+            let n_parents = parents.len() as u64;
+
+            let has_case1 = parents.iter().any(|&p| vertex_is_impure[p]);
+            let has_case2 = is_case2;
+
+            if has_case1 {
+                cell_mol_case1 += 1;
+                cell_nodes_case1 += n_parents;
+            }
+            if has_case2 {
+                cell_mol_case2 += 1;
+                cell_nodes_case2 += n_parents;
+            }
+            if has_case1 && has_case2 {
+                cell_mol_both += 1;
+                cell_nodes_both += n_parents;
+            }
+            if has_case1 || has_case2 {
+                cell_mol_either += 1;
+                cell_nodes_either += n_parents;
+            } else {
+                cell_mol_neither += 1;
+            }
+
+            cell_molecules += 1;
+            cell_reads += num_reads as u64;
+
+            emit(num_reads, global_txps, global_txp_prob, &mut pug_stats);
+        }
+    }
+
+    ORACLE_CELLS.fetch_add(1, AtomicOrdering::Relaxed);
+    ORACLE_VERTICES.fetch_add(cell_vertices, AtomicOrdering::Relaxed);
+    ORACLE_VNODES.fetch_add(cell_vnodes, AtomicOrdering::Relaxed);
+    ORACLE_MOLECULES.fetch_add(cell_molecules, AtomicOrdering::Relaxed);
+    ORACLE_READS.fetch_add(cell_reads, AtomicOrdering::Relaxed);
+    ORACLE_CASE1_NODES.fetch_add(cell_case1, AtomicOrdering::Relaxed);
+    ORACLE_CASE2_GROUPS.fetch_add(cell_case2, AtomicOrdering::Relaxed);
+    ORACLE_MOL_CASE1.fetch_add(cell_mol_case1, AtomicOrdering::Relaxed);
+    ORACLE_MOL_CASE2.fetch_add(cell_mol_case2, AtomicOrdering::Relaxed);
+    ORACLE_MOL_BOTH.fetch_add(cell_mol_both, AtomicOrdering::Relaxed);
+    ORACLE_MOL_EITHER.fetch_add(cell_mol_either, AtomicOrdering::Relaxed);
+    ORACLE_MOL_NEITHER.fetch_add(cell_mol_neither, AtomicOrdering::Relaxed);
+    ORACLE_NODES_CASE1.fetch_add(cell_nodes_case1, AtomicOrdering::Relaxed);
+    ORACLE_NODES_CASE2.fetch_add(cell_nodes_case2, AtomicOrdering::Relaxed);
+    ORACLE_NODES_BOTH.fetch_add(cell_nodes_both, AtomicOrdering::Relaxed);
+    ORACLE_NODES_EITHER.fetch_add(cell_nodes_either, AtomicOrdering::Relaxed);
+
+    eprintln!(
+        "[ORACLE_CELL] bc={} vertices={} vnodes={} molecules={} reads={} case1_nodes={} case2_groups={}",
+        bc, cell_vertices, cell_vnodes, cell_molecules, cell_reads, cell_case1, cell_case2
+    );
+    eprintln!(
+        "[ORACLE_CELL_AFFECTED] bc={} mol_case1={} mol_case2={} mol_both={} mol_either={} \
+         mol_neither={} nodes_case1={} nodes_case2={} nodes_both={} nodes_either={}",
+        bc, cell_mol_case1, cell_mol_case2, cell_mol_both, cell_mol_either,
+        cell_mol_neither, cell_nodes_case1, cell_nodes_case2, cell_nodes_both, cell_nodes_either
+    );
 
     pug_stats
 }

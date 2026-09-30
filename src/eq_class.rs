@@ -17,6 +17,7 @@ use libradicl::record::{MappedRecord, UmiTaggedRecord};
 use crate::utils::{EqClassPayload, OptionalAlignmentExtras};
 use statrs::distribution::{Normal, Continuous};
 use std::f64::consts::LN_10;
+use crate::quant::{EndModel, EndDistribution};
 //use anyhow::bail;
 
 /// Minimal per-transcript coverage state needed for the per-cell model.
@@ -287,54 +288,126 @@ fn start_probabilities(
 }
 
 
-fn end_probabilities(
+//fn end_probabilities(
+//    ends: &[u32],
+//    tlens: &[u32],
+//) -> Vec<f64> {
+//    let std_dev: f64 = 100.0;
+//    let thresh: f64 = 100.0;
+//    let min_end: f64 = 3.0;
+//    assert_eq!(ends.len(), tlens.len());
+//    assert!(std_dev > 0.0);
+//
+//    // This is μ=0, σ=std_dev
+//    let dist = Normal::new(0.0, std_dev)
+//        .expect("should be able to construct a normal distribution");
+//
+//    // Precompute ln_pdf(0) once (normalization to make weight(0)=1)
+//    let ln_pdf0 = dist.ln_pdf(0.0);
+//    let ln_floor = -min_end * LN_10;
+//
+//    // Compute unnormalized weights
+//    let mut out: Vec<f64> = ends
+//        .iter()
+//        .zip(tlens.iter())
+//        .map(|(&end, &tlen)| {
+//            // 3' model distance from sequenced end:
+//            // dist_from_end = tlen - end
+//            let dist_from_end = (tlen as f64) - (end as f64);
+//
+//            // extra_dist = max(dist_from_end - thresh, 0)
+//            let extra_dist = (dist_from_end - thresh).max(0.0);
+//
+//            // ln w = ln_pdf(extra_dist) - ln_pdf(0)
+//            let ln_w = dist.ln_pdf(extra_dist) - ln_pdf0;
+//
+//            let final_value = ln_w.max(ln_floor);
+//
+//            final_value.exp()
+//        })
+//        .collect();
+//
+//    // Normalize to sum to 1
+//    //let sum: f64 = out.iter().sum();
+//    //if sum > 0.0 {
+//    //    for p in out.iter_mut() {
+//    //        *p /= sum;
+//    //    }
+//    //}
+//
+//    out
+//}
+
+
+/// Distance-from-3'-end weight, `exp(-(max(d - thresh, 0) / sd)^2 / 2)`,
+/// floored at 10^-min_end. Alignments terminating within `thresh` of the
+/// transcript 3' end are unpenalised; the penalty saturates at the floor
+/// around `thresh + sd * sqrt(2 * min_end * ln 10)`.
+///
+/// `dirs[i] == true` means the alignment is forward, so the read's 3' terminus
+/// is at `ends[i]` and the distance is `tlen - end`. For a reverse-complement
+/// alignment the read runs the other way, so its 3' terminus is at `starts[i]`
+/// and the distance is `start`.
+fn end_probabilities_oriented(
+    starts: &[u32],
     ends: &[u32],
     tlens: &[u32],
+    dirs: &[bool],
+    distribution: EndDistribution,
+    model: EndModel,
+    threshold: f64,
+    scale: f64,
 ) -> Vec<f64> {
-    let std_dev: f64 = 100.0;
-    let thresh: f64 = 100.0;
-    let min_end: f64 = 3.0;
-    assert_eq!(ends.len(), tlens.len());
-    assert!(std_dev > 0.0);
+    let n = ends.len();
+    if model == EndModel::Off {
+        return vec![1.0; n];
+    }
 
-    // This is μ=0, σ=std_dev
-    let dist = Normal::new(0.0, std_dev)
-        .expect("should be able to construct a normal distribution");
+    debug_assert_eq!(starts.len(), n);
+    debug_assert_eq!(tlens.len(), n);
+    debug_assert_eq!(dirs.len(), n);
 
-    // Precompute ln_pdf(0) once (normalization to make weight(0)=1)
-    let ln_pdf0 = dist.ln_pdf(0.0);
-    let ln_floor = -min_end * LN_10;
+    //let std_dev: f64 = 100.0;
+    let thresh: f64 = threshold;
+    const MIN_END_WEIGHT: f64 = 1e-3;
+    //let min_end: f64 = 3.0;
 
-    // Compute unnormalized weights
-    let mut out: Vec<f64> = ends
-        .iter()
-        .zip(tlens.iter())
-        .map(|(&end, &tlen)| {
-            // 3' model distance from sequenced end:
-            // dist_from_end = tlen - end
-            let dist_from_end = (tlen as f64) - (end as f64);
+    //let dist = Normal::new(0.0, std_dev)
+    //    .expect("should be able to construct a normal distribution");
+    //let ln_pdf0 = dist.ln_pdf(0.0);
+    //let ln_floor = -min_end * LN_10;
 
-            // extra_dist = max(dist_from_end - thresh, 0)
+    (0..n)
+        .map(|i| {
+            let dist_from_end = match model {
+                EndModel::Off => 0.0,
+                EndModel::ThreePrime => (tlens[i] as f64) - (ends[i] as f64),
+                EndModel::Oriented => {
+                    if dirs[i] {
+                        (tlens[i] as f64) - (ends[i] as f64)   // forward
+                    } else {
+                        starts[i] as f64                        // reverse-complement
+                    }
+                }
+            }
+            .max(0.0);   // guard against annotations shorter than the alignment
+
             let extra_dist = (dist_from_end - thresh).max(0.0);
+            //(-extra_dist / scale).exp().max(MIN_END_WEIGHT)
 
-            // ln w = ln_pdf(extra_dist) - ln_pdf(0)
-            let ln_w = dist.ln_pdf(extra_dist) - ln_pdf0;
+            let end_weight = match distribution {
+                EndDistribution::Exponential => {
+                    (-extra_dist / scale).exp()
+                }
+                EndDistribution::Normal => {
+                    (-(extra_dist * extra_dist) / (2.0 * scale * scale)).exp()
+                }
+            };
 
-            let final_value = ln_w.max(ln_floor);
-
-            final_value.exp()
+            end_weight.max(MIN_END_WEIGHT)
+            
         })
-        .collect();
-
-    // Normalize to sum to 1
-    //let sum: f64 = out.iter().sum();
-    //if sum > 0.0 {
-    //    for p in out.iter_mut() {
-    //        *p /= sum;
-    //    }
-    //}
-
-    out
+        .collect()
 }
 
 
@@ -1079,7 +1152,7 @@ impl EqMap {
         }
     }
 
-    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>)
+    pub fn init_from_chunk<R>(&mut self, cell_chunk: &mut chunk::Chunk<R>, end_distribution: EndDistribution, end_model: EndModel, end_threshold: f64, end_scale: f64)
     where
         R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
     {
@@ -1138,11 +1211,18 @@ impl EqMap {
                         let starts   = extras.starts;
                         let ends   = extras.ends;
                         let tlens  = extras.tlens;
+                        //let dirs = extras.dirs;
                         let score_probs = score_probabilities(scores);
+                        let end_probs = end_probabilities_oriented(starts, ends, tlens, extras.dirs, end_distribution, end_model, end_threshold, end_scale);
+                        let mut final_probs: Vec<f64> = score_probs
+                            .iter()
+                            .zip(end_probs.iter())
+                            .map(|(sp, ep)| sp * ep)
+                            .collect();
                         //let start_probs = start_probabilities(starts);
                         //let end_probs = end_probabilities(ends, tlens);
                         //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
-                        let mut final_probs: Vec<f64> = score_probs;
+                        //let mut final_probs: Vec<f64> = score_probs;
                         let prob_sum: f64 = final_probs.iter().sum();
 
                         if prob_sum.is_infinite() {
@@ -1197,10 +1277,16 @@ impl EqMap {
                         let ends   = extras.ends;
                         let tlens  = extras.tlens;
                         let score_probs = score_probabilities(scores);
+                        let end_probs = end_probabilities_oriented(starts, ends, tlens, extras.dirs, end_distribution, end_model, end_threshold, end_scale);
+                        let mut final_probs: Vec<f64> = score_probs
+                            .iter()
+                            .zip(end_probs.iter())
+                            .map(|(sp, ep)| sp * ep)
+                            .collect();
                         //let start_probs = start_probabilities(starts);
                         //let end_probs = end_probabilities(ends, tlens);
                         //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
-                        let mut final_probs: Vec<f64> = score_probs;
+                        //let mut final_probs: Vec<f64> = score_probs;
                         let prob_sum: f64 = final_probs.iter().sum();
 
                         if prob_sum.is_infinite() {

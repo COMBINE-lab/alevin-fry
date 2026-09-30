@@ -14,7 +14,7 @@ use slog;
 use typed_builder::TypedBuilder;
 
 use crate::cellfilter::CellFilterMethod;
-use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel};
+use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel, TrueUmiOracleMode, EditDistanceMode, EMMode, EndModel, EndDistribution};
 
 use std::path::PathBuf;
 
@@ -40,6 +40,16 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub filter_list: Option<&'d PathBuf>,
     pub cmdline: &'e str,
     pub version: &'f str,
+    pub true_umi_mode: TrueUmiOracleMode,
+    pub true_txp_mode: Option<bool>,
+    pub true_umi_txp_file: Option<PathBuf>,
+    pub ed_distance_model: EditDistanceMode,
+    pub ed_upper_bound: usize,
+    pub em_prob_model: EMMode,
+    pub end_model: EndModel,
+    pub end_distribution: EndDistribution,
+    pub end_threshold: f64,
+    pub end_scale: f64,
     #[serde(skip_serializing)]
     pub log: &'g slog::Logger,
 }

@@ -273,6 +273,7 @@ pub struct AlnExtras<'a> {
     pub starts: &'a [u32],
     pub ends: &'a [u32],
     pub tlens: &'a [u32], 
+    pub dirs: &'a [bool],
 }
 
 pub trait OptionalAlignmentExtras {
@@ -284,7 +285,7 @@ pub trait OptionalAlignmentExtras {
 macro_rules! impl_optional_alignment_extras {
     // Generic record type that HAS the fields
     (<$($gen:ident $(: $bound:path)?),+>, $ty_name:ident,
-        Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident)
+        Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident, dirs = $dirs:ident)
     ) => {
         impl<$($gen $(: $bound)?),+> OptionalAlignmentExtras for $ty_name<$($gen),+> {
             fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
@@ -293,6 +294,7 @@ macro_rules! impl_optional_alignment_extras {
                     starts: &self.$starts,
                     ends: &self.$ends,
                     tlens: &self.$tlens,
+                    dirs: &self.$dirs,
                 })
             }
 
@@ -366,7 +368,7 @@ macro_rules! impl_optional_alignment_extras {
     };
 
     // Non-generic record type that HAS the fields
-    ($ty:ty, Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident)) => {
+    ($ty:ty, Some(as_scores = $scores:ident, starts = $starts:ident, ends = $ends:ident, tlens = $tlens:ident, dirs = $dirs:ident)) => {
         impl OptionalAlignmentExtras for $ty {
             fn maybe_aln_extras(&self) -> Option<AlnExtras<'_>> {
                 Some(AlnExtras {
@@ -374,6 +376,7 @@ macro_rules! impl_optional_alignment_extras {
                     starts: &self.$starts,
                     ends: &self.$ends,
                     tlens: &self.$tlens,
+                    dirs: &self.$dirs,
                 })
             }
 
@@ -450,7 +453,7 @@ macro_rules! impl_optional_alignment_extras {
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordT, None);
 impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, AlevinFryReadRecordWithPositionT, None);
 impl_optional_alignment_extras!(AtacSeqReadRecord, None);
-impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, starts = starts, ends = ends, tlens = tlens));
+impl_optional_alignment_extras!(<B: ConvertiblePrimitiveInteger>, ScLongReadRecordT, Some(as_scores = as_scores, starts = starts, ends = ends, tlens = tlens, dirs = dirs));
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum KnownRecordType {

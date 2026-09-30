@@ -32,16 +32,17 @@ use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
 use crate::umi_general_distance::umi_edit_distance_from_packed_shifted;
+use crate::quant::{EditDistanceMode, EMMode};
 
 use needletail::bitkmer::bitmer_to_bytes;
 use triple_accel::levenshtein::levenshtein;
 
-//#[inline]
-//fn umi_edit_distance_from_packed(x: u64, y: u64, umi_len: u8) -> usize {
-//    let xb = bitmer_to_bytes((x, umi_len));
-//    let yb = bitmer_to_bytes((y, umi_len));
-//    levenshtein(&xb, &yb) as usize
-//}
+#[inline]
+fn umi_edit_distance_from_packed(x: u64, y: u64, umi_len: u8) -> usize {
+    let xb = bitmer_to_bytes((x, umi_len));
+    let yb = bitmer_to_bytes((y, umi_len));
+    levenshtein(&xb, &yb) as usize
+}
 
 
 type CcMap = HashMap<u32, Vec<u32>, ahash::RandomState>;
@@ -77,6 +78,8 @@ pub struct PugResolutionStatistics {
 pub fn extract_graph(
     eqmap: &EqMap,
     pug_exact_umi: bool, // true if only identical UMIs induce an edge
+    ed_distance_model: EditDistanceMode,
+    ed_upper_bound: usize,
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
@@ -90,9 +93,16 @@ pub fn extract_graph(
         let hdist = if pug_exact_umi {
             if x.0 == y.0 { 0 } else { usize::MAX }
         } else {
-            umi_edit_distance_from_packed_shifted(x.0, y.0, umi_len)
-            //umi_edit_distance_from_packed(x.0, y.0, umi_len)
-            //afutils::count_diff_2_bit_packed(x.0, y.0)
+            if ed_distance_model == EditDistanceMode::General {
+                umi_edit_distance_from_packed_shifted(x.0, y.0, umi_len)
+            } else if ed_distance_model == EditDistanceMode::Levenshtein {
+                umi_edit_distance_from_packed(x.0, y.0, umi_len)
+            } else if ed_distance_model == EditDistanceMode::Hamming {
+                afutils::count_diff_2_bit_packed(x.0, y.0)
+            } else {
+                panic!("Unknown edit distance model: {:?}", ed_distance_model);
+            }
+
         };
 
         if hdist == 0 {
@@ -100,7 +110,7 @@ pub fn extract_graph(
             return PugEdgeType::BiDirected;
         }
 
-        if hdist < 2 {
+        if hdist < ed_upper_bound {
             one_edit += 1;
             return if x.1 > (2 * y.1 - 1) {
                 PugEdgeType::XToY

@@ -23,7 +23,7 @@ use alevin_fry::cmd_parse_utils::{
     pathbuf_directory_exists_validator, pathbuf_file_exists_validator,
 };
 use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
-use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel};
+use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, TrueUmiOracleMode, EditDistanceMode, EMMode, EndModel, EndDistribution};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -206,7 +206,41 @@ fn main() -> anyhow::Result<()> {
         .default_value("0.0"))
     .arg(arg!(--"tau-delta" <TAUDELTA> "minimum delta(v,t) = score(v,t) - best_alt(v) for transcript admissibility")
         .value_parser(value_parser!(f64))
-        .default_value("0.0"));
+        .default_value("0.0"))
+    .arg(arg!(--"true-umi-mode" <MODE> "how (if at all) to use ground-truth UMIs to compute an oracle upper bound")
+        .ignore_case(true)
+        .value_parser(value_parser!(TrueUmiOracleMode))
+        .default_value("off"))
+    .arg(arg!(--"true-txp-mode" <TxpMODE> "if using the true transcript in the oracle mode")
+        .ignore_case(true)
+        .value_parser(value_parser!(bool)))
+    .arg(arg!(--"true-umi-txp-file" <TRUEUMIFILE> "TSV file mapping read names to true UMI/gene ground truth; required unless --true-umi-mode=off")
+        .value_parser(pathbuf_file_exists_validator))
+    .arg(arg!(--"ed-distance-model" <EDMODE> "edit distance model to use for UMI correction")
+        .ignore_case(true)
+        .value_parser(value_parser!(EditDistanceMode))
+        .default_value("general"))
+    .arg(arg!(--"ed-upper-bound" <EDUPPERBOUND> "upper bound for edit distance")
+        .value_parser(value_parser!(usize))
+        .default_value("2"))
+    .arg(arg!(--"em-prob-model" <EMMODE> "probability model to use for EM-based UMI correction")
+        .ignore_case(true)
+        .value_parser(value_parser!(EMMode))
+        .default_value("uniform"))
+    .arg(arg!(--"end-model" <ENDMODEL> "positional model for distance from the transcript 3' end")
+        .ignore_case(true)
+        .value_parser(value_parser!(EndModel))
+        .default_value("off"))
+    .arg(arg!(--"end-distribution" <ENDDISTRIBUTION> "distribution for distance from the transcript 3' end")
+        .ignore_case(true)
+        .value_parser(value_parser!(EndDistribution))
+        .default_value("normal"))
+    .arg(arg!(--"end-threshold" <ENDTHRESHOLD> "distance from the transcript 3' end before the penalty starts")
+        .value_parser(value_parser!(f64))
+        .default_value("10.0"))
+    .arg(arg!(--"end-scale" <ENDSCALE> "scale of the transcript 3' end penalty")
+        .value_parser(value_parser!(f64))
+        .default_value("10.0"));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -444,6 +478,25 @@ fn main() -> anyhow::Result<()> {
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
+        let true_umi_mode = *t.get_one::<TrueUmiOracleMode>("true-umi-mode").unwrap();
+        let true_txp_mode: Option<bool> = t.get_one("true-txp-mode").cloned();
+        let true_umi_txp_file: Option<&PathBuf> = t.get_one("true-umi-txp-file");
+        let ed_distance_model = *t.get_one::<EditDistanceMode>("ed-distance-model").unwrap();
+        let ed_upper_bound: usize = *t.get_one("ed-upper-bound").unwrap();
+        let em_prob_model = *t.get_one::<EMMode>("em-prob-model").unwrap();
+        let end_model = *t.get_one::<EndModel>("end-model").unwrap();
+        let end_distribution = *t.get_one::<EndDistribution>("end-distribution").unwrap();
+        let end_threshold: f64 = *t.get_one("end-threshold").unwrap();
+        let end_scale: f64 = *t.get_one("end-scale").unwrap();
+
+        if end_threshold < 0.0 || end_scale <= 0.0 {
+            bail!("--end-threshold must be non-negative and --end-scale must be positive");
+        }
+
+        if (true_umi_mode != TrueUmiOracleMode::Off || true_txp_mode == Some(true)) && true_umi_txp_file.is_none() {
+            crit!(log, "--true-umi-mode was set to {:?} but no --true-umi-txp-file was provided", true_umi_mode);
+            bail!("Invalid command line option");
+        }
         let mut pug_exact_umi = false;
 
         match umi_edit_dist {
@@ -546,6 +599,16 @@ fn main() -> anyhow::Result<()> {
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)
+            .true_umi_mode(true_umi_mode)
+            .true_txp_mode(true_txp_mode)          
+            .true_umi_txp_file(true_umi_txp_file.cloned()) 
+            .ed_distance_model(ed_distance_model)
+            .ed_upper_bound(ed_upper_bound)
+            .em_prob_model(em_prob_model)
+            .end_model(end_model)
+            .end_distribution(end_distribution)
+            .end_threshold(end_threshold)
+            .end_scale(end_scale)
             .cmdline(&cmdline)
             .version(VERSION)
             .log(&log)

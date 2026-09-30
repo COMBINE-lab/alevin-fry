@@ -50,7 +50,7 @@ use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 //use crate::pugutils_dp;
 //use crate::pugutils_dp::{get_num_molecules_log_dp, DpConfig};
-use crate::pugutils_dp_new::{get_num_molecules_log_dp_new, DpConfig};
+use crate::pugutils_dp_new::{get_num_molecules_log_dp_new, get_num_molecules_true_umi_oracle, get_num_molecules_true_umi_oracle_virtual_node, DpConfig};
 use crate::graph_dump;
 use crate::utils as afutils;
 use crate::utils::{
@@ -59,6 +59,140 @@ use crate::utils::{
 };
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
+
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum EndModel {
+    #[default]
+    Off,
+    ThreePrime,
+    Oriented,
+}
+
+impl fmt::Display for EndModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for EndModel {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(EndModel::Off),
+            "three-prime" => Ok(EndModel::ThreePrime),
+            "oriented" => Ok(EndModel::Oriented),
+            _ => Err("no match"),
+        }
+    }
+}
+
+
+//==============================================================================
+
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum EndDistribution {
+    #[default]
+    Exponential,
+    Normal,
+}
+
+impl fmt::Display for EndDistribution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for EndDistribution {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "exponential" | "exp" => Ok(EndDistribution::Exponential),
+            "normal" | "gaussian" => Ok(EndDistribution::Normal),
+            _ => Err("expected exponential or normal"),
+        }
+    }
+}
+//==============================================================================
+
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum TrueUmiOracleMode {
+    #[default]
+    Off,
+    EdgeCorrection,
+    BfsGate,
+    DirectCollapse,
+}
+
+impl fmt::Display for TrueUmiOracleMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for TrueUmiOracleMode {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(TrueUmiOracleMode::Off),
+            "edge" => Ok(TrueUmiOracleMode::EdgeCorrection),
+            "bfs" => Ok(TrueUmiOracleMode::BfsGate),
+            "direct" => Ok(TrueUmiOracleMode::DirectCollapse),
+            _ => Err("no match"),
+        }
+    }
+}
+
+
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum EditDistanceMode {
+    Hamming,
+    Levenshtein,
+    #[default]
+    General,
+}
+
+impl fmt::Display for EditDistanceMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for EditDistanceMode {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "hamming" => Ok(EditDistanceMode::Hamming),
+            "levenshtein" => Ok(EditDistanceMode::Levenshtein),
+            "general" => Ok(EditDistanceMode::General),
+            _ => Err("no match"),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum EMMode {
+    #[default]
+    Uniform,
+    Likelihood,
+}
+
+impl fmt::Display for EMMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for EMMode {
+    type Err = &'static str;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "uniform" => Ok(EMMode::Uniform),
+            "likelihood" => Ok(EMMode::Likelihood),
+            _ => Err("no match"),
+        }
+    }
+}
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum SplicedAmbiguityModel {
@@ -372,6 +506,77 @@ fn write_eqc_counts(
     Ok(true)
 }
 
+/// Loads read_name -> true_umi (as raw bytes) from the ground-truth TSV.
+pub fn load_true_umi_table(path: &std::path::Path) -> HashMap<String, Vec<u8>> {
+    let file = File::open(path).expect("could not open ground-truth TSV");
+    let reader = BufReader::new(file);
+    let mut map = HashMap::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.expect("could not read line");
+        if i == 0 { continue; } // skip header
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 11 { continue; }
+        let true_umi = fields[7].as_bytes().to_vec();
+        let read_name = fields[10].to_string();
+        map.insert(read_name, true_umi);
+    }
+    map
+}
+
+
+
+/// table[eq_id][umi_idx] -> all distinct true UMIs found among the reads merged into this node
+pub fn build_true_umi_table(
+    eqmap: &EqMap,
+    read_to_true_umi: &HashMap<String, Vec<u8>>,
+) -> Vec<Vec<Vec<Vec<u8>>>> {
+    let mut table = Vec::with_capacity(eqmap.num_eq_classes());
+    for eqid in 0..eqmap.num_eq_classes() {
+        let entry = &eqmap.eqc_info[eqid];
+        let mut node_umis = Vec::with_capacity(entry.umis.len());
+        for umi_idx in 0..entry.umis.len() {
+            let qnames: &[String] = entry.qnames.get(umi_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+
+            let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
+            for qn in qnames {
+                if let Some(tu) = read_to_true_umi.get(qn) {
+                    *counts.entry(tu.clone()).or_insert(0) += 1;
+                }
+            }
+
+            let mut list: Vec<(Vec<u8>, u32)> = counts.into_iter().collect();
+            list.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let uniq: Vec<Vec<u8>> = list.into_iter().map(|(u, _)| u).collect();
+
+            node_umis.push(uniq);
+        }
+        table.push(node_umis);
+    }
+    table
+}
+
+
+/// Loads read_name -> true transcript from the ground-truth TSV (column 9).
+pub fn load_true_txp_table(path: &std::path::Path) -> HashMap<String, String> {
+    let file = File::open(path).expect("could not open ground-truth TSV");
+    let reader = BufReader::new(file);
+    let mut map = HashMap::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.expect("could not read line");
+        if i == 0 { continue; } // skip header
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 11 { continue; }
+        let true_txp = fields[9].to_string();   // was .as_bytes().to_vec() -> type mismatch
+        let read_name = fields[10].to_string();
+        map.insert(read_name, true_txp);
+    }
+    map
+}
+
+
+
 // TODO: see if we'd rather pass an structure
 // with these options
 pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
@@ -432,12 +637,22 @@ struct WorkerConfig {
     num_genes: usize,
     num_rows: usize,
     barcode_len: u16,
+    true_umi_mode: TrueUmiOracleMode,
+    true_txp_mode: Option<bool>,
+    ed_distance_model: EditDistanceMode,
+    ed_upper_bound: usize,
+    em_prob_model: EMMode,  
+    end_model: EndModel,
+    end_distribution: EndDistribution,
+    end_threshold: f64,
+    end_scale: f64,
 }
 
 struct WorkerSharedState<R: MappedRecord> {
     in_q: Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
     is_done: Arc<std::sync::atomic::AtomicBool>,
     tid_to_gid: Arc<Vec<u32>>,
+    ref_names: Arc<Vec<String>>,
     cells_remaining: Arc<AtomicUsize>,
     bcout: Arc<Mutex<QuantOutputInfo>>,
     eqid_map_lock: Arc<Mutex<EqcMap>>,
@@ -445,6 +660,8 @@ struct WorkerSharedState<R: MappedRecord> {
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<HashMap<u64, u32>>,
     mmrate: Arc<Mutex<Vec<f64>>>,
+    true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>>,
+    true_txp_lookup: Option<Arc<HashMap<String, String>>>,
 }
 
 fn run_worker_thread<B, R, P>(
@@ -567,7 +784,7 @@ where
                                     &log,
                                 );
                             } else {
-                                eq_map.init_from_chunk::<R>(&mut c);
+                                eq_map.init_from_chunk::<R>(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
                                 pugutils::get_num_molecules_cell_ranger_like(
                                     &eq_map,
                                     &shared.tid_to_gid,
@@ -623,7 +840,7 @@ where
                             }
                         }
                         ResolutionStrategy::Trivial => {
-                            eq_map.init_from_chunk(&mut c);
+                            eq_map.init_from_chunk(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
                             let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &shared.tid_to_gid,
@@ -646,27 +863,29 @@ where
                                 //eprintln!("before the init from chunk");
 
                                 // step 1: collect umi -> qnames BEFORE init_from_chunk destroys ordering
-                                let mut umi_to_qnames: HashMap<u64, Vec<String>> = HashMap::new();
+                                let mut refs_umi_to_qnames: HashMap<(Vec<u32>, u64), Vec<String>> = HashMap::new();
                                 for r in c.reads.iter() {
                                     if let Some(qname) = r.maybe_qname() {
-                                        umi_to_qnames
-                                            .entry(r.umi())
+                                        refs_umi_to_qnames
+                                            .entry((r.refs().to_vec(), r.umi()))
                                             .or_default()
                                             .push(qname.to_string());
                                     }
                                 }
 
-                                eq_map.init_from_chunk(&mut c);
+                                eq_map.init_from_chunk(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
                                 //eprintln!("after the init from chunk");
 
                                 // step 3: populate qnames using the umi lookup
                                 // after init_from_chunk, eqc_info[i].umis contains deduplicated (umi_val, count) pairs
-                                for entry in eq_map.eqc_info.iter_mut() {
+                                for eq_id in 0..eq_map.num_eq_classes() {
+                                    let refs_for_this_eqc = eq_map.refs_for_eqc(eq_id as u32).to_vec();
+                                    let entry = &mut eq_map.eqc_info[eq_id];
                                     entry.qnames = entry.umis
                                         .iter()
                                         .map(|(umi_val, _count)| {
-                                            umi_to_qnames
-                                                .get(umi_val)
+                                            refs_umi_to_qnames
+                                                .get(&(refs_for_this_eqc.clone(), *umi_val))
                                                 .cloned()
                                                 .unwrap_or_default()
                                         })
@@ -691,7 +910,27 @@ where
 
                             }
 
-                            let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
+                            //let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
+
+                            let true_umi_table = shared.true_umi_lookup.as_ref()
+                                .map(|lookup| build_true_umi_table(&eq_map, lookup));
+
+
+                            let g = match config.true_umi_mode {
+                                TrueUmiOracleMode::EdgeCorrection => {
+                                    //pugutils::extract_graph(&eq_map, config.pug_exact_umi, true_umi_table.as_ref(), &log)
+                                    pugutils::extract_graph(&eq_map, config.pug_exact_umi, config.ed_distance_model, config.ed_upper_bound, &log)
+                                }
+                                _ => {
+                                    //pugutils::extract_graph(&eq_map, config.pug_exact_umi, None, &log)
+                                    pugutils::extract_graph(&eq_map, config.pug_exact_umi, config.ed_distance_model, config.ed_upper_bound, &log)
+                                }
+                            };
+                        
+                            //let bfs_gate_table = match config.true_umi_mode {
+                            //    TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
+                            //    _ => None,
+                            //};
 
                             // for the PUG resolution algorithm, set the hasher
                             // that will be used based on the cell barcode.
@@ -729,10 +968,10 @@ where
                             //);
 
 
-                            let dp_cfg = DpConfig {
-                                log_prior_odds: config.lambda_size,
-                                tau_delta: config.tau_delta,
-                            };
+                            //let dp_cfg = DpConfig {
+                            //    log_prior_odds: config.lambda_size,
+                            //    tau_delta: config.tau_delta,
+                            //};
 
                             if let Some(target) = graph_dump::dump_cell_target() {
                                 if cell_num == target {
@@ -740,16 +979,76 @@ where
                                 }
                             }
 
-                            let pug_stats = get_num_molecules_log_dp_new(
-                                &g,
-                                &eq_map,
-                                &shared.tid_to_gid,
-                                &mut gene_eqc,
-                                &s,
-                                config.large_graph_thresh,
-                                dp_cfg,
-                                &log,
-                            );
+                            //let pug_stats = get_num_molecules_log_dp_new(
+                            //    &g,
+                            //    &eq_map,
+                            //    &shared.tid_to_gid,
+                            //    &mut gene_eqc,
+                            //    &s,
+                            //    config.large_graph_thresh,
+                            //    dp_cfg,
+                            //    bfs_gate_table,
+                            //    &log,
+                            //);
+
+                            let pug_stats = match config.true_umi_mode {
+                                TrueUmiOracleMode::DirectCollapse => {
+                                    get_num_molecules_true_umi_oracle_virtual_node(
+                                        &g,
+                                        &eq_map,
+                                        &shared.tid_to_gid,
+                                        &shared.ref_names,
+                                        bc.into(),
+                                        shared.true_umi_lookup.as_ref().expect("true_umi_lookup required for DirectCollapse mode"),
+                                        shared.true_txp_lookup.as_ref(),
+                                        config.em_prob_model,
+                                        &mut gene_eqc,
+                                        &log,
+                                    )
+                                    //get_num_molecules_true_umi_oracle(
+                                    //    &g,
+                                    //    &eq_map,
+                                    //    &shared.tid_to_gid,
+                                    //    true_umi_table.as_ref().expect("true_umi_table required for DirectCollapse mode"),
+                                    //    &mut gene_eqc,
+                                    //    &log,
+                                    //)
+                                }
+                                //TrueUmiOracleMode::EdgeCorrection => {
+                                //    get_num_molecules_true_umi_oracle(
+                                //        &g,
+                                //        &eq_map,
+                                //        &shared.tid_to_gid,
+                                //        true_umi_table.as_ref().expect("true_umi_table required for DirectCollapse mode"),
+//
+                                //        &mut gene_eqc,
+                                //        &log,
+                                //    )
+                                //}
+                                _ => {
+                                    let bfs_gate_table = match config.true_umi_mode {
+                                        TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
+                                        _ => None,
+                                    };
+                                
+                                    let dp_cfg = DpConfig {
+                                        log_prior_odds: config.lambda_size,
+                                        tau_delta: config.tau_delta,
+                                    };
+                                
+                                    get_num_molecules_log_dp_new(
+                                        &g,
+                                        &eq_map,
+                                        &shared.tid_to_gid,
+                                        &mut gene_eqc,
+                                        &s,
+                                        config.large_graph_thresh,
+                                        dp_cfg,
+                                        //bfs_gate_table,
+                                        &log,
+                                    )
+                                }
+                            };
 
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
                             eq_map.clear();
@@ -1187,6 +1486,16 @@ where
     let log = quant_opts.log;
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
+    let true_umi_mode = quant_opts.true_umi_mode;
+    let true_txp_mode = quant_opts.true_txp_mode;
+    let true_umi_txp_file = quant_opts.true_umi_txp_file.clone();
+    let ed_distance_model = quant_opts.ed_distance_model;
+    let ed_upper_bound = quant_opts.ed_upper_bound;
+    let em_prob_model = quant_opts.em_prob_model;
+    let end_model = quant_opts.end_model;
+    let end_distribution = quant_opts.end_distribution;
+    let end_threshold = quant_opts.end_threshold;
+    let end_scale = quant_opts.end_scale;
 
     let hdr = &prelude.hdr;
     // in the collated rad file, we have 1 cell per chunk.
@@ -1371,11 +1680,26 @@ where
     let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
+    let ref_names_shared = Arc::new(hdr.ref_names.clone());
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
 
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
+
+    let true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>> = match quant_opts.true_umi_mode {
+        TrueUmiOracleMode::Off => None,
+        _ => Some(Arc::new(load_true_umi_table(
+            quant_opts.true_umi_txp_file.as_ref().expect("true_umi_file required when true_umi_mode != Off"),
+        ))),
+    };
+    
+    let true_txp_lookup: Option<Arc<HashMap<String, String>>> = match quant_opts.true_txp_mode {
+        Some(true) => Some(Arc::new(load_true_txp_table(
+            quant_opts.true_umi_txp_file.as_ref().expect("true_umi_txp_file required when true_txp_mode is Some(true)"),
+        ))),
+        _ => None,
+    };
 
     // create our output directory
     let output_path = std::path::Path::new(quant_opts.output_dir);
@@ -1474,6 +1798,7 @@ where
         let log = log.clone();
         // the shared tid_to_gid map
         let tid_to_gid = tid_to_gid_shared.clone();
+        let ref_names = ref_names_shared.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
 
@@ -1486,6 +1811,8 @@ where
         let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
+        let true_umi_lookup = true_umi_lookup.clone();
+        let true_txp_lookup = true_txp_lookup.clone();
 
         // if we are performing parsimony-gene or parsimony-gene-em
         // resolution, then the equivalence classes will be immediately
@@ -1533,12 +1860,22 @@ where
             num_genes,
             num_rows,
             barcode_len,
+            true_umi_mode,
+            true_txp_mode,
+            ed_distance_model,
+            ed_upper_bound,
+            em_prob_model,
+            end_model,
+            end_distribution,
+            end_threshold,
+            end_scale,
         };
 
         let shared = WorkerSharedState {
             in_q,
             is_done,
             tid_to_gid,
+            ref_names,
             cells_remaining,
             bcout,
             eqid_map_lock: eqid_map_lockc,
@@ -1546,6 +1883,8 @@ where
             empty_resolved_cells,
             unmapped_count,
             mmrate,
+            true_umi_lookup,
+            true_txp_lookup,
         };
 
         // now, make the worker thread
@@ -1611,6 +1950,8 @@ where
             }
         }
     }
+
+    crate::pugutils_dp_new::report_true_umi_oracle_totals();
 
     // write to matrix market if we are using it
     if use_mtx {
