@@ -33,6 +33,11 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub summary_stat: bool,
     pub dump_eq: bool,
     pub resolution: ResolutionStrategy,
+    /// Flex only: also write the probe x cell matrix the gene matrix was summed
+    /// from. The gene matrix is written either way, and the feature axis is not an
+    /// option -- it follows the data type. An error on data that has no probes.
+    #[builder(default = false)]
+    pub probe_mtx: bool,
     pub pug_exact_umi: bool,
     /// cr-like only: collapse UMIs within Hamming distance 1 of a higher-count UMI (same cell, same gene)
     #[builder(default = 0)]

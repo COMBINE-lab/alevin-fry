@@ -343,6 +343,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than this many reads are resolved by a fast path that applies cr-like (winner-take-all) semantics regardless of --resolution; pass 0 to resolve every cell with the requested strategy")
         .value_parser(value_parser!(usize))
         .default_value("100"))
+    .arg(arg!(--"probe-mtx" "for Flex data, also write the probe x cell count matrix the gene matrix was summed from; the gene matrix is written either way"))
     // Multi-sample output option (for multi-barcode RAD files)
     .arg(arg!(--"multi-sample-output" <MSOUTPUT> "output mode for multi-sample data: separate per-sample matrices, one combined matrix, or both")
         .value_parser(["separate", "combined", "both"])
@@ -648,6 +649,7 @@ fn main() -> anyhow::Result<()> {
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
+        let probe_mtx = t.get_flag("probe-mtx");
         let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
@@ -763,6 +765,7 @@ fn main() -> anyhow::Result<()> {
             .summary_stat(summary_stat)
             .dump_eq(dump_eq)
             .resolution(resolution)
+            .probe_mtx(probe_mtx)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
             .large_graph_thresh(large_graph_thresh)

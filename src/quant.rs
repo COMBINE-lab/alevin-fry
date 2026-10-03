@@ -405,10 +405,24 @@ struct WorkerConfig {
     dump_eq: bool,
     num_genes: usize,
     num_rows: usize,
+    /// Width of the gene matrix, i.e. of the axis actually written out. Equals
+    /// `num_rows` unless we resolve at probe level, where `num_rows` is the
+    /// target axis and the gene matrix is the per-gene sum of it.
+    gene_rows: usize,
     barcode_len: u16,
     /// Cells with fewer than this many records take the tiny-cell fast path.
     /// Set from `--small-thresh`; 0 disables the fast path entirely.
     tiny_cell_thresh: usize,
+}
+
+/// Probe-level resolution: the target -> gene projection table used to sum a
+/// cell's target counts into genes, which is always needed, and the target x cell
+/// matrix writer, which exists only when `--probe-mtx` asked for that matrix (its
+/// rows are shared with `matrix_out`).
+#[derive(Clone)]
+struct ProbeLevelOutput {
+    target_to_gene: Arc<Vec<u32>>,
+    writer: Option<Arc<Mutex<MatrixMarketWriter<File>>>>,
 }
 
 struct WorkerSharedState<R: MappedRecord> {
@@ -423,6 +437,8 @@ struct WorkerSharedState<R: MappedRecord> {
     /// feature critical section, and vice-versa.
     matrix_out: Arc<Mutex<MatrixMarketWriter<File>>>,
     bootstrap_out: Option<Arc<BootstrapOutput>>,
+    /// Set iff resolving at probe level; see [`ProbeLevelOutput`].
+    probe_level_out: Option<ProbeLevelOutput>,
     output_failed: Arc<AtomicBool>,
     eqid_map_lock: Arc<Mutex<EqcMap>>,
     alt_res_cells: Arc<Mutex<Vec<u64>>>,
@@ -701,6 +717,14 @@ where
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
+    // Probe-level resolution only: this cell's target-axis entries, held back
+    // for the target matrix while the gene matrix is written from their sum,
+    // plus the dense accumulator and touched-index list used to take that sum.
+    let mut probe_ind = Vec::<usize>::new();
+    let mut probe_vec = Vec::<f32>::new();
+    let mut gene_acc = Vec::<f32>::new();
+    let mut gene_touched = Vec::<usize>::new();
+    let mut probe_batch = MatrixBatch::default();
 
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
@@ -1189,6 +1213,45 @@ where
                 sum_umi = sum_umi_local;
             }
 
+            // At probe level the cell has just been resolved on the target
+            // axis, by whichever path it took. Hold those entries back for the
+            // target matrix and sum them into genes: from here on the gene
+            // matrix, and every per-cell statistic taken from it, is that sum.
+            // `sum_umi` is invariant under the sum; `max_umi` and `num_expr`
+            // are not, so they are recomputed rather than carried over.
+            if let Some(probe) = &shared.probe_level_out {
+                let target_to_gene = &probe.target_to_gene;
+                std::mem::swap(&mut probe_ind, &mut expressed_ind);
+                std::mem::swap(&mut probe_vec, &mut expressed_vec);
+                gene_acc.resize(config.gene_rows, 0.0);
+                gene_touched.clear();
+                for (&ti, &v) in probe_ind.iter().zip(probe_vec.iter()) {
+                    let g = target_to_gene[ti] as usize;
+                    if gene_acc[g] == 0.0 {
+                        gene_touched.push(g);
+                    }
+                    gene_acc[g] += v;
+                }
+                // a row's entries stay in increasing column order
+                gene_touched.sort_unstable();
+                expressed_ind.clear();
+                expressed_vec.clear();
+                max_umi = 0.0;
+                sum_umi = 0.0;
+                for &g in gene_touched.iter() {
+                    // taking the value also clears the accumulator for the
+                    // next cell, so it is never zeroed in full
+                    let c = std::mem::replace(&mut gene_acc[g], 0.0);
+                    expressed_ind.push(g);
+                    expressed_vec.push(c);
+                    sum_umi += c;
+                    if c > max_umi {
+                        max_umi = c;
+                    }
+                }
+                num_expr = expressed_vec.len() as u32;
+            }
+
             if num_expr == 0 {
                 shared
                     .empty_resolved_cells
@@ -1266,6 +1329,17 @@ where
                         .push(row_index, ind, val, &shared.matrix_out)
                         .context("could not write count matrix")?;
                 }
+                if let Some(probe_out) = shared
+                    .probe_level_out
+                    .as_ref()
+                    .and_then(|p| p.writer.as_ref())
+                {
+                    for (&ind, &val) in probe_ind.iter().zip(probe_vec.iter()) {
+                        probe_batch
+                            .push(row_index, ind, val, probe_out)
+                            .context("could not write probe count matrix")?;
+                    }
+                }
                 if let Some(output) = &shared.bootstrap_out {
                     boot_helper
                         .record_cell(row_index, &bootstraps, output)
@@ -1331,6 +1405,15 @@ where
             matrix_batch
                 .flush(&shared.matrix_out)
                 .context("could not flush count matrix batch")?;
+            if let Some(probe_out) = shared
+                .probe_level_out
+                .as_ref()
+                .and_then(|p| p.writer.as_ref())
+            {
+                probe_batch
+                    .flush(probe_out)
+                    .context("could not flush probe count matrix batch")?;
+            }
             if let Some(output) = &shared.bootstrap_out {
                 boot_helper
                     .flush(output)
@@ -1674,7 +1757,8 @@ where
         );
     }
     let num_threads = quant_opts.num_threads;
-    let num_bootstraps = quant_opts.num_bootstraps;
+    // Zeroed below for Flex, which is resolved per probe and does not bootstrap.
+    let mut num_bootstraps = quant_opts.num_bootstraps;
 
     let hdr = &prelude.hdr;
     // in the collated rad file, we have 1 cell per chunk.
@@ -1777,6 +1861,71 @@ where
         Err(e) => {
             return Err(e);
         }
+    }
+
+    // The feature axis follows the data type generate-permit-list recorded, which
+    // identifies only Flex: Flex resolves per reference target, everything else per
+    // gene. The gene matrix is written either way; --probe-mtx adds the per-probe
+    // matrix it was summed from, and changes nothing that is computed.
+    let data_type = afutils::read_data_type(quant_opts.input_dir);
+    let probe_level = data_type.as_deref() == Some(afutils::DATA_TYPE_FLEX);
+    if quant_opts.probe_mtx && !probe_level {
+        anyhow::bail!("--probe-mtx is only supported for Flex data.");
+    }
+    let write_probe = probe_level && quant_opts.probe_mtx;
+
+    if probe_level {
+        // Report the data type that was detected, and only that: the type is
+        // inferred rather than requested, so a run should not go on without
+        // saying so, and the line stays true however the handling changes.
+        info!(
+            log,
+            "generate_permit_list.json records data_type \"{}\"",
+            afutils::DATA_TYPE_FLEX
+        );
+        // The equivalence classes are built on the probe axis, so the ids in
+        // gene_eqclass.txt.gz are reference-target ids. Its format is positional
+        // (feature count, class count, then one line per class), so it cannot
+        // carry that caveat itself.
+        if dump_eq {
+            warn!(
+                log,
+                "--dump-eqclasses on Flex data: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes."
+            );
+        }
+        // The bootstrap reports the uncertainty in how the EM allocates a molecule
+        // that several features could claim. Flex probes are designed to target
+        // a single gene with minimal cross-reactivity, so multi-mapping is rare
+        // enough that a bootstrap is not considered necessary here.
+        if num_bootstraps > 0 {
+            warn!(
+                log,
+                "--num-bootstraps is not supported for Flex data, and no bootstrap matrices will be written. The bootstrap reports the uncertainty in how the EM allocates a molecule that several features could claim. Flex probes are designed to target a single gene with minimal cross-reactivity, so multi-mapping is rare enough that a bootstrap is not considered necessary here."
+            );
+            num_bootstraps = 0;
+        }
+        // parsimony-gene(-em) project reads to genes as the equivalence classes are
+        // built, so no per-target assignment survives to sum.
+        let rejected = match resolution {
+            ResolutionStrategy::ParsimonyGene => Some(("parsimony-gene", "parsimony")),
+            ResolutionStrategy::ParsimonyGeneEm => Some(("parsimony-gene-em", "parsimony-em")),
+            _ => None,
+        };
+        if let Some((name, counterpart)) = rejected {
+            anyhow::bail!(
+                "Flex data is only supported with probe-level quantification, so --resolution {name} is not supported. Use --resolution {counterpart} instead."
+            );
+        }
+    }
+
+    // Probe-level quantification does not support USA mode.
+    // USA mode is defined for transcriptome references, where splicing status
+    // is inferred from UMI mapping. In Flex, each UMI maps to a single probe
+    // and splicing status is no longer inferred, so USA mode does not apply.
+    if probe_level && usa_mode {
+        anyhow::bail!(
+            "Flex data is only supported with probe-level quantification, which does not support USA mode: USA mode is defined for transcriptome references, where splicing status is inferred from UMI mapping, and in Flex each UMI maps to a single probe. Pass a 2-column (target, gene) tg-map."
+        );
     }
 
     info!(
@@ -1902,6 +2051,16 @@ where
 
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
+    // At probe level the resolver is handed an identity map, so every reference
+    // target is its own feature; the real map becomes the projection table that
+    // sums a cell's target counts into genes once it has been resolved.
+    let resolver_map = if probe_level {
+        std::sync::Arc::new((0..hdr.ref_count as u32).collect::<Vec<u32>>())
+    } else {
+        tid_to_gid_shared.clone()
+    };
+    // Column names of the target matrix, in reference-id (RAD header) order.
+    let probe_names = write_probe.then(|| hdr.ref_names.clone());
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
 
@@ -1971,24 +2130,54 @@ where
         None
     };
 
+    // `num_rows` is the width of the gene matrix, which is what gets written.
+    // The resolver may work on a wider axis: one column per reference target.
+    let resolver_rows = if probe_level {
+        hdr.ref_count as usize
+    } else {
+        num_rows
+    };
+    let resolver_features = if probe_level {
+        hdr.ref_count as usize
+    } else {
+        num_genes
+    };
+
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
         barcode_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, bc_file),
         feature_file: BufWriter::with_capacity(MATRIX_BUFFER_CAPACITY, ff_file),
         row_index: 0usize,
     }));
 
-    let open_matrix = |name: &str| -> anyhow::Result<MatrixMarketWriter<File>> {
+    let open_matrix = |name: &str, width: usize| -> anyhow::Result<MatrixMarketWriter<File>> {
         let path = output_matrix_path.join(name);
         let file =
             File::create(&path).with_context(|| format!("could not create {}", path.display()))?;
-        Ok(MatrixMarketWriter::new(file, num_cells as usize, num_rows)?)
+        Ok(MatrixMarketWriter::new(file, num_cells as usize, width)?)
     };
-    let matrix_out = Arc::new(Mutex::new(open_matrix("quants_mat.mtx")?));
+    let matrix_out = Arc::new(Mutex::new(open_matrix("quants_mat.mtx", num_rows)?));
     let bootstrap_out = if num_bootstraps > 0 {
         Some(Arc::new(BootstrapOutput {
-            mean: Mutex::new(open_matrix("bootstraps_mean.mtx")?),
-            variance: Mutex::new(open_matrix("bootstraps_var.mtx")?),
+            mean: Mutex::new(open_matrix("bootstraps_mean.mtx", num_rows)?),
+            variance: Mutex::new(open_matrix("bootstraps_var.mtx", num_rows)?),
         }))
+    } else {
+        None
+    };
+    // The target matrix is written alongside the gene matrix it was summed
+    // into, sharing its rows; the projection table travels with it.
+    let probe_level_out: Option<ProbeLevelOutput> = if probe_level {
+        Some(ProbeLevelOutput {
+            target_to_gene: tid_to_gid_shared.clone(),
+            writer: if write_probe {
+                Some(Arc::new(Mutex::new(open_matrix(
+                    "probe_quants_mat.mtx",
+                    resolver_rows,
+                )?)))
+            } else {
+                None
+            },
+        })
     } else {
         None
     };
@@ -2016,14 +2205,15 @@ where
         let chunks = chunk_reader.chunk_iter();
         // and the logger
         let log = log.clone();
-        // the shared tid_to_gid map
-        let tid_to_gid = tid_to_gid_shared.clone();
+        // the shared map the resolver projects targets through
+        let tid_to_gid = resolver_map.clone();
 
         // and the file writer
         let bcout = bc_writer.clone();
         // and the streaming count-matrix writer
         let matrix_out = matrix_out.clone();
         let bootstrap_out = bootstrap_out.clone();
+        let probe_level_out = probe_level_out.clone();
         let output_failed = output_failed.clone();
         // global gene-level eqc map
         let eqid_map_lockc = eqid_map_lock.clone();
@@ -2074,8 +2264,9 @@ where
             init_uniform,
             summary_stat,
             dump_eq,
-            num_genes,
-            num_rows,
+            num_genes: resolver_features,
+            num_rows: resolver_rows,
+            gene_rows: num_rows,
             barcode_len,
             tiny_cell_thresh,
         };
@@ -2086,6 +2277,7 @@ where
             bcout,
             matrix_out,
             bootstrap_out,
+            probe_level_out,
             output_failed,
             eqid_map_lock: eqid_map_lockc,
             alt_res_cells,
@@ -2221,6 +2413,25 @@ where
         total_nnz.to_formatted_string(&Locale::en)
     );
 
+    // The target matrix carries its own nonzero count in its header, so it has
+    // to be finalized just like the gene matrix.
+    let probe_nnz = match probe_level_out.as_ref().and_then(|p| p.writer.as_ref()) {
+        Some(probe_out) => {
+            let nnz = probe_out
+                .lock()
+                .map_err(|_| anyhow::anyhow!("probe matrix output lock was poisoned"))?
+                .finish()
+                .context("could not finalize probe count matrix")?;
+            info!(
+                log,
+                "wrote streamed probe count matrix: {} nonzeros",
+                nnz.to_formatted_string(&Locale::en)
+            );
+            Some(nnz)
+        }
+        None => None,
+    };
+
     if let Some(output) = bootstrap_out {
         let output = Arc::try_unwrap(output)
             .map_err(|_| anyhow::anyhow!("bootstrap output is still held by a worker"))?;
@@ -2279,6 +2490,28 @@ where
 
     gn_writer.flush().context("could not flush gene names")?;
 
+    // The probe matrix keeps one column per reference target, in RAD header order.
+    // Its rows are the gene matrix's rows -- both matrices take a cell's row index
+    // from the same counter, under the same lock that appends that cell's barcode --
+    // so the row labels are written out a second time under the probe matrix's own
+    // name rather than left implicit, which keeps each matrix loadable from its own
+    // triple of files.
+    if let Some(names) = &probe_names {
+        let pn_path = output_matrix_path.join("probe_quants_mat_cols.txt");
+        let pn_file = File::create(pn_path).context("could not create probe name output")?;
+        let mut pn_writer = BufWriter::new(pn_file);
+        for n in names.iter() {
+            writeln!(pn_writer, "{}", n)?;
+        }
+        pn_writer.flush().context("could not flush probe names")?;
+        // The barcode file is flushed and no longer written to by this point.
+        fs::copy(
+            output_matrix_path.join("quants_mat_rows.txt"),
+            output_matrix_path.join("probe_quants_mat_rows.txt"),
+        )
+        .context("could not write probe barcode output")?;
+    }
+
     let pb_msg = format!(
         "finished quantifying {} cells.",
         num_cells.to_formatted_string(&Locale::en)
@@ -2292,7 +2525,13 @@ where
     );
 
     if dump_eq {
-        write_eqc_counts(&eqid_map_lock, num_rows, usa_mode, &output_matrix_path, log)?;
+        write_eqc_counts(
+            &eqid_map_lock,
+            resolver_rows,
+            usa_mode,
+            &output_matrix_path,
+            log,
+        )?;
     }
 
     // Snapshot the tiny-cell list once: it goes into quant.json both as a
@@ -2319,6 +2558,10 @@ where
     "resolution_strategy" : resolution.to_string(),
     "num_quantified_cells" : num_cells,
     "num_genes" : num_rows,
+    "data_type" : data_type,
+    "probe_mtx" : write_probe,
+    "num_probes" : probe_level.then_some(resolver_rows),
+    "probe_nnz" : probe_nnz,
     "dump_eq" : dump_eq,
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),

@@ -1211,6 +1211,21 @@ pub fn read_filter_list(
     Ok(fset)
 }
 
+/// The `data_type` value recorded in `generate_permit_list.json`.
+pub const DATA_TYPE_FLEX: &str = "flex";
+
+/// The data type recorded by generate-permit-list, if it identified one.
+///
+/// `None` covers both a run whose layout identified nothing and a directory
+/// written before the key existed, so it means "not identified as Flex" rather
+/// than "certainly not Flex".
+pub fn read_data_type(input_dir: &PathBuf) -> Option<String> {
+    let parent = std::path::Path::new(input_dir);
+    let meta_data_file = File::open(parent.join("generate_permit_list.json")).ok()?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(meta_data_file)).ok()?;
+    mdata.get("data_type")?.as_str().map(str::to_owned)
+}
+
 pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
     let parent = std::path::Path::new(input_dir);
     // open the metadata file and read the json
