@@ -464,6 +464,12 @@ fn test_multi_bc_generate_permit_list() {
     assert!(output_dir.join("sample_info.json").exists());
     assert!(output_dir.join("generate_permit_list.json").exists());
 
+    // A multi-barcode layout is the one data type generate-permit-list can name,
+    // and quant resolves per probe when it sees it.
+    let gpl_meta_file = File::open(output_dir.join("generate_permit_list.json")).unwrap();
+    let gpl_meta: serde_json::Value = serde_json::from_reader(gpl_meta_file).unwrap();
+    assert_eq!(gpl_meta["data_type"].as_str(), Some("flex"));
+
     // Check sample_info.json
     let info_file = File::open(output_dir.join("sample_info.json")).unwrap();
     let info: serde_json::Value = serde_json::from_reader(info_file).unwrap();
@@ -1542,5 +1548,570 @@ fn tiny_cell_fast_path_does_not_override_requested_resolution() {
          substituted cr-like for the requested strategy",
         em_fast_mass,
         em_full_mass
+    );
+}
+
+// -----------------------------------------------------------------------
+// Probe-level (Flex) quantification
+// -----------------------------------------------------------------------
+
+/// One probe-level input, built per test: a synthetic multi-barcode RAD taken
+/// through generate-permit-list and collate. Its `generate_permit_list.json`
+/// records data_type "flex", which is what puts quant on the probe axis.
+struct FlexFixture {
+    _tmp: tempfile::TempDir,
+    input_dir: std::path::PathBuf,
+    /// Groups the ten reference targets into four genes, so summing the probe
+    /// matrix by gene is a real reduction rather than a relabelling.
+    tg_map: std::path::PathBuf,
+    /// The same grouping in the 3-column (USA) form.
+    usa_tg_map: std::path::PathBuf,
+    log: slog::Logger,
+}
+
+/// Four genes over ten targets: gene_0..2 -> G0, gene_3..5 -> G1, gene_6..8 -> G2, gene_9 -> G3.
+const FLEX_NUM_GENES: usize = 4;
+
+fn flex_gene_of(target: usize) -> usize {
+    target / 3
+}
+
+fn write_grouped_tg_map(path: &Path) -> anyhow::Result<()> {
+    let mut f = BufWriter::new(File::create(path)?);
+    for i in 0..NUM_REFS as usize {
+        writeln!(f, "gene_{}\tG{}", i, flex_gene_of(i))?;
+    }
+    Ok(())
+}
+
+fn write_usa_tg_map(path: &Path) -> anyhow::Result<()> {
+    let mut f = BufWriter::new(File::create(path)?);
+    for i in 0..NUM_REFS as usize {
+        let status = if i % 2 == 0 { "S" } else { "U" };
+        writeln!(f, "gene_{}\tG{}\t{}", i, flex_gene_of(i), status)?;
+    }
+    Ok(())
+}
+
+fn build_flex_fixture() -> FlexFixture {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, SampleCorrectionMode};
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let input_dir = tmp.path().join("gpl");
+    std::fs::create_dir_all(&input_dir).unwrap();
+
+    let sample_bcs = vec![
+        make_packed_bc(100, SAMPLE_BC_LEN),
+        make_packed_bc(200, SAMPLE_BC_LEN),
+    ];
+    let cells_per_sample = 3;
+    // Two reads per target per cell, each with its own UMI.
+    let reads_per_cell = 2 * NUM_REFS as usize;
+
+    create_synthetic_multi_bc_rad(
+        &rad_dir.join("map.rad"),
+        sample_bcs.len(),
+        cells_per_sample,
+        reads_per_cell,
+        &sample_bcs,
+    )
+    .unwrap();
+
+    let sample_list_path = tmp.path().join("sample_barcodes.txt");
+    write_sample_bc_list(&sample_list_path, &sample_bcs, SAMPLE_BC_LEN).unwrap();
+    let tg_map = tmp.path().join("grouped_tg_map.tsv");
+    write_grouped_tg_map(&tg_map).unwrap();
+    let usa_tg_map = tmp.path().join("usa_tg_map.tsv");
+    write_usa_tg_map(&usa_tg_map).unwrap();
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&input_dir)
+        .fmeth(CellFilterMethod::ForceCells(cells_per_sample))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list_path))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .build();
+    generate_permit_list(gpl_opts).unwrap();
+
+    let gpl_meta: serde_json::Value =
+        serde_json::from_reader(File::open(input_dir.join("generate_permit_list.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        gpl_meta["data_type"].as_str(),
+        Some("flex"),
+        "the fixture is only a probe-level input if the data type says so"
+    );
+
+    collate(
+        input_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        ChunkCodec::None,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+
+    FlexFixture {
+        _tmp: tmp,
+        input_dir,
+        tg_map,
+        usa_tg_map,
+        log,
+    }
+}
+
+/// One worker, so a cell's row index is reproducible and two runs are directly
+/// comparable; `small_thresh` picks between the full resolver and the tiny-cell
+/// fast path, both of which reach the probe-to-gene summation.
+#[allow(clippy::too_many_arguments)]
+fn run_flex_quant(
+    fx: &FlexFixture,
+    output_dir: &std::path::PathBuf,
+    tg_map: &std::path::PathBuf,
+    resolution: alevin_fry::quant::ResolutionStrategy,
+    probe_mtx: bool,
+    num_bootstraps: u32,
+    dump_eq: bool,
+    small_thresh: usize,
+) -> anyhow::Result<()> {
+    use alevin_fry::prog_opts::QuantOpts;
+    use alevin_fry::quant::{SplicedAmbiguityModel, quantify};
+
+    let quant_opts = QuantOpts::builder()
+        .input_dir(&fx.input_dir)
+        .tg_map(tg_map)
+        .output_dir(output_dir)
+        .num_threads(1)
+        .num_bootstraps(num_bootstraps)
+        .init_uniform(false)
+        .summary_stat(num_bootstraps > 0)
+        .dump_eq(dump_eq)
+        .resolution(resolution)
+        .probe_mtx(probe_mtx)
+        .pug_exact_umi(false)
+        .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+        .small_thresh(small_thresh)
+        .large_graph_thresh(0)
+        .filter_list(None)
+        .cmdline("test")
+        .version(TEST_VERSION)
+        .log(&fx.log)
+        .build();
+    quantify(quant_opts)
+}
+
+/// Entries of a matrix-market coordinate file, as (row, column, value).
+fn read_mtx(path: &Path) -> (usize, usize, Vec<(usize, usize, f64)>) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let mut lines = text.lines().filter(|l| !l.starts_with('%'));
+    let dims: Vec<usize> = lines
+        .next()
+        .expect("matrix market file has no dimension line")
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let entries = lines
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (
+                f[0].parse::<usize>().unwrap(),
+                f[1].parse::<usize>().unwrap(),
+                f[2].parse::<f64>().unwrap(),
+            )
+        })
+        .collect();
+    (dims[0], dims[1], entries)
+}
+
+/// A matrix keyed by barcode rather than by row number. The RAD reader is
+/// parallel, so which cell lands in row 0 varies between runs even with one
+/// worker; only the labels make two runs comparable.
+fn dense_by_barcode(
+    dir: &Path,
+    mtx: &str,
+    rows_file: &str,
+    cols: usize,
+) -> HashMap<String, Vec<f64>> {
+    let labels: Vec<String> = std::fs::read_to_string(dir.join(rows_file))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let (nrow, ncol, entries) = read_mtx(&dir.join(mtx));
+    assert_eq!(
+        (nrow, ncol),
+        (labels.len(), cols),
+        "{mtx} has unexpected dimensions"
+    );
+    let mut out: HashMap<String, Vec<f64>> = labels
+        .iter()
+        .map(|b| (b.clone(), vec![0.0; cols]))
+        .collect();
+    assert_eq!(out.len(), labels.len(), "duplicate barcodes in {rows_file}");
+    for (r, c, v) in entries {
+        out.get_mut(&labels[r - 1]).unwrap()[c - 1] += v;
+    }
+    out
+}
+
+/// The probe matrix of a run, summed by gene and keyed by barcode.
+fn probe_mtx_summed_by_gene(dir: &Path) -> HashMap<String, Vec<f64>> {
+    dense_by_barcode(
+        dir,
+        "probe_quants_mat.mtx",
+        "probe_quants_mat_rows.txt",
+        NUM_REFS as usize,
+    )
+    .into_iter()
+    .map(|(bc, probes)| {
+        let mut genes = vec![0.0; FLEX_NUM_GENES];
+        for (target, v) in probes.into_iter().enumerate() {
+            genes[flex_gene_of(target)] += v;
+        }
+        (bc, genes)
+    })
+    .collect()
+}
+
+/// featureDump.txt keyed by its barcode column, for the same reason.
+fn feature_dump_by_barcode(output_dir: &Path) -> HashMap<String, String> {
+    let text = std::fs::read_to_string(output_dir.join("featureDump.txt")).unwrap();
+    let mut lines = text.lines();
+    let header = lines.next().expect("featureDump.txt is empty").to_owned();
+    let mut out = HashMap::new();
+    out.insert("#header".to_string(), header);
+    for line in lines.filter(|l| !l.trim().is_empty()) {
+        let (bc, rest) = line
+            .split_once('\t')
+            .expect("featureDump row has one field");
+        assert!(
+            out.insert(bc.to_string(), rest.to_string()).is_none(),
+            "duplicate barcode in featureDump.txt"
+        );
+    }
+    out
+}
+
+#[test]
+fn flex_gene_matrix_is_the_probe_matrix_summed_by_gene() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    // Both routes into the summation: the full resolver and the tiny-cell fast path.
+    for small_thresh in [0usize, 1_000usize] {
+        let fx = build_flex_fixture();
+        let gene_only = fx.input_dir.parent().unwrap().join("gene_only");
+        let with_probe = fx.input_dir.parent().unwrap().join("with_probe");
+
+        run_flex_quant(
+            &fx,
+            &gene_only,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            false,
+            0,
+            false,
+            small_thresh,
+        )
+        .unwrap();
+        run_flex_quant(
+            &fx,
+            &with_probe,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            true,
+            0,
+            false,
+            small_thresh,
+        )
+        .unwrap();
+
+        let gene_dir = gene_only.join("alevin");
+        let probe_dir = with_probe.join("alevin");
+
+        // The gene matrix is written either way, and asking for the probe matrix
+        // does not change it or anything taken from it.
+        assert_eq!(
+            std::fs::read(gene_dir.join("quants_mat_cols.txt")).unwrap(),
+            std::fs::read(probe_dir.join("quants_mat_cols.txt")).unwrap(),
+        );
+        let gene_without = dense_by_barcode(
+            &gene_dir,
+            "quants_mat.mtx",
+            "quants_mat_rows.txt",
+            FLEX_NUM_GENES,
+        );
+        let gene_with = dense_by_barcode(
+            &probe_dir,
+            "quants_mat.mtx",
+            "quants_mat_rows.txt",
+            FLEX_NUM_GENES,
+        );
+        assert_eq!(
+            gene_without, gene_with,
+            "the gene matrix differs when --probe-mtx is requested (small_thresh {small_thresh})"
+        );
+        assert_eq!(
+            feature_dump_by_barcode(&gene_only),
+            feature_dump_by_barcode(&with_probe),
+            "featureDump.txt differs when --probe-mtx is requested"
+        );
+
+        // Without the flag there is no probe matrix at all.
+        for name in [
+            "probe_quants_mat.mtx",
+            "probe_quants_mat_cols.txt",
+            "probe_quants_mat_rows.txt",
+        ] {
+            assert!(
+                !gene_dir.join(name).exists(),
+                "{name} was written without --probe-mtx"
+            );
+            assert!(
+                probe_dir.join(name).exists(),
+                "{name} is missing with --probe-mtx"
+            );
+        }
+
+        // Each matrix loads from its own triple, and the row labels agree.
+        assert_eq!(
+            std::fs::read_to_string(probe_dir.join("probe_quants_mat_rows.txt")).unwrap(),
+            std::fs::read_to_string(probe_dir.join("quants_mat_rows.txt")).unwrap(),
+        );
+        let probe_cols: Vec<String> =
+            std::fs::read_to_string(probe_dir.join("probe_quants_mat_cols.txt"))
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect();
+        let expected_cols: Vec<String> = (0..NUM_REFS).map(|i| format!("gene_{}", i)).collect();
+        assert_eq!(
+            probe_cols, expected_cols,
+            "probe columns in reference order"
+        );
+        let gene_cols: Vec<String> = std::fs::read_to_string(gene_dir.join("quants_mat_cols.txt"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(gene_cols.len(), FLEX_NUM_GENES);
+
+        // The claim the feature rests on: the gene matrix is that probe matrix
+        // summed by gene, entry for entry.
+        assert_eq!(
+            probe_mtx_summed_by_gene(&probe_dir),
+            gene_with,
+            "gene matrix is not the probe matrix summed by gene (small_thresh {small_thresh})"
+        );
+        assert!(
+            gene_with.values().flatten().any(|&v| v > 0.0),
+            "the fixture produced no counts, so the comparison is vacuous"
+        );
+    }
+}
+
+#[test]
+fn flex_skips_a_requested_bootstrap_and_leaves_the_counts_alone() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_flex_fixture();
+    let plain = fx.input_dir.parent().unwrap().join("no_bootstrap");
+    let asked = fx.input_dir.parent().unwrap().join("bootstrap_asked");
+
+    run_flex_quant(
+        &fx,
+        &plain,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLikeEm,
+        false,
+        0,
+        false,
+        0,
+    )
+    .unwrap();
+    // The request is accepted and not honoured: the run completes.
+    run_flex_quant(
+        &fx,
+        &asked,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLikeEm,
+        false,
+        20,
+        false,
+        0,
+    )
+    .unwrap();
+
+    for name in [
+        "bootstraps_mean.mtx",
+        "bootstraps_var.mtx",
+        "probe_bootstraps_mean.mtx",
+        "probe_bootstraps_var.mtx",
+    ] {
+        assert!(
+            !asked.join("alevin").join(name).exists(),
+            "{name} was written for Flex data"
+        );
+    }
+    assert_eq!(
+        dense_by_barcode(
+            &plain.join("alevin"),
+            "quants_mat.mtx",
+            "quants_mat_rows.txt",
+            FLEX_NUM_GENES
+        ),
+        dense_by_barcode(
+            &asked.join("alevin"),
+            "quants_mat.mtx",
+            "quants_mat_rows.txt",
+            FLEX_NUM_GENES
+        ),
+        "asking for a bootstrap changed the counts"
+    );
+}
+
+#[test]
+fn flex_equivalence_classes_are_keyed_by_probe() {
+    use alevin_fry::quant::ResolutionStrategy;
+    use std::io::BufRead;
+
+    let fx = build_flex_fixture();
+    let out = fx.input_dir.parent().unwrap().join("dump_eq");
+    run_flex_quant(
+        &fx,
+        &out,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLike,
+        false,
+        0,
+        true,
+        0,
+    )
+    .unwrap();
+
+    let path = out.join("alevin").join("gene_eqclass.txt.gz");
+    let reader = std::io::BufReader::new(flate2::read::GzDecoder::new(File::open(path).unwrap()));
+    let first = reader.lines().next().unwrap().unwrap();
+    // The file's first line is its feature count. On the probe axis that is the
+    // number of probes, not the four genes the matrix has.
+    assert_eq!(first.trim().parse::<usize>().unwrap(), NUM_REFS as usize);
+}
+
+#[test]
+fn probe_mtx_is_rejected_on_data_that_is_not_flex() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_flex_fixture();
+    // Same input, with the data type it would have had on any other chemistry.
+    let gpl_path = fx.input_dir.join("generate_permit_list.json");
+    let mut gpl: serde_json::Value =
+        serde_json::from_reader(File::open(&gpl_path).unwrap()).unwrap();
+    gpl["data_type"] = serde_json::Value::Null;
+    std::fs::write(&gpl_path, serde_json::to_string_pretty(&gpl).unwrap()).unwrap();
+
+    let refused = fx.input_dir.parent().unwrap().join("not_flex_probe_mtx");
+    let error = run_flex_quant(
+        &fx,
+        &refused,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLike,
+        true,
+        0,
+        false,
+        0,
+    )
+    .expect_err("--probe-mtx on data that is not Flex should be an error")
+    .to_string();
+    assert!(
+        error.contains("only supported for Flex data"),
+        "unexpected error: {error}"
+    );
+
+    // Without the flag the same input quantifies on the gene axis as always.
+    let accepted = fx.input_dir.parent().unwrap().join("not_flex_default");
+    run_flex_quant(
+        &fx,
+        &accepted,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLike,
+        false,
+        0,
+        false,
+        0,
+    )
+    .unwrap();
+    assert!(
+        !accepted
+            .join("alevin")
+            .join("probe_quants_mat.mtx")
+            .exists()
+    );
+}
+
+#[test]
+fn flex_rejects_what_cannot_resolve_per_probe() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_flex_fixture();
+
+    for (resolution, name, counterpart) in [
+        (
+            ResolutionStrategy::ParsimonyGene,
+            "parsimony-gene",
+            "parsimony",
+        ),
+        (
+            ResolutionStrategy::ParsimonyGeneEm,
+            "parsimony-gene-em",
+            "parsimony-em",
+        ),
+    ] {
+        let out = fx.input_dir.parent().unwrap().join(name);
+        let error = run_flex_quant(&fx, &out, &fx.tg_map, resolution, false, 0, false, 0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("--resolution {name} is not supported")),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains(&format!("Use --resolution {counterpart} instead")),
+            "the error should name the counterpart: {error}"
+        );
+    }
+
+    // A 3-column tg-map asks for USA mode, which the probe axis cannot represent.
+    let usa = fx.input_dir.parent().unwrap().join("usa");
+    let error = run_flex_quant(
+        &fx,
+        &usa,
+        &fx.usa_tg_map,
+        ResolutionStrategy::CellRangerLike,
+        false,
+        0,
+        false,
+        0,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("does not support USA mode"),
+        "unexpected error: {error}"
     );
 }

@@ -165,6 +165,11 @@ fn role_only_single_barcode_flows_through_gpl_and_collate() {
     // rejected because `validate_tag_types` keyed on the `b`/`u` names.
     generate_permit_list(gpl_opts).unwrap();
     assert!(output_dir.join("generate_permit_list.json").exists());
+    // Nothing identifies a chemistry on a single-barcode layout, so the key is
+    // written as null rather than guessed; quant then stays on the gene axis.
+    let gpl_meta_file = std::fs::File::open(output_dir.join("generate_permit_list.json")).unwrap();
+    let gpl_meta: serde_json::Value = serde_json::from_reader(gpl_meta_file).unwrap();
+    assert!(gpl_meta["data_type"].is_null());
     assert!(output_dir.join("permit_freq.bin").exists());
 
     // collate: auto-routes to the tag-driven generic gather (role key), since the
