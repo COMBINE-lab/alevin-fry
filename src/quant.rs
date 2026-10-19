@@ -2255,7 +2255,15 @@ where
         Some(Arc::new(MoleculeTableWriter::create(
             &path,
             sample_names.as_deref().map(Vec::as_slice),
-            FeatureLabeler::new(feature_names.clone(), usa_mode),
+            {
+                let labeler = FeatureLabeler::new(feature_names.clone(), usa_mode);
+                // Probe-level (Flex) labels are targets; project them onto genes.
+                if probe_level {
+                    labeler.with_target_to_gene(tid_to_gid_shared.clone())
+                } else {
+                    labeler
+                }
+            },
             molecule_umi_len,
         )?))
     } else {
