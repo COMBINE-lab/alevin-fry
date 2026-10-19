@@ -66,6 +66,14 @@ slog-term = "2.9.2"
 slog-async = "2.8.0"
 smallvec = "1.15.1"
 snap = "1.1.1"
+# `quant --dump-molecules` writes a Parquet molecule table. Only the Arrow writer
+# and the LZ4 codec are enabled; LZ4 comes from lz4_flex, the pure-Rust crate
+# libradicl already uses for collated chunks, so the default build pulls in no C
+# code. Each quant worker encodes and compresses its own row groups, and only the
+# splice of finished pages into the shared file is serialized.
+parquet = { version = "60.0.0", default-features = false, features = ["arrow", "lz4"] }
+arrow-array = "60.0.0"
+arrow-schema = "60.0.0"
 # pure-Rust, no_std, zero-dependency single-threaded radix sort; used for the
 # initial (umi, gene) triplet sort in the cr-like Hamming-1 UMI correction, where
 # it is ~1.2-1.35x faster than pdqsort on realistic per-cell sizes (its built-in
@@ -100,6 +108,8 @@ rand_distr = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+# only for concatenating read-back batches in the molecule-table round-trip test
+arrow-select = "60.0.0"
 slog-term = "2.9.2"
 
 [profile.release]

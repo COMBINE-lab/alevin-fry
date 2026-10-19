@@ -303,6 +303,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
+    .arg(arg!(--"dump-molecules" "write alevin/molecules.parquet: one row per resolved molecule (cell barcode, representative UMI, feature, supporting reads, status), before molecules are summed into the count matrix"))
     .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
     .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
     .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
@@ -639,6 +640,7 @@ fn main() -> anyhow::Result<()> {
         let init_uniform = t.get_flag("init-uniform");
         let summary_stat = t.get_flag("summary-stat");
         let dump_eq = t.get_flag("dump-eqclasses");
+        let dump_molecules = t.get_flag("dump-molecules");
         if t.get_flag("use-eds") {
             anyhow::bail!(
                 "--use-eds is no longer supported. EDS output has been removed as of v0.12."
@@ -762,6 +764,7 @@ fn main() -> anyhow::Result<()> {
             .init_uniform(init_uniform)
             .summary_stat(summary_stat)
             .dump_eq(dump_eq)
+            .dump_molecules(dump_molecules)
             .resolution(resolution)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
