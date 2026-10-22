@@ -316,7 +316,10 @@ fn process_unfiltered(
             ("fw", "rc")
         };
         let total_reads: u64 = observed_counts.values().sum();
-        if other_ori_reads > 0 {
+        // Only suggest the other orientation when it clearly fits: a wrong
+        // permit list also matches a few reads in the other orientation by
+        // chance, and flipping the orientation would not fix that.
+        if other_ori_reads > listed_reads && 2 * other_ori_reads >= total_reads {
             bail!(
                 "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {}, but {} ({:.2}%) have one with --permit-bc-ori {}. The barcode orientation is probably wrong; re-run generate-permit-list with --permit-bc-ori {} (with `simpleaf atac process`, pass --permit-barcode-ori {}).",
                 listed_reads,
@@ -330,10 +333,12 @@ fn process_unfiltered(
             );
         }
         bail!(
-            "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {}, and no barcode has at least --min-reads {} reads. Check that the permit list matches the chemistry, and the barcode orientation (--permit-bc-ori; --permit-barcode-ori with `simpleaf atac process`).",
+            "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {} ({} with --permit-bc-ori {}), and no barcode has at least --min-reads {} reads. Check that the permit list matches the chemistry, and the barcode orientation (--permit-bc-ori; --permit-barcode-ori with `simpleaf atac process`).",
             listed_reads,
             total_reads,
             ori,
+            other_ori_reads,
+            other_ori,
             min_freq
         );
     }

@@ -734,6 +734,28 @@ fn atac_gpl_that_keeps_no_barcode_is_an_error() {
     assert!(msg.contains("no cell barcodes were retained"), "{msg}");
     assert!(!msg.contains("re-run"), "{msg}");
 
+    // Only a minority of reads (1 of 4 cells) match in the other orientation,
+    // as a wrong permit list can by chance: report the counts, but do not
+    // suggest flipping the orientation.
+    let tmp = tempfile::tempdir().unwrap();
+    let (res, _) = permit_list_with(
+        tmp.path(),
+        |bcs| {
+            let mut wl = vec![bcs[0]];
+            wl.extend(bcs[1..].iter().map(|bc| bc ^ 0b11));
+            wl
+        },
+        true,
+        &log,
+    );
+    let msg = format!("{:#}", res.expect_err("mostly unrelated whitelist"));
+    assert!(msg.contains("no cell barcodes were retained"), "{msg}");
+    assert!(
+        msg.contains("0 of the 24 mapped reads have a barcode in the permit list with --permit-bc-ori rc (6 with --permit-bc-ori fw)"),
+        "{msg}"
+    );
+    assert!(!msg.contains("re-run"), "{msg}");
+
     // The right orientation is unaffected.
     let tmp = tempfile::tempdir().unwrap();
     let (res, _) = permit_list_with(tmp.path(), |bcs| bcs.to_vec(), false, &log);
