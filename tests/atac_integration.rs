@@ -670,3 +670,142 @@ fn atac_deduplicate_matches_across_compression() {
         "lz4 per-chunk collation produced different fragments than the uncompressed path"
     );
 }
+
+/// Run generate-permit-list on a fresh fixture whose whitelist holds
+/// `whitelist`, in the orientation `rc` selects, returning its result and the
+/// output directory.
+fn permit_list_with(
+    tmp: &Path,
+    whitelist: impl FnOnce(&[u64]) -> Vec<u64>,
+    rc: bool,
+    log: &slog::Logger,
+) -> (anyhow::Result<u64>, PathBuf) {
+    let rad_dir = tmp.join("rad");
+    let gpl_dir = tmp.join("gpl");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let mix = CellMix {
+        good: 6,
+        unmapped: 0,
+        multimapped: 0,
+    };
+    let barcodes = create_synthetic_atac_rad(&rad_dir.join("map.rad"), 4, &mix);
+    let wl_path = tmp.join("whitelist.txt");
+    write_whitelist(&wl_path, &whitelist(&barcodes));
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&gpl_dir)
+        .fmeth(CellFilterMethod::UnfilteredExternalList(wl_path, 1))
+        .threads(2)
+        .rc(rc)
+        .cmdline("atac_integration_test")
+        .version(TEST_VERSION)
+        .log(log)
+        .build();
+    (generate_permit_list(gpl_opts), gpl_dir)
+}
+
+/// With the wrong `--permit-bc-ori` no barcode matches the permit list. That
+/// used to succeed with an empty permit list, and `atac sort` then wrote an
+/// empty BED and succeeded too. It is now an error that names the orientation
+/// that does match, and generate_permit_list.json still records the stats.
+#[test]
+fn atac_gpl_that_keeps_no_barcode_is_an_error() {
+    let log = make_test_logger();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (res, gpl_dir) = permit_list_with(tmp.path(), |bcs| bcs.to_vec(), true, &log);
+    let msg = format!("{:#}", res.expect_err("wrong orientation"));
+    assert!(msg.contains("no cell barcodes were retained"), "{msg}");
+    assert!(
+        msg.contains("re-run generate-permit-list with --permit-bc-ori fw"),
+        "{msg}"
+    );
+    assert!(gpl_dir.join("generate_permit_list.json").exists());
+
+    // Nothing matches in either orientation: no orientation to suggest.
+    let tmp = tempfile::tempdir().unwrap();
+    let (res, _) = permit_list_with(
+        tmp.path(),
+        |bcs| bcs.iter().map(|bc| bc ^ 0b11).collect(),
+        false,
+        &log,
+    );
+    let msg = format!("{:#}", res.expect_err("unrelated whitelist"));
+    assert!(msg.contains("no cell barcodes were retained"), "{msg}");
+    assert!(!msg.contains("re-run"), "{msg}");
+
+    // The right orientation is unaffected.
+    let tmp = tempfile::tempdir().unwrap();
+    let (res, _) = permit_list_with(tmp.path(), |bcs| bcs.to_vec(), false, &log);
+    res.expect("matching orientation");
+}
+
+/// An unreadable map.rad is an error naming the file from generate-permit-list,
+/// and an unreadable collated RAD is one from deduplicate; both used to panic.
+#[test]
+fn atac_unreadable_rad_is_an_error() {
+    let log = make_test_logger();
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    File::create(rad_dir.join("map.rad")).unwrap();
+    let wl_path = tmp.path().join("whitelist.txt");
+    write_whitelist(&wl_path, &[make_packed_bc(1, CELL_BC_LEN)]);
+    let gpl_dir = tmp.path().join("gpl");
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&gpl_dir)
+        .fmeth(CellFilterMethod::UnfilteredExternalList(wl_path, 1))
+        .threads(2)
+        .rc(false)
+        .cmdline("atac_integration_test")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    let msg = format!(
+        "{:#}",
+        generate_permit_list(gpl_opts).expect_err("empty map.rad")
+    );
+    assert!(
+        msg.contains(&format!("{}", rad_dir.join("map.rad").display())),
+        "{msg}"
+    );
+
+    File::create(gpl_dir.join("map.collated.rad")).unwrap();
+    let opts = DeduplicateOpts::builder()
+        .input_dir(&gpl_dir)
+        .num_threads(2)
+        .rev(false)
+        .cmdline("atac_integration_test")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    let msg = format!("{:#}", deduplicate(opts).expect_err("empty collated RAD"));
+    assert!(
+        msg.contains("could not read the collated RAD header"),
+        "{msg}"
+    );
+}
+
+/// `view` prints only the single-barcode scRNA-seq layout; on an ATAC RAD it
+/// returns an error that says so.
+#[test]
+fn view_rejects_atac_rad() {
+    let log = make_test_logger();
+    let tmp = tempfile::tempdir().unwrap();
+    let rad = tmp.path().join("map.rad");
+    create_synthetic_atac_rad(
+        &rad,
+        2,
+        &CellMix {
+            good: 2,
+            unmapped: 0,
+            multimapped: 0,
+        },
+    );
+    let msg = format!(
+        "{:#}",
+        alevin_fry::convert::view(&rad, false, &log).expect_err("ATAC view")
+    );
+    assert!(msg.contains("scATAC-seq"), "{msg}");
+}
