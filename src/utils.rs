@@ -1228,6 +1228,27 @@ pub fn read_data_type(input_dir: &PathBuf) -> Option<String> {
     mdata.get("data_type")?.as_str().map(str::to_owned)
 }
 
+/// The `version_str` of the alevin-fry that wrote `generate_permit_list.json`,
+/// when that file has no `data_type` key at all because it predates the key.
+///
+/// `None` when the key is present (null included) or the file cannot be read,
+/// so it tells an older directory apart from one written without `--data-type`.
+pub fn gpl_version_predating_data_type(input_dir: &PathBuf) -> Option<String> {
+    let parent = std::path::Path::new(input_dir);
+    let meta_data_file = File::open(parent.join("generate_permit_list.json")).ok()?;
+    let mdata: serde_json::Value = serde_json::from_reader(BufReader::new(meta_data_file)).ok()?;
+    if mdata.get("data_type").is_some() {
+        return None;
+    }
+    Some(
+        mdata
+            .get("version_str")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown version)")
+            .to_owned(),
+    )
+}
+
 pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
     let parent = std::path::Path::new(input_dir);
     // open the metadata file and read the json

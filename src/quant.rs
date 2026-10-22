@@ -1873,8 +1873,38 @@ where
     // summed from, and changes nothing that is computed.
     let data_type = afutils::read_data_type(quant_opts.input_dir);
     let probe_level = data_type.as_deref() == Some(afutils::DATA_TYPE_FLEX);
-    if quant_opts.probe_mtx && !probe_level {
-        anyhow::bail!("--probe-mtx is only supported for Flex data.");
+    if !probe_level && (quant_opts.probe_mtx || sample_bc_extractor.is_some()) {
+        // Say why the run is quantified per gene where that may be unexpected: on
+        // a multi-barcode layout, which Flex has, and when --probe-mtx asks for a
+        // probe matrix. A directory written before the key existed (absent) is
+        // told apart from a run that did not declare --data-type flex (null).
+        let predates = afutils::gpl_version_predating_data_type(quant_opts.input_dir);
+        let why = match (&predates, &data_type) {
+            (Some(version), _) => {
+                format!("was written by alevin-fry {version}, which does not record a data_type")
+            }
+            (None, Some(other)) => format!("records data_type \"{other}\""),
+            (None, None) => {
+                "records no data_type (generate-permit-list was run without --data-type flex)"
+                    .to_string()
+            }
+        };
+        let fix = "If the reads were mapped to a 10x Flex probe set, re-run generate-permit-list with --data-type flex, then collate";
+        if quant_opts.probe_mtx {
+            anyhow::bail!(
+                "--probe-mtx is only supported for Flex data, which is quantified per probe, and generate_permit_list.json {why}. {fix}, to quantify per probe and write the probe matrix."
+            );
+        }
+        if sample_bc_extractor.is_some() {
+            let msg = format!(
+                "generate_permit_list.json {why}, so this multi-barcode data is quantified per gene. {fix}, to resolve UMIs per probe."
+            );
+            if predates.is_some() {
+                warn!(log, "{}", msg);
+            } else {
+                info!(log, "{}", msg);
+            }
+        }
     }
     let write_probe = probe_level && quant_opts.probe_mtx;
 

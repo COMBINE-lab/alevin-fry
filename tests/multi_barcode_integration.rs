@@ -2021,7 +2021,7 @@ fn probe_mtx_is_rejected_on_data_that_is_not_flex() {
     use alevin_fry::quant::ResolutionStrategy;
 
     let fx = build_flex_fixture();
-    // Same input, with the data type it would have had on any other chemistry.
+    // Same input, with the data type it has when --data-type flex is not passed.
     let gpl_path = fx.input_dir.join("generate_permit_list.json");
     let mut gpl: serde_json::Value =
         serde_json::from_reader(File::open(&gpl_path).unwrap()).unwrap();
@@ -2045,6 +2045,11 @@ fn probe_mtx_is_rejected_on_data_that_is_not_flex() {
         error.contains("only supported for Flex data"),
         "unexpected error: {error}"
     );
+    // The error says why, and how to get a probe matrix.
+    assert!(
+        error.contains("records no data_type") && error.contains("--data-type flex"),
+        "the error should name the missing declaration: {error}"
+    );
 
     // Without the flag the same input quantifies on the gene axis as always.
     let accepted = fx.input_dir.parent().unwrap().join("not_flex_default");
@@ -2065,6 +2070,52 @@ fn probe_mtx_is_rejected_on_data_that_is_not_flex() {
             .join("probe_quants_mat.mtx")
             .exists()
     );
+}
+
+#[test]
+fn probe_mtx_names_a_permit_list_that_predates_data_type() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_flex_fixture();
+    // Same input, as an alevin-fry that predates the key would have written it.
+    let gpl_path = fx.input_dir.join("generate_permit_list.json");
+    let mut gpl: serde_json::Value =
+        serde_json::from_reader(File::open(&gpl_path).unwrap()).unwrap();
+    gpl.as_object_mut().unwrap().remove("data_type");
+    std::fs::write(&gpl_path, serde_json::to_string_pretty(&gpl).unwrap()).unwrap();
+
+    let refused = fx.input_dir.parent().unwrap().join("old_gpl_probe_mtx");
+    let error = run_flex_quant(
+        &fx,
+        &refused,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLike,
+        true,
+        0,
+        false,
+        0,
+    )
+    .expect_err("--probe-mtx without a recorded data_type should be an error")
+    .to_string();
+    assert!(
+        error.contains(&format!("was written by alevin-fry {TEST_VERSION}"))
+            && error.contains("--data-type flex"),
+        "the error should say the permit list predates data_type: {error}"
+    );
+
+    // Without the flag it is quantified (per gene), as that version would have.
+    let accepted = fx.input_dir.parent().unwrap().join("old_gpl_default");
+    run_flex_quant(
+        &fx,
+        &accepted,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLike,
+        false,
+        0,
+        false,
+        0,
+    )
+    .unwrap();
 }
 
 #[test]
