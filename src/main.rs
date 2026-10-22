@@ -591,7 +591,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: &PathBuf = t.get_one("rad").unwrap();
         let print_header = t.get_flag("header");
-        alevin_fry::convert::view(rad_file, print_header, &log)
+        alevin_fry::convert::view(rad_file, print_header, &log)?;
     }
 
     // collate a rad file to group together all records corresponding
