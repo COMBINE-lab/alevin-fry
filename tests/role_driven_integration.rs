@@ -165,8 +165,8 @@ fn role_only_single_barcode_flows_through_gpl_and_collate() {
     // rejected because `validate_tag_types` keyed on the `b`/`u` names.
     generate_permit_list(gpl_opts).unwrap();
     assert!(output_dir.join("generate_permit_list.json").exists());
-    // Nothing identifies a chemistry on a single-barcode layout, so the key is
-    // written as null rather than guessed; quant then stays on the gene axis.
+    // No --data-type was declared, so the key is written as null rather than
+    // guessed; quant then stays on the gene axis.
     let gpl_meta_file = std::fs::File::open(output_dir.join("generate_permit_list.json")).unwrap();
     let gpl_meta: serde_json::Value = serde_json::from_reader(gpl_meta_file).unwrap();
     assert!(gpl_meta["data_type"].is_null());
@@ -208,4 +208,41 @@ fn role_only_single_barcode_flows_through_gpl_and_collate() {
             .any(|t| matches!(t.role, TagRole::Barcode { .. })),
         "collated prelude should preserve the declared Barcode role"
     );
+}
+
+/// `--data-type flex` is recorded on the single-barcode path too (e.g. a
+/// singleplex Flex library), where no barcode layout could have implied it.
+#[test]
+fn single_barcode_gpl_records_the_declared_data_type() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::prog_opts::GenPermitListOpts;
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+
+    let num_cells = 6usize;
+    create_role_only_rad(&rad_dir.join("map.rad"), num_cells, 8).unwrap();
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(num_cells))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .data_type(Some(alevin_fry::utils::DATA_TYPE_FLEX.to_string()))
+        .build();
+    generate_permit_list(gpl_opts).unwrap();
+
+    let gpl_meta_file = std::fs::File::open(output_dir.join("generate_permit_list.json")).unwrap();
+    let gpl_meta: serde_json::Value = serde_json::from_reader(gpl_meta_file).unwrap();
+    assert_eq!(gpl_meta["data_type"].as_str(), Some("flex"));
 }

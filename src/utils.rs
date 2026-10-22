@@ -1211,14 +1211,16 @@ pub fn read_filter_list(
     Ok(fset)
 }
 
-/// The `data_type` value recorded in `generate_permit_list.json`.
+/// The `data_type` value recorded in `generate_permit_list.json` for
+/// `generate-permit-list --data-type flex`.
 pub const DATA_TYPE_FLEX: &str = "flex";
 
-/// The data type recorded by generate-permit-list, if it identified one.
+/// The data type recorded by generate-permit-list, if one was declared to it
+/// with `--data-type`.
 ///
-/// `None` covers both a run whose layout identified nothing and a directory
-/// written before the key existed, so it means "not identified as Flex" rather
-/// than "certainly not Flex".
+/// `None` covers both a run that declared none and a directory written before
+/// the key existed, so it means "not declared Flex" rather than "certainly not
+/// Flex".
 pub fn read_data_type(input_dir: &PathBuf) -> Option<String> {
     let parent = std::path::Path::new(input_dir);
     let meta_data_file = File::open(parent.join("generate_permit_list.json")).ok()?;

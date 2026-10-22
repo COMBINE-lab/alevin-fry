@@ -464,11 +464,12 @@ fn test_multi_bc_generate_permit_list() {
     assert!(output_dir.join("sample_info.json").exists());
     assert!(output_dir.join("generate_permit_list.json").exists());
 
-    // A multi-barcode layout is the one data type generate-permit-list can name,
-    // and quant resolves per probe when it sees it.
+    // No --data-type was declared, so the key is written as null (not absent):
+    // a multi-barcode layout alone does not make the data Flex, and quant then
+    // stays on the gene axis.
     let gpl_meta_file = File::open(output_dir.join("generate_permit_list.json")).unwrap();
     let gpl_meta: serde_json::Value = serde_json::from_reader(gpl_meta_file).unwrap();
-    assert_eq!(gpl_meta["data_type"].as_str(), Some("flex"));
+    assert!(gpl_meta.get("data_type").is_some_and(|v| v.is_null()));
 
     // Check sample_info.json
     let info_file = File::open(output_dir.join("sample_info.json")).unwrap();
@@ -1556,8 +1557,9 @@ fn tiny_cell_fast_path_does_not_override_requested_resolution() {
 // -----------------------------------------------------------------------
 
 /// One probe-level input, built per test: a synthetic multi-barcode RAD taken
-/// through generate-permit-list and collate. Its `generate_permit_list.json`
-/// records data_type "flex", which is what puts quant on the probe axis.
+/// through generate-permit-list (with `--data-type flex`) and collate. Its
+/// `generate_permit_list.json` records data_type "flex", which is what puts
+/// quant on the probe axis.
 struct FlexFixture {
     _tmp: tempfile::TempDir,
     input_dir: std::path::PathBuf,
@@ -1640,6 +1642,7 @@ fn build_flex_fixture() -> FlexFixture {
         .velo_mode(false)
         .cmdline("test")
         .log(&log)
+        .data_type(Some(alevin_fry::utils::DATA_TYPE_FLEX.to_string()))
         .sample_bc_list(Some(sample_list_path))
         .sample_names(None)
         .sample_correction_mode(SampleCorrectionMode::Exact)

@@ -103,6 +103,12 @@ pub struct GenPermitListOpts<'a, 'b, 'c, 'd, 'e> {
     pub version: &'d str,
     #[serde(skip_serializing)]
     pub log: &'e slog::Logger,
+    /// Data type declared by `--data-type` and recorded verbatim in
+    /// `generate_permit_list.json` (`"flex"` when the reference targets are
+    /// probes, else null). Never inferred from the barcode layout: a
+    /// multi-barcode RAD can come from a transcriptome reference too.
+    #[builder(default)]
+    pub data_type: Option<String>,
     /// Path to known sample barcode list (one per line). When present,
     /// triggers multi-barcode mode (e.g., 10x Flex).
     #[builder(default)]

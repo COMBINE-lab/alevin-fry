@@ -496,9 +496,10 @@ fn process_unfiltered(
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
     "permit-list-type" : "unfiltered",
-    // Null, not absent: the key is written on every path, so a reader can tell
-    // an unidentified type from a directory predating the key.
-    "data_type" : serde_json::Value::Null,
+    // As declared by --data-type, else null, not absent: the key is written on
+    // every path, so a reader can tell an undeclared type from a directory
+    // predating the key.
+    "data_type" : gpl_opts.data_type,
     "gpl_options" : &gpl_opts,
     "resolved_cell_bc_neighborhood": spec.neighborhood.to_string(),
     "resolved_cell_bc_confidence": gpl_opts.cell_bc_confidence.to_string(),
@@ -643,9 +644,10 @@ fn process_filtered(
     "max-ambig-record" : max_ambiguity_read,
     "cmd" : cmdline,
     "permit-list-type" : "filtered",
-    // Null, not absent: the key is written on every path, so a reader can tell
-    // an unidentified type from a directory predating the key.
-    "data_type" : serde_json::Value::Null,
+    // As declared by --data-type, else null, not absent: the key is written on
+    // every path, so a reader can tell an undeclared type from a directory
+    // predating the key.
+    "data_type" : gpl_opts.data_type,
     "gpl_options" : &gpl_opts,
     "resolved_cell_bc_neighborhood": spec.neighborhood.to_string(),
     "resolved_cell_bc_confidence": gpl_opts.cell_bc_confidence.to_string(),
@@ -1405,10 +1407,10 @@ fn do_generate_permit_list_multi_bc(
         "version_str": gpl_opts.version,
         "cmd": gpl_opts.cmdline,
         "permit-list-type": format!("{:?}", gpl_opts.fmeth),
-        // A multi-barcode layout is reached only by 10x Flex today, so it is the
-        // single data type this step can identify; no chemistry is declared to it
-        // and the RAD carries none.
-        "data_type": afutils::DATA_TYPE_FLEX,
+        // Recorded only as declared by --data-type, never inferred: a multi-barcode
+        // layout is not evidence of a probe reference (simpleaf multiplex-quant
+        // also runs transcriptome references through this path).
+        "data_type": gpl_opts.data_type,
         "multi_barcode": true,
         "num_barcodes": num_barcodes,
         "cell_bc_correction": gpl_opts.cell_bc_correction.to_string(),

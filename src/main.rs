@@ -202,6 +202,10 @@ fn main() -> anyhow::Result<()> {
             arg!(-m --"min-reads" <MINREADS> "minimum read count threshold; only used with --unfiltered-pl")
                 .value_parser(value_parser!(usize))
                 .default_value("10"))
+        .arg(
+            arg!(--"data-type" <DATATYPE> "declare the data type for quant: `flex` when the reference is a 10x Flex probe set, so quant resolves UMIs per probe; omit it for any other reference (e.g. a transcriptome). Never inferred from the barcode layout")
+                .value_parser(["flex"])
+        )
         // Multi-barcode options (e.g., 10x Flex)
         .arg(
             arg!(--"sample-bc-list" <SAMPLELIST> "file containing known sample/library barcodes (one per line); triggers multi-barcode mode")
@@ -488,6 +492,7 @@ fn main() -> anyhow::Result<()> {
                 .expect("valid integer number of threads"),
             &log,
         ) as usize;
+        let data_type: Option<String> = t.get_one::<String>("data-type").cloned();
 
         // Parse multi-barcode options
         let sample_bc_list: Option<PathBuf> = t.get_one::<PathBuf>("sample-bc-list").cloned();
@@ -556,6 +561,7 @@ fn main() -> anyhow::Result<()> {
             .velo_mode(velo_mode)
             .cmdline(&cmdline)
             .log(&log)
+            .data_type(data_type)
             .sample_bc_list(sample_bc_list)
             .sample_names(sample_names)
             .sample_correction_mode(sample_correction_mode)

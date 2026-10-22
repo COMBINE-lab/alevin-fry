@@ -60,6 +60,19 @@ Sample Frequency can defer structurally ambiguous ``(sample, cell)`` pairs.
 ``--memory-limit`` sets the total bounded buffer budget (512 MiB by default),
 and ``--tmp-dir`` chooses where compressed temporary runs are written.
 
+Data type
+---------
+
+``--data-type flex`` declares that the reads were mapped to a 10x Flex probe
+set.  The declaration is recorded in ``generate_permit_list.json`` and makes
+``quant`` resolve UMIs per probe, as described in :doc:`quant`.  Pass it only
+when the reference is a probe set, with a single- or a multi-barcode layout.
+Omit it for any other reference, including a transcriptome used with a Flex or
+other multi-barcode geometry: resolved per target, each transcript would be its
+own feature, and under ``cr-like`` a UMI compatible with several isoforms of one
+gene would be discarded as a tie.  The data type is never inferred from the
+barcode layout.
+
 output
 ------
 
@@ -74,4 +87,4 @@ relevant to users of ``alevin-fry``, but the files are described here.
 
 4. ``correction_plan.bin`` is the deterministic, versioned internal handoff consumed by current collation and ATAC sorting.  It contains the accepted observed corrections, including identities, and their resolved policy metadata.  It is not a user-editable permit list or stable interchange format; keep it with the complete GPL output and use compatible alevin-fry stages.
 
-5. ``generate_permit_list.json`` records the command, resolved options, correction statistics, and expected orientation.  Multi-barcode workflows additionally write ``sample_info.json``, ``sample_permit_map.bin``, and per-sample permit files for samples having retained cells.  It also records ``data_type``: ``"flex"`` for a multi-barcode layout and ``null`` otherwise.  ``quant`` reads this key to select the feature axis on which it resolves UMIs, as described in :doc:`quant`.
+5. ``generate_permit_list.json`` records the command, resolved options, correction statistics, and expected orientation.  Multi-barcode workflows additionally write ``sample_info.json``, ``sample_permit_map.bin``, and per-sample permit files for samples having retained cells.  It also records ``data_type``: ``"flex"`` when ``--data-type flex`` was passed and ``null`` otherwise.  ``quant`` reads this key to select the feature axis on which it resolves UMIs, as described in :doc:`quant`.

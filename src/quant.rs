@@ -1863,10 +1863,14 @@ where
         }
     }
 
-    // The feature axis follows the data type generate-permit-list recorded, which
-    // identifies only Flex: Flex resolves per reference target, everything else per
-    // gene. The gene matrix is written either way; --probe-mtx adds the per-probe
-    // matrix it was summed from, and changes nothing that is computed.
+    // The feature axis follows the data type declared to generate-permit-list
+    // (--data-type flex) and recorded in generate_permit_list.json. It is never
+    // inferred: a multi-barcode layout also comes from transcriptome references,
+    // where resolving per target would make cr-like discard UMIs shared by a
+    // gene's isoforms.
+    // Flex resolves per reference target, everything else per gene. The gene
+    // matrix is written either way; --probe-mtx adds the per-probe matrix it was
+    // summed from, and changes nothing that is computed.
     let data_type = afutils::read_data_type(quant_opts.input_dir);
     let probe_level = data_type.as_deref() == Some(afutils::DATA_TYPE_FLEX);
     if quant_opts.probe_mtx && !probe_level {
@@ -1875,9 +1879,9 @@ where
     let write_probe = probe_level && quant_opts.probe_mtx;
 
     if probe_level {
-        // Report the data type that was detected, and only that: the type is
-        // inferred rather than requested, so a run should not go on without
-        // saying so, and the line stays true however the handling changes.
+        // Report the declared data type, and only that: it switches the feature
+        // axis, so a run should not go on without saying so, and the line stays
+        // true however the handling changes.
         info!(
             log,
             "generate_permit_list.json records data_type \"{}\"",

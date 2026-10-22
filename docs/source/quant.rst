@@ -37,7 +37,7 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``--use-mtx`` : This flag is accepted for backwards compatibility. Matrix market coordinate format is the default (and currently only) output format.
 
-* ``--probe-mtx`` : This flag will cause the probe-by-cell count matrix to be written to the output directory in addition to the gene-level count matrix, as ``probe_quants_mat.mtx`` with its own ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  It changes only what is written and not what is computed; the gene-level matrix and ``featureDump.txt`` are the same with and without it.  This flag is only meaningful for Flex data, and passing it on any other data type is an error.
+* ``--probe-mtx`` : This flag will cause the probe-by-cell count matrix to be written to the output directory in addition to the gene-level count matrix, as ``probe_quants_mat.mtx`` with its own ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  It changes only what is written and not what is computed; the gene-level matrix and ``featureDump.txt`` are the same with and without it.  This flag is only meaningful for Flex data, i.e. when ``generate-permit-list`` was run with ``--data-type flex``, and passing it on any other data is an error.
 
 There are also a few flags that are not immediately exposed:
 
@@ -48,7 +48,7 @@ There are also a few flags that are not immediately exposed:
 Flex data
 ---------
 
-For Flex data, ``quant`` resolves UMIs per probe rather than per gene.  The axis follows the ``data_type`` key recorded in ``generate_permit_list.json`` by ``generate-permit-list``.
+For Flex data, ``quant`` resolves UMIs per probe rather than per gene.  The axis follows the ``data_type`` key recorded in ``generate_permit_list.json`` by ``generate-permit-list``, which is ``"flex"`` only when ``generate-permit-list`` was run with ``--data-type flex`` (see :doc:`generate_permit_list`).  It is never inferred from the barcode layout: a multi-barcode RAD file mapped to a transcriptome (for example by ``simpleaf multiplex-quant`` with ``--t2g-map``) is quantified per gene, as is every other run without the declaration, including directories written by a ``generate-permit-list`` that predates the key.
 
 Every reference target (probe) is its own feature, so UMI correction, deduplication, tie handling and the EM all act per probe, and the gene-level count matrix is then the sum of each gene's probes.  **Note**: the resulting gene counts are not identical to those a gene-level run produces, since correction and deduplication act per probe.  The per-cell statistics in ``featureDump.txt`` are computed from the probe-summed gene matrix.
 
