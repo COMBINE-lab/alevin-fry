@@ -34,6 +34,13 @@ Are you curious about processing details like [whether to use a sparse or dense 
 
 * The [`alevinqc`](https://github.com/csoneson/alevinQC) package — maintained by @csoneson — provides tool and functions for performing quality control and assessment downstream of `alevin-fry`.
 
+## Compatibility
+
+Since piscem 0.24, the RAD files written by `piscem` use version 2 of the RAD format (self-describing: a `RAD_FILE` magic, a format version and tag roles). `salmon alevin` and piscem 0.23 or earlier write RAD v1.
+
+* `alevin-fry` releases after 0.18.3 read both RAD v1 and RAD v2.
+* `alevin-fry` 0.18.3 and earlier read only RAD v1, so they cannot process the output of piscem 0.24 or later. They fail while parsing the RAD header, and the message does not mention versions: `generate-permit-list` panics with e.g. `invalid utf-8 sequence of 1 bytes from index ...`, and `atac generate-permit-list` with `could not create ParallelRadReader: could not parse the RAD prelude`. If you see these errors, check the `alevin-fry` version first; `head -c 8 map.rad` prints `RAD_FILE` for a RAD v2 file. (The same errors can also mean a truncated or corrupt RAD file.)
+
 ## Installing from bioconda
 
 Alevin-fry is available for both x86 linux and OSX platforms [using bioconda](https://anaconda.org/bioconda/alevin-fry). On Apple silicon, you can either build (easily) from source (see below) or run `alevin-fry` under the rosetta 2 emulation layer.
