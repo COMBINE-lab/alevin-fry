@@ -91,9 +91,9 @@ clap = { version = "4.6.0", features = [
   "error-context",
 ] }
 
-# libradicl 0.20 depends on noodles 0.115; a mismatch here yields two
-# incompatible `sam::Header` types at the `RadHeader::from_bam_header` call in
-# src/convert.rs. Keep these in lockstep.
+# noodles is used only by `convert` (BAM/SAM -> RAD, src/convert.rs). libradicl
+# >= 0.21 has no noodles dependency (convert hands it plain reference names via
+# `RadHeader::from_ref_names`), so noodles can be bumped independently.
 noodles = { version = "0.115.0", features = ["bam", "bgzf", "sam"] }
 dashmap = { version = "6.1.0", features = ["serde", "inline"] }
 rand_distr = "0.6"
