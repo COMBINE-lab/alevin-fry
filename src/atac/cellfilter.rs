@@ -180,6 +180,20 @@ fn process_unfiltered(
             kept_barcodes.push(*entry.key());
         }
     }
+    // When no barcode is kept, count the reads whose barcode is in the permit
+    // list as given and in the other orientation, so the error raised below
+    // can name a wrong --permit-bc-ori as the cause.
+    let mut listed_reads = 0u64;
+    let mut other_ori_reads = 0u64;
+    if kept_barcodes.is_empty() {
+        listed_reads = hm.iter().map(|entry| *entry.value()).sum();
+        for (&barcode, &count) in &unmatched_bc {
+            let rc = needletail::bitkmer::reverse_complement((barcode, barcode_len as u8));
+            if hm.contains_key(&rc.0) {
+                other_ori_reads += count;
+            }
+        }
+    }
     for (barcode, count) in unmatched_bc {
         *observed_counts.entry(barcode).or_insert(0) += count;
     }
@@ -291,6 +305,38 @@ fn process_unfiltered(
     m_file
         .write_all(meta_info_string.as_bytes())
         .context("cannot write to generate_permit_list.json file")?;
+
+    // Nothing downstream can use an empty permit list: sort would write an empty
+    // BED and still succeed. Fail here instead (generate_permit_list.json above
+    // keeps the correction stats) and say what to check.
+    if kept_barcodes.is_empty() {
+        let (ori, other_ori) = if gpl_opts.rc {
+            ("rc", "fw")
+        } else {
+            ("fw", "rc")
+        };
+        let total_reads: u64 = observed_counts.values().sum();
+        if other_ori_reads > 0 {
+            bail!(
+                "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {}, but {} ({:.2}%) have one with --permit-bc-ori {}. The barcode orientation is probably wrong; re-run generate-permit-list with --permit-bc-ori {} (with `simpleaf atac process`, pass --permit-barcode-ori {}).",
+                listed_reads,
+                total_reads,
+                ori,
+                other_ori_reads,
+                100.0 * other_ori_reads as f64 / total_reads as f64,
+                other_ori,
+                other_ori,
+                other_ori
+            );
+        }
+        bail!(
+            "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {}, and no barcode has at least --min-reads {} reads. Check that the permit list matches the chemistry, and the barcode orientation (--permit-bc-ori; --permit-barcode-ori with `simpleaf atac process`).",
+            listed_reads,
+            total_reads,
+            ori,
+            min_freq
+        );
+    }
 
     info!(
         log,
