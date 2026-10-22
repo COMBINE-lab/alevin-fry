@@ -420,11 +420,9 @@ fn multi_sample_knee_skips_samples_with_too_few_barcodes() {
     ))
     .unwrap();
     let info = read_info(&knee_dir);
-    let kept = sample(&info, "sample0")["num_cells"].as_u64().unwrap();
-    assert!(
-        (1..16).contains(&kept),
-        "knee finding should filter sample0, kept {kept}"
-    );
+    // The knee keeps exactly the 8 large cells, as it does when sample0 is run
+    // on its own.
+    assert_eq!(sample(&info, "sample0")["num_cells"], 8);
     assert!(
         knee_dir
             .join("sample_sample0")
