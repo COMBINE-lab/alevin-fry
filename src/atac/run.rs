@@ -151,7 +151,12 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
         let col_json_path = parent.join("collate.json");
 
         if json_path.exists() && col_json_path.exists() {
-            deduplicate(dedup_opts).context("could not deduplicate the collated RAD file")?;
+            deduplicate(dedup_opts).with_context(|| {
+                format!(
+                    "could not deduplicate the collated RAD file in {}",
+                    input_dir.display()
+                )
+            })?;
         } else {
             crit!(
                 log,
