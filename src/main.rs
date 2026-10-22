@@ -629,7 +629,7 @@ fn main() -> anyhow::Result<()> {
             VERSION,
             &log,
         )
-        .expect("could not collate.");
+        .with_context(|| format!("could not collate the RAD file in {}", rad_dir.display()))?;
     }
 
     // perform quantification of a collated rad file.
@@ -819,7 +819,7 @@ fn main() -> anyhow::Result<()> {
             output_dir,
             &log,
         )
-        .expect("could not perform inference from equivalence class counts.");
+        .context("could not perform inference from equivalence class counts")?;
     }
     Ok(())
 }

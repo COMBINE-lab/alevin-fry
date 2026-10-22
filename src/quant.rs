@@ -2359,7 +2359,10 @@ where
 pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let log = quant_opts.log;
     let prelude = RadPrelude::from_bytes(&mut br)?;
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .context("could not read the file-level tags of the collated RAD file")?;
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 

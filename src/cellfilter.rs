@@ -689,8 +689,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         anyhow::bail!("execution terminated because input RAD path does not exist.");
     }
 
-    let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut ifile).unwrap();
+    let rad_path = i_dir.join("map.rad");
+    let prelude = RadPrelude::from_bytes(&mut ifile)
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut ifile)
+        .with_context(|| {
+            format!(
+                "could not read the file-level tags of {}",
+                rad_path.display()
+            )
+        })?;
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {

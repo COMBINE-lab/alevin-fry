@@ -369,16 +369,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let nworkers: usize = gpl_opts.threads.saturating_sub(1).max(1);
     // open the input rad file and get the total file length from metadata to support
     // a progress bar
-    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
+    let rad_path = i_dir.join("map.rad");
+    let i_file = File::open(&rad_path).context("could not open input rad file")?;
     let metadata = i_file.metadata()?;
     let file_len = metadata.len();
 
     let ifile = BufReader::new(i_file);
     let mut rad_reader =
-        libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
+        libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::try_new(
             ifile,
             NonZeroUsize::new(nworkers).unwrap(),
-        );
+        )
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
 
     let hdr = &rad_reader.prelude.hdr;
     info!(

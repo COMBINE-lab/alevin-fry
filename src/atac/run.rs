@@ -7,7 +7,7 @@ use crate::atac::sort::sort;
 use crate::barcode_correction::{BarcodeNeighborhood, Confidence};
 use crate::prog_opts::CellBarcodeCorrectionStrategy;
 use crate::utils::enforce_thread_floor;
-use anyhow::bail;
+use anyhow::{Context, bail};
 use clap::ArgMatches;
 use slog::{Logger, crit, warn};
 use std::path::PathBuf;
@@ -102,7 +102,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             version,
             log,
         )
-        .expect("could not collate.");
+        .with_context(|| format!("could not collate the RAD file in {}", rad_dir.display()))?;
     }
 
     if let Some(t) = opts.subcommand_matches("sort") {
@@ -122,7 +122,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
             version,
             log,
         )
-        .expect("could not sort.");
+        .with_context(|| format!("could not sort the RAD file in {}", rad_dir.display()))?;
     }
 
     if let Some(t) = opts.subcommand_matches("deduplicate") {
@@ -151,12 +151,7 @@ pub fn run(opts: &ArgMatches, version: &str, cmdline: &str, log: &Logger) -> any
         let col_json_path = parent.join("collate.json");
 
         if json_path.exists() && col_json_path.exists() {
-            match deduplicate(dedup_opts) {
-                Ok(_) => {}
-                Err(_e) => {
-                    panic!("Could not dedupicate rad file");
-                }
-            };
+            deduplicate(dedup_opts).context("could not deduplicate the collated RAD file")?;
         } else {
             crit!(
                 log,
