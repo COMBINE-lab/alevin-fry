@@ -2010,10 +2010,40 @@ fn flex_equivalence_classes_are_keyed_by_probe() {
 
     let path = out.join("alevin").join("gene_eqclass.txt.gz");
     let reader = std::io::BufReader::new(flate2::read::GzDecoder::new(File::open(path).unwrap()));
-    let first = reader.lines().next().unwrap().unwrap();
+    let lines: Vec<String> = reader.lines().map(Result::unwrap).collect();
     // The file's first line is its feature count. On the probe axis that is the
     // number of probes, not the four genes the matrix has.
-    assert_eq!(first.trim().parse::<usize>().unwrap(), NUM_REFS as usize);
+    assert_eq!(lines[0].trim().parse::<usize>().unwrap(), NUM_REFS as usize);
+
+    // The probe ids are named by probe_quants_mat_cols.txt, written with -d
+    // alone; the rest of the probe-matrix triple needs --probe-mtx.
+    let alevin = out.join("alevin");
+    let probe_cols: Vec<String> = std::fs::read_to_string(alevin.join("probe_quants_mat_cols.txt"))
+        .expect("-d on Flex data should name the probes")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let expected_cols: Vec<String> = (0..NUM_REFS).map(|i| format!("gene_{}", i)).collect();
+    assert_eq!(probe_cols, expected_cols, "probe names in reference order");
+    for name in ["probe_quants_mat.mtx", "probe_quants_mat_rows.txt"] {
+        assert!(
+            !alevin.join(name).exists(),
+            "{name} was written without --probe-mtx"
+        );
+    }
+    // Every id of every class (all but its last field, the class id) indexes it.
+    let num_classes: usize = lines[1].trim().parse().unwrap();
+    assert!(
+        num_classes > 0,
+        "the fixture produced no equivalence classes"
+    );
+    assert_eq!(lines.len(), 2 + num_classes);
+    for class in &lines[2..] {
+        let fields: Vec<&str> = class.split('\t').collect();
+        for id in &fields[..fields.len() - 1] {
+            assert!(id.parse::<usize>().unwrap() < probe_cols.len());
+        }
+    }
 }
 
 #[test]

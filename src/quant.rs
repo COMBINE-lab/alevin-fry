@@ -1924,7 +1924,7 @@ where
         if dump_eq {
             warn!(
                 log,
-                "--dump-eqclasses on Flex data: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes."
+                "--dump-eqclasses on Flex data: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes. The ids index the probe names in probe_quants_mat_cols.txt."
             );
         }
         // The bootstrap reports the uncertainty in how the EM allocates a molecule
@@ -2093,8 +2093,9 @@ where
     } else {
         tid_to_gid_shared.clone()
     };
-    // Column names of the target matrix, in reference-id (RAD header) order.
-    let probe_names = write_probe.then(|| hdr.ref_names.clone());
+    // Column names of the target matrix, in reference-id (RAD header) order. They
+    // also name the probe ids of the equivalence classes, so -d writes them too.
+    let probe_names = (write_probe || (probe_level && dump_eq)).then(|| hdr.ref_names.clone());
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
 
@@ -2529,7 +2530,8 @@ where
     // from the same counter, under the same lock that appends that cell's barcode --
     // so the row labels are written out a second time under the probe matrix's own
     // name rather than left implicit, which keeps each matrix loadable from its own
-    // triple of files.
+    // triple of files. With only -d, the names are written alone: they label the
+    // equivalence classes, and there is no probe matrix for rows to describe.
     if let Some(names) = &probe_names {
         let pn_path = output_matrix_path.join("probe_quants_mat_cols.txt");
         let pn_file = File::create(pn_path).context("could not create probe name output")?;
@@ -2538,12 +2540,14 @@ where
             writeln!(pn_writer, "{}", n)?;
         }
         pn_writer.flush().context("could not flush probe names")?;
-        // The barcode file is flushed and no longer written to by this point.
-        fs::copy(
-            output_matrix_path.join("quants_mat_rows.txt"),
-            output_matrix_path.join("probe_quants_mat_rows.txt"),
-        )
-        .context("could not write probe barcode output")?;
+        if write_probe {
+            // The barcode file is flushed and no longer written to by this point.
+            fs::copy(
+                output_matrix_path.join("quants_mat_rows.txt"),
+                output_matrix_path.join("probe_quants_mat_rows.txt"),
+            )
+            .context("could not write probe barcode output")?;
+        }
     }
 
     let pb_msg = format!(
