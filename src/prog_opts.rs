@@ -32,6 +32,9 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub init_uniform: bool,
     pub summary_stat: bool,
     pub dump_eq: bool,
+    /// write the per-molecule table (`alevin/molecules.parquet`)
+    #[builder(default = false)]
+    pub dump_molecules: bool,
     pub resolution: ResolutionStrategy,
     pub pug_exact_umi: bool,
     /// cr-like only: collapse UMIs within Hamming distance 1 of a higher-count UMI (same cell, same gene)
