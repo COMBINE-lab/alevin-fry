@@ -581,6 +581,178 @@ pub fn em_optimize<P: EqClassPayload>(
     alphas_in
 }
 
+/// One cell's counts on a feature axis (genes, or probes at probe level),
+/// held by a worker and reused for every cell it resolves.
+///
+/// `em_optimize` allocates, initializes and scans vectors over the whole axis
+/// for every cell, and the caller then scans the result again to find the
+/// nonzero entries, although a cell only touches the features its own
+/// equivalence classes name. Here `values` and `scratch` span the axis once per
+/// worker, and every per-cell pass walks only `support`: the features this
+/// cell's classes name. Between cells, both vectors are zero outside `support`.
+#[derive(Default)]
+pub struct SparseCellCounts {
+    values: Vec<f32>,
+    scratch: Vec<f32>,
+    in_support: Vec<bool>,
+    support: Vec<u32>,
+}
+
+impl SparseCellCounts {
+    /// Forgets the previous cell and sizes the axis to `num_features`.
+    pub fn reset(&mut self, num_features: usize) {
+        for &index in &self.support {
+            let index = index as usize;
+            self.values[index] = 0.0;
+            self.in_support[index] = false;
+        }
+        self.support.clear();
+        self.values.resize(num_features, 0.0);
+        self.scratch.resize(num_features, 0.0);
+        self.in_support.resize(num_features, false);
+    }
+
+    #[inline]
+    fn mark(&mut self, index: usize) {
+        if !self.in_support[index] {
+            self.in_support[index] = true;
+            self.support
+                .push(u32::try_from(index).expect("feature index does not fit in u32"));
+        }
+    }
+
+    /// Adds `count` to feature `index`.
+    #[inline]
+    pub fn add(&mut self, index: usize, count: f32) {
+        self.mark(index);
+        self.values[index] += count;
+    }
+
+    /// Counts the classes that name a single feature, as
+    /// `em_optimize(.., only_unique = true)` does.
+    pub fn unique_counts<P: EqClassPayload>(
+        &mut self,
+        eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
+    ) {
+        for (labels, payload) in eqclasses {
+            if let [index] = labels[..] {
+                self.add(index as usize, payload.count() as f32);
+            }
+        }
+    }
+
+    /// `em_optimize(.., only_unique = false)` over this cell's support.
+    ///
+    /// A feature outside the support appears in no class: `em_update` never
+    /// reads or writes it, so the dense version zeroes it in the first
+    /// iteration (there are always at least `MIN_ITER`) whatever its initial
+    /// value. Within the support, every step is the dense version's, in the
+    /// same order, so for the uniform and informative initializations the
+    /// result is bit-identical. A random initialization draws one value per
+    /// supported feature instead of one per feature.
+    pub fn em<P: EqClassPayload>(
+        &mut self,
+        eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
+        init_type: EmInitType,
+        num_alphas: usize,
+    ) {
+        for (labels, payload) in eqclasses {
+            if let [index] = labels[..] {
+                self.add(index as usize, payload.count() as f32);
+            } else {
+                for &index in labels {
+                    self.mark(index as usize);
+                }
+            }
+        }
+
+        let Self {
+            values: alphas_in,
+            scratch: alphas_out,
+            support,
+            ..
+        } = self;
+
+        let mut rng = rand::rng();
+        let uni_prior = 1.0 / (num_alphas as f32);
+        for &index in support.iter() {
+            let item = &mut alphas_in[index as usize];
+            match init_type {
+                EmInitType::Uniform => {
+                    *item = uni_prior;
+                }
+                EmInitType::Informative => {
+                    *item = (*item + 0.5) * 1e-3;
+                }
+                EmInitType::Random => {
+                    *item = rng.random::<f32>() + 1e-5;
+                }
+            }
+        }
+
+        let mut it_num: u32 = 0;
+        let mut converged: bool = true;
+        while it_num < MIN_ITER || (it_num < MAX_ITER && !converged) {
+            em_update(alphas_in, alphas_out, eqclasses);
+
+            converged = true;
+            for &index in support.iter() {
+                let index = index as usize;
+                if alphas_out[index] > ALPHA_CHECK_CUTOFF {
+                    let rel_diff = (alphas_in[index] - alphas_out[index]).abs();
+                    if rel_diff > REL_DIFF_TOLERANCE {
+                        converged = false;
+                    }
+                }
+                alphas_in[index] = alphas_out[index];
+                alphas_out[index] = 0.0_f32;
+            }
+
+            it_num += 1;
+        }
+
+        for &index in support.iter() {
+            let alpha = &mut alphas_in[index as usize];
+            if *alpha < MIN_OUTPUT_ALPHA {
+                *alpha = 0.0_f32;
+            }
+        }
+    }
+
+    /// Writes this cell's nonzero counts to `ind`/`vals` in increasing
+    /// feature order, and returns their maximum and sum. These are exactly
+    /// the entries, order and floating-point sum of a scan over the dense
+    /// vector: the entries skipped here are all zero.
+    pub fn write_nonzero(&mut self, ind: &mut Vec<usize>, vals: &mut Vec<f32>) -> (f32, f32) {
+        self.support.sort_unstable();
+        ind.clear();
+        vals.clear();
+        let mut max = 0.0f32;
+        let mut sum = 0.0f32;
+        for &index in &self.support {
+            let c = self.values[index as usize];
+            if c > max {
+                max = c;
+            }
+            sum += c;
+            if c > 0.0 {
+                ind.push(index as usize);
+                vals.push(c);
+            }
+        }
+        (max, sum)
+    }
+
+    /// The counts as a dense vector over the axis `reset` last sized.
+    pub fn to_dense(&self) -> Vec<f32> {
+        let mut dense = vec![0.0f32; self.values.len()];
+        for &index in &self.support {
+            dense[index as usize] = self.values[index as usize];
+        }
+        dense
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_bootstrap_subset_with_scratch(
     eqclasses: &IndexedEqList,
@@ -1279,5 +1451,186 @@ mod tests {
         assert!(!scratch.support_membership[1]);
         assert!(!scratch.support_membership[2]);
         assert_eq!(scratch.support_membership.capacity(), membership_capacity);
+    }
+
+    fn cell_eqc(
+        classes: &[(&[u32], u32)],
+    ) -> HashMap<Vec<u32>, crate::utils::BasicEqClassPayload, ahash::RandomState> {
+        let mut eqc = HashMap::with_hasher(ahash::RandomState::with_seeds(2, 7, 1, 8));
+        for &(labels, ct) in classes {
+            eqc.insert(labels.to_vec(), crate::utils::BasicEqClassPayload { ct });
+        }
+        eqc
+    }
+
+    fn bits(v: &[f32]) -> Vec<u32> {
+        v.iter().map(|x| x.to_bits()).collect()
+    }
+
+    /// The dense path this replaces: `em_optimize`, then a scan of its output.
+    fn dense_cell(
+        eqc: &HashMap<Vec<u32>, crate::utils::BasicEqClassPayload, ahash::RandomState>,
+        init_type: EmInitType,
+        num_alphas: usize,
+        only_unique: bool,
+    ) -> (Vec<f32>, Vec<usize>, Vec<f32>, f32, f32) {
+        let mut unique_evidence = vec![false; num_alphas];
+        let mut no_ambiguity = vec![false; num_alphas];
+        let counts = em_optimize(
+            eqc,
+            &mut unique_evidence,
+            &mut no_ambiguity,
+            init_type,
+            num_alphas,
+            only_unique,
+            &slog::Logger::root(slog::Discard, slog::o!()),
+        );
+        let (mut ind, mut vals, mut max, mut sum) = (Vec::new(), Vec::new(), 0.0f32, 0.0f32);
+        for (i, &c) in counts.iter().enumerate() {
+            max = if c > max { c } else { max };
+            sum += c;
+            if c > 0.0 {
+                ind.push(i);
+                vals.push(c);
+            }
+        }
+        (counts, ind, vals, max, sum)
+    }
+
+    fn assert_cell_counts_match_dense(
+        sparse: &mut SparseCellCounts,
+        classes: &[(&[u32], u32)],
+        init_type: EmInitType,
+        num_alphas: usize,
+        only_unique: bool,
+    ) {
+        let eqc = cell_eqc(classes);
+        let (dense, d_ind, d_vals, d_max, d_sum) =
+            dense_cell(&eqc, init_type, num_alphas, only_unique);
+        sparse.reset(num_alphas);
+        if only_unique {
+            sparse.unique_counts(&eqc);
+        } else {
+            sparse.em(&eqc, init_type, num_alphas);
+        }
+        assert_eq!(bits(&sparse.to_dense()), bits(&dense), "{classes:?}");
+        let (mut ind, mut vals) = (vec![usize::MAX], vec![-1.0]);
+        let (max, sum) = sparse.write_nonzero(&mut ind, &mut vals);
+        assert_eq!(ind, d_ind, "{classes:?}");
+        assert_eq!(bits(&vals), bits(&d_vals), "{classes:?}");
+        assert_eq!(max.to_bits(), d_max.to_bits(), "{classes:?}");
+        assert_eq!(sum.to_bits(), d_sum.to_bits(), "{classes:?}");
+    }
+
+    #[test]
+    fn cell_counts_match_em_optimize_and_the_dense_scan() {
+        let cells: &[&[(&[u32], u32)]] = &[
+            &[],
+            &[(&[3], 5)],
+            &[
+                (&[0], 20),
+                (&[1], 4),
+                (&[0, 1], 8),
+                (&[1, 2], 1),
+                (&[2, 3, 4], 2),
+            ],
+            // only ambiguous classes: every feature starts from its prior
+            &[(&[5, 9], 3), (&[9, 11], 7)],
+            // a feature whose EM share falls under MIN_OUTPUT_ALPHA
+            &[(&[2], 1000), (&[2, 7], 1)],
+            // slow convergence: a long chain of overlapping classes
+            &[
+                (&[0, 1], 9),
+                (&[1, 2], 9),
+                (&[2, 3], 9),
+                (&[3, 4], 9),
+                (&[4], 1),
+                (&[0], 30),
+            ],
+        ];
+        let mut sparse = SparseCellCounts::default();
+        for &init_type in &[EmInitType::Uniform, EmInitType::Informative] {
+            for only_unique in [true, false] {
+                for cell in cells {
+                    assert_cell_counts_match_dense(&mut sparse, cell, init_type, 12, only_unique);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cell_counts_match_dense_on_generated_cells_with_one_reused_scratch() {
+        // A worker reuses one scratch for every cell: each result must not
+        // depend on what the previous cells touched.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let num_alphas = 200;
+        let mut sparse = SparseCellCounts::default();
+        for cell_num in 0..500 {
+            let num_classes = next(40) as usize;
+            let mut owned: Vec<(Vec<u32>, u32)> = Vec::new();
+            for _ in 0..num_classes {
+                let len = 1 + next(4) as usize;
+                let mut labels: Vec<u32> =
+                    (0..len).map(|_| next(num_alphas as u64) as u32).collect();
+                labels.sort_unstable();
+                labels.dedup();
+                owned.push((labels, 1 + next(50) as u32));
+            }
+            let classes: Vec<(&[u32], u32)> = owned.iter().map(|(l, c)| (&l[..], *c)).collect();
+            let init_type = if cell_num % 2 == 0 {
+                EmInitType::Uniform
+            } else {
+                EmInitType::Informative
+            };
+            assert_cell_counts_match_dense(
+                &mut sparse,
+                &classes,
+                init_type,
+                num_alphas,
+                cell_num % 3 == 0,
+            );
+        }
+    }
+
+    #[test]
+    fn usa_unique_counts_match_extract_counts_with_one_reused_scratch() {
+        // USA labels are `gene << 1 | unspliced`; the axis is genes x {S, U, A}.
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let num_genes = 60u64;
+        let num_counts = 3 * num_genes as usize;
+        let mut sparse = SparseCellCounts::default();
+        for _ in 0..500 {
+            let mut owned: Vec<(Vec<u32>, u32)> = Vec::new();
+            for _ in 0..next(30) {
+                let len = 1 + next(4) as usize;
+                let mut labels: Vec<u32> = (0..len)
+                    .map(|_| {
+                        let g = next(num_genes) as u32;
+                        // often both statuses of one gene, the A column's case
+                        (g << 1) | next(2) as u32
+                    })
+                    .collect();
+                labels.sort_unstable();
+                labels.dedup();
+                owned.push((labels, 1 + next(50) as u32));
+            }
+            let classes: Vec<(&[u32], u32)> = owned.iter().map(|(l, c)| (&l[..], *c)).collect();
+            let eqc = cell_eqc(&classes);
+            let dense = crate::utils::extract_counts(&eqc, num_counts);
+            crate::utils::extract_counts_sparse(&eqc, num_counts, &mut sparse);
+            assert_eq!(bits(&sparse.to_dense()), bits(&dense), "{classes:?}");
+        }
     }
 }
