@@ -33,9 +33,15 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub summary_stat: bool,
     pub dump_eq: bool,
     pub resolution: ResolutionStrategy,
-    /// Flex only: also write the probe x cell matrix the gene matrix was summed
-    /// from. The gene matrix is written either way, and the feature axis is not an
-    /// option -- it follows the data type. An error on data that has no probes.
+    /// Resolve UMIs per reference target (probe) and sum the targets of a gene
+    /// into its count, rather than resolving per gene. This is what
+    /// `quant-probe` requests; it is never inferred from the data, because
+    /// probe-ness is a property of the reference, which neither the RAD file
+    /// nor generate-permit-list sees.
+    #[builder(default = false)]
+    pub probe_level: bool,
+    /// Probe level only: also write the probe x cell matrix the gene matrix was
+    /// summed from. The gene matrix is written either way.
     #[builder(default = false)]
     pub probe_mtx: bool,
     pub pug_exact_umi: bool,

@@ -29,7 +29,7 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``-d, --dump-eqclasses`` : This flag will cause a gene-level, UMI-deduplicated, equivalence class counts file to be written to the output directory in addition to the gene-level count matrix.  This can be used for subsequent analyses where gene-ambiguous reads have been neither resovled nor discarded.
 
-* ``-b, --num-bootstraps`` : This flag will cause bootstrap inferential replicate information to be written to the output directory.  This provides a measure of the inferential uncertainty in the gene-level estimates provided by ``alevin-fry`` when run with a method using the EM algorithm for gene-level abundance estimation.  This information can be used with downstream testing, like differential expression testing using swish.  This flag is only meaningful with the ``cr-like-em`` or ``full`` resolution modes.  This flag is not supported for Flex data; see *Flex data* below.
+* ``-b, --num-bootstraps`` : This flag will cause bootstrap inferential replicate information to be written to the output directory.  This provides a measure of the inferential uncertainty in the gene-level estimates provided by ``alevin-fry`` when run with a method using the EM algorithm for gene-level abundance estimation.  This information can be used with downstream testing, like differential expression testing using swish.  This flag is only meaningful with the ``cr-like-em`` or ``full`` resolution modes.  This flag is not defined for ``quant-probe``; see *Probe-level quantification* below.
 
 * ``--summary-stat`` : This flag will write the summary statistics of the bootstrap replicates (i.e. the mean and variance of the inferential replicates).  This provides the most important information for uncertainty-aware downstream analysis, while requiring much less storage space than the full bootstrap replicate information.  This flag is only meaningful when ``--num-bootstraps`` is meaningful.
 
@@ -37,28 +37,48 @@ Additionally, this command can optionally take the following flags (note that no
 
 * ``--use-mtx`` : This flag is accepted for backwards compatibility. Matrix market coordinate format is the default (and currently only) output format.
 
-* ``--probe-mtx`` : This flag will cause the probe-by-cell count matrix to be written to the output directory in addition to the gene-level count matrix, as ``probe_quants_mat.mtx`` with its own ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  It changes only what is written and not what is computed; the gene-level matrix and ``featureDump.txt`` are the same with and without it.  This flag is only meaningful for Flex data, and passing it on any other data type is an error.
-
 There are also a few flags that are not immediately exposed:
 
 * ``--umi-edit-dist <EDIST>`` : This option takes a parameter that sets the Hamming distance within which potentially colliding UMIs will be considered for correction.  With resolution modes ``parsimony``, ``parsimony-em``, ``parsimony-gene`` or ``parsimony-gene-em`` the valid values are 0 and 1 (and the default is 1).  With ``cr-like`` and ``cr-like-em`` the valid values are 0 and 1 (default 0), where 1 enables Cell Ranger-style Hamming-1 UMI collapsing (not supported in USA mode).  With other resolution modes the only supported value is 0.  Note: when the ``cr-like`` UMI correction is enabled (``--umi-edit-dist 1``), the tiny-cell fast path is disabled (the effective ``--small-thresh`` is forced to 0) so that every cell is resolved by the corrected ``cr-like`` resolver; this is logged at run time.
  
 * ``--large-graph-thresh <NVERT>`` : This option takes a parameter that sets the order (number of nodes) of a PUG above which an alternative (faster) resolution strategy will be applied.  This option only has an effect for ``parsimony``, ``parsimony-em``, ``parsimony-gene`` or ``parsimony-gene-em`` resolution modes.  The default value is 1000.
 
-Flex data
----------
+Probe-level quantification (``quant-probe``)
+--------------------------------------------
 
-For Flex data, ``quant`` resolves UMIs per probe rather than per gene.  The axis follows the ``data_type`` key recorded in ``generate_permit_list.json`` by ``generate-permit-list``.
+Probe-based data -- e.g. 10x Flex -- is quantified with the ``quant-probe``
+subcommand, which quantifies at the probe level.  It is a subcommand of its own
+rather than a flag on ``quant`` because the probe axis cannot honour some of
+``quant``'s options -- ``--num-bootstraps`` and the gene-level resolution
+strategies among them -- and leaving those out is cleaner than accepting them
+and then refusing them.  It adds one option of its own, ``--probe-mtx``;
+everything else is as in ``quant``.
 
-Every reference target (probe) is its own feature, so UMI correction, deduplication, tie handling and the EM all act per probe, and the gene-level count matrix is then the sum of each gene's probes.  **Note**: the resulting gene counts are not identical to those a gene-level run produces, since correction and deduplication act per probe.  The per-cell statistics in ``featureDump.txt`` are computed from the probe-summed gene matrix.
+Nothing is detected: pick the subcommand that matches the data.  Probe-ness is a
+property of the *reference*, which neither the RAD file nor
+``generate-permit-list`` sees.
 
-The following are not available for Flex data:
+Under ``quant-probe``, every reference target (probe) is its own feature, so UMI
+correction, deduplication, tie handling and the EM all act per probe, and the
+gene-level count matrix is then the sum of each gene's probes.  **Note**: the
+resulting gene counts are not identical to those a gene-level run produces, since
+correction and deduplication act per probe.  The per-cell statistics in
+``featureDump.txt`` are computed from the probe-summed gene matrix.
 
-* The ``parsimony-gene`` and ``parsimony-gene-em`` resolution strategies, which build gene-level equivalence classes.  Use ``parsimony`` or ``parsimony-em`` instead.
-* A three-column (USA) transcript-to-gene map, since each UMI is resolved to a single probe and splicing status is not inferred.
-* ``--num-bootstraps``, which is ignored: Flex probes are designed to target a single gene with minimal cross-reactivity, so multi-mapping is rare enough that the replicates are not informative.  This is logged at run time.
+* ``--probe-mtx`` : This flag will cause the probe-by-cell count matrix to be written to the output directory in addition to the gene-level count matrix, as ``probe_quants_mat.mtx`` with its own ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  It changes only what is written and not what is computed; the gene-level matrix and ``featureDump.txt`` are the same with and without it.
+
+The following are not available with ``quant-probe``:
+
+* The ``parsimony-gene`` and ``parsimony-gene-em`` resolution strategies, which build gene-level equivalence classes, so that no per-target assignment survives to sum into a gene.  Use ``parsimony`` or ``parsimony-em`` instead.
+* ``--num-bootstraps``, ``--init-uniform`` and ``--summary-stat``, which are not defined for this subcommand.  The bootstrap reports the uncertainty in how the EM allocates a molecule that several features could claim, and Flex probes are designed to target a single gene with minimal cross-reactivity, so multi-mapping is rare enough that the replicates are not informative.
+* ``--sa-model``, which is not defined for this subcommand, since it only applies in USA mode.
+* A three-column (USA) transcript-to-gene map.  A probe set's status column does not mean what USA mode's does.  10x annotates a probe ``spliced`` when it spans an exon-exon junction by at least 10 bp, so its evidence is mature mRNA alone, and ``unspliced`` when it does not, in which case it cannot distinguish mature from nascent transcript; 10x uses the two classes of one gene to estimate genomic-DNA background.  A non-junction probe is therefore *ambiguous* in USA terms rather than unspliced, and a transcriptome probe set carries no nascent-specific probe, so USA's unspliced layer has little to hold.  Read as a splicing state, the column would write the bulk of a probe set into the unspliced layer -- 46,022 of the 53,519 included probes of the human v2 set -- while those probes mostly measure mature mRNA.  Separately, the state USA mode reports is a resolution outcome rather than an annotation: a UMI reaches a gene's ambiguous slot by being compatible with both of its variants, which relies on the overlapping transcripts of a transcriptome reference, and a probe reference carries little such overlap.  Passing a three-column map is an error; use a two-column (target, gene) map, and ``--probe-mtx`` if you need the per-probe breakdown.
+* An input directory produced in velocity mode, which has its own feature axis -- the spliced and unspliced variants of a gene -- and no probe axis to sum.
 
 **Note**: with ``--dump-eqclasses``, the ids written to ``gene_eqclass.txt.gz`` are probe ids and its first line is the number of probes; this is logged at run time.
+
+``quant.json`` records the axis that was used as ``feature_axis``, which is
+``"probe"`` for ``quant-probe`` and ``"gene"`` for ``quant``.
 
 output
 ------
@@ -67,7 +87,7 @@ The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``
 
 If ``quant`` was executed in USA mode, then the resulting count matrix will be of dimension ``C``x``3G`` where ``C`` is the number of quantified cells (barcodes) and ``G`` is the number of genes.  This is because, in USA mode, ``alevin-fry`` quantifies the UMI count attributable to each splicing state of each gene in each cell, where the splicing state is one of spliced (S), unspliced (U) or ambiguous (A).  If ``quant`` was run with a two-column transcript-to-gene map (not in USA-mode), then the resulting count matrix will be a ``C``x``G`` matrix, as splicing status is not tracked.  For more details on USA mode and its uses, please read the ``alevin-fry`` `paper <https://www.nature.com/articles/s41592-022-01408-3>`__ or `preprint <https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1>`__, or the `corresponding tutorial <https://combine-lab.github.io/alevin-fry-tutorials/2021/improving-txome-specificity/>`__.
 
-For Flex data run with ``--probe-mtx``, the output also contains ``probe_quants_mat.mtx``, ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  This is the probe-by-cell matrix from which the gene-level matrix was summed.
+For ``quant-probe`` run with ``--probe-mtx``, the output also contains ``probe_quants_mat.mtx``, ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  This is the probe-by-cell matrix from which the gene-level matrix was summed.
 
 The ``quants_mat.mtx`` is a matrix market `coordinate format <https://math.nist.gov/MatrixMarket/formats.html>`__ file that stores the gene-by-cell expression matrix. The two other files provide the labels for the rows and columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that contains the names of the rows of the matrix, in the order in which it is written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a text file that contains the names of the columns of the matrix, in the order in which it is written, with one barcode name written per line.
 

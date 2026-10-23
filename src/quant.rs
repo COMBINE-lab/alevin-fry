@@ -17,6 +17,7 @@ use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
@@ -219,6 +220,42 @@ struct EqcMap {
     cell_offset: Vec<(usize, usize)>,
 }
 
+/// The probe matrix writer: present only when resolving at probe level and
+/// `--probe-mtx` asked for that matrix.
+fn probe_writer(
+    probe_level_out: &Option<ProbeLevelOutput>,
+) -> Option<&Arc<Mutex<MatrixMarketWriter<File>>>> {
+    probe_level_out
+        .as_ref()
+        .and_then(|probe| probe.writer.as_ref())
+}
+
+/// Back-fill a streamed matrix's header with the nonzero count it ended up
+/// with, which each matrix this command writes needs once, after the workers
+/// have joined.
+fn finish_matrix(out: &Mutex<MatrixMarketWriter<File>>, what: &str) -> anyhow::Result<u64> {
+    out.lock()
+        .map_err(|_| anyhow::anyhow!("{} output lock was poisoned", what))?
+        .finish()
+        .with_context(|| format!("could not finalize {}", what))
+}
+
+/// Write the labels beside a matrix, one per line: its columns, or its rows.
+fn write_label_file<S: AsRef<str>>(
+    path: &std::path::Path,
+    labels: impl IntoIterator<Item = S>,
+    what: &str,
+) -> anyhow::Result<()> {
+    let file = File::create(path).with_context(|| format!("could not create {} output", what))?;
+    let mut writer = BufWriter::new(file);
+    for label in labels {
+        writeln!(writer, "{}", label.as_ref())?;
+    }
+    writer
+        .flush()
+        .with_context(|| format!("could not flush {}", what))
+}
+
 fn write_eqc_counts(
     eqid_map_lock: &Arc<Mutex<EqcMap>>,
     num_genes: usize,
@@ -403,16 +440,63 @@ struct WorkerConfig {
     init_uniform: bool,
     summary_stat: bool,
     dump_eq: bool,
-    num_genes: usize,
-    num_rows: usize,
+    /// Number of features the resolver works over: one per probe when resolving
+    /// at probe level, one per gene otherwise.
+    num_features: usize,
+    /// Width of the resolver's axis: `num_features`, or three slots per gene in
+    /// USA mode.
+    feature_rows: usize,
     /// Width of the gene matrix, i.e. of the axis actually written out. Equals
-    /// `num_rows` unless we resolve at probe level, where `num_rows` is the
-    /// target axis and the gene matrix is the per-gene sum of it.
+    /// `feature_rows` unless we resolve at probe level, where the gene matrix is
+    /// the per-gene sum of what the resolver produced.
     gene_rows: usize,
     barcode_len: u16,
     /// Cells with fewer than this many records take the tiny-cell fast path.
     /// Set from `--small-thresh`; 0 disables the fast path entirely.
     tiny_cell_thresh: usize,
+}
+
+/// The axis the resolver works on, and how it relates to the gene matrix.
+///
+/// On the gene axis the two are the same thing. At probe level the resolver is
+/// handed an identity map, so every reference target is its own feature and the
+/// equivalence classes come out probe-keyed; the gene matrix is then the
+/// per-gene sum of what the resolver produced, and the real transcript -> gene
+/// map is demoted to the projection that takes that sum.
+struct FeatureAxis {
+    /// The map the resolver projects a record's targets through.
+    resolver_map: Arc<Vec<u32>>,
+    /// Width of the resolver's axis, and so of the probe matrix when one is
+    /// written.
+    rows: usize,
+    /// Number of features on that axis, i.e. `rows` outside USA mode.
+    features: usize,
+    /// Set iff resolving at probe level: target -> gene, the projection into the
+    /// gene matrix.
+    target_to_gene: Option<Arc<Vec<u32>>>,
+}
+
+impl FeatureAxis {
+    /// Resolve per gene: the resolver's own projection lands in the gene matrix,
+    /// so nothing is summed afterwards.
+    fn genes(tid_to_gid: Arc<Vec<u32>>, num_rows: usize, num_genes: usize) -> Self {
+        Self {
+            resolver_map: tid_to_gid,
+            rows: num_rows,
+            features: num_genes,
+            target_to_gene: None,
+        }
+    }
+
+    /// Resolve per reference target, then sum each gene's targets.
+    fn probes(tid_to_gid: Arc<Vec<u32>>, ref_count: usize) -> Self {
+        Self {
+            resolver_map: Arc::new((0..ref_count as u32).collect()),
+            rows: ref_count,
+            features: ref_count,
+            target_to_gene: Some(tid_to_gid),
+        }
+    }
 }
 
 /// Probe-level resolution: the target -> gene projection table used to sum a
@@ -696,8 +780,8 @@ where
 {
     // these can be created once and cleared after processing
     // each cell.
-    let mut unique_evidence = vec![false; config.num_rows];
-    let mut no_ambiguity = vec![false; config.num_rows];
+    let mut unique_evidence = vec![false; config.feature_rows];
+    let mut no_ambiguity = vec![false; config.feature_rows];
     // Lazily allocated on the first subset-EM or bootstrap call, then reused
     // for every subsequent cell handled by this worker.
     let mut em_scratch = EmSubsetScratch::default();
@@ -831,7 +915,7 @@ where
                     &mut c,
                     &shared.tid_to_gid,
                     config.usa_mode,
-                    config.num_rows,
+                    config.feature_rows,
                     &mut gene_umi_buf,
                     &mut umi_gene_triplets,
                 );
@@ -894,7 +978,7 @@ where
                                 pugutils::get_num_molecules_cell_ranger_like_small::<B, R, P>(
                                     &mut c,
                                     &shared.tid_to_gid,
-                                    config.num_genes,
+                                    config.num_features,
                                     &mut gene_eqc,
                                     config.sa_model,
                                     &mut crlike_scratch,
@@ -908,7 +992,7 @@ where
                                 pugutils::get_num_molecules_cell_ranger_like(
                                     &eq_map,
                                     &shared.tid_to_gid,
-                                    config.num_genes,
+                                    config.num_features,
                                     &mut gene_eqc,
                                     config.sa_model,
                                     &mut crlike_scratch,
@@ -927,13 +1011,14 @@ where
                             match (config.usa_mode, only_unique) {
                                 (true, true) => {
                                     // USA mode, only gene-unqique reads
-                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                    counts =
+                                        afutils::extract_counts(&gene_eqc, config.feature_rows);
                                 }
                                 (true, false) => {
                                     // USA mode, use EM
                                     afutils::extract_usa_eqmap(
                                         &gene_eqc,
-                                        config.num_rows,
+                                        config.feature_rows,
                                         &mut idx_eq_list,
                                         &mut eq_id_count,
                                     );
@@ -943,7 +1028,7 @@ where
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
-                                        config.num_rows,
+                                        config.feature_rows,
                                         only_unique,
                                         config.usa_offsets,
                                         &log,
@@ -957,7 +1042,7 @@ where
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
-                                        config.num_genes,
+                                        config.num_features,
                                         only_unique,
                                         &log,
                                     );
@@ -969,7 +1054,7 @@ where
                             let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &shared.tid_to_gid,
-                                config.num_genes,
+                                config.num_features,
                                 &log,
                             );
                             counts = ct.0;
@@ -1013,13 +1098,14 @@ where
                             match (config.usa_mode, only_unique, P::HAS_PROBS) {
                                 (true, true, _) => {
                                     // USA mode, only gene-unqique reads
-                                    counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                    counts =
+                                        afutils::extract_counts(&gene_eqc, config.feature_rows);
                                 }
                                 (true, false, _) => {
                                     // USA mode, use EM
                                     afutils::extract_usa_eqmap(
                                         &gene_eqc,
-                                        config.num_rows,
+                                        config.feature_rows,
                                         &mut idx_eq_list,
                                         &mut eq_id_count,
                                     );
@@ -1029,7 +1115,7 @@ where
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
-                                        config.num_rows,
+                                        config.feature_rows,
                                         only_unique,
                                         config.usa_offsets,
                                         &log,
@@ -1043,7 +1129,7 @@ where
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
-                                        config.num_genes,
+                                        config.num_features,
                                         only_unique,
                                         &log,
                                     );
@@ -1055,7 +1141,7 @@ where
                                         &mut unique_evidence,
                                         &mut no_ambiguity,
                                         config.em_init_type,
-                                        config.num_genes,
+                                        config.num_features,
                                         only_unique,
                                         &log,
                                     );
@@ -1090,7 +1176,7 @@ where
                     pugutils::get_num_molecules_cell_ranger_like_small(
                         &mut c,
                         &shared.tid_to_gid,
-                        config.num_genes,
+                        config.num_features,
                         &mut gene_eqc,
                         config.sa_model,
                         &mut crlike_scratch,
@@ -1108,16 +1194,18 @@ where
                             ResolutionStrategy::CellRangerLike
                             | ResolutionStrategy::Parsimony
                             | ResolutionStrategy::ParsimonyGene => {
-                                counts = afutils::extract_counts(&gene_eqc, config.num_rows);
+                                counts = afutils::extract_counts(&gene_eqc, config.feature_rows);
                             }
                             ResolutionStrategy::CellRangerLikeEm
                             | ResolutionStrategy::ParsimonyEm
                             | ResolutionStrategy::ParsimonyGeneEm => {
-                                counts =
-                                    afutils::extract_counts_mm_uniform(&gene_eqc, config.num_rows);
+                                counts = afutils::extract_counts_mm_uniform(
+                                    &gene_eqc,
+                                    config.feature_rows,
+                                );
                             }
                             _ => {
-                                counts = vec![0f32; config.num_genes];
+                                counts = vec![0f32; config.num_features];
                                 warn!(
                                     log,
                                     "Should not reach here, only cr-like, cr-like-em, parsimony(-gene) and parsimony(-gene)-em are supported in USA-mode."
@@ -1126,7 +1214,7 @@ where
                         }
                     } else {
                         // non USA-mode
-                        counts = vec![0f32; config.num_genes];
+                        counts = vec![0f32; config.num_features];
                         for (k, payload) in gene_eqc.iter() {
                             let v = payload.count();
                             if k.len() == 1 {
@@ -1160,7 +1248,7 @@ where
                             // sample mean = quant
                             bootstraps.push(counts.clone());
                             // sample var = 0
-                            bootstraps.push(vec![0f32; config.num_genes]);
+                            bootstraps.push(vec![0f32; config.num_features]);
                         } else {
                             // no variation
                             for _ in 0..config.num_bootstraps {
@@ -1329,11 +1417,7 @@ where
                         .push(row_index, ind, val, &shared.matrix_out)
                         .context("could not write count matrix")?;
                 }
-                if let Some(probe_out) = shared
-                    .probe_level_out
-                    .as_ref()
-                    .and_then(|p| p.writer.as_ref())
-                {
+                if let Some(probe_out) = probe_writer(&shared.probe_level_out) {
                     for (&ind, &val) in probe_ind.iter().zip(probe_vec.iter()) {
                         probe_batch
                             .push(row_index, ind, val, probe_out)
@@ -1405,11 +1489,7 @@ where
             matrix_batch
                 .flush(&shared.matrix_out)
                 .context("could not flush count matrix batch")?;
-            if let Some(probe_out) = shared
-                .probe_level_out
-                .as_ref()
-                .and_then(|p| p.writer.as_ref())
-            {
+            if let Some(probe_out) = probe_writer(&shared.probe_level_out) {
                 probe_batch
                     .flush(probe_out)
                     .context("could not flush probe count matrix batch")?;
@@ -1757,8 +1837,7 @@ where
         );
     }
     let num_threads = quant_opts.num_threads;
-    // Zeroed below for Flex, which is resolved per probe and does not bootstrap.
-    let mut num_bootstraps = quant_opts.num_bootstraps;
+    let num_bootstraps = quant_opts.num_bootstraps;
 
     let hdr = &prelude.hdr;
     // in the collated rad file, we have 1 cell per chunk.
@@ -1863,26 +1942,18 @@ where
         }
     }
 
-    // The feature axis follows the data type generate-permit-list recorded, which
-    // identifies only Flex: Flex resolves per reference target, everything else per
-    // gene. The gene matrix is written either way; --probe-mtx adds the per-probe
-    // matrix it was summed from, and changes nothing that is computed.
-    let data_type = afutils::read_data_type(quant_opts.input_dir);
-    let probe_level = data_type.as_deref() == Some(afutils::DATA_TYPE_FLEX);
+    // The feature axis is requested, never inferred: `quant` resolves per gene and
+    // `quant-probe` per reference target. Probe-ness is a property of the
+    // reference, which neither the RAD file nor generate-permit-list sees -- a
+    // multi-barcode layout, for instance, says nothing about whether the targets
+    // are probes. The gene matrix is written either way; --probe-mtx adds the
+    // per-probe matrix it was summed from, and changes nothing that is computed.
+    let probe_level = quant_opts.probe_level;
     if quant_opts.probe_mtx && !probe_level {
-        anyhow::bail!("--probe-mtx is only supported for Flex data.");
+        anyhow::bail!("--probe-mtx requires probe-level quantification; use `quant-probe`.");
     }
-    let write_probe = probe_level && quant_opts.probe_mtx;
 
     if probe_level {
-        // Report the data type that was detected, and only that: the type is
-        // inferred rather than requested, so a run should not go on without
-        // saying so, and the line stays true however the handling changes.
-        info!(
-            log,
-            "generate_permit_list.json records data_type \"{}\"",
-            afutils::DATA_TYPE_FLEX
-        );
         // The equivalence classes are built on the probe axis, so the ids in
         // gene_eqclass.txt.gz are reference-target ids. Its format is positional
         // (feature count, class count, then one line per class), so it cannot
@@ -1890,22 +1961,23 @@ where
         if dump_eq {
             warn!(
                 log,
-                "--dump-eqclasses on Flex data: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes."
+                "--dump-eqclasses with probe-level quantification: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes."
             );
         }
         // The bootstrap reports the uncertainty in how the EM allocates a molecule
-        // that several features could claim. Flex probes are designed to target
-        // a single gene with minimal cross-reactivity, so multi-mapping is rare
-        // enough that a bootstrap is not considered necessary here.
+        // that several features could claim. Flex probes are designed to target a
+        // single gene with minimal cross-reactivity, so multi-mapping is rare
+        // enough that a bootstrap is not considered necessary here. It is refused
+        // rather than silently dropped, like every other option this axis cannot
+        // honour, so a run never produces less than what was asked for.
         if num_bootstraps > 0 {
-            warn!(
-                log,
-                "--num-bootstraps is not supported for Flex data, and no bootstrap matrices will be written. The bootstrap reports the uncertainty in how the EM allocates a molecule that several features could claim. Flex probes are designed to target a single gene with minimal cross-reactivity, so multi-mapping is rare enough that a bootstrap is not considered necessary here."
+            anyhow::bail!(
+                "--num-bootstraps is not supported with probe-level quantification. The bootstrap reports the uncertainty in how the EM allocates a molecule that several features could claim. Flex probes are designed to target a single gene with minimal cross-reactivity, so multi-mapping is rare enough that a bootstrap is not considered necessary here. Re-run without --num-bootstraps."
             );
-            num_bootstraps = 0;
         }
-        // parsimony-gene(-em) project reads to genes as the equivalence classes are
-        // built, so no per-target assignment survives to sum.
+        // parsimony-gene(-em) build the equivalence map with the reads already
+        // projected to genes (`init_from_chunk_gene_level`), so the UMI graph is
+        // deduplicated per gene: there is never a per-probe assignment to sum.
         let rejected = match resolution {
             ResolutionStrategy::ParsimonyGene => Some(("parsimony-gene", "parsimony")),
             ResolutionStrategy::ParsimonyGeneEm => Some(("parsimony-gene-em", "parsimony-em")),
@@ -1913,19 +1985,35 @@ where
         };
         if let Some((name, counterpart)) = rejected {
             anyhow::bail!(
-                "Flex data is only supported with probe-level quantification, so --resolution {name} is not supported. Use --resolution {counterpart} instead."
+                "--resolution {name} is not supported with probe-level quantification: it builds gene-level equivalence classes, so no per-probe assignment survives to sum. Use --resolution {counterpart} instead."
             );
         }
-    }
-
-    // Probe-level quantification does not support USA mode.
-    // USA mode is defined for transcriptome references, where splicing status
-    // is inferred from UMI mapping. In Flex, each UMI maps to a single probe
-    // and splicing status is no longer inferred, so USA mode does not apply.
-    if probe_level && usa_mode {
-        anyhow::bail!(
-            "Flex data is only supported with probe-level quantification, which does not support USA mode: USA mode is defined for transcriptome references, where splicing status is inferred from UMI mapping, and in Flex each UMI maps to a single probe. Pass a 2-column (target, gene) tg-map."
-        );
+        // A 3-column tg-map asks for USA mode, which this axis cannot honour for
+        // two separate reasons.
+        //
+        // The status column of a probe set does not mean what USA mode's means.
+        // 10x marks a probe `spliced` when it spans an exon-exon junction, so its
+        // evidence is mature mRNA alone, and `unspliced` when it does not, in
+        // which case it cannot tell mature from nascent transcript. So a
+        // non-junction probe is *ambiguous* in USA terms, not unspliced -- and a
+        // transcriptome probe set carries no nascent-specific probe, so USA's
+        // unspliced layer has little to hold. Read as a splicing state, the column would
+        // write the bulk of a probe set into the unspliced layer (46,022 of the
+        // 53,519 included probes of the human v2 set) while those probes mostly
+        // measure mature mRNA. 10x uses the two classes of one gene to estimate
+        // genomic-DNA background, which is what the column is for.
+        //
+        // Separately, the splicing state USA mode reports is a resolution
+        // outcome, not an annotation: a UMI reaches a gene's ambiguous slot by
+        // being compatible with both its spliced and its unspliced variant, which
+        // relies on the overlapping transcripts of a transcriptome reference. A
+        // probe reference carries little such overlap, so there is next to nothing
+        // for that resolution to act on.
+        if usa_mode {
+            anyhow::bail!(
+                "a 3-column (target, gene, status) tg-map is not supported with probe-level quantification. USA mode exists for the splicing ambiguity of a transcriptome reference, which is very rare in a probe reference; and a probe set's status column marks whether the probe spans an exon-exon junction, not the splicing state of a molecule. Pass a 2-column (target, gene) tg-map."
+            );
+        }
     }
 
     info!(
@@ -2051,16 +2139,6 @@ where
 
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
-    // At probe level the resolver is handed an identity map, so every reference
-    // target is its own feature; the real map becomes the projection table that
-    // sums a cell's target counts into genes once it has been resolved.
-    let resolver_map = if probe_level {
-        std::sync::Arc::new((0..hdr.ref_count as u32).collect::<Vec<u32>>())
-    } else {
-        tid_to_gid_shared.clone()
-    };
-    // Column names of the target matrix, in reference-id (RAD header) order.
-    let probe_names = write_probe.then(|| hdr.ref_names.clone());
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
 
@@ -2132,15 +2210,11 @@ where
 
     // `num_rows` is the width of the gene matrix, which is what gets written.
     // The resolver may work on a wider axis: one column per reference target.
-    let resolver_rows = if probe_level {
-        hdr.ref_count as usize
+    // This is the one place that decides; everything downstream reads `axis`.
+    let axis = if probe_level {
+        FeatureAxis::probes(tid_to_gid_shared.clone(), hdr.ref_count as usize)
     } else {
-        num_rows
-    };
-    let resolver_features = if probe_level {
-        hdr.ref_count as usize
-    } else {
-        num_genes
+        FeatureAxis::genes(tid_to_gid_shared.clone(), num_rows, num_genes)
     };
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {
@@ -2166,20 +2240,19 @@ where
     };
     // The target matrix is written alongside the gene matrix it was summed
     // into, sharing its rows; the projection table travels with it.
-    let probe_level_out: Option<ProbeLevelOutput> = if probe_level {
-        Some(ProbeLevelOutput {
-            target_to_gene: tid_to_gid_shared.clone(),
-            writer: if write_probe {
+    let probe_level_out: Option<ProbeLevelOutput> = match &axis.target_to_gene {
+        Some(target_to_gene) => Some(ProbeLevelOutput {
+            target_to_gene: target_to_gene.clone(),
+            writer: if quant_opts.probe_mtx {
                 Some(Arc::new(Mutex::new(open_matrix(
                     "probe_quants_mat.mtx",
-                    resolver_rows,
+                    axis.rows,
                 )?)))
             } else {
                 None
             },
-        })
-    } else {
-        None
+        }),
+        None => None,
     };
     let output_failed = Arc::new(AtomicBool::new(false));
 
@@ -2206,7 +2279,7 @@ where
         // and the logger
         let log = log.clone();
         // the shared map the resolver projects targets through
-        let tid_to_gid = resolver_map.clone();
+        let tid_to_gid = axis.resolver_map.clone();
 
         // and the file writer
         let bcout = bc_writer.clone();
@@ -2264,8 +2337,8 @@ where
             init_uniform,
             summary_stat,
             dump_eq,
-            num_genes: resolver_features,
-            num_rows: resolver_rows,
+            num_features: axis.features,
+            feature_rows: axis.rows,
             gene_rows: num_rows,
             barcode_len,
             tiny_cell_thresh,
@@ -2402,11 +2475,7 @@ where
         emitted_rows,
         num_cells
     );
-    let total_nnz = matrix_out
-        .lock()
-        .map_err(|_| anyhow::anyhow!("count matrix output lock was poisoned"))?
-        .finish()
-        .context("could not finalize count matrix")?;
+    let total_nnz = finish_matrix(&matrix_out, "count matrix")?;
     info!(
         log,
         "wrote streamed count matrix: {} nonzeros",
@@ -2415,13 +2484,9 @@ where
 
     // The target matrix carries its own nonzero count in its header, so it has
     // to be finalized just like the gene matrix.
-    let probe_nnz = match probe_level_out.as_ref().and_then(|p| p.writer.as_ref()) {
+    let probe_nnz = match probe_writer(&probe_level_out) {
         Some(probe_out) => {
-            let nnz = probe_out
-                .lock()
-                .map_err(|_| anyhow::anyhow!("probe matrix output lock was poisoned"))?
-                .finish()
-                .context("could not finalize probe count matrix")?;
+            let nnz = finish_matrix(probe_out, "probe count matrix")?;
             info!(
                 log,
                 "wrote streamed probe count matrix: {} nonzeros",
@@ -2463,32 +2528,21 @@ where
         }
     }
 
+    // the gene matrix's columns: the gene names, and in USA mode the unspliced
+    // and then the ambiguous slot of each gene after them
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
-    let gn_file = File::create(gn_path).context("could not create gene name output")?;
-    let mut gn_writer = BufWriter::new(gn_file);
-
-    // if we are not using unspliced then just write the gene names
+    let spliced = || gene_names.iter().map(|g| Cow::Borrowed(g.as_str()));
     if !usa_mode {
-        for g in gene_names {
-            writeln!(gn_writer, "{}", g)?;
-        }
+        write_label_file(&gn_path, spliced(), "gene names")?;
     } else {
-        // otherwise, we write the spliced names, the unspliced names, and then
-        // the ambiguous names
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}", g)?;
-        }
-        // unspliced
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}-U", g)?;
-        }
-        // ambiguous
-        for g in gene_names.iter() {
-            writeln!(gn_writer, "{}-A", g)?;
-        }
+        write_label_file(
+            &gn_path,
+            spliced()
+                .chain(gene_names.iter().map(|g| Cow::Owned(format!("{}-U", g))))
+                .chain(gene_names.iter().map(|g| Cow::Owned(format!("{}-A", g)))),
+            "gene names",
+        )?;
     }
-
-    gn_writer.flush().context("could not flush gene names")?;
 
     // The probe matrix keeps one column per reference target, in RAD header order.
     // Its rows are the gene matrix's rows -- both matrices take a cell's row index
@@ -2496,14 +2550,12 @@ where
     // so the row labels are written out a second time under the probe matrix's own
     // name rather than left implicit, which keeps each matrix loadable from its own
     // triple of files.
-    if let Some(names) = &probe_names {
-        let pn_path = output_matrix_path.join("probe_quants_mat_cols.txt");
-        let pn_file = File::create(pn_path).context("could not create probe name output")?;
-        let mut pn_writer = BufWriter::new(pn_file);
-        for n in names.iter() {
-            writeln!(pn_writer, "{}", n)?;
-        }
-        pn_writer.flush().context("could not flush probe names")?;
+    if quant_opts.probe_mtx {
+        write_label_file(
+            &output_matrix_path.join("probe_quants_mat_cols.txt"),
+            hdr.ref_names.iter(),
+            "probe names",
+        )?;
         // The barcode file is flushed and no longer written to by this point.
         fs::copy(
             output_matrix_path.join("quants_mat_rows.txt"),
@@ -2527,7 +2579,7 @@ where
     if dump_eq {
         write_eqc_counts(
             &eqid_map_lock,
-            resolver_rows,
+            axis.rows,
             usa_mode,
             &output_matrix_path,
             log,
@@ -2558,9 +2610,9 @@ where
     "resolution_strategy" : resolution.to_string(),
     "num_quantified_cells" : num_cells,
     "num_genes" : num_rows,
-    "data_type" : data_type,
-    "probe_mtx" : write_probe,
-    "num_probes" : probe_level.then_some(resolver_rows),
+    "feature_axis" : if probe_level { "probe" } else { "gene" },
+    "probe_mtx" : quant_opts.probe_mtx,
+    "num_probes" : probe_level.then_some(axis.rows),
     "probe_nnz" : probe_nnz,
     "dump_eq" : dump_eq,
     "usa_mode" : usa_mode,
