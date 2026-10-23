@@ -2324,6 +2324,15 @@ where
         None
     };
 
+    // `num_rows` is the width of the gene matrix, which is what gets written.
+    // The resolver may work on a wider axis: one column per reference target.
+    // This is the one place that decides; everything downstream reads `axis`.
+    let axis = if probe_level {
+        FeatureAxis::probes(tid_to_gid_shared.clone(), hdr.ref_count as usize)
+    } else {
+        FeatureAxis::genes(tid_to_gid_shared.clone(), num_rows, num_genes)
+    };
+
     // The count-matrix column names (quants_mat_cols.txt): the gene names, or
     // in USA mode the spliced, then unspliced (-U), then ambiguous (-A) names.
     let feature_names: Arc<Vec<String>> = Arc::new(if usa_mode {
@@ -2343,20 +2352,20 @@ where
         Some(Arc::new(MoleculeTableWriter::create(
             &path,
             sample_names.as_deref().map(Vec::as_slice),
-            FeatureLabeler::new(feature_names.clone(), usa_mode),
+            {
+                let labeler = FeatureLabeler::new(feature_names.clone(), usa_mode);
+                // At probe level the resolver's labels are reference targets;
+                // project them onto genes through the table the gene matrix
+                // is summed with.
+                match &axis.target_to_gene {
+                    Some(target_to_gene) => labeler.with_target_to_gene(target_to_gene.clone()),
+                    None => labeler,
+                }
+            },
             molecule_umi_len,
         )?))
     } else {
         None
-    };
-
-    // `num_rows` is the width of the gene matrix, which is what gets written.
-    // The resolver may work on a wider axis: one column per reference target.
-    // This is the one place that decides; everything downstream reads `axis`.
-    let axis = if probe_level {
-        FeatureAxis::probes(tid_to_gid_shared.clone(), hdr.ref_count as usize)
-    } else {
-        FeatureAxis::genes(tid_to_gid_shared.clone(), num_rows, num_genes)
     };
 
     let bc_writer = Arc::new(Mutex::new(QuantOutputInfo {

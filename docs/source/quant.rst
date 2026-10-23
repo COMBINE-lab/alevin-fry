@@ -115,7 +115,7 @@ The columns are:
 * ``reads`` : the number of reads supporting the molecule's assignment. For ``cr-like``, these are the reads of the (corrected) UMI that are compatible with the winning gene(s); for the parsimony strategies, the reads of every UMI in the covering arborescence.
 * ``status`` : ``assigned`` if the molecule was counted as one molecule of ``feature``; ``multi_gene`` if it is gene-ambiguous (discarded by the non-EM strategies, apportioned among ``candidate_features`` by the EM strategies); or ``low_support`` if ``cr-like --umi-edit-dist 1`` dropped it as a low-support (tied or chimeric) UMI.
 
-For the non-EM strategies, counting the ``assigned`` rows of each (cell, feature) reproduces ``quants_mat.mtx`` exactly. Cells resolved by the tiny-cell fast path (see ``--small-thresh``) are recorded with that path's ``cr-like`` semantics, just as they are counted. Rows of a cell are contiguous, but cells appear in no particular order.
+For the non-EM strategies, counting the ``assigned`` rows of each (cell, feature) reproduces ``quants_mat.mtx`` exactly. Under ``quant-probe``, ``feature`` and ``candidate_features`` are genes, as in ``quants_mat.mtx``: a molecule compatible with several probes is ``multi_gene`` even when they all belong to one gene (the non-EM strategies discard it per probe), and its ``candidate_features`` then lists that gene once. Cells resolved by the tiny-cell fast path (see ``--small-thresh``) are recorded with that path's ``cr-like`` semantics, just as they are counted. Rows of a cell are contiguous, but cells appear in no particular order.
 
 .. _alevin: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1670-y
 

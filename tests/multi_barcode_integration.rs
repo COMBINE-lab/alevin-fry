@@ -859,6 +859,160 @@ fn test_multi_bc_collate_and_quant_preserve_sample_cell_identity() {
     assert!(row_labels.iter().any(|r| r.starts_with("sample_b_")));
 }
 
+#[test]
+/// `--dump-molecules` under `quant-probe`: the resolver's labels are
+/// reference targets, so the molecule table must
+/// project them onto genes as the gene matrix does. With two probes per gene,
+/// labelling by target id indexed past the gene names and failed.
+fn test_flex_dump_molecules_reports_genes_matching_the_matrix() {
+    use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
+    use alevin_fry::collate::collate;
+    use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts, SampleCorrectionMode};
+    use alevin_fry::quant::{ResolutionStrategy, SplicedAmbiguityModel, quantify};
+    use bio_types::strand::Strand;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let rad_dir = tmp.path().join("rad");
+    std::fs::create_dir_all(&rad_dir).unwrap();
+    let output_dir = tmp.path().join("output");
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let quant_dir = tmp.path().join("quant");
+
+    let sample_bcs = vec![
+        make_packed_bc(100, SAMPLE_BC_LEN),
+        make_packed_bc(200, SAMPLE_BC_LEN),
+    ];
+    let sample_entries = [("sample_a", sample_bcs[0]), ("sample_b", sample_bcs[1])];
+    let num_samples = sample_bcs.len();
+    let cells_per_sample = 4;
+    let reads_per_cell = 8;
+
+    let rad_path = rad_dir.join("map.rad");
+    create_synthetic_multi_bc_rad_with_shared_cells(
+        &rad_path,
+        num_samples,
+        cells_per_sample,
+        reads_per_cell,
+        &sample_bcs,
+        true,
+    )
+    .unwrap();
+
+    let sample_list_path = tmp.path().join("sample_barcodes.tsv");
+    write_named_sample_bc_list(&sample_list_path, &sample_entries, SAMPLE_BC_LEN).unwrap();
+
+    let tg_map_path = tmp.path().join("tg_map.tsv");
+    {
+        // two probes (reference targets) per gene
+        let mut f = BufWriter::new(File::create(&tg_map_path).unwrap());
+        for i in 0..NUM_REFS {
+            writeln!(f, "gene_{}\tG{}", i, i / 2).unwrap();
+        }
+    }
+
+    let log = make_test_logger();
+    let gpl_opts = GenPermitListOpts::builder()
+        .input_dir(&rad_dir)
+        .output_dir(&output_dir)
+        .fmeth(CellFilterMethod::ForceCells(cells_per_sample))
+        .expected_ori(Strand::Unknown)
+        .version(TEST_VERSION)
+        .threads(2)
+        .velo_mode(false)
+        .cmdline("test")
+        .log(&log)
+        .sample_bc_list(Some(sample_list_path))
+        .sample_names(None)
+        .sample_correction_mode(SampleCorrectionMode::Exact)
+        .build();
+    let total_cells = generate_permit_list(gpl_opts).unwrap();
+    assert_eq!(total_cells, (num_samples * cells_per_sample) as u64);
+
+    // Older GPL outputs predate correction_plan.bin. Collation must retain
+    // its documented Hamming-1 Unique compatibility path for those outputs.
+    std::fs::remove_file(output_dir.join("correction_plan.bin")).unwrap();
+
+    collate(
+        output_dir.clone(),
+        &rad_dir,
+        2,
+        1_000,
+        ChunkCodec::None,
+        "test",
+        TEST_VERSION,
+        &log,
+    )
+    .unwrap();
+
+    let quant_opts = QuantOpts::builder()
+        .input_dir(&output_dir)
+        .tg_map(&tg_map_path)
+        .output_dir(&quant_dir)
+        .num_threads(2)
+        .num_bootstraps(0)
+        .init_uniform(false)
+        .summary_stat(false)
+        .dump_eq(false)
+        .resolution(ResolutionStrategy::Trivial)
+        .pug_exact_umi(false)
+        .sa_model(SplicedAmbiguityModel::WinnerTakeAll)
+        .small_thresh(0)
+        .large_graph_thresh(0)
+        .filter_list(None)
+        .dump_molecules(true)
+        .probe_level(true)
+        .cmdline("test")
+        .version(TEST_VERSION)
+        .log(&log)
+        .build();
+    quantify(quant_opts).unwrap();
+
+    // Assigned molecules per gene, from the table, equal the matrix column sums.
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int32Type;
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let alevin = quant_dir.join("alevin");
+    let genes: Vec<String> = std::fs::read_to_string(alevin.join("quants_mat_cols.txt"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut from_matrix = vec![0f64; genes.len()];
+    let mtx = std::fs::read_to_string(alevin.join("quants_mat.mtx")).unwrap();
+    for line in mtx.lines().filter(|l| !l.starts_with('%')).skip(1) {
+        let v: Vec<&str> = line.split_whitespace().collect();
+        from_matrix[v[1].parse::<usize>().unwrap() - 1] += v[2].parse::<f64>().unwrap();
+    }
+    let reader = ParquetRecordBatchReaderBuilder::try_new(
+        File::open(alevin.join("molecules.parquet")).unwrap(),
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    let mut from_table = vec![0f64; genes.len()];
+    for batch in reader.map(Result::unwrap) {
+        let feature = batch
+            .column_by_name("feature")
+            .unwrap()
+            .as_dictionary::<Int32Type>();
+        let names = feature.values().as_string::<i32>();
+        let status = batch
+            .column_by_name("status")
+            .unwrap()
+            .as_dictionary::<Int32Type>();
+        let statuses = status.values().as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            if statuses.value(status.keys().value(row) as usize) != "assigned" {
+                continue;
+            }
+            let name = names.value(feature.keys().value(row) as usize);
+            from_table[genes.iter().position(|g| g == name).unwrap()] += 1.0;
+        }
+    }
+    assert!(from_matrix.iter().sum::<f64>() > 0.0);
+    assert_eq!(from_table, from_matrix);
+}
+
 /// Regression test for COMBINE-lab/simpleaf#195.
 ///
 /// The bug: collate.rs used to write the *sparse plate index* `sample_idx`
