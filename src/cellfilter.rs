@@ -182,6 +182,9 @@ fn buffer_count(
     }
 }
 
+/// The fewest distinct cell barcodes `knee_finding::get_knee` can process.
+const MIN_KNEE_BARCODES: usize = 3;
+
 struct MultiSampleCellOutput {
     sample_idx: usize,
     num_cells: u64,
@@ -220,11 +223,27 @@ fn compile_multi_sample_cell_output(
     // Preserve the historical multi-sample output contract: unused samples
     // have metadata/directories but no empty permit files. The compiled plan
     // remains total so its empty lookup rejects any such records directly.
-    if cell_hist.is_empty() {
-        warn!(
-            log,
-            "Sample '{}' has no reads — skipping permit list generation", sample_name
-        );
+    //
+    // Knee finding needs at least three distinct barcodes (with fewer, its
+    // refinement step is left with a single point), so in knee mode a sample
+    // with only one or two, typically a few stray reads in an unused sample of
+    // a large multiplexed run, is skipped the same way and retains no cells.
+    let too_few_for_knee = matches!(filter_method, CellFilterMethod::KneeFinding)
+        && cell_hist.len() < MIN_KNEE_BARCODES;
+    if cell_hist.is_empty() || too_few_for_knee {
+        if cell_hist.is_empty() {
+            warn!(
+                log,
+                "Sample '{}' has no reads — skipping permit list generation", sample_name
+            );
+        } else {
+            warn!(
+                log,
+                "Sample '{}' has only {} distinct cell barcode(s), too few for knee finding — skipping permit list generation",
+                sample_name,
+                cell_hist.len()
+            );
+        }
         return Ok(MultiSampleCellOutput {
             sample_idx,
             num_cells: 0,
@@ -546,6 +565,15 @@ fn process_filtered(
         "cell barcode",
         log,
     )?;
+    if matches!(filter_meth, CellFilterMethod::KneeFinding)
+        && (1..MIN_KNEE_BARCODES).contains(&hm.len())
+    {
+        bail!(
+            "knee finding needs at least {} distinct cell barcodes, but only {} were observed; check the mapping rate and the chemistry, or select cells with --force-cells, --expect-cells or --unfiltered-pl instead",
+            MIN_KNEE_BARCODES,
+            hm.len()
+        );
+    }
     let mut valid_barcodes = select_retained_barcodes(&hm, filter_meth, 0, barcode_len, log);
     valid_barcodes.sort_unstable();
     valid_barcodes.dedup();
@@ -689,8 +717,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         anyhow::bail!("execution terminated because input RAD path does not exist.");
     }
 
-    let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut ifile).unwrap();
+    let rad_path = i_dir.join("map.rad");
+    let prelude = RadPrelude::from_bytes(&mut ifile)
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut ifile)
+        .with_context(|| {
+            format!(
+                "could not read the file-level tags of {}",
+                rad_path.display()
+            )
+        })?;
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {

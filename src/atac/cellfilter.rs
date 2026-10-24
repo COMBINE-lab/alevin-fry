@@ -180,6 +180,20 @@ fn process_unfiltered(
             kept_barcodes.push(*entry.key());
         }
     }
+    // When no barcode is kept, count the reads whose barcode is in the permit
+    // list as given and in the other orientation, so the error raised below
+    // can name a wrong --permit-bc-ori as the cause.
+    let mut listed_reads = 0u64;
+    let mut other_ori_reads = 0u64;
+    if kept_barcodes.is_empty() {
+        listed_reads = hm.iter().map(|entry| *entry.value()).sum();
+        for (&barcode, &count) in &unmatched_bc {
+            let rc = needletail::bitkmer::reverse_complement((barcode, barcode_len as u8));
+            if hm.contains_key(&rc.0) {
+                other_ori_reads += count;
+            }
+        }
+    }
     for (barcode, count) in unmatched_bc {
         *observed_counts.entry(barcode).or_insert(0) += count;
     }
@@ -292,6 +306,43 @@ fn process_unfiltered(
         .write_all(meta_info_string.as_bytes())
         .context("cannot write to generate_permit_list.json file")?;
 
+    // Nothing downstream can use an empty permit list: sort would write an empty
+    // BED and still succeed. Fail here instead (generate_permit_list.json above
+    // keeps the correction stats) and say what to check.
+    if kept_barcodes.is_empty() {
+        let (ori, other_ori) = if gpl_opts.rc {
+            ("rc", "fw")
+        } else {
+            ("fw", "rc")
+        };
+        let total_reads: u64 = observed_counts.values().sum();
+        // Only suggest the other orientation when it clearly fits: a wrong
+        // permit list also matches a few reads in the other orientation by
+        // chance, and flipping the orientation would not fix that.
+        if other_ori_reads > listed_reads && 2 * other_ori_reads >= total_reads {
+            bail!(
+                "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {}, but {} ({:.2}%) have one with --permit-bc-ori {}. The barcode orientation is probably wrong; re-run generate-permit-list with --permit-bc-ori {} (with `simpleaf atac process`, pass --permit-barcode-ori {}).",
+                listed_reads,
+                total_reads,
+                ori,
+                other_ori_reads,
+                100.0 * other_ori_reads as f64 / total_reads as f64,
+                other_ori,
+                other_ori,
+                other_ori
+            );
+        }
+        bail!(
+            "no cell barcodes were retained: {} of the {} mapped reads have a barcode in the permit list with --permit-bc-ori {} ({} with --permit-bc-ori {}), and no barcode has at least --min-reads {} reads. Check that the permit list matches the chemistry, and the barcode orientation (--permit-bc-ori; --permit-barcode-ori with `simpleaf atac process`).",
+            listed_reads,
+            total_reads,
+            ori,
+            other_ori_reads,
+            other_ori,
+            min_freq
+        );
+    }
+
     info!(
         log,
         "total number of distinct corrected barcodes : {}",
@@ -369,16 +420,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
     let nworkers: usize = gpl_opts.threads.saturating_sub(1).max(1);
     // open the input rad file and get the total file length from metadata to support
     // a progress bar
-    let i_file = File::open(i_dir.join("map.rad")).context("could not open input rad file")?;
+    let rad_path = i_dir.join("map.rad");
+    let i_file = File::open(&rad_path).context("could not open input rad file")?;
     let metadata = i_file.metadata()?;
     let file_len = metadata.len();
 
     let ifile = BufReader::new(i_file);
     let mut rad_reader =
-        libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::new(
+        libradicl::readers::ParallelRadReader::<AtacSeqReadRecord, BufReader<File>>::try_new(
             ifile,
             NonZeroUsize::new(nworkers).unwrap(),
-        );
+        )
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
 
     let hdr = &rad_reader.prelude.hdr;
     info!(

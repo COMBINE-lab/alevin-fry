@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use slog::{crit, info};
 
@@ -590,53 +590,54 @@ where
     Ok(())
 }
 
-pub fn view<P>(rad_file: P, print_header: bool, log: &slog::Logger)
+pub fn view<P>(rad_file: P, print_header: bool, log: &slog::Logger) -> anyhow::Result<()>
 where
     P: AsRef<Path>,
 {
-    let _read_num = view2(rad_file, print_header, log).unwrap();
+    let _read_num = view2(rad_file, print_header, log)?;
+    Ok(())
 }
 pub fn view2<P>(rad_file: P, print_header: bool, log: &slog::Logger) -> anyhow::Result<u64>
 where
     P: AsRef<Path>,
 {
-    let i_file = File::open(rad_file).unwrap();
+    let rad_path = rad_file.as_ref();
+    let i_file = File::open(rad_path)
+        .with_context(|| format!("could not open the RAD file {}", rad_path.display()))?;
     let mut br = BufReader::new(i_file);
-    let prelude = RadPrelude::from_bytes(&mut br)?;
+    let prelude = RadPrelude::from_bytes(&mut br)
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
     let hdr = &prelude.hdr;
-    let rl_tags = &prelude.read_tags;
 
-    // right now, we only handle BC and UMI types of U8—U64, so validate that
-    const BNAME: &str = "b";
-    const UNAME: &str = "u";
-
-    let mut bct: Option<RadType> = None;
-    let mut umit: Option<RadType> = None;
-
-    for rt in &rl_tags.tags {
-        // if this is one of our tags
-        if rt.name == BNAME || rt.name == UNAME {
-            if !rt.typeid.is_int_type() {
-                crit!(
-                    log,
-                    "currently only RAD types 1--4 are supported for 'b' and 'u' tags."
-                );
-                std::process::exit(libradicl::exit_codes::EXIT_UNSUPPORTED_TAG_TYPE);
-            }
-
-            if rt.name == BNAME {
-                bct = Some(rt.typeid);
-            }
-            if rt.name == UNAME {
-                umit = Some(rt.typeid);
-            }
-        }
-    }
-    assert!(bct.is_some(), "barcode type tag was missing!");
-    assert!(umit.is_some(), "umi type tag was missing!");
-
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .with_context(|| {
+            format!(
+                "could not read the file-level tags of {}",
+                rad_path.display()
+            )
+        })?;
     info!(log, "File-level tag map {:?}", file_tag_map);
+
+    // `view` prints the single-barcode scRNA-seq layout (one cell barcode and one
+    // UMI per read), so name the layout of any other file rather than failing on
+    // its tags. The barcode and UMI tag types are validated by the record context
+    // below.
+    let unsupported = match crate::utils::get_record_type_from_prelude(&prelude, &file_tag_map)? {
+        crate::utils::KnownRecordType::RnaShortMultiBC(..) => {
+            Some("a multi-barcode (e.g. 10x Flex)")
+        }
+        crate::utils::KnownRecordType::AtacSeq(_) => Some("a scATAC-seq"),
+        _ => None,
+    };
+    if let Some(layout) = unsupported {
+        bail!(
+            "`alevin-fry view` supports only single-barcode scRNA-seq RAD files, but {} is {} RAD file",
+            rad_path.display(),
+            layout
+        );
+    }
 
     // Barcode/UMI lengths: role-declared if present, else the cblen/ulen file tags
     // (shared resolver, prefers role and warns on disagreement).
@@ -656,7 +657,14 @@ where
     )?;
 
     let mut num_reads: u64 = 0;
-    let record_context = prelude.get_record_context_prefer_roles::<AlevinFryRecordContext>()?;
+    let record_context = prelude
+        .get_record_context_prefer_roles::<AlevinFryRecordContext>()
+        .with_context(|| {
+            format!(
+                "`alevin-fry view` supports only single-barcode scRNA-seq RAD files with an integer barcode and UMI read tag; could not read the records of {}",
+                rad_path.display()
+            )
+        })?;
 
     let stdout = stdout(); // get the global stdout entity
     let stdout_l = stdout.lock();

@@ -592,7 +592,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: &PathBuf = t.get_one("rad").unwrap();
         let print_header = t.get_flag("header");
-        alevin_fry::convert::view(rad_file, print_header, &log)
+        alevin_fry::convert::view(rad_file, print_header, &log)?;
     }
 
     // collate a rad file to group together all records corresponding
@@ -630,7 +630,7 @@ fn main() -> anyhow::Result<()> {
             VERSION,
             &log,
         )
-        .expect("could not collate.");
+        .with_context(|| format!("could not collate the RAD file in {}", rad_dir.display()))?;
     }
 
     // perform quantification of a collated rad file.
@@ -830,7 +830,7 @@ fn main() -> anyhow::Result<()> {
             output_dir,
             &log,
         )
-        .expect("could not perform inference from equivalence class counts.");
+        .context("could not perform inference from equivalence class counts")?;
     }
     Ok(())
 }

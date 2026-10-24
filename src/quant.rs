@@ -1836,11 +1836,6 @@ where
                         "--umi-edit-dist 1 (cr-like Hamming-1 UMI correction) is not supported in USA mode (a spliced+unspliced tg-map); it is only meaningful for a spliced-only reference"
                     );
                 }
-                assert_eq!(
-                    num_bootstraps, 0,
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-                );
-
                 match resolution {
                     ResolutionStrategy::Parsimony
                     | ResolutionStrategy::ParsimonyEm
@@ -1880,6 +1875,22 @@ where
         gene_names.len().to_formatted_string(&Locale::en),
         tid_to_gid.len().to_formatted_string(&Locale::en)
     );
+
+    // USA mode is detected from the tg-map, so main.rs cannot reject these
+    // combinations when it parses the arguments; refuse them here, before any
+    // output is written. Bootstrapping is not implemented for USA mode, and
+    // trivial resolution counts molecules per gene id, which USA mode splits
+    // into spliced, unspliced and ambiguous ids.
+    if usa_mode {
+        anyhow::ensure!(
+            num_bootstraps == 0,
+            "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping; drop --num-bootstraps or use a 2-column tg-map."
+        );
+        anyhow::ensure!(
+            resolution != ResolutionStrategy::Trivial,
+            "--resolution trivial is not supported in USA mode (a 3-column spliced/unspliced tg-map); use another resolution, such as cr-like or cr-like-em, or a 2-column tg-map."
+        );
+    }
 
     // read the map for the number of unmapped reads per corrected barcode
     let bc_unmapped_map: Arc<libradicl::unmapped::CollatedUnmappedCounts> = Arc::new(
@@ -2493,7 +2504,10 @@ where
 pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let log = quant_opts.log;
     let prelude = RadPrelude::from_bytes(&mut br)?;
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .context("could not read the file-level tags of the collated RAD file")?;
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
