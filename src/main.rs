@@ -345,9 +345,9 @@ fn main() -> anyhow::Result<()> {
         .value_parser(value_parser!(usize))
         .default_value("100"))
     // Multi-sample output option (for multi-barcode RAD files)
-    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "output mode for multi-sample data: separate per-sample matrices, one combined matrix, or both")
+    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "deprecated and ignored; multi-sample output is always one combined matrix whose rows are <sample>_<barcode>")
         .value_parser(["separate", "combined", "both"])
-        .default_value("separate"));
+        .hide(true));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -644,6 +644,14 @@ fn main() -> anyhow::Result<()> {
         if t.get_flag("use-eds") {
             anyhow::bail!(
                 "--use-eds is no longer supported. EDS output has been removed as of v0.12."
+            );
+        }
+        // never implemented: quant always writes a single combined matrix
+        if let Some(mode) = t.get_one::<String>("multi-sample-output") {
+            warn!(
+                log,
+                "--multi-sample-output={} is deprecated and has no effect; quant always writes one combined matrix, whose rows are named <sample>_<barcode> for multi-sample (e.g. Flex) input",
+                mode
             );
         }
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();

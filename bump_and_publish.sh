@@ -104,10 +104,12 @@ cd "$SCRIPT_DIR"
 
 ROOT_CARGO="Cargo.toml"
 LOCKFILE="Cargo.lock"
+DOCS_CONF="docs/source/conf.py"
 TAG="v${VERSION}"
 
 [[ -f "$ROOT_CARGO" ]] || die "not found: $ROOT_CARGO"
 [[ -f "$LOCKFILE" ]] || die "not found: $LOCKFILE"
+[[ -f "$DOCS_CONF" ]] || die "not found: $DOCS_CONF"
 
 require_cmd git
 require_cmd cargo
@@ -118,6 +120,9 @@ fi
 
 CURRENT_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_CARGO" | head -1)"
 [[ -n "$CURRENT_VERSION" ]] || die "could not determine current crate version from $ROOT_CARGO"
+
+CURRENT_DOCS_RELEASE="$(sed -n "s/^release = '\(.*\)'/\1/p" "$DOCS_CONF" | head -1)"
+[[ -n "$CURRENT_DOCS_RELEASE" ]] || die "could not determine current docs release from $DOCS_CONF"
 
 if [[ "$CURRENT_VERSION" == "$VERSION" ]]; then
     die "crate version is already $VERSION"
@@ -177,22 +182,28 @@ run_with_sanitized_manifest cargo publish --dry-run --locked --allow-dirty
 echo
 echo "Updating $ROOT_CARGO"
 echo "  version: $CURRENT_VERSION -> $VERSION"
+echo "Updating $DOCS_CONF"
+echo "  release: $CURRENT_DOCS_RELEASE -> $VERSION"
 
 if [[ "$DRY_RUN" == false ]]; then
     sed -i.bak "1,/^version = /s/^version = \".*\"/version = \"${VERSION}\"/" "$ROOT_CARGO"
     rm -f "${ROOT_CARGO}.bak"
+    sed -i.bak "s/^release = '.*'/release = '${VERSION}'/" "$DOCS_CONF"
+    rm -f "${DOCS_CONF}.bak"
 fi
 
 UPDATED_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT_CARGO" | head -1)"
+UPDATED_DOCS_RELEASE="$(sed -n "s/^release = '\(.*\)'/\1/p" "$DOCS_CONF" | head -1)"
 if [[ "$DRY_RUN" == false ]]; then
     [[ "$UPDATED_VERSION" == "$VERSION" ]] || die "crate version update failed"
+    [[ "$UPDATED_DOCS_RELEASE" == "$VERSION" ]] || die "docs release update failed"
 else
-    echo "Dry-run: would rewrite $ROOT_CARGO"
+    echo "Dry-run: would rewrite $ROOT_CARGO and $DOCS_CONF"
 fi
 
 run cargo check -q
 run cargo check --locked -q
-run git add "$ROOT_CARGO" "$LOCKFILE"
+run git add "$ROOT_CARGO" "$LOCKFILE" "$DOCS_CONF"
 run git commit -m "chore(release): bump alevin-fry to v${VERSION}"
 
 if [[ "$PUBLISH" == true ]]; then

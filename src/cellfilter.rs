@@ -2014,7 +2014,11 @@ where
 
     if let Some(tag_val) = file_tag_map.get("cblen") {
         let cb_len: u64 = tag_val.try_into().expect("should be able to fit");
-        if cb_len as usize != first_bclen {
+        // only an unfiltered permit list (-u) is loaded here; in every other
+        // mode first_bclen stays 0, so there is nothing to compare against.
+        if matches!(gpl_opts.fmeth, CellFilterMethod::UnfilteredExternalList(..))
+            && cb_len as usize != first_bclen
+        {
             warn!(
                 &gpl_opts.log,
                 "The provided permit list had barcodes of length {}, but the mapped reads have barcodes of length {}",
