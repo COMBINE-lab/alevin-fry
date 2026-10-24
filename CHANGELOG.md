@@ -20,8 +20,9 @@ Changelog for alevin-fry
     out one probe of its gene (they tie between two of its probes, or every read
     matches both) is dropped by `cr-like` and by the tiny-cell fast path, and
     divided between the probes by the EM strategies, where `quant` counts it
-    once for the gene. `trivial` and `parsimony` also drop a read that matches
-    two probes of one gene, and `trivial` counts a UMI once per probe when its
+    once for the gene. `trivial` also drops each read that matches two probes
+    of one gene, and `parsimony` such a molecule unless another of its reads
+    singles out one probe. `trivial` counts a UMI once per probe when its
     reads fall on different probes of its gene. On a 384-plex Flex v2 library
     (262k cells, about 112M UMIs) the net change was at most 164 UMIs.
   * `parsimony-gene` and `parsimony-gene-em` are refused, naming `parsimony` and
@@ -35,7 +36,9 @@ Changelog for alevin-fry
     `quant` keeps with `cr-like` or `parsimony`. With the EM strategies the gene
     totals were nearly unchanged, but UMIs were split among isoforms arbitrarily.
   * With `--dump-eqclasses`, the probe names that the equivalence-class ids
-    index are written to `probe_quants_mat_cols.txt`.
+    index are written to `probe_quants_mat_cols.txt`. `infer` refuses
+    equivalence classes whose ids do not index the `quants_mat_cols.txt` beside
+    them, as with this output, rather than label a probe matrix with gene names.
   * Cost depends on the library. On the Flex library above, across the five
     strategies, `quant-probe` took 18-34% longer than `quant` (1.5-2.1 s to
     1.8-2.7 s at 16 threads), and 37-52% longer with `--probe-mtx`.

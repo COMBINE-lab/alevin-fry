@@ -51,10 +51,10 @@ Probe-level quantification (``quant-probe``)
 Probe-based data -- e.g. 10x Flex -- is quantified with the ``quant-probe``
 subcommand, which quantifies at the probe level.  It is a subcommand of its own
 rather than a flag on ``quant`` because the probe axis cannot honour some of
-``quant``'s options -- ``--num-bootstraps`` and the gene-level resolution
-strategies among them -- and leaving those out is cleaner than accepting them
-and then refusing them.  It adds one option of its own, ``--probe-mtx``;
-everything else is as in ``quant``.
+``quant``'s options.  Most of them, such as ``--num-bootstraps``, are left out of
+``quant-probe``; the gene-level resolution strategies are refused with their
+probe-level counterparts named (see below).  It adds one option of its own,
+``--probe-mtx``; everything else is as in ``quant``.
 
 Nothing is detected: pick the subcommand that matches the data.  Probe-ness is a
 property of the *reference*, which neither the RAD file nor
@@ -83,8 +83,9 @@ not single out one probe -- they tie between two probes of its gene, or every
 read matches both -- is discarded by ``cr-like`` and by the tiny-cell fast path
 (which applies ``cr-like`` rules whatever the strategy), where a gene-level run
 counts it once for the gene; the EM strategies apportion it among its probes, so
-it still counts for the gene.  A read that matches two probes of one gene is
-likewise discarded by ``trivial`` and ``parsimony``.  ``trivial`` deduplicates
+it still counts for the gene.  ``trivial`` likewise discards each read that
+matches two probes of one gene, and ``parsimony`` discards such a molecule unless
+another of its reads singles out one probe.  ``trivial`` deduplicates
 each probe's UMIs separately, so a UMI with reads on two probes of its gene counts
 once on each, and twice for the gene.  Such UMIs are rare on real Flex data, since
 probes seldom share reads.
@@ -101,7 +102,7 @@ The following are not available with ``quant-probe``:
 * A three-column (USA) transcript-to-gene map.  A probe set's status column does not mean what USA mode's does.  10x annotates a probe ``spliced`` when it spans an exon-exon junction by at least 10 bp, so its evidence is mature mRNA alone, and ``unspliced`` when it does not, in which case it cannot distinguish mature from nascent transcript; 10x uses the two classes of one gene to estimate genomic-DNA background.  A non-junction probe is therefore *ambiguous* in USA terms rather than unspliced, and a transcriptome probe set carries no nascent-specific probe, so USA's unspliced layer has little to hold.  Read as a splicing state, the column would write the bulk of a probe set into the unspliced layer -- 46,022 of the 53,519 included probes of the human v2 set -- while those probes mostly measure mature mRNA.  Separately, the state USA mode reports is a resolution outcome rather than an annotation: a UMI reaches a gene's ambiguous slot by being compatible with both of its variants, which relies on the overlapping transcripts of a transcriptome reference, and a probe reference carries little such overlap.  Passing a three-column map is an error; use a two-column (target, gene) map, and ``--probe-mtx`` if you need the per-probe breakdown.
 * An input directory produced in velocity mode, which has its own feature axis -- the spliced and unspliced variants of a gene -- and no probe axis to sum.
 
-**Note**: with ``--dump-eqclasses``, the ids written to ``gene_eqclass.txt.gz`` are probe ids and its first line is the number of probes; this is logged at run time.  The ids index the probe names written to ``probe_quants_mat_cols.txt``, one per line in reference (RAD header) order; that file is written with ``--dump-eqclasses`` even without ``--probe-mtx``.
+**Note**: with ``--dump-eqclasses``, the ids written to ``gene_eqclass.txt.gz`` are probe ids and its first line is the number of probes; this is logged at run time.  The ids index the probe names written to ``probe_quants_mat_cols.txt``, one per line in reference (RAD header) order; that file is written with ``--dump-eqclasses`` even without ``--probe-mtx``.  Since the ids are not gene ids, ``infer`` refuses this output.
 
 ``quant.json`` records the axis that was used as ``feature_axis``, which is
 ``"probe"`` for ``quant-probe`` and ``"gene"`` for ``quant``.

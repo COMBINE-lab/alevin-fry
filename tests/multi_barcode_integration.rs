@@ -3008,3 +3008,78 @@ fn flex_ties_between_probes_of_one_gene_are_resolved_per_probe() {
         );
     }
 }
+
+/// `infer` names its output's columns with the quants_mat_cols.txt beside the
+/// equivalence classes. After `quant -d` the class ids index those gene names;
+/// after `quant-probe -d` they index probe_quants_mat_cols.txt instead, and
+/// `infer` refuses them rather than write a probe matrix labelled with gene names.
+#[test]
+fn infer_refuses_probe_level_equivalence_classes() {
+    use std::io::BufRead;
+
+    let fx = build_multi_probe_fixture();
+    let root = fx.input_dir.parent().unwrap().to_path_buf();
+    let num_lines = |path: &Path| std::fs::read_to_string(path).unwrap().lines().count();
+    let num_features = |dir: &Path| {
+        let eqc =
+            flate2::read::GzDecoder::new(File::open(dir.join("gene_eqclass.txt.gz")).unwrap());
+        let mut first = String::new();
+        BufReader::new(eqc).read_line(&mut first).unwrap();
+        first.trim().parse::<usize>().unwrap()
+    };
+    let quant = |subcommand: &str| {
+        let out = root.join(subcommand);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_alevin-fry"))
+            .arg(subcommand)
+            .arg("-i")
+            .arg(&fx.input_dir)
+            .arg("-m")
+            .arg(&fx.tg_map)
+            .arg("-o")
+            .arg(&out)
+            .args(["-t", "2", "-r", "cr-like", "-d"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        out.join("alevin")
+    };
+
+    // The invariant the check rests on, on each axis.
+    let gene_dir = quant("quant");
+    assert_eq!(num_features(&gene_dir), FLEX_NUM_GENES);
+    assert_eq!(
+        num_lines(&gene_dir.join("quants_mat_cols.txt")),
+        FLEX_NUM_GENES
+    );
+    let probe_dir = quant("quant-probe");
+    let num_probes = num_features(&probe_dir);
+    assert_ne!(num_probes, FLEX_NUM_GENES);
+    assert_eq!(
+        num_lines(&probe_dir.join("probe_quants_mat_cols.txt")),
+        num_probes
+    );
+    assert_eq!(
+        num_lines(&probe_dir.join("quants_mat_cols.txt")),
+        FLEX_NUM_GENES
+    );
+
+    let inferred = root.join("inferred");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_alevin-fry"))
+        .arg("infer")
+        .arg("-c")
+        .arg(probe_dir.join("geqc_counts.mtx"))
+        .arg("-e")
+        .arg(probe_dir.join("gene_eqclass.txt.gz"))
+        .arg("-o")
+        .arg(&inferred)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("`quant-probe -d`"), "{stderr}");
+    assert!(!inferred.exists(), "infer wrote output before refusing");
+}
