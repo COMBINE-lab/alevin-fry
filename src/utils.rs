@@ -1226,8 +1226,15 @@ pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, PartialEq, Eq)]
+/// The `major.minor.patch` core of an alevin-fry version string.
+///
+/// Parsing keeps only the numeric core: a leading `v`, a pre-release
+/// (`-rc.1`) and build metadata (`+abc`) are accepted and dropped, and
+/// anything without exactly three numeric parts is a `VersionParseError`.
+/// A pre-release therefore compares as its core version, both in
+/// `is_compatible_with` and in the derived ordering (`0.19.0-rc.1` equals
+/// `0.19.0`, rather than sorting before it as in semver).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InternalVersionInfo {
     pub major: u32,
     pub minor: u32,
@@ -1264,15 +1271,18 @@ impl FromStr for InternalVersionInfo {
     type Err = VersionParseError;
 
     fn from_str(vs: &str) -> Result<Self, Self::Err> {
-        let versions: Vec<u32> = vs.split('.').map(|s| s.parse::<u32>().unwrap()).collect();
-        if versions.len() != 3 {
-            return Err(VersionParseError::IncorrectFormat(vs.to_string()));
+        let core = vs.strip_prefix('v').unwrap_or(vs);
+        // drop a pre-release (`-rc.1`) or build (`+abc`) suffix
+        let core = core.split(['-', '+']).next().unwrap_or(core);
+        let mut parts = core.split('.').map(str::parse::<u32>);
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) => Ok(Self {
+                major,
+                minor,
+                patch,
+            }),
+            _ => Err(VersionParseError::IncorrectFormat(vs.to_string())),
         }
-        Ok(Self {
-            major: versions[0],
-            minor: versions[1],
-            patch: versions[2],
-        })
     }
 }
 
@@ -1324,6 +1334,7 @@ mod tests {
     use crate::utils::InternalVersionInfo;
     use crate::utils::MIN_THREADS;
     use crate::utils::ProbMap;
+    use crate::utils::VersionParseError;
     use crate::utils::enforce_thread_floor;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
@@ -1353,6 +1364,49 @@ mod tests {
                 patch: 3
             }
         );
+    }
+
+    #[test]
+    fn test_version_info_drops_prefix_and_suffixes() {
+        let v = |major, minor, patch| InternalVersionInfo {
+            major,
+            minor,
+            patch,
+        };
+        for (vs, expected) in [
+            ("0.19.0-rc.1", v(0, 19, 0)),
+            ("0.18.3-dev", v(0, 18, 3)),
+            ("0.15.0+build.5", v(0, 15, 0)),
+            ("1.2.3-beta.2+abc", v(1, 2, 3)),
+            ("v1.2.3", v(1, 2, 3)),
+        ] {
+            assert_eq!(InternalVersionInfo::from_str(vs).unwrap(), expected, "{vs}");
+        }
+    }
+
+    #[test]
+    fn test_version_info_rejects_malformed_without_panic() {
+        for vs in [
+            "", "1.2", "1.2.3.4", "a.b.c", "1..3", "1.2.x", "vv1.2.3", "-1.2.3", "1.2.3 ",
+        ] {
+            match InternalVersionInfo::from_str(vs) {
+                Err(VersionParseError::IncorrectFormat(s)) => assert_eq!(s, vs),
+                Ok(v) => panic!("{vs:?} parsed as {v}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_prerelease_compares_as_core_version() {
+        let v = |vs| InternalVersionInfo::from_str(vs).unwrap();
+        let rc = v("0.19.0-rc.1");
+        assert_eq!(rc, v("0.19.0"));
+        assert!(rc.is_compatible_with(&v("0.19.2")).is_ok());
+        assert!(v("0.19.2").is_compatible_with(&rc).is_ok());
+        assert!(rc.is_compatible_with(&v("0.18.3")).is_err());
+        assert!(v("0.18.3") < rc && rc < v("0.19.1") && v("0.19.1") < v("1.0.0"));
+        // Display output parses back to the same version
+        assert_eq!(v(&rc.to_string()), rc);
     }
 
     #[test]
