@@ -101,8 +101,12 @@ pub fn do_deduplicate<T: BufRead>(mut br: T, dedup_opts: DeduplicateOpts) -> any
         1
     };
 
-    let prelude = RadPrelude::from_bytes(&mut br).unwrap();
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
+    let prelude =
+        RadPrelude::from_bytes(&mut br).context("could not read the collated RAD header")?;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .context("could not read the file-level tags of the collated RAD file")?;
     let log = &dedup_opts.log;
 
     let hdr = &prelude.hdr;

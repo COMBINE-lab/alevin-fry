@@ -182,6 +182,9 @@ fn buffer_count(
     }
 }
 
+/// The fewest distinct cell barcodes `knee_finding::get_knee` can process.
+const MIN_KNEE_BARCODES: usize = 3;
+
 struct MultiSampleCellOutput {
     sample_idx: usize,
     num_cells: u64,
@@ -220,11 +223,27 @@ fn compile_multi_sample_cell_output(
     // Preserve the historical multi-sample output contract: unused samples
     // have metadata/directories but no empty permit files. The compiled plan
     // remains total so its empty lookup rejects any such records directly.
-    if cell_hist.is_empty() {
-        warn!(
-            log,
-            "Sample '{}' has no reads — skipping permit list generation", sample_name
-        );
+    //
+    // Knee finding needs at least three distinct barcodes (with fewer, its
+    // refinement step is left with a single point), so in knee mode a sample
+    // with only one or two, typically a few stray reads in an unused sample of
+    // a large multiplexed run, is skipped the same way and retains no cells.
+    let too_few_for_knee = matches!(filter_method, CellFilterMethod::KneeFinding)
+        && cell_hist.len() < MIN_KNEE_BARCODES;
+    if cell_hist.is_empty() || too_few_for_knee {
+        if cell_hist.is_empty() {
+            warn!(
+                log,
+                "Sample '{}' has no reads — skipping permit list generation", sample_name
+            );
+        } else {
+            warn!(
+                log,
+                "Sample '{}' has only {} distinct cell barcode(s), too few for knee finding — skipping permit list generation",
+                sample_name,
+                cell_hist.len()
+            );
+        }
         return Ok(MultiSampleCellOutput {
             sample_idx,
             num_cells: 0,
@@ -546,6 +565,15 @@ fn process_filtered(
         "cell barcode",
         log,
     )?;
+    if matches!(filter_meth, CellFilterMethod::KneeFinding)
+        && (1..MIN_KNEE_BARCODES).contains(&hm.len())
+    {
+        bail!(
+            "knee finding needs at least {} distinct cell barcodes, but only {} were observed; check the mapping rate and the chemistry, or select cells with --force-cells, --expect-cells or --unfiltered-pl instead",
+            MIN_KNEE_BARCODES,
+            hm.len()
+        );
+    }
     let mut valid_barcodes = select_retained_barcodes(&hm, filter_meth, 0, barcode_len, log);
     valid_barcodes.sort_unstable();
     valid_barcodes.dedup();
@@ -689,8 +717,18 @@ pub fn generate_permit_list(gpl_opts: GenPermitListOpts) -> anyhow::Result<u64> 
         anyhow::bail!("execution terminated because input RAD path does not exist.");
     }
 
-    let prelude = RadPrelude::from_bytes(&mut ifile).unwrap();
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut ifile).unwrap();
+    let rad_path = i_dir.join("map.rad");
+    let prelude = RadPrelude::from_bytes(&mut ifile)
+        .with_context(|| format!("could not read the RAD header of {}", rad_path.display()))?;
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut ifile)
+        .with_context(|| {
+            format!(
+                "could not read the file-level tags of {}",
+                rad_path.display()
+            )
+        })?;
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
     match rec_type {
@@ -831,7 +869,11 @@ fn do_generate_permit_list_multi_bc(
     );
 
     // Load known sample barcodes (with rotation → canonical mapping)
-    let sample_info = load_sample_barcode_list(sample_bc_list_path, gpl_opts.sample_bc_ori, log)?;
+    let mut sample_info =
+        load_sample_barcode_list(sample_bc_list_path, gpl_opts.sample_bc_ori, log)?;
+    if let Some(names_path) = gpl_opts.sample_names.as_ref() {
+        apply_sample_names(&mut sample_info, names_path, gpl_opts.sample_bc_ori, log)?;
+    }
 
     // Build sample barcode correction map (rotation → canonical)
     let sample_correction_spec = gpl_opts.sample_correction_spec(sample_info.barcode_len as u8);
@@ -1444,6 +1486,133 @@ struct SampleBarcodeInfo {
 ///    has 8 rotation variants.
 ///
 /// Returns `SampleBarcodeInfo` with canonical barcodes and rotation mapping.
+/// A sample barcode as it appears in the read: reverse-complemented when the
+/// whitelist is in the reverse orientation.
+fn orient_sample_barcode(seq: &str, ori: SampleBarcodeOri) -> String {
+    if ori != SampleBarcodeOri::Reverse {
+        return seq.to_string();
+    }
+    seq.bytes()
+        .rev()
+        .map(|b| match b {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            b'a' => b't',
+            b't' => b'a',
+            b'c' => b'g',
+            b'g' => b'c',
+            other => other,
+        })
+        .map(|b| b as char)
+        .collect()
+}
+
+fn pack_sample_barcode(seq: &str) -> anyhow::Result<u64> {
+    needletail::bitkmer::BitNuclKmer::new(seq.as_bytes(), seq.len() as u8, false)
+        .next()
+        .map(|(_, kmer, _)| kmer.0)
+        .ok_or_else(|| anyhow!("couldn't pack sample barcode: {}", seq))
+}
+
+/// Apply `--sample-names`: a `barcode<TAB>name` file whose names replace those
+/// from the sample-barcode list. A barcode may be any barcode of the list
+/// (a rotation or a canonical barcode); all barcodes of one sample must agree
+/// on its name, and the resulting sample names must be distinct.
+fn apply_sample_names(
+    info: &mut SampleBarcodeInfo,
+    path: &PathBuf,
+    ori: SampleBarcodeOri,
+    log: &slog::Logger,
+) -> anyhow::Result<()> {
+    let file = File::open(path)
+        .with_context(|| format!("couldn't open sample names file: {}", path.display()))?;
+    let mut named: HashMap<u64, String> = HashMap::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (barcode, name) = trimmed.split_once('\t').ok_or_else(|| {
+            anyhow!(
+                "sample names file {}: expected `barcode<TAB>name`, found '{}'",
+                path.display(),
+                trimmed
+            )
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            bail!(
+                "sample names file {}: barcode '{}' has an empty name",
+                path.display(),
+                barcode
+            );
+        }
+        if barcode.len() != info.barcode_len {
+            bail!(
+                "sample names file {}: barcode '{}' has length {}, but the sample barcodes have length {}",
+                path.display(),
+                barcode,
+                barcode.len(),
+                info.barcode_len
+            );
+        }
+        let packed = pack_sample_barcode(&orient_sample_barcode(barcode, ori))?;
+        let canonical = info
+            .rotation_to_canonical
+            .get(&packed)
+            .copied()
+            .or_else(|| {
+                info.canonical_to_name
+                    .contains_key(&packed)
+                    .then_some(packed)
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "sample names file {}: barcode '{}' is not in the sample barcode list",
+                    path.display(),
+                    barcode
+                )
+            })?;
+        match named.entry(canonical) {
+            Entry::Occupied(entry) if entry.get() != name => bail!(
+                "sample names file {}: barcode '{}' names its sample '{}', but another barcode of the same sample names it '{}'",
+                path.display(),
+                barcode,
+                name,
+                entry.get()
+            ),
+            Entry::Occupied(_) => {}
+            Entry::Vacant(entry) => {
+                entry.insert(name.to_string());
+            }
+        }
+    }
+    let num_named = named.len();
+    info.canonical_to_name.extend(named);
+    let mut seen = std::collections::HashSet::new();
+    for canonical in &info.canonical_barcodes {
+        if let Some(name) = info.canonical_to_name.get(canonical)
+            && !seen.insert(name.as_str())
+        {
+            bail!(
+                "after applying {}, more than one sample is named '{}'",
+                path.display(),
+                name
+            );
+        }
+    }
+    info!(
+        log,
+        "Applied {} sample names from {}",
+        num_named,
+        path.display()
+    );
+    Ok(())
+}
+
 fn load_sample_barcode_list(
     path: &PathBuf,
     ori: SampleBarcodeOri,
@@ -1510,42 +1679,12 @@ fn load_sample_barcode_list(
             _ => {}
         }
 
-        let rc = |seq: &str| -> String {
-            seq.bytes()
-                .rev()
-                .map(|b| match b {
-                    b'A' => b'T',
-                    b'T' => b'A',
-                    b'C' => b'G',
-                    b'G' => b'C',
-                    b'a' => b't',
-                    b't' => b'a',
-                    b'c' => b'g',
-                    b'g' => b'c',
-                    other => other,
-                })
-                .map(|b| b as char)
-                .collect()
-        };
+        let observed_owned = orient_sample_barcode(observed_seq, ori);
+        let canonical_owned = orient_sample_barcode(canonical_seq, ori);
+        let (observed_seq, canonical_seq) = (observed_owned.as_str(), canonical_owned.as_str());
 
-        let (observed_owned, canonical_owned);
-        let (observed_seq, canonical_seq) = if ori == SampleBarcodeOri::Reverse {
-            observed_owned = rc(observed_seq);
-            canonical_owned = rc(canonical_seq);
-            (observed_owned.as_str(), canonical_owned.as_str())
-        } else {
-            (observed_seq, canonical_seq)
-        };
-
-        let pack = |seq: &str| -> anyhow::Result<u64> {
-            needletail::bitkmer::BitNuclKmer::new(seq.as_bytes(), seq.len() as u8, false)
-                .next()
-                .map(|(_, kmer, _)| kmer.0)
-                .ok_or_else(|| anyhow!("couldn't pack sample barcode: {}", seq))
-        };
-
-        let obs_packed = pack(observed_seq)?;
-        let canon_packed = pack(canonical_seq)?;
+        let obs_packed = pack_sample_barcode(observed_seq)?;
+        let canon_packed = pack_sample_barcode(canonical_seq)?;
 
         match rotation_to_canonical.entry(obs_packed) {
             Entry::Occupied(entry) if *entry.get() != canon_packed => {
@@ -1913,7 +2052,11 @@ where
 
     if let Some(tag_val) = file_tag_map.get("cblen") {
         let cb_len: u64 = tag_val.try_into().expect("should be able to fit");
-        if cb_len as usize != first_bclen {
+        // only an unfiltered permit list (-u) is loaded here; in every other
+        // mode first_bclen stays 0, so there is nothing to compare against.
+        if matches!(gpl_opts.fmeth, CellFilterMethod::UnfilteredExternalList(..))
+            && cb_len as usize != first_bclen
+        {
             warn!(
                 &gpl_opts.log,
                 "The provided permit list had barcodes of length {}, but the mapped reads have barcodes of length {}",
@@ -2839,5 +2982,39 @@ mod cell_barcode_correction_tests {
         let conflict_path = dir.path().join("conflict.tsv");
         std::fs::write(&conflict_path, "AA\tAA\ta\nAA\tCC\tb\n").unwrap();
         assert!(load_sample_barcode_list(&conflict_path, SampleBarcodeOri::Forward, &log).is_err());
+    }
+
+    #[test]
+    fn sample_names_file_renames_samples_through_any_of_their_barcodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let list = dir.path().join("list.tsv");
+        std::fs::write(&list, "AA\tAA\ta\nAC\tAA\ta\nCC\tCC\tb\n").unwrap();
+        let names = dir.path().join("names.tsv");
+        let load = || load_sample_barcode_list(&list, SampleBarcodeOri::Forward, &log).unwrap();
+        let apply = |contents: &str| {
+            std::fs::write(&names, contents).unwrap();
+            let mut info = load();
+            apply_sample_names(&mut info, &names, SampleBarcodeOri::Forward, &log).map(|_| info)
+        };
+
+        // a rotation (AC) names its canonical sample (AA); unnamed samples keep theirs
+        let info = apply("# comment\nAC\tfirst\n").unwrap();
+        assert_eq!(get_sample_names(&info), ["first", "b"]);
+        // barcodes of one sample may repeat the same name
+        let info = apply("AA\tfirst\nAC\tfirst\nCC\tsecond\n").unwrap();
+        assert_eq!(get_sample_names(&info), ["first", "second"]);
+        // ... but not disagree, name two samples alike, or name unknown barcodes
+        assert!(apply("AA\tfirst\nAC\tother\n").is_err());
+        assert!(apply("AA\tsame\nCC\tsame\n").is_err());
+        assert!(apply("GG\tghost\n").is_err());
+        assert!(apply("AA first\n").is_err());
+        assert!(apply("AAA\tlong\n").is_err());
+
+        // with a reverse-oriented whitelist, names use the file's own orientation
+        let mut info = load_sample_barcode_list(&list, SampleBarcodeOri::Reverse, &log).unwrap();
+        std::fs::write(&names, "AC\tfirst\n").unwrap();
+        apply_sample_names(&mut info, &names, SampleBarcodeOri::Reverse, &log).unwrap();
+        assert_eq!(get_sample_names(&info), ["first", "b"]);
     }
 }

@@ -324,6 +324,7 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-o --"output-dir" <OUTPUTDIR> "output directory where quantification results will be written").required(true).value_parser(value_parser!(PathBuf)))
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
+    .arg(arg!(--"dump-molecules" "write alevin/molecules.parquet: one row per resolved molecule (cell barcode, representative UMI, feature, supporting reads, status), before molecules are summed into the count matrix"))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
     .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
@@ -354,9 +355,9 @@ fn main() -> anyhow::Result<()> {
         .value_parser(value_parser!(usize))
         .default_value("100"))
     // Multi-sample output option (for multi-barcode RAD files)
-    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "output mode for multi-sample data: separate per-sample matrices, one combined matrix, or both")
+    .arg(arg!(--"multi-sample-output" <MSOUTPUT> "deprecated and ignored; multi-sample output is always one combined matrix whose rows are <sample>_<barcode>")
         .value_parser(["separate", "combined", "both"])
-        .default_value("separate"))
+        .hide(true))
     };
 
     let quant_app = quant_common(
@@ -658,7 +659,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(t) = opts.subcommand_matches("view") {
         let rad_file: &PathBuf = t.get_one("rad").unwrap();
         let print_header = t.get_flag("header");
-        alevin_fry::convert::view(rad_file, print_header, &log)
+        alevin_fry::convert::view(rad_file, print_header, &log)?;
     }
 
     // collate a rad file to group together all records corresponding
@@ -696,7 +697,7 @@ fn main() -> anyhow::Result<()> {
             VERSION,
             &log,
         )
-        .expect("could not collate.");
+        .with_context(|| format!("could not collate the RAD file in {}", rad_dir.display()))?;
     }
 
     // perform quantification of a collated rad file.
@@ -726,9 +727,18 @@ fn main() -> anyhow::Result<()> {
         };
         let probe_mtx = probe_level && t.get_flag("probe-mtx");
         let dump_eq = t.get_flag("dump-eqclasses");
+        let dump_molecules = t.get_flag("dump-molecules");
         if t.get_flag("use-eds") {
             anyhow::bail!(
                 "--use-eds is no longer supported. EDS output has been removed as of v0.12."
+            );
+        }
+        // never implemented: quant always writes a single combined matrix
+        if let Some(mode) = t.get_one::<String>("multi-sample-output") {
+            warn!(
+                log,
+                "--multi-sample-output={} is deprecated and has no effect; quant always writes one combined matrix, whose rows are named <sample>_<barcode> for multi-sample (e.g. Flex) input",
+                mode
             );
         }
         let input_dir: &PathBuf = t.get_one("input-dir").unwrap();
@@ -848,6 +858,7 @@ fn main() -> anyhow::Result<()> {
             .init_uniform(init_uniform)
             .summary_stat(summary_stat)
             .dump_eq(dump_eq)
+            .dump_molecules(dump_molecules)
             .resolution(resolution)
             .probe_level(probe_level)
             .probe_mtx(probe_mtx)
@@ -915,7 +926,7 @@ fn main() -> anyhow::Result<()> {
             output_dir,
             &log,
         )
-        .expect("could not perform inference from equivalence class counts.");
+        .context("could not perform inference from equivalence class counts")?;
     }
     Ok(())
 }

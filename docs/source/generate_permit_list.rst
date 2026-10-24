@@ -26,7 +26,9 @@ barcodes are decided):
   from the x=y line. The algorithm is iterative, because experiments with many low-quality barcodes may predict too many 
   valid barcodes using this method. Thus, the algorithm is run repeatedly, each time considering a prefix of the CDF from 
   index 0 through the previous knee's index * 5. Once two subsequent iterations of the algorithm return the same 
-  knee point, the algorithm terminates.
+  knee point, the algorithm terminates. Knee finding needs at least 3 distinct cell barcodes. A single-sample run
+  with only 1 or 2 fails with an error. In a multi-sample run (``--sample-bc-list``), such a sample is skipped like an
+  empty one: it is reported with ``num_cells`` 0 in ``sample_info.json`` and gets no permit files.
 
 * ``--force-cells <ncells>``: This option will count the number of reads associated with each barcode, and sort the barcodes 
   in descending order of frequency. Then, it will consider the first <ncells> barcodes to be valid. Any barcode that has 
@@ -55,6 +57,14 @@ routing.  ``--sample-bc-correction exact|unique|frequency`` selects its policy,
 ``--sample-bc-confidence`` sets the Frequency threshold.  Sample correction
 defaults to Exact.  ``--sample-correction-mode exact|1-edit`` remains as a
 deprecated compatibility alias.
+
+The sample-barcode list may have one column (each barcode is its own sample),
+two (``barcode<TAB>name``), or three (``barcode<TAB>canonical_barcode<TAB>name``,
+the 10x Flex format grouping each sample's barcode variants).  Samples are named
+by the list's name column, or by their barcode when it has none.
+``--sample-names`` takes a ``barcode<TAB>name`` file whose names replace those:
+each line may use any barcode of a sample from the list, barcodes of the same
+sample must agree on its name, and no two samples may share a name.
 
 Sample Frequency can defer structurally ambiguous ``(sample, cell)`` pairs.
 ``--memory-limit`` sets the total bounded buffer budget (512 MiB by default),

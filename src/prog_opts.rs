@@ -32,6 +32,9 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub init_uniform: bool,
     pub summary_stat: bool,
     pub dump_eq: bool,
+    /// write the per-molecule table (`alevin/molecules.parquet`)
+    #[builder(default = false)]
+    pub dump_molecules: bool,
     pub resolution: ResolutionStrategy,
     /// Resolve UMIs per reference target (probe) and sum the targets of a gene
     /// into its count, rather than resolving per gene. This is what

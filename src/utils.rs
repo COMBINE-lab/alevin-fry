@@ -768,6 +768,74 @@ pub fn parse_tg_map(
 /// one gene, but only one *spliced* gene, then it is assigned to
 /// the spliced gene, unless there is too much multimapping
 /// (i.e. it is compatible with > 10 different loci).
+/// The USA-mode count-matrix column that a molecule with these (sorted) gene
+/// labels is counted in by the winner-take-all strategies, or `None` if it is
+/// discarded as gene-ambiguous.
+///
+/// Labels are interleaved spliced (even) / unspliced (odd) gene ids.
+/// * one label: its spliced or unspliced column;
+/// * two labels of the same gene: the gene's ambiguous column;
+/// * two to ten labels with exactly one spliced gene: that gene (its ambiguous
+///   column if its unspliced variant is also present) -- "prefer spliced";
+/// * otherwise: discarded.
+pub fn usa_label_column(
+    labels: &[u32],
+    unspliced_offset: usize,
+    ambig_offset: usize,
+) -> Option<usize> {
+    match labels.len() {
+        1 => {
+            let gid = labels[0];
+            Some(if is_spliced(gid) {
+                (gid >> 1) as usize
+            } else {
+                unspliced_offset + (gid >> 1) as usize
+            })
+        }
+        2 => {
+            // spliced & unspliced of the same gene, or something different?
+            let (g1, g2) = (labels[0], labels[1]);
+            if same_gene(g1, g2, true) {
+                Some(ambig_offset + (g1 >> 1) as usize)
+            } else {
+                // report spliced if we can
+                match (is_spliced(g1), is_spliced(g2)) {
+                    (true, false) => Some((g1 >> 1) as usize),
+                    (false, true) => Some((g2 >> 1) as usize),
+                    _ => None,
+                }
+            }
+        }
+        3..=10 => {
+            // if we don't have *too* many distinct genes matching this UMI
+            // then apply the prefer-spliced rule.
+
+            // See if there is precisely 1 spliced gene, and if so take it
+            // but assign the read as ambiguous if it is for this gene
+            let mut iter = labels.iter();
+            // search for the first spliced index
+            let sidx = iter.position(|&x| is_spliced(x))?;
+            // if there is a second spliced gene, this is gene ambiguous and
+            // we drop it.
+            if iter.position(|&x| is_spliced(x)).is_some() {
+                return None;
+            }
+            // we only had one spliced gene.  Check to see if the
+            // index following the spliced gene we found is its
+            // unspliced variant or not.  If so, add it as ambiguous
+            // otherwise, add it as spliced
+            let sg = labels[sidx];
+            if let Some(ng) = labels.get(sidx + 1)
+                && same_gene(sg, *ng, true)
+            {
+                return Some(ambig_offset + (sg >> 1) as usize);
+            }
+            Some((sg >> 1) as usize)
+        }
+        _ => None,
+    }
+}
+
 pub fn extract_counts<P: EqClassPayload>(
     gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
     num_counts: usize,
@@ -779,75 +847,8 @@ pub fn extract_counts<P: EqClassPayload>(
     let mut counts = vec![0_f32; num_counts];
 
     for (labels, payload) in gene_eqc {
-        let count = payload.count();
-        // the length of the label will tell us if this is a
-        // splicing-unique, gene-unique (but splicing ambiguous).
-        // or gene-ambiguous equivalence class label.
-        match labels.len() {
-            1 => {
-                // determine if spliced or unspliced
-                if let Some(gid) = labels.first() {
-                    let idx = if is_spliced(*gid) {
-                        (*gid >> 1) as usize
-                    } else {
-                        unspliced_offset + (*gid >> 1) as usize
-                    };
-                    counts[idx] += count as f32;
-                }
-            }
-            2 => {
-                // spliced & unspliced of the same gene, or something differnet?
-                if let (Some(g1), Some(g2)) = (labels.first(), labels.last()) {
-                    if same_gene(*g1, *g2, true) {
-                        let idx = ambig_offset + (*g1 >> 1) as usize;
-                        //eprintln!("ambig count {} at {}!", *count, idx);
-                        counts[idx] += count as f32;
-                    } else {
-                        // report spliced if we can
-                        match (is_spliced(*g1), is_spliced(*g2)) {
-                            (true, false) => {
-                                counts[(*g1 >> 1) as usize] += count as f32;
-                            }
-                            (false, true) => {
-                                counts[(*g2 >> 1) as usize] += count as f32;
-                            }
-                            _ => { /* do nothing */ }
-                        }
-                    }
-                }
-            }
-            3..=10 => {
-                // if we don't have *too* many distinct genes matching this UMI
-                // then apply the prefer-spliced rule.
-
-                // See if there is precisely 1 spliced gene, and if so take it
-                // but assign the read as ambiguous if it is for this gene
-                let mut iter = labels.iter();
-                // search for the first spliced index
-                if let Some(sidx) = iter.position(|&x| is_spliced(x)) {
-                    // if we found a spliced gene, check if there are any more
-                    if let Some(_sidx2) = iter.position(|&x| is_spliced(x)) {
-                        // in this case we had 2 spliced genes, so this is
-                        // gene ambiguous and we just drop it.
-                    } else {
-                        // we only had one spliced gene.  Check to see if the
-                        // index following the spliced gene we found is its
-                        // unspliced variant or not.  If so, add it as ambiguous
-                        // otherwise, add it as spliced
-                        if let Some(sg) = labels.get(sidx) {
-                            if let Some(ng) = labels.get(sidx + 1)
-                                && same_gene(*sg, *ng, true)
-                            {
-                                let idx = ambig_offset + (*sg >> 1) as usize;
-                                counts[idx] += count as f32;
-                                continue;
-                            }
-                            counts[(*sg >> 1) as usize] += count as f32;
-                        }
-                    }
-                }
-            }
-            _ => {}
+        if let Some(idx) = usa_label_column(labels, unspliced_offset, ambig_offset) {
+            counts[idx] += payload.count() as f32;
         }
     }
     counts
@@ -1225,8 +1226,15 @@ pub fn is_velo_mode(input_dir: &PathBuf) -> bool {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, PartialEq, Eq)]
+/// The `major.minor.patch` core of an alevin-fry version string.
+///
+/// Parsing keeps only the numeric core: a leading `v`, a pre-release
+/// (`-rc.1`) and build metadata (`+abc`) are accepted and dropped, and
+/// anything without exactly three numeric parts is a `VersionParseError`.
+/// A pre-release therefore compares as its core version, both in
+/// `is_compatible_with` and in the derived ordering (`0.19.0-rc.1` equals
+/// `0.19.0`, rather than sorting before it as in semver).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InternalVersionInfo {
     pub major: u32,
     pub minor: u32,
@@ -1263,15 +1271,18 @@ impl FromStr for InternalVersionInfo {
     type Err = VersionParseError;
 
     fn from_str(vs: &str) -> Result<Self, Self::Err> {
-        let versions: Vec<u32> = vs.split('.').map(|s| s.parse::<u32>().unwrap()).collect();
-        if versions.len() != 3 {
-            return Err(VersionParseError::IncorrectFormat(vs.to_string()));
+        let core = vs.strip_prefix('v').unwrap_or(vs);
+        // drop a pre-release (`-rc.1`) or build (`+abc`) suffix
+        let core = core.split(['-', '+']).next().unwrap_or(core);
+        let mut parts = core.split('.').map(str::parse::<u32>);
+        match (parts.next(), parts.next(), parts.next(), parts.next()) {
+            (Some(Ok(major)), Some(Ok(minor)), Some(Ok(patch)), None) => Ok(Self {
+                major,
+                minor,
+                patch,
+            }),
+            _ => Err(VersionParseError::IncorrectFormat(vs.to_string())),
         }
-        Ok(Self {
-            major: versions[0],
-            minor: versions[1],
-            patch: versions[2],
-        })
     }
 }
 
@@ -1323,6 +1334,7 @@ mod tests {
     use crate::utils::InternalVersionInfo;
     use crate::utils::MIN_THREADS;
     use crate::utils::ProbMap;
+    use crate::utils::VersionParseError;
     use crate::utils::enforce_thread_floor;
     use crate::utils::generate_whitelist_set;
     use crate::utils::get_all_indels;
@@ -1352,6 +1364,49 @@ mod tests {
                 patch: 3
             }
         );
+    }
+
+    #[test]
+    fn test_version_info_drops_prefix_and_suffixes() {
+        let v = |major, minor, patch| InternalVersionInfo {
+            major,
+            minor,
+            patch,
+        };
+        for (vs, expected) in [
+            ("0.19.0-rc.1", v(0, 19, 0)),
+            ("0.18.3-dev", v(0, 18, 3)),
+            ("0.15.0+build.5", v(0, 15, 0)),
+            ("1.2.3-beta.2+abc", v(1, 2, 3)),
+            ("v1.2.3", v(1, 2, 3)),
+        ] {
+            assert_eq!(InternalVersionInfo::from_str(vs).unwrap(), expected, "{vs}");
+        }
+    }
+
+    #[test]
+    fn test_version_info_rejects_malformed_without_panic() {
+        for vs in [
+            "", "1.2", "1.2.3.4", "a.b.c", "1..3", "1.2.x", "vv1.2.3", "-1.2.3", "1.2.3 ",
+        ] {
+            match InternalVersionInfo::from_str(vs) {
+                Err(VersionParseError::IncorrectFormat(s)) => assert_eq!(s, vs),
+                Ok(v) => panic!("{vs:?} parsed as {v}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_prerelease_compares_as_core_version() {
+        let v = |vs| InternalVersionInfo::from_str(vs).unwrap();
+        let rc = v("0.19.0-rc.1");
+        assert_eq!(rc, v("0.19.0"));
+        assert!(rc.is_compatible_with(&v("0.19.2")).is_ok());
+        assert!(v("0.19.2").is_compatible_with(&rc).is_ok());
+        assert!(rc.is_compatible_with(&v("0.18.3")).is_err());
+        assert!(v("0.18.3") < rc && rc < v("0.19.1") && v("0.19.1") < v("1.0.0"));
+        // Display output parses back to the same version
+        assert_eq!(v(&rc.to_string()), rc);
     }
 
     #[test]

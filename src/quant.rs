@@ -17,7 +17,6 @@ use needletail::bitkmer::*;
 use num_format::{Locale, ToFormattedString};
 use serde::Serialize;
 use serde_json::json;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
@@ -51,6 +50,9 @@ use crate::em::{
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
 use crate::matrix_market::{MATRIX_BUFFER_CAPACITY, MatrixBatch, MatrixMarketWriter};
+use crate::molecules::{
+    CellMolecules, FeatureLabeler, MOLECULE_TABLE_NAME, MoleculeBatch, MoleculeTableWriter,
+};
 use crate::prog_opts::QuantOpts;
 
 /// Shared closure that extracts a sample index from a record.
@@ -424,6 +426,43 @@ pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
     }
 }
 
+/// First release whose multi-barcode collation stores the manifest ordinal of
+/// each record's sample in `barcodes[0]`; earlier releases stored the sparse
+/// plate index, which quant would map to the wrong sample name (see
+/// COMBINE-lab/simpleaf#195).
+const FIRST_ORDINAL_SAMPLE_COLLATE: (u64, u64, u64) = (0, 15, 0);
+
+/// Refuse a multi-barcode collation written before sample indices became
+/// manifest ordinals. A collation without a readable version is accepted.
+fn ensure_ordinal_sample_indices(collate_json: &std::path::Path) -> anyhow::Result<()> {
+    let Ok(file) = File::open(collate_json) else {
+        return Ok(());
+    };
+    let md: serde_json::Value =
+        serde_json::from_reader(BufReader::new(file)).context("could not parse collate.json")?;
+    let Some(version) = md.get("version_str").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
+    let Some(parsed) = parse_release_version(version) else {
+        return Ok(());
+    };
+    let (a, b, c) = FIRST_ORDINAL_SAMPLE_COLLATE;
+    anyhow::ensure!(
+        parsed >= FIRST_ORDINAL_SAMPLE_COLLATE,
+        "this multi-sample collation was written by alevin-fry {version}, which recorded plate positions rather than sample ordinals, so cells would be assigned to the wrong samples; re-run `alevin-fry collate` with alevin-fry {a}.{b}.{c} or later"
+    );
+    Ok(())
+}
+
+/// Parse the leading `major.minor.patch` of a version string.
+fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
 struct WorkerConfig {
     resolution: ResolutionStrategy,
     usa_mode: bool,
@@ -536,6 +575,8 @@ struct WorkerSharedState<R: MappedRecord> {
     sample_names: Option<Arc<Vec<String>>>,
     /// Extracts the sample index from a record. None for single-barcode types.
     sample_idx_extractor: Option<SampleIdxExtractor<R>>,
+    /// The molecule table, with `--dump-molecules`.
+    molecule_out: Option<Arc<MoleculeTableWriter>>,
 }
 
 /// Default threshold (in number of records) below which a cell uses the fast
@@ -575,6 +616,8 @@ fn quantify_small_cell_sparse<B, R>(
     gene_umi_buf: &mut Vec<(u32, u64)>,
     // Reusable scratch buffer for (umi, gene, count) triplets
     umi_gene_triplets: &mut Vec<(u64, u32, u32)>,
+    // With `--dump-molecules`, every UMI and its winning gene(s)
+    mut mols: Option<&mut CellMolecules>,
 ) where
     B: ConvertiblePrimitiveInteger,
     u64: From<B>,
@@ -654,62 +697,66 @@ fn quantify_small_cell_sparse<B, R>(
     // Commit a resolved UMI to gene_umi_buf. For single-winner UMIs,
     // maps to slot and pushes. For multi-gene ties in USA mode, applies
     // splicing-aware resolution matching extract_counts in utils.rs.
-    let commit_umi = |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, buf: &mut Vec<(u32, u64)>| {
-        match best.len() {
-            0 => {}
-            1 => {
-                buf.push((to_slot(best[0]), umi));
+    let mut commit_umi =
+        |best: &smallvec::SmallVec<[u32; 4]>, umi: u64, reads: u32, buf: &mut Vec<(u32, u64)>| {
+            if let Some(m) = mols.as_deref_mut() {
+                m.push(umi, best, reads, 1);
             }
-            _ if !usa_mode => {
-                // Non-USA: multi-gene tie → discard
-            }
-            2 => {
-                // USA: same logic as extract_counts len==2
-                let (g1, g2) = (best[0], best[1]);
-                if afutils::same_gene(g1, g2, true) {
-                    // S+U of same gene → ambiguous slot
-                    buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
-                } else {
-                    // Different genes: prefer spliced
-                    match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
-                        (true, false) => buf.push(((g1 >> 1), umi)),
-                        (false, true) => buf.push(((g2 >> 1), umi)),
-                        _ => {} // both spliced or both unspliced → discard
-                    }
+            match best.len() {
+                0 => {}
+                1 => {
+                    buf.push((to_slot(best[0]), umi));
                 }
-            }
-            n if n <= 10 => {
-                // USA: same logic as extract_counts len==3..10
-                // Find spliced genes
-                let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
-                if let Some(&first_spliced) = spliced_iter.next() {
-                    if spliced_iter.next().is_some() {
-                        // 2+ spliced genes → gene-ambiguous, discard
+                _ if !usa_mode => {
+                    // Non-USA: multi-gene tie → discard
+                }
+                2 => {
+                    // USA: same logic as extract_counts len==2
+                    let (g1, g2) = (best[0], best[1]);
+                    if afutils::same_gene(g1, g2, true) {
+                        // S+U of same gene → ambiguous slot
+                        buf.push(((ambig_offset as u32) + (g1 >> 1), umi));
                     } else {
-                        // Exactly 1 spliced gene. Check if its unspliced
-                        // counterpart is also in the set.
-                        let has_unspliced_partner = best.iter().any(|&g| {
-                            g != first_spliced && afutils::same_gene(first_spliced, g, true)
-                        });
-                        if has_unspliced_partner {
-                            buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
-                        } else {
-                            buf.push(((first_spliced >> 1), umi));
+                        // Different genes: prefer spliced
+                        match (afutils::is_spliced(g1), afutils::is_spliced(g2)) {
+                            (true, false) => buf.push(((g1 >> 1), umi)),
+                            (false, true) => buf.push(((g2 >> 1), umi)),
+                            _ => {} // both spliced or both unspliced → discard
                         }
                     }
                 }
-                // No spliced genes at all → discard
+                n if n <= 10 => {
+                    // USA: same logic as extract_counts len==3..10
+                    // Find spliced genes
+                    let mut spliced_iter = best.iter().filter(|&&x| afutils::is_spliced(x));
+                    if let Some(&first_spliced) = spliced_iter.next() {
+                        if spliced_iter.next().is_some() {
+                            // 2+ spliced genes → gene-ambiguous, discard
+                        } else {
+                            // Exactly 1 spliced gene. Check if its unspliced
+                            // counterpart is also in the set.
+                            let has_unspliced_partner = best.iter().any(|&g| {
+                                g != first_spliced && afutils::same_gene(first_spliced, g, true)
+                            });
+                            if has_unspliced_partner {
+                                buf.push(((ambig_offset as u32) + (first_spliced >> 1), umi));
+                            } else {
+                                buf.push(((first_spliced >> 1), umi));
+                            }
+                        }
+                    }
+                    // No spliced genes at all → discard
+                }
+                _ => {} // >10 labels → discard
             }
-            _ => {} // >10 labels → discard
-        }
-    };
+        };
 
     for idx in 0..umi_gene_triplets.len() {
         let (umi, gn, ct) = umi_gene_triplets[idx];
 
         if umi != curr_umi {
             // Commit previous UMI
-            commit_umi(&best_genes, curr_umi, gene_umi_buf);
+            commit_umi(&best_genes, curr_umi, max_count, gene_umi_buf);
 
             // Reset for new UMI
             curr_umi = umi;
@@ -748,7 +795,7 @@ fn quantify_small_cell_sparse<B, R>(
 
         // Commit last UMI
         if idx == umi_gene_triplets.len() - 1 {
-            commit_umi(&best_genes, curr_umi, gene_umi_buf);
+            commit_umi(&best_genes, curr_umi, max_count, gene_umi_buf);
         }
     }
 
@@ -801,6 +848,11 @@ where
     // Reusable buffers for the small-cell sparse fast path
     let mut gene_umi_buf: Vec<(u32, u64)> = Vec::new();
     let mut umi_gene_triplets: Vec<(u64, u32, u32)> = Vec::new();
+    // With `--dump-molecules`: this cell's molecules, and this worker's
+    // buffered rows of the molecule table.
+    let mut cell_mols = CellMolecules::default();
+    let mut mol_batch = shared.molecule_out.clone().map(MoleculeBatch::new);
+    let dump_molecules = mol_batch.is_some();
     // Probe-level resolution only: this cell's target-axis entries, held back
     // for the target matrix while the gene matrix is written from their sum,
     // plus the dense accumulator and touched-index list used to take that sum.
@@ -851,6 +903,7 @@ where
                 break;
             }
             let cell_num = first_cell_in_chunk + cn;
+            cell_mols.clear();
 
             let nbytes = c.nbytes;
             let nrec = c.nrec;
@@ -918,6 +971,7 @@ where
                     config.feature_rows,
                     &mut gene_umi_buf,
                     &mut umi_gene_triplets,
+                    dump_molecules.then_some(&mut cell_mols),
                 );
                 // gene_umi_buf is now sorted and deduped (gene_id, umi) pairs.
                 // Build expressed_vec/expressed_ind by run-length counting genes.
@@ -985,6 +1039,7 @@ where
                                     config.crlike_umi_edit,
                                     config.umi_len,
                                     config.resolution == ResolutionStrategy::CellRangerLike,
+                                    dump_molecules.then_some(&mut cell_mols),
                                     &log,
                                 );
                             } else {
@@ -999,6 +1054,7 @@ where
                                     config.crlike_umi_edit,
                                     config.umi_len,
                                     config.resolution == ResolutionStrategy::CellRangerLike,
+                                    dump_molecules.then_some(&mut cell_mols),
                                     &log,
                                 );
                                 eq_map.clear();
@@ -1055,6 +1111,7 @@ where
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 config.num_features,
+                                dump_molecules.then_some(&mut cell_mols),
                                 &log,
                             );
                             counts = ct.0;
@@ -1085,6 +1142,7 @@ where
                                 &mut gene_eqc,
                                 &s,
                                 config.large_graph_thresh,
+                                dump_molecules.then_some(&mut cell_mols),
                                 &log,
                             );
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
@@ -1183,6 +1241,7 @@ where
                         config.crlike_umi_edit,
                         config.umi_len,
                         config.resolution == ResolutionStrategy::CellRangerLike,
+                        dump_molecules.then_some(&mut cell_mols),
                         &log,
                     );
                     // USA-mode
@@ -1369,8 +1428,25 @@ where
             // lock. Only row allocation and paired appends must be serialized.
             let bc_bytes = bitmer_to_bytes((bc.into(), config.barcode_len as u8));
             let bc_str = unsafe { std::str::from_utf8_unchecked(&bc_bytes) };
-            let sample_name = sample_idx_from_rec
-                .and_then(|si| shared.sample_names.as_ref()?.get(si).map(|s| s.as_str()));
+            // Every multi-sample record must name a sample in the manifest; an
+            // index outside it would otherwise drop the sample_name field and
+            // misalign this featureDump.txt row.
+            let sample_name = match (sample_idx_from_rec, shared.sample_names.as_ref()) {
+                (Some(si), Some(names)) => match names.get(si) {
+                    Some(name) => Some(name.as_str()),
+                    None => {
+                        output_error = Some(anyhow::anyhow!(
+                            "cell {} has sample index {}, but collation_manifest.bin names only {} samples; re-run `alevin-fry collate` on this input",
+                            bc_str,
+                            si,
+                            names.len()
+                        ));
+                        shared.output_failed.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                },
+                _ => None,
+            };
             barcode_buf.clear();
             feature_buf.clear();
             if let Some(sn) = sample_name {
@@ -1428,6 +1504,19 @@ where
                     boot_helper
                         .record_cell(row_index, &bootstraps, output)
                         .context("could not write bootstrap matrices")?;
+                }
+                if let Some(batch) = mol_batch.as_mut() {
+                    // The tiny-cell fast path is winner-take-all whatever `-r` is.
+                    let em = !used_fast_path
+                        && matches!(
+                            config.resolution,
+                            ResolutionStrategy::CellRangerLikeEm
+                                | ResolutionStrategy::ParsimonyEm
+                                | ResolutionStrategy::ParsimonyGeneEm
+                        );
+                    batch
+                        .add_cell(bc_str, sample_idx_from_rec, &cell_mols, em)
+                        .context("could not write molecule table")?;
                 }
                 Ok(row_index)
             })();
@@ -1498,6 +1587,9 @@ where
                 boot_helper
                     .flush(output)
                     .context("could not flush bootstrap batches")?;
+            }
+            if let Some(batch) = mol_batch.as_mut() {
+                batch.flush().context("could not flush molecule table")?;
             }
             Ok(())
         })();
@@ -1790,6 +1882,7 @@ where
     // The collation stores the integer sample index in barcodes[0] of each record,
     // so quant reads it directly and indexes into this Vec — no HashMap needed.
     let sample_names = if manifest_path.exists() {
+        ensure_ordinal_sample_indices(&parent.join("collate.json"))?;
         let manifest = CollationManifest::read_from_file(&manifest_path)?;
         let names: Vec<String> = manifest
             .sample_groups
@@ -1809,6 +1902,7 @@ where
     let init_uniform = quant_opts.init_uniform;
     let summary_stat = quant_opts.summary_stat;
     let dump_eq = quant_opts.dump_eq;
+    let dump_molecules = quant_opts.dump_molecules;
     let resolution = quant_opts.resolution;
     let pug_exact_umi = quant_opts.pug_exact_umi;
     let crlike_umi_edit = quant_opts.crlike_umi_edit;
@@ -1904,11 +1998,6 @@ where
                         "--umi-edit-dist 1 (cr-like Hamming-1 UMI correction) is not supported in USA mode (a spliced+unspliced tg-map); it is only meaningful for a spliced-only reference"
                     );
                 }
-                assert_eq!(
-                    num_bootstraps, 0,
-                    "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping."
-                );
-
                 match resolution {
                     ResolutionStrategy::Parsimony
                     | ResolutionStrategy::ParsimonyEm
@@ -2023,6 +2112,22 @@ where
         tid_to_gid.len().to_formatted_string(&Locale::en)
     );
 
+    // USA mode is detected from the tg-map, so main.rs cannot reject these
+    // combinations when it parses the arguments; refuse them here, before any
+    // output is written. Bootstrapping is not implemented for USA mode, and
+    // trivial resolution counts molecules per gene id, which USA mode splits
+    // into spliced, unspliced and ambiguous ids.
+    if usa_mode {
+        anyhow::ensure!(
+            num_bootstraps == 0,
+            "currently USA-mode (all-in-one unspliced/spliced/ambiguous) analysis cannot be used with bootstrapping; drop --num-bootstraps or use a 2-column tg-map."
+        );
+        anyhow::ensure!(
+            resolution != ResolutionStrategy::Trivial,
+            "--resolution trivial is not supported in USA mode (a 3-column spliced/unspliced tg-map); use another resolution, such as cr-like or cr-like-em, or a 2-column tg-map."
+        );
+    }
+
     // read the map for the number of unmapped reads per corrected barcode
     let bc_unmapped_map: Arc<libradicl::unmapped::CollatedUnmappedCounts> = Arc::new(
         libradicl::unmapped::CollatedUnmappedCounts::read_from_file(
@@ -2076,6 +2181,17 @@ where
             "ulen ({umi_len_bases}) exceeds the 32-base capacity of the u64 UMI packing"
         );
         umi_len_bases as u32
+    } else {
+        0
+    };
+
+    // The molecule table decodes UMIs to sequences, so it needs their length.
+    let molecule_umi_len: usize = if dump_molecules {
+        let umi_len_bases: u16 = file_tag_map
+            .get("ulen")
+            .context("--dump-molecules requires the `ulen` file-level tag (the UMI length)")?
+            .try_into()?;
+        umi_len_bases as usize
     } else {
         0
     };
@@ -2204,6 +2320,32 @@ where
 
     let usa_offsets = if usa_mode {
         Some((num_rows / 3, (2 * num_rows / 3)))
+    } else {
+        None
+    };
+
+    // The count-matrix column names (quants_mat_cols.txt): the gene names, or
+    // in USA mode the spliced, then unspliced (-U), then ambiguous (-A) names.
+    let feature_names: Arc<Vec<String>> = Arc::new(if usa_mode {
+        gene_names
+            .iter()
+            .cloned()
+            .chain(gene_names.iter().map(|g| format!("{g}-U")))
+            .chain(gene_names.iter().map(|g| format!("{g}-A")))
+            .collect()
+    } else {
+        gene_names.clone()
+    });
+
+    let molecule_out = if dump_molecules {
+        let path = output_matrix_path.join(MOLECULE_TABLE_NAME);
+        info!(log, "writing the molecule table to {}", path.display());
+        Some(Arc::new(MoleculeTableWriter::create(
+            &path,
+            sample_names.as_deref().map(Vec::as_slice),
+            FeatureLabeler::new(feature_names.clone(), usa_mode),
+            molecule_umi_len,
+        )?))
     } else {
         None
     };
@@ -2359,6 +2501,7 @@ where
             unmapped_count,
             sample_names: sample_names.clone(),
             sample_idx_extractor: sample_bc_extractor.clone(),
+            molecule_out: molecule_out.clone(),
         };
 
         // now, make the worker thread
@@ -2528,21 +2671,9 @@ where
         }
     }
 
-    // the gene matrix's columns: the gene names, and in USA mode the unspliced
-    // and then the ambiguous slot of each gene after them
+    // the gene matrix's columns (see `feature_names`)
     let gn_path = output_matrix_path.join("quants_mat_cols.txt");
-    let spliced = || gene_names.iter().map(|g| Cow::Borrowed(g.as_str()));
-    if !usa_mode {
-        write_label_file(&gn_path, spliced(), "gene names")?;
-    } else {
-        write_label_file(
-            &gn_path,
-            spliced()
-                .chain(gene_names.iter().map(|g| Cow::Owned(format!("{}-U", g))))
-                .chain(gene_names.iter().map(|g| Cow::Owned(format!("{}-A", g)))),
-            "gene names",
-        )?;
-    }
+    write_label_file(&gn_path, feature_names.iter(), "gene names")?;
 
     // The probe matrix keeps one column per reference target, in RAD header order.
     // Its rows are the gene matrix's rows -- both matrices take a cell's row index
@@ -2563,6 +2694,23 @@ where
         )
         .context("could not write probe barcode output")?;
     }
+
+    // Every worker has flushed its rows; write the footer.
+    let molecule_table = match &molecule_out {
+        Some(out) => {
+            let num_molecules = out.finish()?;
+            info!(
+                log,
+                "wrote molecule table: {} molecules",
+                num_molecules.to_formatted_string(&Locale::en)
+            );
+            json!({
+                "file": format!("alevin/{MOLECULE_TABLE_NAME}"),
+                "num_molecules": num_molecules,
+            })
+        }
+        None => serde_json::Value::Null,
+    };
 
     let pb_msg = format!(
         "finished quantifying {} cells.",
@@ -2615,6 +2763,7 @@ where
     "num_probes" : probe_level.then_some(axis.rows),
     "probe_nnz" : probe_nnz,
     "dump_eq" : dump_eq,
+    "molecule_table" : molecule_table,
     "usa_mode" : usa_mode,
     "alt_resolved_cell_numbers" : *alt_res_cells.lock().unwrap(),
     "empty_resolved_cell_numbers" : *empty_resolved_cells.lock().unwrap(),
@@ -2654,7 +2803,10 @@ where
 pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> anyhow::Result<()> {
     let log = quant_opts.log;
     let prelude = RadPrelude::from_bytes(&mut br)?;
-    let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
+    let file_tag_map = prelude
+        .file_tags
+        .parse_tags_from_bytes(&mut br)
+        .context("could not read the file-level tags of the collated RAD file")?;
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map)?;
 
@@ -2732,4 +2884,40 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
 pub fn velo_quantify(_quant_opts: QuantOpts) -> anyhow::Result<()> {
     unimplemented!("not implemented on this branch yet");
     //Ok(())
+}
+
+#[cfg(test)]
+mod collate_version_tests {
+    use super::{ensure_ordinal_sample_indices, parse_release_version};
+
+    #[test]
+    fn parses_release_versions() {
+        assert_eq!(parse_release_version("0.15.0"), Some((0, 15, 0)));
+        assert_eq!(parse_release_version("0.18.3-dev"), Some((0, 18, 3)));
+        assert_eq!(parse_release_version("v1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_release_version("0.15"), None);
+    }
+
+    #[test]
+    fn rejects_collations_that_stored_plate_positions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("collate.json");
+        for (version, ok) in [
+            ("0.11.2", false),
+            ("0.14.9", false),
+            ("0.15.0", true),
+            ("0.18.3", true),
+        ] {
+            std::fs::write(&path, format!(r#"{{"version_str": "{version}"}}"#)).unwrap();
+            assert_eq!(
+                ensure_ordinal_sample_indices(&path).is_ok(),
+                ok,
+                "{version}"
+            );
+        }
+        // no collate.json, or no version: accepted
+        std::fs::write(&path, "{}").unwrap();
+        assert!(ensure_ordinal_sample_indices(&path).is_ok());
+        assert!(ensure_ordinal_sample_indices(&dir.path().join("missing.json")).is_ok());
+    }
 }

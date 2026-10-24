@@ -24,7 +24,8 @@ use libradicl::writers::RadFileWriter;
 const NUM_REFS: u64 = 4;
 const CELL_BC_LEN: u16 = 16;
 const UMI_LEN: u16 = 12;
-const TEST_VERSION: &str = "0.12.0";
+// The real version: quant rejects multi-sample collations written before 0.15.0.
+const TEST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn packed(idx: u64, len: u16) -> u64 {
     let mask = (1u64 << (2 * len as u64)) - 1;
