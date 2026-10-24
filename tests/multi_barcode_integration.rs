@@ -1765,6 +1765,19 @@ fn build_flex_fixture_from<F>(write_rad: F) -> FlexFixture
 where
     F: FnOnce(&Path, &[u64], usize) -> anyhow::Result<()>,
 {
+    build_flex_fixture_with(2, 3, write_rad)
+}
+
+/// A fixture over `num_samples` samples of `cells_per_sample` cells, whose RAD
+/// `write_rad` writes, taken through generate-permit-list and collate.
+fn build_flex_fixture_with<F>(
+    num_samples: u64,
+    cells_per_sample: usize,
+    write_rad: F,
+) -> FlexFixture
+where
+    F: FnOnce(&Path, &[u64], usize) -> anyhow::Result<()>,
+{
     use alevin_fry::cellfilter::{CellFilterMethod, generate_permit_list};
     use alevin_fry::collate::collate;
     use alevin_fry::prog_opts::{GenPermitListOpts, SampleCorrectionMode};
@@ -1776,11 +1789,9 @@ where
     let input_dir = tmp.path().join("gpl");
     std::fs::create_dir_all(&input_dir).unwrap();
 
-    let sample_bcs = vec![
-        make_packed_bc(100, SAMPLE_BC_LEN),
-        make_packed_bc(200, SAMPLE_BC_LEN),
-    ];
-    let cells_per_sample = 3;
+    let sample_bcs: Vec<u64> = (1..=num_samples)
+        .map(|s| make_packed_bc(100 * s, SAMPLE_BC_LEN))
+        .collect();
     write_rad(&rad_dir.join("map.rad"), &sample_bcs, cells_per_sample).unwrap();
 
     let sample_list_path = tmp.path().join("sample_barcodes.txt");
@@ -2369,6 +2380,24 @@ fn flex_equivalence_classes_are_keyed_by_probe() {
     // The file's first line is its feature count. On the probe axis that is the
     // number of probes, not the four genes the matrix has.
     assert_eq!(first.trim().parse::<usize>().unwrap(), NUM_REFS as usize);
+
+    // The ids are probe ids, so the probe names are written to name them, in
+    // reference order, even without --probe-mtx; the rest of the probe-matrix
+    // triple is not.
+    let alevin = out.join("alevin");
+    let probe_cols: Vec<String> = std::fs::read_to_string(alevin.join("probe_quants_mat_cols.txt"))
+        .expect("-d at probe level should write probe_quants_mat_cols.txt")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let expected: Vec<String> = (0..NUM_REFS).map(|i| format!("gene_{i}")).collect();
+    assert_eq!(probe_cols, expected);
+    for name in ["probe_quants_mat.mtx", "probe_quants_mat_rows.txt"] {
+        assert!(
+            !alevin.join(name).exists(),
+            "{name} was written without --probe-mtx"
+        );
+    }
 }
 
 /// `--probe-mtx` is the probe matrix the gene matrix was summed from, so it only
@@ -2516,4 +2545,466 @@ fn flex_rejects_what_cannot_resolve_per_probe() {
     )
     .expect("a 3-column tg-map on the gene axis is USA mode as always");
     assert!(usa_gene.join("alevin").join("quants_mat.mtx").exists());
+}
+
+/// featureDump.txt describes the gene matrix, so at probe level its per-cell
+/// statistics are taken after the probes are summed into genes.
+///
+/// Under cr-like each cell of the multi-probe fixture keeps the probes
+/// gene_0, gene_1, gene_3 and gene_9 with 2 UMIs each, i.e. G0 = 4, G1 = 2 and
+/// G3 = 2. Per gene that is 3 expressed features, mean 8/3, max 4 and one above
+/// the mean; per probe it would be 4 features, mean 2, max 2 and none above it.
+#[test]
+fn flex_feature_dump_counts_genes_not_probes() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_multi_probe_fixture();
+    for small_thresh in [0usize, 1_000usize] {
+        let out = fx
+            .input_dir
+            .parent()
+            .unwrap()
+            .join(format!("fd_{small_thresh}"));
+        run_flex_quant(
+            &fx,
+            &out,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            false,
+            0,
+            false,
+            small_thresh,
+        )
+        .unwrap();
+        let dump = feature_dump_by_barcode(&out);
+        let header: Vec<&str> = dump["#header"].split('\t').skip(1).collect();
+        let col = |name: &str| header.iter().position(|h| *h == name).unwrap();
+        let rows: Vec<&String> = dump
+            .iter()
+            .filter(|(bc, _)| *bc != "#header")
+            .map(|(_, row)| row)
+            .collect();
+        assert_eq!(rows.len(), 6, "every cell should be quantified");
+        for row in rows {
+            let fields: Vec<&str> = row.split('\t').collect();
+            let num = |name: &str| fields[col(name)].parse::<f64>().unwrap();
+            assert_eq!(num("DeduplicatedReads"), 8.0, "small_thresh {small_thresh}");
+            assert_eq!(num("NumGenesExpressed"), 3.0, "small_thresh {small_thresh}");
+            assert_eq!(num("NumGenesOverMean"), 1.0, "small_thresh {small_thresh}");
+            assert!(
+                (num("MeanByMax") - 2.0 / 3.0).abs() < 1e-5,
+                "MeanByMax {} (small_thresh {small_thresh})",
+                num("MeanByMax")
+            );
+        }
+    }
+}
+
+/// trivial and the parsimony strategies also resolve per probe and sum into
+/// genes. Every read of the fixture has its own UMI and no two of a cell's UMIs
+/// are within Hamming distance 1, so the UMI graph has no edges and these runs
+/// pin the per-probe treatment of a read compatible with two probes of G0:
+/// trivial and parsimony discard it, as cr-like does, where the gene axis
+/// counts it for G0; parsimony-em apportions it within G0, as cr-like-em does.
+#[test]
+fn flex_trivial_and_parsimony_resolve_per_probe() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_multi_probe_fixture();
+    let dir = fx.input_dir.parent().unwrap();
+    let gene_matrix = |out: &Path| {
+        dense_by_barcode(
+            &out.join("alevin"),
+            "quants_mat.mtx",
+            "quants_mat_rows.txt",
+            FLEX_NUM_GENES,
+        )
+    };
+    for (resolution, name) in [
+        (ResolutionStrategy::Trivial, "trivial"),
+        (ResolutionStrategy::Parsimony, "parsimony"),
+        (ResolutionStrategy::ParsimonyEm, "parsimony-em"),
+    ] {
+        let probe_out = dir.join(format!("{name}_probe"));
+        let gene_out = dir.join(format!("{name}_gene"));
+        run_flex_quant(&fx, &probe_out, &fx.tg_map, resolution, true, 0, false, 0).unwrap();
+        run_flex_quant_axis(
+            &fx, false, &gene_out, &fx.tg_map, resolution, false, 0, false, 0,
+        )
+        .unwrap();
+        let probe = gene_matrix(&probe_out);
+        let gene = gene_matrix(&gene_out);
+        assert_eq!(probe.len(), 6, "{name}: every cell should be quantified");
+        assert_eq!(
+            probe.len(),
+            gene.len(),
+            "{name}: the axes quantified different cells"
+        );
+
+        let summed = probe_mtx_summed_by_gene(&probe_out.join("alevin"));
+        for (bc, counts) in &probe {
+            for (g, (a, b)) in counts.iter().zip(summed[bc].iter()).enumerate() {
+                assert!(
+                    (a - b).abs() < 0.05,
+                    "{name}: gene matrix != probe matrix summed by gene (cell {bc}, gene {g}): {a} vs {b}"
+                );
+            }
+            match resolution {
+                ResolutionStrategy::Trivial | ResolutionStrategy::Parsimony => {
+                    assert_eq!(
+                        counts[..],
+                        [4.0, 2.0, 0.0, 2.0],
+                        "{name} probe axis, cell {bc}"
+                    );
+                    assert_eq!(
+                        gene[bc][..],
+                        [8.0, 2.0, 0.0, 2.0],
+                        "{name} gene axis, cell {bc}"
+                    );
+                }
+                // as for cr-like-em in
+                // probe_axis_differs_from_the_gene_axis_on_reads_that_hit_two_probes:
+                // a UMI two probes of G0 claim stays inside G0, and the two-gene UMIs
+                // are spread within their pair
+                _ => {
+                    for (axis, c) in [("probe", counts), ("gene", &gene[bc])] {
+                        assert!(
+                            (c.iter().sum::<f64>() - 16.0).abs() < 0.05,
+                            "{name} {axis} axis, cell {bc}: total of {c:?}"
+                        );
+                        assert!(
+                            c[0] >= 8.0 - 0.05,
+                            "{name} {axis} axis, cell {bc}: G0 of {c:?}"
+                        );
+                        assert!(
+                            (c[0] + c[1] - 12.0).abs() < 0.05,
+                            "{name} {axis} axis, cell {bc}"
+                        );
+                        assert!(
+                            (c[2] + c[3] - 4.0).abs() < 0.05,
+                            "{name} {axis} axis, cell {bc}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `quant-probe` counts the reads compatible with two or more targets of one
+/// gene, which a probe set seldom produces and a transcriptome mostly does, and
+/// records the number in quant.json; `quant` does not count them.
+///
+/// In the multi-probe fixture the reads on [0, 1] and [1, 2] are such reads (two
+/// targets of G0), the reads on [0, 3] and [6, 9] are not (two genes): 4 of each
+/// cell's 16 reads, 24 over its 6 cells.
+#[test]
+fn quant_probe_counts_reads_on_two_targets_of_one_gene() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let recorded = |fx: &FlexFixture, probe_level: bool, name: &str| {
+        let out = fx.input_dir.parent().unwrap().join(name);
+        run_flex_quant_axis(
+            fx,
+            probe_level,
+            &out,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            false,
+            0,
+            false,
+            0,
+        )
+        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_reader(File::open(out.join("quant.json")).unwrap()).unwrap();
+        json["num_same_gene_multimapping_reads"].clone()
+    };
+
+    let multi = build_multi_probe_fixture();
+    assert_eq!(recorded(&multi, true, "multi_probe"), serde_json::json!(24));
+    assert!(recorded(&multi, false, "multi_gene").is_null());
+
+    let single = build_flex_fixture();
+    assert_eq!(
+        recorded(&single, true, "single_probe"),
+        serde_json::json!(0)
+    );
+}
+
+/// The warning fires above 10% of reads: on the multi-probe fixture, 25% of reads
+/// are on two targets of one gene; on the single-probe fixture, none are.
+#[test]
+fn quant_probe_warns_when_the_reference_does_not_look_like_a_probe_set() {
+    let stderr_of = |fx: &FlexFixture, name: &str| {
+        let out = fx.input_dir.parent().unwrap().join(name);
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_alevin-fry"))
+            .arg("quant-probe")
+            .arg("-i")
+            .arg(&fx.input_dir)
+            .arg("-m")
+            .arg(&fx.tg_map)
+            .arg("-o")
+            .arg(&out)
+            .args(["-t", "2", "-r", "cr-like"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        stderr
+    };
+    // only the warning says this; the info line below the threshold does not
+    let warning = "If this is a transcriptome, quantify it with `quant` instead.";
+
+    let stderr = stderr_of(&build_multi_probe_fixture(), "multi_probe");
+    assert!(stderr.contains(warning), "{stderr}");
+    assert!(stderr.contains("25.0% of reads (24 of 96)"), "{stderr}");
+
+    let stderr = stderr_of(&build_flex_fixture(), "single_probe");
+    assert!(!stderr.contains(warning), "{stderr}");
+}
+
+/// `-r` ignores case on both subcommands. Upper case used to panic: `quant-probe`
+/// converted the value case-sensitively, and on both subcommands the defaults
+/// that depend on the strategy (--umi-edit-dist, --large-graph-thresh) were
+/// matched against the text as typed, so a strategy not in lower case had no
+/// --umi-edit-dist, and with one given, `-r PARSIMONY` got a large-graph
+/// threshold of 0 rather than 1000.
+#[test]
+fn resolution_ignores_case() {
+    let fx = build_flex_fixture();
+    for (sub, axis) in [("quant", "gene"), ("quant-probe", "probe")] {
+        for (typed, strategy, large_graph) in [
+            ("CR-LIKE", "CellRangerLike", 0),
+            ("Parsimony", "Parsimony", 1000),
+        ] {
+            let out = fx
+                .input_dir
+                .parent()
+                .unwrap()
+                .join(format!("{sub}_{typed}"));
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_alevin-fry"))
+                .arg(sub)
+                .arg("-i")
+                .arg(&fx.input_dir)
+                .arg("-m")
+                .arg(&fx.tg_map)
+                .arg("-o")
+                .arg(&out)
+                .args(["-t", "2", "-r", typed])
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{sub} -r {typed}: {stderr}");
+            let json: serde_json::Value =
+                serde_json::from_reader(File::open(out.join("quant.json")).unwrap()).unwrap();
+            assert_eq!(json["resolution_strategy"], strategy, "{sub} -r {typed}");
+            assert_eq!(json["feature_axis"], axis, "{sub} -r {typed}");
+            // --umi-edit-dist defaults to 0 for cr-like and to 1 for parsimony,
+            // where 1 means the PUG is not exact
+            let opts = &json["quant_options"];
+            assert_eq!(opts["pug_exact_umi"], false, "{sub} -r {typed}");
+            assert_eq!(opts["crlike_umi_edit"], 0, "{sub} -r {typed}");
+            assert_eq!(
+                opts["large_graph_thresh"], large_graph,
+                "{sub} -r {typed}: --large-graph-thresh default"
+            );
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Ties between probes of one gene
+// -----------------------------------------------------------------------
+
+/// A one-sample multi-barcode RAD built from explicit reads, one `(umi, ref)`
+/// pair per read, so a UMI can be given reads on several probes. The other
+/// writers give every read its own UMI, which no feature axis can tell apart.
+fn create_multi_bc_rad_from_reads(
+    path: &Path,
+    sample_bc: u64,
+    cells: &[(u64, Vec<(u64, u32)>)],
+) -> anyhow::Result<()> {
+    let (prelude, file_tag_map) = make_multi_bc_prelude();
+    let ctx = MultiBarcodeRecordContext::get_context_from_tag_section(
+        &prelude.file_tags,
+        &prelude.read_tags,
+        &prelude.aln_tags,
+    )?;
+    let file = File::create(path)?;
+    let mut fw = RadFileWriter::new(file, &prelude, &file_tag_map)?;
+    for (cell_bc, cell_reads) in cells {
+        let reads: Vec<MultiBarcodeReadRecord> = cell_reads
+            .iter()
+            .map(|&(umi, ref_id)| MultiBarcodeReadRecord {
+                barcodes: smallvec![sample_bc, *cell_bc],
+                umi,
+                dirs: vec![true],
+                refs: vec![ref_id],
+            })
+            .collect();
+        let chunk = Chunk::<MultiBarcodeReadRecord> {
+            nbytes: 0, // computed by write_chunk
+            nrec: reads.len() as u32,
+            reads,
+        };
+        fw.write_chunk(&chunk, &ctx)?;
+    }
+    fw.finalize()?;
+    Ok(())
+}
+
+/// Cells in the tie fixture.
+const TIE_CELLS: usize = 2;
+
+/// Each cell holds two UMIs on probes gene_0 and gene_1, which both belong to
+/// G0: U1 has one read on each probe (a tie between probes), U2 has two reads
+/// on gene_0 and one on gene_1 (no tie).
+fn build_tie_fixture() -> FlexFixture {
+    let u1 = make_packed_bc(11, UMI_LEN);
+    let u2 = make_packed_bc(22, UMI_LEN);
+    build_flex_fixture_with(1, TIE_CELLS, |path, sample_bcs, _| {
+        let cells: Vec<(u64, Vec<(u64, u32)>)> = (0..TIE_CELLS as u64)
+            .map(|c| {
+                (
+                    make_packed_bc(c + 1, CELL_BC_LEN),
+                    vec![(u1, 0), (u1, 1), (u2, 0), (u2, 0), (u2, 1)],
+                )
+            })
+            .collect();
+        create_multi_bc_rad_from_reads(path, sample_bcs[0], &cells)
+    })
+}
+
+/// The gene matrix of a tie-fixture run, one row per cell.
+fn tie_gene_rows(out: &Path) -> Vec<Vec<f64>> {
+    let rows: Vec<Vec<f64>> = dense_by_barcode(
+        &out.join("alevin"),
+        "quants_mat.mtx",
+        "quants_mat_rows.txt",
+        FLEX_NUM_GENES,
+    )
+    .into_values()
+    .collect();
+    assert_eq!(rows.len(), TIE_CELLS, "every cell should be quantified");
+    rows
+}
+
+/// A UMI whose reads tie between two probes of one gene is discarded per probe
+/// under cr-like, where `quant` counts it once for the gene; a UMI whose reads
+/// favour one probe goes to that probe. No other Flex fixture separates the two
+/// axes this way: the synthetic writers give every read its own UMI.
+#[test]
+fn flex_ties_between_probes_of_one_gene_are_resolved_per_probe() {
+    use alevin_fry::quant::ResolutionStrategy;
+
+    let fx = build_tie_fixture();
+    let dir = fx.input_dir.parent().unwrap();
+
+    // Both routes into cr-like resolution: the full resolver and the tiny-cell
+    // fast path, which applies cr-like rules.
+    for small_thresh in [0usize, 1_000usize] {
+        // Per probe: U1 ties between gene_0 and gene_1 and is discarded, U2 goes
+        // to gene_0, so G0 counts 1.
+        let probe_out = dir.join(format!("probe_{small_thresh}"));
+        run_flex_quant(
+            &fx,
+            &probe_out,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            true,
+            0,
+            false,
+            small_thresh,
+        )
+        .unwrap();
+        for row in tie_gene_rows(&probe_out) {
+            assert_eq!(
+                row,
+                vec![1.0, 0.0, 0.0, 0.0],
+                "probe level, small_thresh {small_thresh}"
+            );
+        }
+        for probes in dense_by_barcode(
+            &probe_out.join("alevin"),
+            "probe_quants_mat.mtx",
+            "probe_quants_mat_rows.txt",
+            NUM_REFS as usize,
+        )
+        .into_values()
+        {
+            assert_eq!(probes[..2], [1.0, 0.0], "U2 should go to gene_0 alone");
+        }
+
+        // Per gene: both UMIs are unambiguous for G0, which counts 2.
+        let gene_out = dir.join(format!("gene_{small_thresh}"));
+        run_flex_quant_axis(
+            &fx,
+            false,
+            &gene_out,
+            &fx.tg_map,
+            ResolutionStrategy::CellRangerLike,
+            false,
+            0,
+            false,
+            small_thresh,
+        )
+        .unwrap();
+        for row in tie_gene_rows(&gene_out) {
+            assert_eq!(
+                row,
+                vec![2.0, 0.0, 0.0, 0.0],
+                "gene level, small_thresh {small_thresh}"
+            );
+        }
+    }
+
+    // trivial deduplicates each feature's UMIs separately. Per probe, U1 and U2
+    // each have reads on both probes and count once on each: G0 counts 4, where
+    // the gene axis merges them and counts 2. (The fast path applies cr-like
+    // rules instead, so only the full resolver shows this.)
+    for (probe_level, expected) in [(true, 4.0), (false, 2.0)] {
+        let out = dir.join(format!("trivial_{probe_level}"));
+        run_flex_quant_axis(
+            &fx,
+            probe_level,
+            &out,
+            &fx.tg_map,
+            ResolutionStrategy::Trivial,
+            false,
+            0,
+            false,
+            0,
+        )
+        .unwrap();
+        for row in tie_gene_rows(&out) {
+            assert_eq!(
+                row,
+                vec![expected, 0.0, 0.0, 0.0],
+                "trivial, probe level {probe_level}"
+            );
+        }
+    }
+
+    // The EM apportions U1 between its probes instead of discarding it, so it
+    // still counts for G0. Only the full resolver runs the EM; the result is
+    // approximate because a probe's tiny leftover share is truncated.
+    let em = dir.join("probe_em");
+    run_flex_quant(
+        &fx,
+        &em,
+        &fx.tg_map,
+        ResolutionStrategy::CellRangerLikeEm,
+        false,
+        0,
+        false,
+        0,
+    )
+    .unwrap();
+    for row in tie_gene_rows(&em) {
+        assert!(
+            (row[0] - 2.0).abs() < 0.05 && row[1..] == [0.0, 0.0, 0.0],
+            "probe level, cr-like-em: {row:?}"
+        );
+    }
 }

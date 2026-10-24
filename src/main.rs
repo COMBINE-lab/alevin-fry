@@ -10,7 +10,7 @@
 use anyhow::{Context, bail};
 use bio_types::strand::Strand;
 use clap::{
-    Arg, Command, arg,
+    Arg, Command, ValueEnum, arg,
     builder::{
         ArgGroup, IntoResettable, PossibleValue, PossibleValuesParser, TypedValueParser,
         ValueParser,
@@ -331,25 +331,9 @@ fn main() -> anyhow::Result<()> {
     .arg(resolution)
     .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction; for cr-like/cr-like-em, 1 enables Cell Ranger-style Hamming-1 UMI collapsing (not supported in USA mode)")
         .value_parser(value_parser!(u32))
-        .default_value_ifs([
-            ("resolution", "cr-like", Some("0")),
-            ("resolution", "cr-like-em", Some("0")),
-            ("resolution", "trivial", Some("0")),
-            ("resolution", "parsimony", Some("1")),
-            ("resolution", "parsimony-em", Some("1")),
-            ("resolution", "parsimony-gene", Some("1")),
-            ("resolution", "parsimony-gene-em", Some("1")),
-        ])
         .hide(true))
     .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
         .value_parser(value_parser!(usize))
-        .default_value_ifs([
-            ("resolution", "parsimony-gene-em", Some("1000")),
-            ("resolution", "parsimony", Some("1000")),
-            ("resolution", "parsimony-em", Some("1000")),
-            ("resolution", "parsimony-gene", Some("1000")),
-        ])
-        .default_value("0") // for any other mode
         .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than this many reads are resolved by a fast path that applies cr-like (winner-take-all) semantics regardless of --resolution; pass 0 to resolve every cell with the requested strategy")
         .value_parser(value_parser!(usize))
@@ -390,7 +374,7 @@ fn main() -> anyhow::Result<()> {
     // strategies it cannot honour are refused by name, with their counterpart.
     let quant_probe_app = quant_common(
         "quant-probe",
-        "Quantify a probe-based (e.g. 10x Flex) collated RAD file per probe, summing each gene's probes into its count",
+        "Quantify a probe-based (e.g. 10x Flex) collated RAD file per probe, summing each gene's probes into its count; for probe-set references only (quantify a transcriptome with `quant`)",
         // parsimony-gene(-em) resolve to genes as the equivalence classes are
         // built, so no per-probe assignment survives to sum. They are hidden
         // rather than dropped: hidden still parses, so the refusal comes from
@@ -407,8 +391,10 @@ fn main() -> anyhow::Result<()> {
                 PossibleValue::new("parsimony-gene").hide(true),
                 PossibleValue::new("parsimony-gene-em").hide(true),
             ])
+            // the parser hands over the value as typed (`-r CR-LIKE` included),
+            // so match it as `quant` does, ignoring case
             .map(|s| {
-                s.parse::<ResolutionStrategy>()
+                <ResolutionStrategy as ValueEnum>::from_str(&s, true)
                     .expect("every listed value is a resolution strategy")
             }),
         ),
@@ -747,8 +733,26 @@ fn main() -> anyhow::Result<()> {
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
-        let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
-        let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
+        // Both defaults depend on the strategy, so they are taken from the parsed
+        // value. clap's `default_value_ifs` compared the text as typed, so a
+        // strategy `ignore_case` accepted in another case (`-r CR-LIKE`) got no
+        // --umi-edit-dist at all, and with one given, `-r PARSIMONY` got a
+        // --large-graph-thresh of 0.
+        let parsimony = matches!(
+            resolution,
+            ResolutionStrategy::Parsimony
+                | ResolutionStrategy::ParsimonyEm
+                | ResolutionStrategy::ParsimonyGene
+                | ResolutionStrategy::ParsimonyGeneEm
+        );
+        let large_graph_thresh: usize = t
+            .get_one("large-graph-thresh")
+            .copied()
+            .unwrap_or(if parsimony { 1000 } else { 0 });
+        let umi_edit_dist: u32 =
+            t.get_one("umi-edit-dist")
+                .copied()
+                .unwrap_or(if parsimony { 1 } else { 0 });
         let mut pug_exact_umi = false;
         // cr-like Hamming-1 UMI correction level: 0 = off.
         let mut crlike_umi_edit: u32 = 0;

@@ -60,12 +60,36 @@ Nothing is detected: pick the subcommand that matches the data.  Probe-ness is a
 property of the *reference*, which neither the RAD file nor
 ``generate-permit-list`` sees.
 
+``quant-probe`` is for probe-set references only.  Per-target resolution assumes
+that the targets of one gene seldom share reads, as a probe set's probes are
+designed not to.  On a transcriptome most reads are compatible with several
+isoforms of their gene, and resolving among them drops or splits UMIs that
+``quant`` counts once for the gene.  On a 10x 3' PBMC sample mapped to a spliced
+and intronic transcriptome, ``quant-probe`` lost about half of the UMIs with
+``cr-like`` or ``parsimony``; with the EM strategies the gene totals were nearly
+unchanged, but each UMI was split among its gene's isoforms arbitrarily.  ``quant-probe``
+therefore counts the reads compatible with two or more targets of one gene,
+records the number in ``quant.json`` as ``num_same_gene_multimapping_reads``,
+and logs a warning when they exceed 10% of all reads.  On a 10x Flex v2 sample
+with the human v2.0.0 probe set, 4 of 118 million reads were; on the PBMC sample,
+48%.
+
 Under ``quant-probe``, every reference target (probe) is its own feature, so UMI
 correction, deduplication, tie handling and the EM all act per probe, and the
 gene-level count matrix is then the sum of each gene's probes.  **Note**: the
 resulting gene counts are not identical to those a gene-level run produces, since
-correction and deduplication act per probe.  The per-cell statistics in
-``featureDump.txt`` are computed from the probe-summed gene matrix.
+correction and deduplication act per probe.  In particular, a UMI whose reads do
+not single out one probe -- they tie between two probes of its gene, or every
+read matches both -- is discarded by ``cr-like`` and by the tiny-cell fast path
+(which applies ``cr-like`` rules whatever the strategy), where a gene-level run
+counts it once for the gene; the EM strategies apportion it among its probes, so
+it still counts for the gene.  A read that matches two probes of one gene is
+likewise discarded by ``trivial`` and ``parsimony``.  ``trivial`` deduplicates
+each probe's UMIs separately, so a UMI with reads on two probes of its gene counts
+once on each, and twice for the gene.  Such UMIs are rare on real Flex data, since
+probes seldom share reads.
+The per-cell statistics in ``featureDump.txt`` are computed from the probe-summed
+gene matrix.
 
 * ``--probe-mtx`` : This flag will cause the probe-by-cell count matrix to be written to the output directory in addition to the gene-level count matrix, as ``probe_quants_mat.mtx`` with its own ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  It changes only what is written and not what is computed; the gene-level matrix and ``featureDump.txt`` are the same with and without it.
 
@@ -77,7 +101,7 @@ The following are not available with ``quant-probe``:
 * A three-column (USA) transcript-to-gene map.  A probe set's status column does not mean what USA mode's does.  10x annotates a probe ``spliced`` when it spans an exon-exon junction by at least 10 bp, so its evidence is mature mRNA alone, and ``unspliced`` when it does not, in which case it cannot distinguish mature from nascent transcript; 10x uses the two classes of one gene to estimate genomic-DNA background.  A non-junction probe is therefore *ambiguous* in USA terms rather than unspliced, and a transcriptome probe set carries no nascent-specific probe, so USA's unspliced layer has little to hold.  Read as a splicing state, the column would write the bulk of a probe set into the unspliced layer -- 46,022 of the 53,519 included probes of the human v2 set -- while those probes mostly measure mature mRNA.  Separately, the state USA mode reports is a resolution outcome rather than an annotation: a UMI reaches a gene's ambiguous slot by being compatible with both of its variants, which relies on the overlapping transcripts of a transcriptome reference, and a probe reference carries little such overlap.  Passing a three-column map is an error; use a two-column (target, gene) map, and ``--probe-mtx`` if you need the per-probe breakdown.
 * An input directory produced in velocity mode, which has its own feature axis -- the spliced and unspliced variants of a gene -- and no probe axis to sum.
 
-**Note**: with ``--dump-eqclasses``, the ids written to ``gene_eqclass.txt.gz`` are probe ids and its first line is the number of probes; this is logged at run time.
+**Note**: with ``--dump-eqclasses``, the ids written to ``gene_eqclass.txt.gz`` are probe ids and its first line is the number of probes; this is logged at run time.  The ids index the probe names written to ``probe_quants_mat_cols.txt``, one per line in reference (RAD header) order; that file is written with ``--dump-eqclasses`` even without ``--probe-mtx``.
 
 ``quant.json`` records the axis that was used as ``feature_axis``, which is
 ``"probe"`` for ``quant-probe`` and ``"gene"`` for ``quant``.
@@ -89,7 +113,7 @@ The output of the ``quant`` command consists of 5 files: ``quants_mat_rows.txt``
 
 If ``quant`` was executed in USA mode, then the resulting count matrix will be of dimension ``C``x``3G`` where ``C`` is the number of quantified cells (barcodes) and ``G`` is the number of genes.  This is because, in USA mode, ``alevin-fry`` quantifies the UMI count attributable to each splicing state of each gene in each cell, where the splicing state is one of spliced (S), unspliced (U) or ambiguous (A).  If ``quant`` was run with a two-column transcript-to-gene map (not in USA-mode), then the resulting count matrix will be a ``C``x``G`` matrix, as splicing status is not tracked.  For more details on USA mode and its uses, please read the ``alevin-fry`` `paper <https://www.nature.com/articles/s41592-022-01408-3>`__ or `preprint <https://www.biorxiv.org/content/10.1101/2021.06.29.450377v1>`__, or the `corresponding tutorial <https://combine-lab.github.io/alevin-fry-tutorials/2021/improving-txome-specificity/>`__.
 
-For ``quant-probe`` run with ``--probe-mtx``, the output also contains ``probe_quants_mat.mtx``, ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  This is the probe-by-cell matrix from which the gene-level matrix was summed.
+For ``quant-probe`` run with ``--probe-mtx``, the output also contains ``probe_quants_mat.mtx``, ``probe_quants_mat_cols.txt`` and ``probe_quants_mat_rows.txt``.  This is the probe-by-cell matrix from which the gene-level matrix was summed.  For ``quant-probe`` run with ``--dump-eqclasses`` but not ``--probe-mtx``, only ``probe_quants_mat_cols.txt`` is written, to name the probe ids in ``gene_eqclass.txt.gz``.
 
 The ``quants_mat.mtx`` is a matrix market `coordinate format <https://math.nist.gov/MatrixMarket/formats.html>`__ file that stores the gene-by-cell expression matrix. The two other files provide the labels for the rows and columns of this matrix. The ``quants_mat_cols.txt`` file is a text file that contains the names of the rows of the matrix, in the order in which it is written, with one gene name written per line. The ``quants_mat_rows.txt`` file is a text file that contains the names of the columns of the matrix, in the order in which it is written, with one barcode name written per line.
 
@@ -115,7 +139,7 @@ The columns are:
 * ``reads`` : the number of reads supporting the molecule's assignment. For ``cr-like``, these are the reads of the (corrected) UMI that are compatible with the winning gene(s); for the parsimony strategies, the reads of every UMI in the covering arborescence.
 * ``status`` : ``assigned`` if the molecule was counted as one molecule of ``feature``; ``multi_gene`` if it is gene-ambiguous (discarded by the non-EM strategies, apportioned among ``candidate_features`` by the EM strategies); or ``low_support`` if ``cr-like --umi-edit-dist 1`` dropped it as a low-support (tied or chimeric) UMI.
 
-For the non-EM strategies, counting the ``assigned`` rows of each (cell, feature) reproduces ``quants_mat.mtx`` exactly. Under ``quant-probe``, ``feature`` and ``candidate_features`` are genes, as in ``quants_mat.mtx``: a molecule compatible with several probes is ``multi_gene`` even when they all belong to one gene (the non-EM strategies discard it per probe), and its ``candidate_features`` then lists that gene once. Cells resolved by the tiny-cell fast path (see ``--small-thresh``) are recorded with that path's ``cr-like`` semantics, just as they are counted. Rows of a cell are contiguous, but cells appear in no particular order.
+For the non-EM strategies, counting the ``assigned`` rows of each (cell, feature) reproduces ``quants_mat.mtx`` exactly. Under ``quant-probe``, ``feature`` and ``candidate_features`` are genes, as in ``quants_mat.mtx``. A molecule compatible with several probes of one gene is ``multi_gene`` under the non-EM strategies, which discard it per probe, and its ``candidate_features`` then lists that gene once; under the EM strategies, which apportion it among those probes, it is ``assigned`` to the gene. Cells resolved by the tiny-cell fast path (see ``--small-thresh``) are recorded with that path's ``cr-like`` semantics, just as they are counted. Rows of a cell are contiguous, but cells appear in no particular order.
 
 .. _alevin: https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1670-y
 

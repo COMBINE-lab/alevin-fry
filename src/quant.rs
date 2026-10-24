@@ -24,7 +24,7 @@ use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::str::FromStr;
 use std::string::ToString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -546,6 +546,46 @@ impl FeatureAxis {
 struct ProbeLevelOutput {
     target_to_gene: Arc<Vec<u32>>,
     writer: Option<Arc<Mutex<MatrixMarketWriter<File>>>>,
+    /// Reads compatible with two or more targets of one gene; see
+    /// [`count_same_gene_multimapping`].
+    same_gene_reads: Arc<AtomicU64>,
+}
+
+/// Above this share of reads compatible with several targets of one gene,
+/// `quant-probe` warns that the reference does not look like a probe set.
+///
+/// A probe set's probes are designed not to overlap, so on probe data such reads
+/// are rare; on a transcriptome, where most reads are compatible with several
+/// isoforms of their gene, they are the bulk.
+const SAME_GENE_MULTIMAPPING_WARN_FRAC: f64 = 0.10;
+
+/// The number of `reads` compatible with two or more targets of one gene.
+///
+/// At probe level these are the reads whose UMIs per-target resolution can split
+/// between targets of one gene: `cr-like` drops such a UMI when its reads do not
+/// single out one target, where `quant` counts it once for the gene. A probe set
+/// produces few of them; a transcriptome, many. `pairs` is scratch space.
+fn count_same_gene_multimapping<R: MappedRecord>(
+    reads: &[R],
+    target_to_gene: &[u32],
+    pairs: &mut Vec<(u32, u32)>,
+) -> u64 {
+    let mut n = 0u64;
+    for read in reads {
+        let refs = read.refs();
+        if refs.len() < 2 {
+            continue;
+        }
+        pairs.clear();
+        pairs.extend(refs.iter().map(|&t| (target_to_gene[t as usize], t)));
+        pairs.sort_unstable();
+        // a target listed twice is still one target
+        pairs.dedup();
+        if pairs.windows(2).any(|w| w[0].0 == w[1].0) {
+            n += 1;
+        }
+    }
+    n
 }
 
 struct WorkerSharedState<R: MappedRecord> {
@@ -861,6 +901,8 @@ where
     let mut gene_acc = Vec::<f32>::new();
     let mut gene_touched = Vec::<usize>::new();
     let mut probe_batch = MatrixBatch::default();
+    let mut same_gene_reads = 0u64;
+    let mut same_gene_scratch = Vec::<(u32, u32)>::new();
 
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
@@ -908,6 +950,13 @@ where
             let nbytes = c.nbytes;
             let nrec = c.nrec;
             local_nrec += nrec as usize;
+            if let Some(probe) = &shared.probe_level_out {
+                same_gene_reads += count_same_gene_multimapping(
+                    &c.reads,
+                    &probe.target_to_gene,
+                    &mut same_gene_scratch,
+                );
+            }
 
             if c.reads.is_empty() {
                 warn!(
@@ -1598,6 +1647,11 @@ where
             shared.output_failed.store(true, Ordering::Relaxed);
         }
     }
+    if let Some(probe) = &shared.probe_level_out {
+        probe
+            .same_gene_reads
+            .fetch_add(same_gene_reads, Ordering::Relaxed);
+    }
     match output_error {
         Some(error) => Err(error),
         None => Ok(local_nrec),
@@ -2050,7 +2104,7 @@ where
         if dump_eq {
             warn!(
                 log,
-                "--dump-eqclasses with probe-level quantification: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes."
+                "--dump-eqclasses with probe-level quantification: UMIs are resolved per probe, so the ids in each equivalence class of gene_eqclass.txt.gz are probe (reference target) ids, not gene ids, and its first line is the number of probes. The ids index the probe names in probe_quants_mat_cols.txt."
             );
         }
         // The bootstrap reports the uncertainty in how the EM allocates a molecule
@@ -2402,6 +2456,7 @@ where
             } else {
                 None
             },
+            same_gene_reads: Arc::new(AtomicU64::new(0)),
         }),
         None => None,
     };
@@ -2689,13 +2744,17 @@ where
     // from the same counter, under the same lock that appends that cell's barcode --
     // so the row labels are written out a second time under the probe matrix's own
     // name rather than left implicit, which keeps each matrix loadable from its own
-    // triple of files.
-    if quant_opts.probe_mtx {
+    // triple of files. The probe names also name the ids of the equivalence classes,
+    // so -d writes them too; without --probe-mtx they are written alone, as there is
+    // no probe matrix for rows to describe.
+    if quant_opts.probe_mtx || (probe_level && dump_eq) {
         write_label_file(
             &output_matrix_path.join("probe_quants_mat_cols.txt"),
             hdr.ref_names.iter(),
             "probe names",
         )?;
+    }
+    if quant_opts.probe_mtx {
         // The barcode file is flushed and no longer written to by this point.
         fs::copy(
             output_matrix_path.join("quants_mat_rows.txt"),
@@ -2732,6 +2791,37 @@ where
         "processed {} total read records",
         total_records.to_formatted_string(&Locale::en)
     );
+
+    // Per-target resolution assumes the targets of a gene rarely share reads, as
+    // a probe set's do. On a transcriptome most reads are compatible with several
+    // isoforms of their gene, and resolving per isoform drops or splits UMIs that
+    // `quant` counts once per gene -- without anything else looking wrong.
+    let same_gene_reads = probe_level_out
+        .as_ref()
+        .map(|probe| probe.same_gene_reads.load(Ordering::Relaxed));
+    if let Some(n) = same_gene_reads {
+        let frac = if total_records > 0 {
+            n as f64 / total_records as f64
+        } else {
+            0.0
+        };
+        if frac > SAME_GENE_MULTIMAPPING_WARN_FRAC {
+            warn!(
+                log,
+                "{:.1}% of reads ({} of {}) are compatible with two or more targets of the same gene. `quant-probe` is meant for probe-set references (e.g. 10x Flex), whose probes seldom share reads; on a reference like this one it resolves each UMI among its gene's targets and drops or splits UMIs that `quant` would count once for the gene. If this is a transcriptome, quantify it with `quant` instead.",
+                100.0 * frac,
+                n.to_formatted_string(&Locale::en),
+                total_records.to_formatted_string(&Locale::en)
+            );
+        } else {
+            info!(
+                log,
+                "{} reads ({:.2}%) are compatible with two or more targets of the same gene",
+                n.to_formatted_string(&Locale::en),
+                100.0 * frac
+            );
+        }
+    }
 
     if dump_eq {
         write_eqc_counts(
@@ -2771,6 +2861,7 @@ where
     "probe_mtx" : quant_opts.probe_mtx,
     "num_probes" : probe_level.then_some(axis.rows),
     "probe_nnz" : probe_nnz,
+    "num_same_gene_multimapping_reads" : same_gene_reads,
     "dump_eq" : dump_eq,
     "molecule_table" : molecule_table,
     "usa_mode" : usa_mode,
