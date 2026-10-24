@@ -11,7 +11,7 @@ estimation step, that attempts to resolve gene-multimapping UMIs.
 
 This command can takes the following options :
 
-* ``-c, --count-mat <eqc-mat>`` : This provides the path to the (mtx format) matrix of cells by equivalence class counts. **Note**: It is assumed that the parent directory where ``eqc-mat`` is located will also contain a file called ``quants_mat_rows.txt`` containing the row names of the matrix and a file called ``quants_mat_cols.txt`` containing the column names of the files. The ``infer`` command will not run if these other input files are absent from the parent directory of ``eqc-mat``. 
+* ``-c, --count-mat <eqc-mat>`` : This provides the path to the (mtx format) matrix of cells by equivalence class counts. **Note**: It is assumed that the parent directory where ``eqc-mat`` is located will also contain a file called ``quants_mat_rows.txt`` containing the row names of the matrix and a file called ``quants_mat_cols.txt`` containing the column names of the files. The ``infer`` command will not run if these other input files are absent from the parent directory of ``eqc-mat``. Nor will it run if ``quants_mat_cols.txt`` does not have one name per feature of the equivalence classes, as with the output of ``quant-probe --dump-eqclasses``, whose equivalence classes are over probes rather than genes. 
 
 * ``-e, --eq-labels <eq-labels>`` : This provides the path to the file containing the gene labels of the equivalence class description.
 

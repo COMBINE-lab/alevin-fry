@@ -156,6 +156,10 @@ pub struct FeatureLabeler {
     usa_mode: bool,
     unspliced_offset: usize,
     ambig_offset: usize,
+    /// Probe-level (10x Flex) resolution: the resolver's labels are reference
+    /// targets (probes), and the gene matrix is their sum through this
+    /// target -> gene table. `None` when labels are already genes.
+    target_to_gene: Option<Arc<Vec<u32>>>,
 }
 
 impl FeatureLabeler {
@@ -168,12 +172,24 @@ impl FeatureLabeler {
             usa_mode,
             unspliced_offset,
             ambig_offset: 2 * unspliced_offset,
+            target_to_gene: None,
         }
+    }
+
+    /// For probe-level resolution (10x Flex): labels are reference targets,
+    /// projected onto the gene columns through `target_to_gene`, as the gene
+    /// matrix is. Probe-level resolution is never USA mode.
+    pub fn with_target_to_gene(mut self, target_to_gene: Arc<Vec<u32>>) -> Self {
+        debug_assert!(!self.usa_mode);
+        self.target_to_gene = Some(target_to_gene);
+        self
     }
 
     /// The matrix column of a single label.
     fn label_column(&self, label: u32) -> usize {
-        if !self.usa_mode {
+        if let Some(t2g) = &self.target_to_gene {
+            t2g[label as usize] as usize
+        } else if !self.usa_mode {
             label as usize
         } else if afutils::is_spliced(label) {
             (label >> 1) as usize
@@ -194,6 +210,23 @@ impl FeatureLabeler {
     /// gene, ambiguous; the non-EM strategies additionally apply the
     /// prefer-spliced rule of [`afutils::usa_label_column`].
     pub fn assign(&self, labels: &[u32], em: bool) -> Assignment {
+        if let Some(t2g) = &self.target_to_gene {
+            // At probe level every target is its own feature for the resolver:
+            // a molecule compatible with several targets is discarded by the
+            // non-EM strategies, and apportioned among them by the EM
+            // strategies, after which the targets are summed into genes. So it
+            // counts wholly for a gene only under EM, and only when all its
+            // targets belong to that gene.
+            return match labels {
+                [t] => Assignment::Feature(t2g[*t as usize] as usize),
+                [t, rest @ ..]
+                    if em && rest.iter().all(|r| t2g[*r as usize] == t2g[*t as usize]) =>
+                {
+                    Assignment::Feature(t2g[*t as usize] as usize)
+                }
+                _ => Assignment::MultiGene,
+            };
+        }
         if !self.usa_mode {
             return match labels {
                 [g] => Assignment::Feature(*g as usize),
@@ -455,10 +488,17 @@ impl MoleculeBatch {
                 }
                 Assignment::MultiGene => {
                     self.feature_key.append_null();
+                    // Each feature once: at probe level several targets can
+                    // share a gene.
+                    let mut seen = Vec::with_capacity(labels.len());
                     for &l in labels {
-                        self.candidate_features
-                            .values()
-                            .append_value(labeler.label_name(l));
+                        let col = labeler.label_column(l);
+                        if !seen.contains(&col) {
+                            seen.push(col);
+                            self.candidate_features
+                                .values()
+                                .append_value(labeler.label_name(l));
+                        }
                     }
                     self.candidate_features.append(true);
                 }
@@ -550,6 +590,52 @@ mod tests {
         assert_eq!(l.assign(&[0, 1], false), Assignment::MultiGene);
         assert_eq!(l.assign(&[0, 1], true), Assignment::MultiGene);
         assert_eq!(l.label_name(1), "g1");
+    }
+
+    #[test]
+    fn probe_level_assignment_projects_targets_onto_genes() {
+        // targets 0 and 1 are probes of g0, target 2 of g1, target 3 of g2
+        let l = FeatureLabeler::new(names(&["g0", "g1", "g2"]), false)
+            .with_target_to_gene(Arc::new(vec![0, 0, 1, 2]));
+        assert_eq!(l.assign(&[1], false), Assignment::Feature(0));
+        assert_eq!(l.assign(&[3], true), Assignment::Feature(2));
+        assert_eq!(l.label_name(1), "g0");
+        // several targets: discarded by non-EM, one gene's under EM
+        assert_eq!(l.assign(&[0, 1], false), Assignment::MultiGene);
+        assert_eq!(l.assign(&[0, 1], true), Assignment::Feature(0));
+        assert_eq!(l.assign(&[0, 2], true), Assignment::MultiGene);
+    }
+
+    /// Probe-level candidates name each gene once.
+    #[test]
+    fn probe_level_candidates_list_each_gene_once() {
+        use arrow_array::cast::AsArray;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MOLECULE_TABLE_NAME);
+        let labeler = FeatureLabeler::new(names(&["g0", "g1", "g2"]), false)
+            .with_target_to_gene(Arc::new(vec![0, 0, 1, 2]));
+        let out = Arc::new(MoleculeTableWriter::create(&path, None, labeler, 4).unwrap());
+        let mut mols = CellMolecules::default();
+        let mut batch = MoleculeBatch::new(out.clone());
+        mols.push(0, &[0, 1, 2], 4, 1); // probes of g0, g0, g1
+        batch.add_cell("AAAC", None, &mols, false).unwrap();
+        batch.flush().unwrap();
+        assert_eq!(out.finish().unwrap(), 1);
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        let batches: Vec<RecordBatch> = reader.map(Result::unwrap).collect();
+        let cands = batches[0]
+            .column_by_name("candidate_features")
+            .unwrap()
+            .as_list::<i32>()
+            .value(0);
+        let cands: Vec<_> = cands.as_string::<i32>().iter().flatten().collect();
+        assert_eq!(cands, ["g0", "g1"]);
     }
 
     /// Write two cells (one per batch, so two row groups) and read them back.

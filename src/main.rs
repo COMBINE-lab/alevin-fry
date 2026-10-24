@@ -9,7 +9,14 @@
 
 use anyhow::{Context, bail};
 use bio_types::strand::Strand;
-use clap::{Command, arg, builder::ArgGroup, crate_authors, crate_version, value_parser};
+use clap::{
+    Arg, Command, ValueEnum, arg,
+    builder::{
+        ArgGroup, IntoResettable, PossibleValue, PossibleValuesParser, TypedValueParser,
+        ValueParser,
+    },
+    crate_authors, crate_version, value_parser,
+};
 use itertools::Itertools;
 use mimalloc::MiMalloc;
 use rand::RngExt;
@@ -292,8 +299,22 @@ fn main() -> anyhow::Result<()> {
          .value_parser(["two-round", "fast"])
          .hide(true));
 
-    let quant_app = Command::new("quant")
-    .about("Quantify expression from a collated RAD file")
+    // The two subcommands accept different resolution *values*, but the same flag:
+    // built once so the help text and parsing rules cannot drift apart.
+    fn resolution_arg(parser: impl IntoResettable<ValueParser>) -> Arg {
+        arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
+            .required(true)
+            .ignore_case(true)
+            .value_parser(parser)
+    }
+
+    // `quant` and `quant-probe` differ only in the feature axis UMIs are resolved
+    // on, so they share every option the axis does not change. The axis-specific
+    // ones are added to each below: bootstrapping and the splicing-ambiguity model
+    // are only meaningful per gene, and --probe-mtx only per probe.
+    let quant_common = |name: &'static str, about: &'static str, resolution: Arg| {
+        Command::new(name)
+    .about(about)
     .version(version)
     .author(crate_authors)
     .arg(arg!(-i --"input-dir" <INPUTDIR>  "input directory containing collated RAD file")
@@ -304,42 +325,15 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(-t --threads <THREADS> "number of threads to use for processing (minimum: 2; lower values use 2)").value_parser(value_parser!(u32)).default_value(max_num_threads.clone()))
     .arg(arg!(-d --"dump-eqclasses" "flag for dumping equivalence classes"))
     .arg(arg!(--"dump-molecules" "write alevin/molecules.parquet: one row per resolved molecule (cell barcode, representative UMI, feature, supporting reads, status), before molecules are summed into the count matrix"))
-    .arg(arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use").value_parser(value_parser!(u32)).default_value("0"))
-    .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
-    .arg(arg!(--"summary-stat" "flag for storing only summary statistics").requires("num-bootstraps"))
     .arg(arg!(--"use-mtx" "flag for writing output matrix in matrix market format (default, kept for compatibility)"))
     .arg(arg!(--"use-eds" "[DEPRECATED] EDS output has been removed").hide(true))
     .arg(arg!(--"quant-subset" <SFILE> "file containing list of barcodes to quantify, those not in this list will be ignored").value_parser(pathbuf_file_exists_validator))
-    .arg(arg!(-r --resolution <RESOLUTION> "the resolution strategy by which molecules will be counted")
-        .required(true)
-        .ignore_case(true)
-        .value_parser(value_parser!(ResolutionStrategy)))
-    .arg(arg!(--"sa-model" <SAMODEL> "preferred model of splicing ambiguity")
-        .ignore_case(true)
-        .value_parser(value_parser!(SplicedAmbiguityModel))
-        .default_value("winner-take-all")
-        .hide(true))
+    .arg(resolution)
     .arg(arg!(--"umi-edit-dist" <EDIST> "the Hamming distance within which potentially colliding UMIs will be considered for correction; for cr-like/cr-like-em, 1 enables Cell Ranger-style Hamming-1 UMI collapsing (not supported in USA mode)")
         .value_parser(value_parser!(u32))
-        .default_value_ifs([
-            ("resolution", "cr-like", Some("0")),
-            ("resolution", "cr-like-em", Some("0")),
-            ("resolution", "trivial", Some("0")),
-            ("resolution", "parsimony", Some("1")),
-            ("resolution", "parsimony-em", Some("1")),
-            ("resolution", "parsimony-gene", Some("1")),
-            ("resolution", "parsimony-gene-em", Some("1")),
-        ])
         .hide(true))
     .arg(arg!(--"large-graph-thresh" <NVERT> "the order (number of nodes) of a PUG above which the alternative resolution strategy will be applied")
         .value_parser(value_parser!(usize))
-        .default_value_ifs([
-            ("resolution", "parsimony-gene-em", Some("1000")),
-            ("resolution", "parsimony", Some("1000")),
-            ("resolution", "parsimony-em", Some("1000")),
-            ("resolution", "parsimony-gene", Some("1000")),
-        ])
-        .default_value("0") // for any other mode
         .hide(true))
     .arg(arg!(--"small-thresh" <SMALLTHRESH> "cells with fewer than this many reads are resolved by a fast path that applies cr-like (winner-take-all) semantics regardless of --resolution; pass 0 to resolve every cell with the requested strategy")
         .value_parser(value_parser!(usize))
@@ -347,7 +341,65 @@ fn main() -> anyhow::Result<()> {
     // Multi-sample output option (for multi-barcode RAD files)
     .arg(arg!(--"multi-sample-output" <MSOUTPUT> "deprecated and ignored; multi-sample output is always one combined matrix whose rows are <sample>_<barcode>")
         .value_parser(["separate", "combined", "both"])
-        .hide(true));
+        .hide(true))
+    };
+
+    let quant_app = quant_common(
+        "quant",
+        "Quantify expression from a collated RAD file",
+        resolution_arg(value_parser!(ResolutionStrategy)),
+    )
+    .arg(
+        arg!(-b --"num-bootstraps" <NUMBOOTSTRAPS> "number of bootstraps to use")
+            .value_parser(value_parser!(u32))
+            .default_value("0"),
+    )
+    .arg(arg!(--"init-uniform" "flag for uniform sampling").requires("num-bootstraps"))
+    .arg(
+        arg!(--"summary-stat" "flag for storing only summary statistics")
+            .requires("num-bootstraps"),
+    )
+    .arg(
+        arg!(--"sa-model" <SAMODEL> "preferred model of splicing ambiguity")
+            .ignore_case(true)
+            .value_parser(value_parser!(SplicedAmbiguityModel))
+            .default_value("winner-take-all")
+            .hide(true),
+    );
+
+    // Probe-level quantification is requested, never inferred: probe-ness is a
+    // property of the reference, which neither the RAD file nor
+    // generate-permit-list sees. Options this axis cannot honour are simply absent
+    // here (-b, --init-uniform, --summary-stat, --sa-model); the resolution
+    // strategies it cannot honour are refused by name, with their counterpart.
+    let quant_probe_app = quant_common(
+        "quant-probe",
+        "Quantify a probe-based (e.g. 10x Flex) collated RAD file per probe, summing each gene's probes into its count; for probe-set references only (quantify a transcriptome with `quant`)",
+        // parsimony-gene(-em) resolve to genes as the equivalence classes are
+        // built, so no per-probe assignment survives to sum. They are hidden
+        // rather than dropped: hidden still parses, so the refusal comes from
+        // `quantify`, which knows that parsimony-gene's counterpart is parsimony
+        // and parsimony-gene-em's is parsimony-em. Dropping them instead left
+        // clap to guess the counterpart, and it guessed parsimony-em for both.
+        resolution_arg(
+            PossibleValuesParser::new([
+                PossibleValue::new("trivial"),
+                PossibleValue::new("cr-like"),
+                PossibleValue::new("cr-like-em"),
+                PossibleValue::new("parsimony"),
+                PossibleValue::new("parsimony-em"),
+                PossibleValue::new("parsimony-gene").hide(true),
+                PossibleValue::new("parsimony-gene-em").hide(true),
+            ])
+            // the parser hands over the value as typed (`-r CR-LIKE` included),
+            // so match it as `quant` does, ignoring case
+            .map(|s| {
+                <ResolutionStrategy as ValueEnum>::from_str(&s, true)
+                    .expect("every listed value is a resolution strategy")
+            }),
+        ),
+    )
+    .arg(arg!(--"probe-mtx" "also write the probe x cell count matrix the gene matrix was summed from; the gene matrix is written either way"));
 
     let infer_app = Command::new("infer")
     .about("Perform inference on equivalence class count data")
@@ -377,6 +429,7 @@ fn main() -> anyhow::Result<()> {
         .subcommand(gen_app)
         .subcommand(collate_app)
         .subcommand(quant_app)
+        .subcommand(quant_probe_app)
         .subcommand(infer_app)
         .subcommand(convert_app)
         .subcommand(view_app)
@@ -634,11 +687,31 @@ fn main() -> anyhow::Result<()> {
     }
 
     // perform quantification of a collated rad file.
-    if let Some(t) = opts.subcommand_matches("quant") {
+    // `quant` and `quant-probe` run the same quantification; they differ in the
+    // feature axis, and so in which options exist at all. Everything below is
+    // shared, so the two stay in step by construction.
+    let quant_invocation = opts
+        .subcommand_matches("quant")
+        .map(|t| (t, false))
+        .or_else(|| opts.subcommand_matches("quant-probe").map(|t| (t, true)));
+
+    if let Some((t, probe_level)) = quant_invocation {
         let num_threads = enforce_thread_floor(*t.get_one("threads").unwrap(), &log);
-        let num_bootstraps = *t.get_one("num-bootstraps").unwrap();
-        let init_uniform = t.get_flag("init-uniform");
-        let summary_stat = t.get_flag("summary-stat");
+        // Bootstrapping and the splicing-ambiguity model are only meaningful per
+        // gene, so `quant-probe` does not define them; --probe-mtx is only
+        // meaningful per probe, so `quant` does not define it. Reading an argument
+        // a subcommand never declared would panic, hence the split.
+        let (num_bootstraps, init_uniform, summary_stat, sa_model) = if probe_level {
+            (0u32, false, false, SplicedAmbiguityModel::WinnerTakeAll)
+        } else {
+            (
+                *t.get_one("num-bootstraps").unwrap(),
+                t.get_flag("init-uniform"),
+                t.get_flag("summary-stat"),
+                *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap(),
+            )
+        };
+        let probe_mtx = probe_level && t.get_flag("probe-mtx");
         let dump_eq = t.get_flag("dump-eqclasses");
         let dump_molecules = t.get_flag("dump-molecules");
         if t.get_flag("use-eds") {
@@ -658,11 +731,28 @@ fn main() -> anyhow::Result<()> {
         let output_dir: &PathBuf = t.get_one("output-dir").unwrap();
         let tg_map: &PathBuf = t.get_one("tg-map").unwrap();
         let resolution = *t.get_one::<ResolutionStrategy>("resolution").unwrap();
-        let sa_model = *t.get_one::<SplicedAmbiguityModel>("sa-model").unwrap();
         let small_thresh = *t.get_one("small-thresh").unwrap();
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
-        let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
-        let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
+        // Both defaults depend on the strategy, so they are taken from the parsed
+        // value. clap's `default_value_ifs` compared the text as typed, so a
+        // strategy `ignore_case` accepted in another case (`-r CR-LIKE`) got no
+        // --umi-edit-dist at all, and with one given, `-r PARSIMONY` got a
+        // --large-graph-thresh of 0.
+        let parsimony = matches!(
+            resolution,
+            ResolutionStrategy::Parsimony
+                | ResolutionStrategy::ParsimonyEm
+                | ResolutionStrategy::ParsimonyGene
+                | ResolutionStrategy::ParsimonyGeneEm
+        );
+        let large_graph_thresh: usize = t
+            .get_one("large-graph-thresh")
+            .copied()
+            .unwrap_or(if parsimony { 1000 } else { 0 });
+        let umi_edit_dist: u32 =
+            t.get_one("umi-edit-dist")
+                .copied()
+                .unwrap_or(if parsimony { 1 } else { 0 });
         let mut pug_exact_umi = false;
         // cr-like Hamming-1 UMI correction level: 0 = off.
         let mut crlike_umi_edit: u32 = 0;
@@ -774,6 +864,8 @@ fn main() -> anyhow::Result<()> {
             .dump_eq(dump_eq)
             .dump_molecules(dump_molecules)
             .resolution(resolution)
+            .probe_level(probe_level)
+            .probe_mtx(probe_mtx)
             .sa_model(sa_model)
             .small_thresh(small_thresh)
             .large_graph_thresh(large_graph_thresh)
@@ -789,6 +881,14 @@ fn main() -> anyhow::Result<()> {
         // then proceed.  otherwise print a critical error.
         if json_path.exists() {
             let velo_mode = alevin_fry::utils::is_velo_mode(quant_opts.input_dir);
+            // velo_quantify has its own feature axis -- it resolves to the spliced
+            // and unspliced variants of a gene -- and does not read probe_level.
+            // Refuse rather than quantify on an axis that was not asked for.
+            if velo_mode && probe_level {
+                anyhow::bail!(
+                    "this input directory was produced in velocity mode, which resolves to the spliced and unspliced variants of a gene; it has no probe axis to sum. Use `quant` instead of `quant-probe`."
+                );
+            }
             let result = if velo_mode {
                 alevin_fry::quant::velo_quantify(quant_opts)
             } else {
