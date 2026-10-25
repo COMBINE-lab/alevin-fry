@@ -40,8 +40,10 @@ Changelog for alevin-fry
     equivalence classes whose ids do not index the `quants_mat_cols.txt` beside
     them, as with this output, rather than label a probe matrix with gene names.
   * Cost depends on the library. On the Flex library above, across the five
-    strategies, `quant-probe` took 18-34% longer than `quant` (1.5-2.1 s to
-    1.8-2.7 s at 16 threads), and 37-52% longer with `--probe-mtx`.
+    strategies, `quant-probe` took 3-6% longer than `quant` (1.43-1.80 s to
+    1.50-1.87 s at 16 threads), and 25-27% longer with `--probe-mtx`
+    (`cr-like` and `cr-like-em`). Without the per-cell sparse resolution below,
+    it took 18-34% longer.
 
 * `quant --dump-molecules` writes `alevin/molecules.parquet`: one row per
   molecule produced by UMI resolution, before molecules are summed into the
@@ -56,6 +58,20 @@ Changelog for alevin-fry
   time (2.24 to 2.42 s for 33M molecules; 5.05 to 5.45 s for 70M molecules in
   USA mode) and about 1 GB of peak memory; the files were 457 MB and 832 MB.
   Without the flag, quant output and speed are unchanged.
+
+### Performance
+
+* `quant` resolves each cell over the features its equivalence classes name,
+  rather than over the whole feature axis (genes, or probes under
+  `quant-probe`). This applies to every resolution strategy except the
+  USA-mode and long-read EMs. Output is unchanged. On the 384-plex Flex library
+  (262k cells, 53,519 probes over 18,132 genes) at 16 threads, `quant-probe`
+  ran 16-36% faster (`cr-like-em` 2.53 to 1.62 s) and `quant` 5-18% faster.
+  Data where nearly every cell takes the tiny-cell fast path, such as standard
+  10x 3' libraries, is unaffected.
+* Library API: `pugutils::get_num_molecules_trivial_discard_all_ambig` now
+  writes the cell's counts into a reusable `em::SparseCellCounts` and returns
+  only the fraction of UMIs discarded as multi-gene.
 
 ### Fixed
 
