@@ -7,6 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 use crate::constants as afconst;
+use crate::em::SparseCellCounts;
 use crate::eq_class::IndexedEqList;
 use anyhow::{Context, anyhow};
 use bstr::io::BufReadExt;
@@ -852,6 +853,23 @@ pub fn extract_counts<P: EqClassPayload>(
         }
     }
     counts
+}
+
+/// [`extract_counts`] into a worker's reusable [`SparseCellCounts`]: the same
+/// columns and sums, touching only the columns this cell's labels map to.
+pub fn extract_counts_sparse<P: EqClassPayload>(
+    gene_eqc: &HashMap<Vec<u32>, P, ahash::RandomState>,
+    num_counts: usize,
+    counts: &mut SparseCellCounts,
+) {
+    let unspliced_offset = num_counts / 3;
+    let ambig_offset = 2 * unspliced_offset;
+    counts.reset(num_counts);
+    for (labels, payload) in gene_eqc {
+        if let Some(idx) = usa_label_column(labels, unspliced_offset, ambig_offset) {
+            counts.add(idx, payload.count() as f32);
+        }
+    }
 }
 
 /// Extracts UMI counts from the `gene_eqc` HashMap.

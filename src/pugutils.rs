@@ -28,6 +28,7 @@ use libradicl::record::{
 
 use slog::{crit, info, warn};
 
+use crate::em::SparseCellCounts;
 use crate::eq_class::{EqMap, EqMapType};
 use crate::molecules::CellMolecules;
 use crate::quant::SplicedAmbiguityModel;
@@ -1344,6 +1345,10 @@ pub fn get_num_molecules_cell_ranger_like<P: EqClassPayload>(
     }
 }
 
+/// Writes the cell's gene-unique counts to `counts` (reset to `num_genes`
+/// features first) and returns the fraction of UMIs that were discarded as
+/// multi-gene.
+///
 /// With `mols`, each distinct (UMI, gene) of a gene-unique equivalence class is
 /// recorded as a molecule with the reads summed over classes, and each UMI of a
 /// gene-ambiguous class as a multi-gene molecule with that class's reads.
@@ -1351,10 +1356,11 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
     eq_map: &EqMap,
     tid_to_gid: &[u32],
     num_genes: usize,
+    counts: &mut SparseCellCounts,
     mut mols: Option<&mut CellMolecules>,
     _log: &slog::Logger,
-) -> (Vec<f32>, f64) {
-    let mut counts = vec![0.0f32; num_genes];
+) -> f64 {
+    counts.reset(num_genes);
     let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
     let mut gene_map: std::collections::HashMap<u32, Vec<(u64, u32)>, ahash::RandomState> =
         HashMap::with_hasher(s);
@@ -1418,7 +1424,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
             same
         });
         // the count is the number of distinct UMIs.
-        counts[*k as usize] += v.len() as f32;
+        counts.add(*k as usize, v.len() as f32);
         if let Some(m) = mols.as_deref_mut() {
             for &(umi, reads) in v.iter() {
                 m.push(umi, &[*k], reads, 1);
@@ -1426,8 +1432,7 @@ pub fn get_num_molecules_trivial_discard_all_ambig(
         }
     }
 
-    // return the counts
-    (counts, multi_gene_umis as f64 / total_umis as f64)
+    multi_gene_umis as f64 / total_umis as f64
 }
 
 /// given the connected component (subgraph) of `g` defined by the

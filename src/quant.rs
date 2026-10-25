@@ -45,7 +45,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use crate::em::{
-    EmInitType, EmSubsetScratch, em_optimize, em_optimize_long_read,
+    EmInitType, EmSubsetScratch, SparseCellCounts, em_optimize_long_read,
     em_optimize_subset_with_scratch, run_bootstrap_with_scratch,
 };
 use crate::eq_class::{EqMap, EqMapType, IndexedEqList};
@@ -927,6 +927,9 @@ where
     // Reusable working buffers for the cr-like resolvers, carried across cells
     // to avoid a fresh allocation per cell / per equivalence class.
     let mut crlike_scratch = pugutils::CrLikeScratch::default();
+    // This cell's counts when its resolver works over the cell's own features
+    // (every path but the USA-mode and long-read EMs); see `SparseCellCounts`.
+    let mut cell_counts = SparseCellCounts::default();
 
     let mut local_nrec = 0usize;
     // Drain MetaChunks until the producer is done and the queue is empty.
@@ -983,7 +986,11 @@ where
 
             // The structures we'll need to hold our output for this
             // cell.
-            let mut counts: Vec<f32>;
+            // Dense counts, from the resolvers that still produce them (the
+            // USA-mode EM and the long-read EM). Otherwise the cell is resolved
+            // into `cell_counts`, and `counts` is only built for bootstrapping.
+            let mut counts: Vec<f32> = Vec::new();
+            let mut sparse_counts = false;
             let mut alt_resolution = false;
             let mut max_umi = 0.0f32;
             let mut sum_umi = 0.0f32;
@@ -1060,8 +1067,6 @@ where
                 max_umi = max_umi_local;
                 sum_umi = sum_umi_local;
                 num_expr = expressed_vec.len() as u32;
-                // counts is only needed for EDS output; build lazily below
-                counts = Vec::new();
             } else
             // Original path for larger cells
             {
@@ -1116,8 +1121,12 @@ where
                             match (config.usa_mode, only_unique) {
                                 (true, true) => {
                                     // USA mode, only gene-unqique reads
-                                    counts =
-                                        afutils::extract_counts(&gene_eqc, config.feature_rows);
+                                    afutils::extract_counts_sparse(
+                                        &gene_eqc,
+                                        config.feature_rows,
+                                        &mut cell_counts,
+                                    );
+                                    sparse_counts = true;
                                 }
                                 (true, false) => {
                                     // USA mode, use EM
@@ -1142,28 +1151,30 @@ where
                                 }
                                 (false, _) => {
                                     // not USA-mode
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_features,
-                                        only_unique,
-                                        &log,
-                                    );
+                                    if only_unique {
+                                        cell_counts.unique_counts(&gene_eqc, config.num_features);
+                                    } else {
+                                        cell_counts.em(
+                                            &gene_eqc,
+                                            config.em_init_type,
+                                            config.num_features,
+                                        );
+                                    }
+                                    sparse_counts = true;
                                 }
                             }
                         }
                         ResolutionStrategy::Trivial => {
                             eq_map.init_from_chunk(&mut c);
-                            let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
+                            pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &shared.tid_to_gid,
                                 config.num_features,
+                                &mut cell_counts,
                                 dump_molecules.then_some(&mut cell_mols),
                                 &log,
                             );
-                            counts = ct.0;
+                            sparse_counts = true;
                             eq_map.clear();
                         }
                         ResolutionStrategy::Parsimony
@@ -1205,8 +1216,12 @@ where
                             match (config.usa_mode, only_unique, P::HAS_PROBS) {
                                 (true, true, _) => {
                                     // USA mode, only gene-unqique reads
-                                    counts =
-                                        afutils::extract_counts(&gene_eqc, config.feature_rows);
+                                    afutils::extract_counts_sparse(
+                                        &gene_eqc,
+                                        config.feature_rows,
+                                        &mut cell_counts,
+                                    );
+                                    sparse_counts = true;
                                 }
                                 (true, false, _) => {
                                     // USA mode, use EM
@@ -1231,15 +1246,16 @@ where
                                 }
                                 (false, _, false) => {
                                     // not USA-mode
-                                    counts = em_optimize(
-                                        &gene_eqc,
-                                        &mut unique_evidence,
-                                        &mut no_ambiguity,
-                                        config.em_init_type,
-                                        config.num_features,
-                                        only_unique,
-                                        &log,
-                                    );
+                                    if only_unique {
+                                        cell_counts.unique_counts(&gene_eqc, config.num_features);
+                                    } else {
+                                        cell_counts.em(
+                                            &gene_eqc,
+                                            config.em_init_type,
+                                            config.num_features,
+                                        );
+                                    }
+                                    sparse_counts = true;
                                 }
                                 (false, _, true) => {
                                     // not USA-mode
@@ -1258,6 +1274,9 @@ where
                     }
 
                     if config.num_bootstraps > 0 {
+                        if sparse_counts {
+                            counts = cell_counts.to_dense();
+                        }
                         bootstraps = run_bootstrap_with_scratch(
                             &gene_eqc,
                             config.num_bootstraps,
@@ -1272,9 +1291,12 @@ where
                     // clear our local variables
                     // eq_map.clear();
 
-                    // fill requires >= 1.50.0
-                    unique_evidence.fill(false);
-                    no_ambiguity.fill(false);
+                    // Only the dense resolvers set these. Nothing in quant
+                    // reads them, but they are cleared for the next cell.
+                    if !sparse_counts {
+                        unique_evidence.fill(false);
+                        no_ambiguity.fill(false);
+                    }
 
                     // done clearing
                 } else {
@@ -1384,9 +1406,13 @@ where
             //   << "\t" << numMappedReads
             //
             // For fast-path cells, max_umi/sum_umi/num_expr/expressed_*
-            // are already computed sparsely above. For non-fast-path
-            // cells, extract them from the dense counts vector.
-            if !used_fast_path {
+            // are already computed sparsely above. Otherwise, extract them
+            // from `cell_counts` or, after a dense resolver, from `counts`.
+            if sparse_counts {
+                (max_umi, sum_umi) =
+                    cell_counts.write_nonzero(&mut expressed_ind, &mut expressed_vec);
+                num_expr = expressed_vec.len() as u32;
+            } else if !used_fast_path {
                 let mut max_umi_local = 0.0f32;
                 let mut sum_umi_local = 0.0f32;
                 expressed_vec.clear();
