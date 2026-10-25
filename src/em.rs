@@ -113,6 +113,74 @@ impl EmSubsetScratch {
     }
 }
 
+/// The subset EM's dense storage, retained by one inference worker. Only
+/// indices in the previous cell's possible support need clearing. This keeps
+/// `infer` from allocating, zeroing and scanning the entire feature axis for
+/// every cell; the EM arithmetic and stopping criteria remain unchanged.
+#[derive(Default)]
+pub(crate) struct SubsetInferenceCounts {
+    support: EmSubsetScratch,
+    values: Vec<f32>,
+    next: Vec<f32>,
+    unique_evidence: Vec<bool>,
+    no_ambiguity: Vec<bool>,
+}
+
+impl SubsetInferenceCounts {
+    pub(crate) fn optimize(
+        &mut self,
+        eqclasses: &IndexedEqList,
+        cell_data: &[(u32, u32)],
+        num_alphas: usize,
+        usa_offsets: Option<(usize, usize)>,
+    ) {
+        // Clear before resizing: the axis can shrink between invocations.
+        for &index in &self.support.support {
+            let i = index as usize;
+            self.values[i] = 0.0;
+            self.next[i] = 0.0;
+            self.unique_evidence[i] = false;
+            self.no_ambiguity[i] = false;
+        }
+        self.values.resize(num_alphas, 0.0);
+        self.next.resize(num_alphas, 0.0);
+        self.unique_evidence.resize(num_alphas, false);
+        self.no_ambiguity.resize(num_alphas, false);
+        // Include the sibling statuses read by USA denominators, even if a
+        // sibling is absent from every label or has zero count in this cell.
+        self.support
+            .prepare_support(eqclasses, cell_data, num_alphas, usa_offsets);
+        em_optimize_subset_into(
+            eqclasses,
+            cell_data,
+            &mut self.unique_evidence,
+            &mut self.no_ambiguity,
+            EmInitType::Informative,
+            num_alphas,
+            false,
+            usa_offsets,
+            &mut self.support,
+            true,
+            &mut self.values,
+            &mut self.next,
+        );
+    }
+
+    pub(crate) fn write_nonzero(&mut self, indices: &mut Vec<usize>, values: &mut Vec<f32>) {
+        indices.clear();
+        values.clear();
+        // Preserve the original dense scan's increasing feature order.
+        self.support.support.sort_unstable();
+        for &index in &self.support.support {
+            let value = self.values[index as usize];
+            if value > 0.0 {
+                indices.push(index as usize);
+                values.push(value);
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn mean(data: &[f64]) -> Option<f64> {
     let sum = data.iter().sum::<f64>();
@@ -315,9 +383,40 @@ fn em_optimize_subset_impl(
     scratch: &mut EmSubsetScratch,
     support_is_prepared: bool,
 ) -> Vec<f32> {
-    let mut alphas_in: Vec<f32> = vec![0.0; num_alphas];
-    let mut alphas_out: Vec<f32> = vec![0.0; num_alphas];
+    let mut alphas_in = vec![0.0; num_alphas];
+    let mut alphas_out = vec![0.0; num_alphas];
+    em_optimize_subset_into(
+        eqclasses,
+        cell_data,
+        unique_evidence,
+        no_ambiguity,
+        init_type,
+        num_alphas,
+        only_unique,
+        usa_offsets,
+        scratch,
+        support_is_prepared,
+        &mut alphas_in,
+        &mut alphas_out,
+    );
+    alphas_in
+}
 
+#[allow(clippy::too_many_arguments)]
+fn em_optimize_subset_into(
+    eqclasses: &IndexedEqList,
+    cell_data: &[(u32, u32)],
+    unique_evidence: &mut [bool],
+    no_ambiguity: &mut [bool],
+    init_type: EmInitType,
+    num_alphas: usize,
+    only_unique: bool,
+    usa_offsets: Option<(usize, usize)>,
+    scratch: &mut EmSubsetScratch,
+    support_is_prepared: bool,
+    alphas_in: &mut [f32],
+    alphas_out: &mut [f32],
+) {
     let mut needs_em = false;
     for (i, count) in cell_data {
         let labels = eqclasses.refs_for_eqc(*i);
@@ -337,7 +436,7 @@ fn em_optimize_subset_impl(
     // or there were no multi-mapping reads, then
     // we're done
     if only_unique || !needs_em {
-        return alphas_in;
+        return;
     }
 
     // The alpha vectors are dense over every gene (or every gene x status in
@@ -392,10 +491,10 @@ fn em_optimize_subset_impl(
         // perform one round of em update
         match usa_offsets {
             Some(otup) => {
-                em_update_subset_usa(&alphas_in, &mut alphas_out, eqclasses, cell_data, otup);
+                em_update_subset_usa(alphas_in, alphas_out, eqclasses, cell_data, otup);
             }
             None => {
-                em_update_subset(&alphas_in, &mut alphas_out, eqclasses, cell_data);
+                em_update_subset(alphas_in, alphas_out, eqclasses, cell_data);
             }
         }
 
@@ -452,7 +551,6 @@ fn em_optimize_subset_impl(
 
     //let alphas_sum: f32 = alphas_in.iter().sum();
     //assert!(alphas_sum > 0.0, "Alpha Sum too small");
-    alphas_in
 }
 
 pub fn em_update<P: EqClassPayload>(
@@ -1216,6 +1314,26 @@ pub fn em_optimize_long_read<P: EqClassPayload>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inference_workspace_clears_counts_between_usa_cells() {
+        let eql = eq_list(2, &[&[0], &[2], &[4], &[1], &[3], &[5], &[0, 4], &[1, 5]]);
+        // Reuse after an EM cell, a unique-only early return, another EM,
+        // and an empty cell. Old counts and USA sibling states must not leak.
+        let cells: &[&[(u32, u32)]] = &[
+            &[(0, 20), (1, 4), (2, 3), (6, 8)],
+            &[(3, 7)],
+            &[(7, 5)],
+            &[],
+        ];
+        let mut workspace = SubsetInferenceCounts::default();
+        for cell in cells {
+            let expected =
+                assert_sparse_matches_dense(&eql, cell, EmInitType::Informative, 6, Some((2, 4)));
+            workspace.optimize(&eql, cell, 6, Some((2, 4)));
+            assert_eq!(bits(&workspace.values), bits(&expected));
+        }
+    }
 
     fn eq_list(num_genes: usize, labels: &[&[u32]]) -> IndexedEqList {
         let mut eqclasses = IndexedEqList::new();

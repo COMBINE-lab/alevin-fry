@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::em::{EmInitType, EmSubsetScratch, em_optimize_subset_with_scratch};
+use crate::em::SubsetInferenceCounts;
 
 /// The cell barcode of a count-matrix row name: `quant` names a row
 /// `<sample>_<barcode>` in a multi-sample run, and by its barcode otherwise.
@@ -248,8 +248,6 @@ pub fn infer(
     for _worker in 0..n_workers {
         // each thread will need to access the work queue
         let in_q = q.clone();
-        // and the logger
-        let log = log.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
         // and the output matrix
@@ -264,9 +262,7 @@ pub fn infer(
         let handle = std::thread::spawn(move || {
             // these can be created once and cleared after processing
             // each cell.
-            let mut unique_evidence = vec![false; num_genes];
-            let mut no_ambiguity = vec![false; num_genes];
-            let mut em_scratch = EmSubsetScratch::default();
+            let mut cell_counts = SubsetInferenceCounts::default();
 
             // Reuse capacity across cells, but grow only to observed
             // expression rather than reserving the full gene axis per worker.
@@ -286,43 +282,11 @@ pub fn infer(
                     // given the set of equivalence classes and counts for
                     // this cell (coming from the input matrix), perform
                     // inference to obtain gene-level counts.
-                    let counts = em_optimize_subset_with_scratch(
-                        &global_eq_classes,
-                        &cell_data,
-                        &mut unique_evidence,
-                        &mut no_ambiguity,
-                        EmInitType::Informative,
-                        num_genes,
-                        false,
-                        usa_offsets,
-                        &log,
-                        &mut em_scratch,
-                    );
+                    cell_counts.optimize(&global_eq_classes, &cell_data, num_genes, usa_offsets);
 
-                    // Note: there is a fill method, but it is only on
-                    // the nightly branch.  Use this for now:
-                    unique_evidence.clear();
-                    unique_evidence.resize(num_genes, false);
-                    no_ambiguity.clear();
-                    no_ambiguity.resize(num_genes, false);
-                    // done clearing
-
-                    let mut max_umi = 0.0f32;
-                    let mut _sum_umi = 0.0f32;
-                    let mut _num_expr: u32 = 0;
-                    expressed_vec.clear();
-                    expressed_ind.clear();
-                    // go over the output counts and fill in the vector of
-                    // expressed gene ids and their corresponding counts
-                    for (gn, c) in counts.iter().enumerate() {
-                        max_umi = if *c > max_umi { *c } else { max_umi };
-                        _sum_umi += *c;
-                        if *c > 0.0 {
-                            _num_expr += 1;
-                            expressed_vec.push(*c);
-                            expressed_ind.push(gn);
-                        }
-                    }
+                    // Extract in feature order without scanning the whole
+                    // gene axis. The workspace also clears the output buffers.
+                    cell_counts.write_nonzero(&mut expressed_ind, &mut expressed_vec);
 
                     /*
                     let num_mapped = nrec;
