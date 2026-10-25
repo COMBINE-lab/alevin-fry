@@ -36,6 +36,17 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     #[builder(default = false)]
     pub dump_molecules: bool,
     pub resolution: ResolutionStrategy,
+    /// Resolve UMIs per reference target (probe) and sum the targets of a gene
+    /// into its count, rather than resolving per gene. This is what
+    /// `quant-probe` requests; it is never inferred from the data, because
+    /// probe-ness is a property of the reference, which neither the RAD file
+    /// nor generate-permit-list sees.
+    #[builder(default = false)]
+    pub probe_level: bool,
+    /// Probe level only: also write the probe x cell matrix the gene matrix was
+    /// summed from. The gene matrix is written either way.
+    #[builder(default = false)]
+    pub probe_mtx: bool,
     pub pug_exact_umi: bool,
     /// cr-like only: collapse UMIs within Hamming distance 1 of a higher-count UMI (same cell, same gene)
     #[builder(default = 0)]

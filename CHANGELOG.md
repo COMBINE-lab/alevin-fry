@@ -10,6 +10,39 @@ Changelog for alevin-fry
 
 ### Features
 
+* New `quant-probe` subcommand for probe-based data such as 10x Flex. It
+  resolves UMIs per probe (UMI correction, deduplication, tie handling and the
+  EM all act on each probe), then sums each gene's probes into the gene count
+  matrix. `--probe-mtx` also writes the probe-by-cell matrix the gene matrix was
+  summed from. `quant` is unchanged, and remains the way to reproduce earlier
+  gene-level counts.
+  * Gene counts differ slightly from `quant`'s. A UMI whose reads do not single
+    out one probe of its gene (they tie between two of its probes, or every read
+    matches both) is dropped by `cr-like` and by the tiny-cell fast path, and
+    divided between the probes by the EM strategies, where `quant` counts it
+    once for the gene. `trivial` also drops each read that matches two probes
+    of one gene, and `parsimony` such a molecule unless another of its reads
+    singles out one probe. `trivial` counts a UMI once per probe when its
+    reads fall on different probes of its gene. On a 384-plex Flex v2 library
+    (262k cells, about 112M UMIs) the net change was at most 164 UMIs.
+  * `parsimony-gene` and `parsimony-gene-em` are refused, naming `parsimony` and
+    `parsimony-em` instead; so is a 3-column (USA) map. `--num-bootstraps`,
+    `--init-uniform` and `--summary-stat` are not options of `quant-probe`.
+  * `quant-probe` is for probe-set references only. It counts the reads
+    compatible with two or more targets of one gene (`num_same_gene_multimapping_reads`
+    in `quant.json`) and warns when they exceed 10% of reads. On a 10x 3' PBMC
+    sample with a transcriptome, 48% of reads were such reads (against 4 of
+    118M on the Flex library), and `quant-probe` lost about half the UMIs that
+    `quant` keeps with `cr-like` or `parsimony`. With the EM strategies the gene
+    totals were nearly unchanged, but UMIs were split among isoforms arbitrarily.
+  * With `--dump-eqclasses`, the probe names that the equivalence-class ids
+    index are written to `probe_quants_mat_cols.txt`. `infer` refuses
+    equivalence classes whose ids do not index the `quants_mat_cols.txt` beside
+    them, as with this output, rather than label a probe matrix with gene names.
+  * Cost depends on the library. On the Flex library above, across the five
+    strategies, `quant-probe` took 18-34% longer than `quant` (1.5-2.1 s to
+    1.8-2.7 s at 16 threads), and 37-52% longer with `--probe-mtx`.
+
 * `quant --dump-molecules` writes `alevin/molecules.parquet`: one row per
   molecule produced by UMI resolution, before molecules are summed into the
   count matrix (cell barcode, representative UMI, number of observed UMIs
@@ -23,6 +56,14 @@ Changelog for alevin-fry
   time (2.24 to 2.42 s for 33M molecules; 5.05 to 5.45 s for 70M molecules in
   USA mode) and about 1 GB of peak memory; the files were 457 MB and 832 MB.
   Without the flag, quant output and speed are unchanged.
+
+### Fixed
+
+* `quant -r` now accepts any case. A strategy not in lower case (`-r CR-LIKE`)
+  panicked for want of a `--umi-edit-dist` default, and with `--umi-edit-dist`
+  given, `-r PARSIMONY` silently ran with a large-graph threshold of 0 rather
+  than 1000: both defaults were matched against the strategy as typed. They are
+  now taken from the parsed strategy.
 
 ## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
 

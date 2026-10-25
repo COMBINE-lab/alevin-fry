@@ -8,7 +8,7 @@
  */
 
 use crate::cellfilter::permit_list_from_file;
-use anyhow::anyhow;
+use anyhow::{Context, anyhow, bail};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 #[allow(unused_imports)]
@@ -102,6 +102,37 @@ pub fn infer(
 
     // the number of genes (columns) that the output (gene-level) matrix will have
     let num_genes = global_eq_classes.num_genes;
+
+    // The output's columns are named by the quants_mat_cols.txt beside the count
+    // matrix, so the ids in the equivalence classes must index it. They don't for
+    // `quant-probe -d`, whose ids are probes; without this check, `infer` would
+    // write a probe-by-cell matrix labelled with gene names.
+    let in_col_path = count_mat_parent.join("quants_mat_cols.txt");
+    let num_col_names =
+        BufReader::new(fs::File::open(&in_col_path).with_context(|| {
+            format!("could not open the column names {}", in_col_path.display())
+        })?)
+        .lines()
+        .count();
+    if num_col_names != num_genes {
+        let probe_col_path = count_mat_parent.join("probe_quants_mat_cols.txt");
+        let hint = if probe_col_path.exists() {
+            format!(
+                " {} is beside it, so these look like the equivalence classes of `quant-probe -d`, whose ids are probes; `infer` produces gene-level counts and does not take them.",
+                probe_col_path.display()
+            )
+        } else {
+            String::new()
+        };
+        bail!(
+            "{} has {} features, but {} names {}; the equivalence class ids must index the column names.{}",
+            eq_label_path.display(),
+            num_genes,
+            in_col_path.display(),
+            num_col_names,
+            hint
+        );
+    }
 
     let usa_offsets = if usa_mode {
         Some((num_genes / 3, (2 * num_genes / 3)))
@@ -346,7 +377,6 @@ pub fn infer(
     let output_path = std::path::Path::new(output_dir);
     fs::create_dir_all(output_path)?;
 
-    let in_col_path = count_mat_parent.join("quants_mat_cols.txt");
     let out_col_path = output_path.join("quants_mat_cols.txt");
     fs::copy(in_col_path, out_col_path).expect("could not copy column (gene) names to output");
 
