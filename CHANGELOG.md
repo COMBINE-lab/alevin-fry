@@ -6,7 +6,29 @@ Changelog for alevin-fry
 > releases 0.10.0 through 0.17.0 are not recorded here. See the git history and
 > the GitHub releases page for that range.
 
-## Unreleased
+## [0.19.0](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.3...v0.19.0) (2026-10-25)
+
+### Upgrading
+
+* **RAD v2.** alevin-fry now reads RAD v2, which piscem 0.24 and later
+  (piscem-rs 0.11) write, as well as RAD v1 from salmon alevin and piscem 0.23
+  and earlier. It reads a file's declared tag roles (barcode, UMI, orientation)
+  rather than relying on the tag names `b`/`u`, and checks the first chunk for
+  the fields collation needs. alevin-fry 0.18.3 and earlier cannot read RAD v2.
+  It is built on libradicl 0.21
+  ([#195](https://github.com/COMBINE-lab/alevin-fry/pull/195),
+  [#198](https://github.com/COMBINE-lab/alevin-fry/pull/198)).
+* **Re-run `generate-permit-list` on results from 0.18.x.** `collate`,
+  `atac collate` and `atac sort` refuse a permit list written by a different
+  major.minor version.
+* **scATAC: re-run `atac collate` and `atac deduplicate` together.** The
+  collated file now uses per-chunk codec framing, like scRNA, instead of a
+  whole-file Snappy `.sz` stream. A leftover `map.collated.rad.sz` is detected
+  and reported with a "re-run collate" message
+  ([#195](https://github.com/COMBINE-lab/alevin-fry/pull/195)).
+* **Multi-sample collations written before 0.15.0**, which recorded plate
+  positions instead of sample ordinals, are refused by `quant`; re-run
+  `collate` ([#203](https://github.com/COMBINE-lab/alevin-fry/pull/203)).
 
 ### Features
 
@@ -59,6 +81,22 @@ Changelog for alevin-fry
   USA mode) and about 1 GB of peak memory; the files were 457 MB and 832 MB.
   Without the flag, quant output and speed are unchanged.
 
+* `--umi-edit-dist 1` now applies to `cr-like` and `cr-like-em`: a Cell
+  Ranger-style Hamming-1 UMI correction per (cell, gene) before deduplication.
+  The default stays 0 (off). It is refused in USA mode and with
+  `--sa-model prefer-ambiguity`, and it turns off the tiny-cell fast path, which
+  is logged. On five 10x Flex datasets it reduced total UMIs by 2.3-3.6%
+  ([#196](https://github.com/COMBINE-lab/alevin-fry/pull/196); algorithm by
+  @ygao61).
+* `generate-permit-list --sample-names` is now applied: a `barcode<TAB>name`
+  file names multi-sample (Flex) samples. Before, it was parsed and ignored
+  ([#203](https://github.com/COMBINE-lab/alevin-fry/pull/203)).
+* `generate-permit-list -k` on multi-sample input skips samples with fewer than
+  3 cell barcodes, as it skips empty ones, instead of aborting
+  ([#207](https://github.com/COMBINE-lab/alevin-fry/pull/207)).
+* `view` reads role-annotated single-barcode files whose tags are not named
+  `b`/`u` ([#207](https://github.com/COMBINE-lab/alevin-fry/pull/207)).
+
 ### Performance
 
 * `quant` resolves each cell over the features its equivalence classes name,
@@ -69,9 +107,38 @@ Changelog for alevin-fry
   ran 16-36% faster (`cr-like-em` 2.53 to 1.62 s) and `quant` 5-18% faster.
   Data where nearly every cell takes the tiny-cell fast path, such as standard
   10x 3' libraries, is unaffected.
-* Library API: `pugutils::get_num_molecules_trivial_discard_all_ambig` now
-  writes the cell's counts into a reusable `em::SparseCellCounts` and returns
-  only the fraction of UMIs discarded as multi-gene.
+
+### Changed
+
+* Bad input now gives an error naming the file, directory or flag, and exit
+  code 1, instead of an abort (exit 134) with a core dump. This covers
+  unreadable, truncated, empty or too-new RAD files in `generate-permit-list`,
+  `collate`, `infer` and the `atac` commands; `view` on multi-barcode or scATAC
+  input; and, in USA mode (a 3-column tg-map), `--num-bootstraps` and
+  `-r trivial`, which are now refused before any output is written
+  ([#207](https://github.com/COMBINE-lab/alevin-fry/pull/207),
+  [#157](https://github.com/COMBINE-lab/alevin-fry/issues/157)).
+* `atac generate-permit-list` that keeps no barcode now exits with an error
+  instead of succeeding, which left `atac sort` to write an empty `map.bed`.
+  When the other barcode orientation clearly fits, the error says to re-run
+  with it ([#207](https://github.com/COMBINE-lab/alevin-fry/pull/207)).
+* `quant --multi-sample-output` is hidden and, as before, has no effect: quant
+  always writes one combined matrix, whose rows are named `<sample>_<barcode>`
+  for multi-sample input. Passing it logs a deprecation warning
+  ([#206](https://github.com/COMBINE-lab/alevin-fry/pull/206)).
+
+### Library API
+
+Changes for crates that use alevin-fry as a library:
+
+* `QuantOpts` gains `dump_molecules`, `probe_level`, `probe_mtx` and
+  `crlike_umi_edit`, each with a builder default.
+* `pugutils::get_num_molecules_trivial_discard_all_ambig` writes the cell's
+  counts into a reusable `em::SparseCellCounts` and returns only the fraction
+  of UMIs discarded as multi-gene.
+* `convert::view` returns `anyhow::Result<()>`.
+* Follows libradicl 0.20/0.21: `Generic*` types are now `TagDriven*`, and
+  `RadHeader::from_bam_header` is replaced by `RadHeader::from_ref_names`.
 
 ### Fixed
 
@@ -87,6 +154,29 @@ Changelog for alevin-fry
 * `infer --quant-subset` never finished when the list named a barcode that the
   matrix does not have: its workers waited for as many cells as the list had
   entries. It now counts the rows kept.
+* `collate` no longer hangs when a gather worker panics (most likely at the
+  2-thread floor, with a single worker); gather-worker errors are returned
+  instead of panicking
+  ([#195](https://github.com/COMBINE-lab/alevin-fry/pull/195),
+  [#197](https://github.com/COMBINE-lab/alevin-fry/pull/197)).
+* The scATAC collate no longer leaves a wrong `num_chunks` in the header
+  ([#195](https://github.com/COMBINE-lab/alevin-fry/pull/195)).
+* In a multi-sample `quant`, a sample index outside the collation manifest is
+  an error. Before, it produced a `featureDump.txt` row missing its
+  `sample_name` field, or, if in range, the wrong sample name
+  ([#203](https://github.com/COMBINE-lab/alevin-fry/pull/203)).
+* Version strings with a pre-release or build suffix (`0.19.0-rc.1`,
+  `0.18.3-dev`) are parsed instead of panicking `collate`, `atac collate` and
+  `atac sort` ([#205](https://github.com/COMBINE-lab/alevin-fry/pull/205)).
+* `generate-permit-list` no longer warns that "the provided permit list had
+  barcodes of length 0" in modes that take no permit list
+  ([#206](https://github.com/COMBINE-lab/alevin-fry/pull/206)).
+* Overflow and underflow on edge inputs, which panicked in debug builds:
+  32-base barcodes in the barcode utilities, the knee search when the knee
+  moves down between iterations, and very large read counts in the one-edit
+  UMI graph. Output for valid input is unchanged
+  ([#201](https://github.com/COMBINE-lab/alevin-fry/pull/201); thanks
+  @IgnatiusPang).
 
 ## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
 
