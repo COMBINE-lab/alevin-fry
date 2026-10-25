@@ -7,8 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use crate::cellfilter::permit_list_from_file;
-use anyhow::anyhow;
+use anyhow::{Context, anyhow, bail};
 use crossbeam_queue::ArrayQueue;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 #[allow(unused_imports)]
@@ -25,7 +24,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::em::{EmInitType, EmSubsetScratch, em_optimize_subset_with_scratch};
-use crate::utils::read_filter_list;
+
+/// The cell barcode of a count-matrix row name: `quant` names a row
+/// `<sample>_<barcode>` in a multi-sample run, and by its barcode otherwise.
+fn row_barcode(name: &str) -> &str {
+    name.rsplit_once('_').map_or(name, |(_, bc)| bc)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn infer(
@@ -86,8 +90,6 @@ pub fn infer(
         count_mat.cols()
     );
 
-    let mut num_cells = count_mat.rows();
-
     // read in the global equivalence class representation
     let eq_label_path = std::path::Path::new(eq_label_file);
     let global_eq_classes = Arc::new(crate::eq_class::IndexedEqList::init_from_eqc_file(
@@ -109,44 +111,70 @@ pub fn infer(
         None
     };
 
-    // if we have a filter list, extract it here
-    let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
-    let mut retained_bc: HashSet<u64, ahash::RandomState> = HashSet::with_hasher(s);
-    let mut filter_bc = false;
-    // read the first barcode in the file to get the barcode
-    // length.
+    // The row names of the count matrix: a cell barcode, or `<sample>_<barcode>`
+    // in a multi-sample run. They are written to the output as they are read.
     let bc_path = count_mat_parent.join("quants_mat_rows.txt");
-    let bc_len;
-    {
-        let mut first_line = String::new();
-        let file = match fs::File::open(&bc_path) {
-            Ok(file) => file,
-            Err(_) => panic!("Unable to read first barcode from {:?}", bc_path),
-        };
-        let mut rdr = BufReader::new(file);
-        rdr.read_line(&mut first_line).expect("Unable to read line");
-        if first_line.ends_with('\n') {
-            first_line.pop();
-        }
-        bc_len = first_line.len() as u16;
+    let row_names: Vec<String> = BufReader::new(
+        fs::File::open(&bc_path)
+            .with_context(|| format!("could not open the row names {}", bc_path.display()))?,
+    )
+    .lines()
+    .collect::<Result<_, _>>()
+    .with_context(|| format!("could not read the row names {}", bc_path.display()))?;
+    if row_names.len() != count_mat.rows() {
+        bail!(
+            "{} names {} rows, but the count matrix has {}",
+            bc_path.display(),
+            row_names.len(),
+            count_mat.rows()
+        );
     }
-    let bc_fname = bc_path.to_str().expect("couldn't unwrap barcode file path");
-    let bcvec = permit_list_from_file(bc_fname, bc_len);
 
-    if let Some(fname) = filter_list {
-        // read in the fitler list
-        match read_filter_list(fname, bc_len) {
-            Ok(fset) => {
-                // the number of cells we expect to
-                // actually process
-                num_cells = fset.len();
-                retained_bc = fset;
-                filter_bc = true;
+    // Which rows to quantify. A --quant-subset line that names a row of a
+    // multi-sample run (`<sample>_<barcode>`) keeps that row; a bare barcode keeps
+    // that barcode in every sample. Bare barcodes are compared as k-mers of the
+    // row barcodes' length, as before, so a suffix such as Cell Ranger's `-1`
+    // is ignored.
+    let retained: Vec<bool> = match filter_list {
+        Some(fname) if !row_names.is_empty() => {
+            let bc_len = row_barcode(&row_names[0]).len() as u8;
+            let kmer = |bc: &str| {
+                BitNuclKmer::new(bc.as_bytes(), bc_len, false)
+                    .next()
+                    .map(|(_, k, _)| k.0)
+            };
+            let list = fs::read_to_string(fname)
+                .with_context(|| format!("could not read {}", fname.display()))?;
+            let mut names = HashSet::new();
+            let mut barcodes = HashSet::new();
+            for line in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                if line.contains('_') {
+                    names.insert(line);
+                } else if let Some(k) = kmer(line) {
+                    barcodes.insert(k);
+                }
             }
-            Err(e) => {
-                return Err(e);
-            }
+            row_names
+                .iter()
+                .map(|name| {
+                    names.contains(name.as_str())
+                        || kmer(row_barcode(name)).is_some_and(|k| barcodes.contains(&k))
+                })
+                .collect()
         }
+        _ => vec![true; row_names.len()],
+    };
+    // The workers stop once this many cells are done, so it must be the number of
+    // rows kept, not the length of the --quant-subset list: a listed barcode that
+    // no row has would leave them waiting forever.
+    let num_cells = retained.iter().filter(|&&keep| keep).count();
+    if filter_list.is_some() {
+        info!(
+            log,
+            "quantifying {} of {} cells, from the --quant-subset list",
+            num_cells,
+            row_names.len()
+        );
     }
 
     // the progress bar we'll use to monitor progress of the EM
@@ -356,27 +384,15 @@ pub fn infer(
     let mut bc_writer = BufWriter::new(out_bc_file);
 
     let mut processed_ind = 0_usize;
-    let short_bc_len = bc_len as u8;
     // iterate over the rows (cells) of the equivalence class count
-    // matrix.  The iterator will yield a pair of the row index and
-    // an iterator over the row data.
-    // we zip the bcvec iterator (vector of barcodes in row order)
-    // with the actual rows of the matrix.
-    for (barcode, row_vec) in bcvec.iter().zip(count_mat.outer_iterator()) {
-        let process_cell = if filter_bc {
-            // if the reatined_bc list contains this cell id
-            // then process it
-            retained_bc.contains(barcode)
-        } else {
-            true
-        };
-        if process_cell {
-            // write to barcode file
-            let bc_bytes = &bitmer_to_bytes((*barcode, short_bc_len))[..];
-            writeln!(&mut bc_writer, "{}", unsafe {
-                std::str::from_utf8_unchecked(bc_bytes)
-            })
-            .expect("can't write to barcode file.");
+    // matrix, with their names and whether each is kept.
+    for ((name, keep), row_vec) in row_names
+        .iter()
+        .zip(retained.iter())
+        .zip(count_mat.outer_iterator())
+    {
+        if *keep {
+            writeln!(&mut bc_writer, "{}", name).expect("can't write to barcode file.");
 
             // gather the data from the row's iterator into a vector of
             // (eq_id, count) tuples.

@@ -24,6 +24,16 @@ Changelog for alevin-fry
   USA mode) and about 1 GB of peak memory; the files were 457 MB and 832 MB.
   Without the flag, quant output and speed are unchanged.
 
+### Fixed
+
+* `infer` panicked on multi-sample input such as 10x Flex, whose rows `quant`
+  names `<sample>_<barcode>`: it read each row name as a bare barcode. Row names
+  are now carried through as written. A `--quant-subset` line may name a row,
+  keeping that row, or give a bare barcode, keeping it in every sample.
+* `infer --quant-subset` never finished when the list named a barcode that the
+  matrix does not have: its workers waited for as many cells as the list had
+  entries. It now counts the rows kept.
+
 ## [0.18.2](https://github.com/COMBINE-lab/alevin-fry/compare/v0.18.1...v0.18.2) (2026-09-11)
 
 ### Performance

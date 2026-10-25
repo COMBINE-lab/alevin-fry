@@ -11,13 +11,13 @@ estimation step, that attempts to resolve gene-multimapping UMIs.
 
 This command can takes the following options :
 
-* ``-c, --count-mat <eqc-mat>`` : This provides the path to the (mtx format) matrix of cells by equivalence class counts. **Note**: It is assumed that the parent directory where ``eqc-mat`` is located will also contain a file called ``quants_mat_rows.txt`` containing the row names of the matrix and a file called ``quants_mat_cols.txt`` containing the column names of the files. The ``infer`` command will not run if these other input files are absent from the parent directory of ``eqc-mat``. 
+* ``-c, --count-mat <eqc-mat>`` : This provides the path to the (mtx format) matrix of cells by equivalence class counts. **Note**: It is assumed that the parent directory where ``eqc-mat`` is located will also contain a file called ``quants_mat_rows.txt`` containing the row names of the matrix (cell barcodes, or ``<sample>_<barcode>`` for multi-sample input such as 10x Flex; they are written to the output unchanged) and a file called ``quants_mat_cols.txt`` containing the column names of the files. The ``infer`` command will not run if these other input files are absent from the parent directory of ``eqc-mat``. 
 
 * ``-e, --eq-labels <eq-labels>`` : This provides the path to the file containing the gene labels of the equivalence class description.
 
 * ``-o, --output-dir <output-dir>`` : This provides the output file directory the quantification matrix, barcodes (row names), and genes (column names) will be written.
 
-* ``--quant-subset <sfile>`` : This optional argument provides a file containing list of barcodes to quantify (one barcode per line, written as a string), those not in this list will be ignored during inference and will not appear in the output quantification matrix.  If this argument is not provided, then all of the original barcodes will be quantified.
+* ``--quant-subset <sfile>`` : This optional argument provides a file containing list of barcodes to quantify (one barcode per line, written as a string), those not in this list will be ignored during inference and will not appear in the output quantification matrix.  For multi-sample input, a line may name a row (``<sample>_<barcode>``), which keeps that row, or give a bare barcode, which keeps that barcode in every sample that has it.  Lines that match no row are ignored.  If this argument is not provided, then all of the original barcodes will be quantified.
    
 * ``-t, --threads <threads>`` : This option provides the number of threads to use for processing [default: number of hardware threads].
 
