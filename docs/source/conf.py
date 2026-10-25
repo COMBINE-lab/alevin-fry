@@ -22,7 +22,7 @@ copyright = '2021-2026, Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneso
 author = 'Dongze He, Mohsen Zakeri, Hirak Sarkar, Charlotte Soneson, Avi Srivastava, Noor Pratap Singh, Rob Patro'
 
 # The full version, including alpha/beta/rc tags
-release = '0.18.3'
+release = '0.19.0'
 
 master_doc = 'index'
 
