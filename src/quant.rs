@@ -1151,9 +1151,8 @@ where
                                 }
                                 (false, _) => {
                                     // not USA-mode
-                                    cell_counts.reset(config.num_features);
                                     if only_unique {
-                                        cell_counts.unique_counts(&gene_eqc);
+                                        cell_counts.unique_counts(&gene_eqc, config.num_features);
                                     } else {
                                         cell_counts.em(
                                             &gene_eqc,
@@ -1247,9 +1246,8 @@ where
                                 }
                                 (false, _, false) => {
                                     // not USA-mode
-                                    cell_counts.reset(config.num_features);
                                     if only_unique {
-                                        cell_counts.unique_counts(&gene_eqc);
+                                        cell_counts.unique_counts(&gene_eqc, config.num_features);
                                     } else {
                                         cell_counts.em(
                                             &gene_eqc,

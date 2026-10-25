@@ -587,9 +587,12 @@ pub fn em_optimize<P: EqClassPayload>(
 /// `em_optimize` allocates, initializes and scans vectors over the whole axis
 /// for every cell, and the caller then scans the result again to find the
 /// nonzero entries, although a cell only touches the features its own
-/// equivalence classes name. Here `values` and `scratch` span the axis once per
-/// worker, and every per-cell pass walks only `support`: the features this
-/// cell's classes name. Between cells, both vectors are zero outside `support`.
+/// equivalence classes name. Here `values` (and, once the EM has run, `scratch`)
+/// span the axis once per worker, and every per-cell pass walks only `support`:
+/// the features this cell's classes name. Between cells, both vectors are zero
+/// outside `support`. Every method that starts a cell (`reset`, `unique_counts`,
+/// `em`, and the resolvers that fill a `SparseCellCounts`) forgets the previous
+/// one first.
 #[derive(Default)]
 pub struct SparseCellCounts {
     values: Vec<f32>,
@@ -608,7 +611,6 @@ impl SparseCellCounts {
         }
         self.support.clear();
         self.values.resize(num_features, 0.0);
-        self.scratch.resize(num_features, 0.0);
         self.in_support.resize(num_features, false);
     }
 
@@ -628,12 +630,15 @@ impl SparseCellCounts {
         self.values[index] += count;
     }
 
-    /// Counts the classes that name a single feature, as
+    /// Forgets the previous cell and counts the classes that name a single
+    /// feature, over an axis of `num_features`, as
     /// `em_optimize(.., only_unique = true)` does.
     pub fn unique_counts<P: EqClassPayload>(
         &mut self,
         eqclasses: &HashMap<Vec<u32>, P, ahash::RandomState>,
+        num_features: usize,
     ) {
+        self.reset(num_features);
         for (labels, payload) in eqclasses {
             if let [index] = labels[..] {
                 self.add(index as usize, payload.count() as f32);
@@ -641,7 +646,8 @@ impl SparseCellCounts {
         }
     }
 
-    /// `em_optimize(.., only_unique = false)` over this cell's support.
+    /// Forgets the previous cell and runs `em_optimize(.., only_unique = false)`
+    /// over this cell's support, on an axis of `num_alphas` features.
     ///
     /// A feature outside the support appears in no class: `em_update` never
     /// reads or writes it, so the dense version zeroes it in the first
@@ -656,6 +662,9 @@ impl SparseCellCounts {
         init_type: EmInitType,
         num_alphas: usize,
     ) {
+        self.reset(num_alphas);
+        // Only the EM needs the second vector; it stays zero between cells.
+        self.scratch.resize(num_alphas, 0.0);
         for (labels, payload) in eqclasses {
             if let [index] = labels[..] {
                 self.add(index as usize, payload.count() as f32);
@@ -1507,9 +1516,8 @@ mod tests {
         let eqc = cell_eqc(classes);
         let (dense, d_ind, d_vals, d_max, d_sum) =
             dense_cell(&eqc, init_type, num_alphas, only_unique);
-        sparse.reset(num_alphas);
         if only_unique {
-            sparse.unique_counts(&eqc);
+            sparse.unique_counts(&eqc, num_alphas);
         } else {
             sparse.em(&eqc, init_type, num_alphas);
         }
