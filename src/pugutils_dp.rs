@@ -324,6 +324,7 @@ pub fn get_num_molecules_log_dp<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };

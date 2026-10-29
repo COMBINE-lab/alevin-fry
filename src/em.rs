@@ -28,7 +28,7 @@ use num_format::{Locale, ToFormattedString};
 //}
 
 const _MIN_ALPHA: f32 = 1e-8;
-const MIN_OUTPUT_ALPHA: f32 = 0.01;
+pub(crate) const MIN_OUTPUT_ALPHA: f32 = 0.01;
 const ALPHA_CHECK_CUTOFF: f32 = 1e-2;
 
 const MIN_ITER: u32 = 2;

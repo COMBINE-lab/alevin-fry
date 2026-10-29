@@ -80,12 +80,12 @@
 
 use petgraph::prelude::*;
 use petgraph::visit::NodeIndexable;
-use slog::{crit, warn};
+use slog::{crit, info, warn};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use crate::umi_general_distance::umi_edit_distance_from_packed_shifted;
 
-use crate::eq_class::{EqMap, EqMapType};
+use crate::eq_class::{AlignmentInterval, EqMap, EqMapType};
 use crate::pugutils::{
     collapse_vertices, component_tx_log_scores, get_num_molecules_large_component,
     softmax_log_scores, vertex_loglik_for_tx, weakly_connected_components,
@@ -547,6 +547,186 @@ fn collapse_vertices_bf(
 // UNCHANGED — public entry point
 // Only changes: calls collapse_vertices_bf instead of collapse_vertices_log_dp
 // ─────────────────────────────────────────────────────────────────────────
+pub struct ResolvedMolecule {
+    pub transcript_probs: Vec<(u32, f64)>,
+    pub intervals: HashMap<u32, Vec<AlignmentInterval>>,
+    /// The (equivalence class, UMI value) vertices merged into this molecule.
+    pub vertices: Vec<(u32, u64)>,
+}
+
+fn vertex_keys(
+    vertices: &[u32],
+    graph: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+) -> Vec<(u32, u64)> {
+    vertices
+        .iter()
+        .map(|&v| {
+            let (eq_id, umi_idx) = graph.from_index(v as usize);
+            (eq_id, eqmap.eqc_info[eq_id as usize].umis[umi_idx as usize].0)
+        })
+        .collect()
+}
+
+fn intervals_for_resolved_vertices(
+    vertices: &[u32],
+    candidate_transcripts: &[u32],
+    graph: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+) -> HashMap<u32, Vec<AlignmentInterval>> {
+    let mut intervals_by_transcript: HashMap<u32, Vec<AlignmentInterval>> = HashMap::new();
+    let Some(intervals_by_umi) = eqmap.alignment_intervals.as_ref() else {
+        return intervals_by_transcript;
+    };
+
+    for &vertex in vertices {
+        let (eq_id, umi_idx) = graph.from_index(vertex as usize);
+        let umi = eqmap.eqc_info[eq_id as usize].umis[umi_idx as usize].0;
+        if let Some(intervals) = intervals_by_umi.get(&(eq_id, umi)) {
+            for interval in intervals {
+                if candidate_transcripts.binary_search(&interval.transcript_id).is_ok() {
+                    intervals_by_transcript
+                        .entry(interval.transcript_id)
+                        .or_default()
+                        .push(*interval);
+                }
+            }
+        }
+    }
+
+    intervals_by_transcript
+}
+
+fn resolve_large_component_with_probs<P: EqClassPayload>(
+    vertices: &[u32],
+    graph: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    tid_to_gid: &[u32],
+    gene_level_eq_map: bool,
+    gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
+    mut resolved_molecules: Option<&mut Vec<ResolvedMolecule>>,
+) -> (u64, u64) {
+    let mut vertices_by_umi: HashMap<u64, Vec<(u32, u32)>> = HashMap::new();
+    for &vertex in vertices {
+        let (eq_id, umi_idx) = graph.from_index(vertex as usize);
+        let umi = eqmap.eqc_info[eq_id as usize].umis[umi_idx as usize].0;
+        vertices_by_umi.entry(umi).or_default().push((eq_id, umi_idx));
+    }
+
+    let mut molecule_count = 0u64;
+    let mut ambiguous_count = 0u64;
+    for umi_vertices in vertices_by_umi.values() {
+        let mut gene_support: HashMap<u32, u64> = HashMap::new();
+        for &(eq_id, umi_idx) in umi_vertices {
+            let count = eqmap.eqc_info[eq_id as usize].umis[umi_idx as usize].1 as u64;
+            let genes: HashSet<u32> = eqmap
+                .refs_for_eqc(eq_id)
+                .iter()
+                .map(|target| {
+                    if gene_level_eq_map {
+                        *target
+                    } else {
+                        tid_to_gid[*target as usize]
+                    }
+                })
+                .collect();
+            for gene_id in genes {
+                *gene_support.entry(gene_id).or_default() += count;
+            }
+        }
+
+        let max_support = gene_support.values().copied().max().unwrap_or(0);
+        let mut selected_genes: Vec<u32> = gene_support
+            .into_iter()
+            .filter_map(|(gene_id, support)| (support == max_support).then_some(gene_id))
+            .collect();
+        selected_genes.sort_unstable();
+        if selected_genes.is_empty() {
+            continue;
+        }
+
+        let mut target_scores: HashMap<u32, f64> = HashMap::new();
+        for &(eq_id, umi_idx) in umi_vertices {
+            for (target_idx, target) in eqmap.refs_for_eqc(eq_id).iter().enumerate() {
+                let gene_id = if gene_level_eq_map {
+                    *target
+                } else {
+                    tid_to_gid[*target as usize]
+                };
+                if selected_genes.binary_search(&gene_id).is_ok() {
+                    *target_scores.entry(*target).or_default() +=
+                        vertex_loglik_for_tx(eq_id, umi_idx, target_idx, eqmap);
+                }
+            }
+        }
+
+        let mut target_scores: Vec<(u32, f64)> = target_scores.into_iter().collect();
+        target_scores.sort_unstable_by_key(|(target, _)| *target);
+        if target_scores.is_empty() {
+            continue;
+        }
+        let target_probs = softmax_log_scores(&target_scores);
+
+        let mut gene_probs: Vec<(u32, f64)> = target_probs
+            .iter()
+            .map(|(target, probability)| {
+                let gene_id = if gene_level_eq_map {
+                    *target
+                } else {
+                    tid_to_gid[*target as usize]
+                };
+                (gene_id, *probability)
+            })
+            .collect();
+        gene_probs.sort_unstable_by_key(|(gene_id, _)| *gene_id);
+
+        let mut gene_ids = Vec::new();
+        let mut probabilities: Vec<f64> = Vec::new();
+        for (gene_id, probability) in gene_probs {
+            if gene_ids.last() == Some(&gene_id) {
+                *probabilities.last_mut().unwrap() += probability;
+            } else {
+                gene_ids.push(gene_id);
+                probabilities.push(probability);
+            }
+        }
+
+        let payload = gene_eqclass_hash
+            .entry(gene_ids.clone())
+            .or_insert(P::new(gene_ids.len()));
+        payload.inc();
+        if P::HAS_PROBS {
+            payload.add_probs(&probabilities);
+        }
+
+        if let Some(molecules) = resolved_molecules.as_mut() {
+            let vertex_ids: Vec<u32> = umi_vertices
+                .iter()
+                .map(|&(eq_id, umi_idx)| {
+                    graph.to_index((eq_id, umi_idx)) as u32
+                })
+                .collect();
+            molecules.push(ResolvedMolecule {
+                transcript_probs: target_probs,
+                intervals: intervals_for_resolved_vertices(
+                    &vertex_ids,
+                    &target_scores.iter().map(|(target, _)| *target).collect::<Vec<_>>(),
+                    graph,
+                    eqmap,
+                ),
+                vertices: vertex_keys(&vertex_ids, graph, eqmap),
+            });
+        }
+
+        molecule_count += 1;
+        if selected_genes.len() > 1 {
+            ambiguous_count += 1;
+        }
+    }
+
+    (molecule_count, ambiguous_count)
+}
+
 
 pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
@@ -556,6 +736,7 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
     cfg: DpConfig,
+    mut resolved_molecules: Option<&mut Vec<ResolvedMolecule>>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics {
     type U32Set = HashSet<u32, ahash::RandomState>;
@@ -576,6 +757,7 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs:     0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs:   0u64,
     };
@@ -590,10 +772,34 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
             }
 
             if comp_verts.len() > large_graph_thresh {
-                get_num_molecules_large_component(
-                    g, eqmap, comp_verts, tid_to_gid, hasher_state,
-                    gene_eqclass_hash, log,
-                );
+                let (fallback_molecules, fallback_ambiguous) = if P::HAS_PROBS {
+                    resolve_large_component_with_probs(
+                        comp_verts,
+                        g,
+                        eqmap,
+                        tid_to_gid,
+                        gene_level_eq_map,
+                        gene_eqclass_hash,
+                        resolved_molecules.as_deref_mut(),
+                    )
+                } else {
+                    get_num_molecules_large_component(
+                        g, eqmap, comp_verts, tid_to_gid, hasher_state,
+                        gene_eqclass_hash, log,
+                    );
+                    let fallback_molecules = comp_verts
+                        .iter()
+                        .map(|vertex| {
+                            let (eq_id, umi_idx) = g.from_index(*vertex as usize);
+                            eqmap.eqc_info[eq_id as usize].umis[umi_idx as usize].0
+                        })
+                        .collect::<HashSet<_>>()
+                        .len() as u64;
+                    (fallback_molecules, 0)
+                };
+                pug_stats.ambiguous_mccs += fallback_ambiguous;
+                pug_stats.total_mccs += fallback_molecules;
+                pug_stats.large_graph_mccs += fallback_molecules;
                 warn!(log,
                     "found connected component with {} vertices; resolved with cr-like resolution.",
                     comp_verts.len()
@@ -725,9 +931,26 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
                     .or_insert(P::new(eq_label_len));
                 payload.inc();
 
-                if P::HAS_PROBS {
+                if P::HAS_PROBS && resolved_molecules.is_none() {
                     assert_eq!(global_txps.len(), global_txp_prob.len());
                     payload.add_probs(&global_txp_prob);
+                }
+
+                if let Some(molecules) = resolved_molecules.as_mut() {
+                    molecules.push(ResolvedMolecule {
+                        transcript_probs: global_txps
+                            .iter()
+                            .copied()
+                            .zip(global_txp_prob.iter().copied())
+                            .collect(),
+                        intervals: intervals_for_resolved_vertices(
+                            &best_mcc,
+                            &global_txps,
+                            g,
+                            eqmap,
+                        ),
+                        vertices: vertex_keys(&best_mcc, g, eqmap),
+                    });
                 }
 
                 for rv in best_mcc.iter() { uncovered_vertices.remove(rv); }
@@ -780,12 +1003,43 @@ pub fn get_num_molecules_log_dp_new<P: EqClassPayload>(
                 .entry(global_genes)
                 .or_insert(P::new(eq_label_len));
             payload.inc();
-            if P::HAS_PROBS { payload.add_probs(&global_txp_prob); }
+            if P::HAS_PROBS && resolved_molecules.is_none() {
+                payload.add_probs(&global_txp_prob);
+            }
+
+            if let Some(molecules) = resolved_molecules.as_mut() {
+                molecules.push(ResolvedMolecule {
+                    transcript_probs: global_txps
+                        .iter()
+                        .copied()
+                        .zip(global_txp_prob.iter().copied())
+                        .collect(),
+                    intervals: intervals_for_resolved_vertices(
+                        &[*tv],
+                        &global_txps,
+                        g,
+                        eqmap,
+                    ),
+                    vertices: vertex_keys(&[*tv], g, eqmap),
+                });
+            }
         }
     }
 
     if do_diag {//&& (diag.singleton_comps + diag.multi_vertex_comps) < 5000 {
         diag.report(cfg);
+    }
+
+    if pug_stats.large_graph_mccs > 0 && pug_stats.total_mccs > 0 {
+        let fallback_percent =
+            100.0 * pug_stats.large_graph_mccs as f64 / pug_stats.total_mccs as f64;
+        info!(
+            log,
+            "large-component fallback resolved {} of {} molecules ({:.2}%)",
+            pug_stats.large_graph_mccs,
+            pug_stats.total_mccs,
+            fallback_percent
+        );
     }
 
     pug_stats
@@ -813,6 +1067,7 @@ pub fn get_num_molecules_true_umi_oracle<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };
@@ -1624,6 +1879,7 @@ pub fn get_num_molecules_true_umi_oracle_virtual_node<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };

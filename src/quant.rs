@@ -7,7 +7,7 @@
  * License: 3-clause BSD, see https://opensource.org/licenses/BSD-3-Clause
  */
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 #[allow(unused_imports)]
@@ -24,7 +24,7 @@ use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter};
 use std::str::FromStr;
 use std::string::ToString;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -43,22 +43,132 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use crate::em::{
-    EmInitType, em_optimize, em_optimize_long_read, em_optimize_subset, run_bootstrap,
+    EmInitType, MIN_OUTPUT_ALPHA, em_optimize, em_optimize_long_read, em_optimize_subset,
+    run_bootstrap,
 };
-use crate::eq_class::{CellTxpCoverage, EqMap, EqMapType, IndexedEqList};
+use crate::eq_class::{
+    CellTxpCoverage, EqMap, EqMapType, IndexedEqList, load_transcript_junctions, merge_intervals,
+};
 use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 //use crate::pugutils_dp;
 //use crate::pugutils_dp::{get_num_molecules_log_dp, DpConfig};
-use crate::pugutils_dp_new::{get_num_molecules_log_dp_new, get_num_molecules_true_umi_oracle, get_num_molecules_true_umi_oracle_virtual_node, DpConfig};
+use crate::coverage_diag;
 use crate::graph_dump;
+use crate::pugutils_dp_new::{
+    DpConfig, ResolvedMolecule, get_num_molecules_log_dp_new, get_num_molecules_true_umi_oracle,
+    get_num_molecules_true_umi_oracle_virtual_node,
+};
+use crate::truncation;
+use crate::truncation_groups;
+use crate::truncation::{
+    TruncationAbundance, TruncationIntervalMode, TruncationModelSpec, TruncationParamScope,
+};
 use crate::utils as afutils;
 use crate::utils::{
-    BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
-    OptionalAlignmentExtras, MaybeQName,
+    BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload, MaybeQName,
+    OptionalAlignmentExtras,
 };
 
 type BufferedGzFile = BufWriter<GzEncoder<fs::File>>;
+
+/// Adds every molecule's merged intervals on each of its candidate transcripts to `coverage`
+/// (weight 1 per molecule and transcript), as the coverage models count coverage.
+fn add_molecules_to_coverage(
+    molecules: &[ResolvedMolecule],
+    coverage: &mut [CellTxpCoverage],
+    bin_width: u32,
+) {
+    for molecule in molecules {
+        for &(transcript_id, _weight) in &molecule.transcript_probs {
+            let Some(intervals) = molecule.intervals.get(&transcript_id) else {
+                continue;
+            };
+            let merged = merge_intervals(intervals.iter().map(|i| (i.start, i.end)).collect());
+            if merged.is_empty() {
+                continue;
+            }
+            let txp = &mut coverage[transcript_id as usize];
+            txp.init_if_needed(intervals[0].transcript_len, bin_width);
+            txp.add_molecule_intervals(&merged, 1.0);
+        }
+    }
+}
+
+/// One cell's coverage model from its own molecules (`--coverage-source cell`): the per-bin
+/// probabilities every transcript the cell's molecules touch.
+fn accumulate_cell_coverage(
+    molecules: &[ResolvedMolecule],
+    coverage: &mut [CellTxpCoverage],
+    bin_width: u32,
+    growth_rate: f64,
+) {
+    for txp in coverage.iter_mut() {
+        if txp.len > 0 {
+            txp.clear();
+        }
+    }
+    add_molecules_to_coverage(molecules, coverage, bin_width);
+    crate::eq_class::compute_cell_coverage_probs(coverage, growth_rate);
+}
+
+/// A value of the four-parameter law for the model files, or NA.
+fn four_col(four: &Option<[f64; 4]>, i: usize) -> String {
+    four.map_or_else(|| "NA".to_string(), |v| v[i].to_string())
+}
+
+fn init_eq_map_for_chunk<R>(
+    eq_map: &mut EqMap,
+    cell_chunk: &mut libradicl::chunk::Chunk<R>,
+    end_distribution: EndDistribution,
+    end_model: EndModel,
+    end_threshold: f64,
+    end_scale: f64,
+    capture_intervals: bool,
+    coverage: Option<&[CellTxpCoverage]>,
+    junction_positions: Option<&[Vec<u32>]>,
+) where
+    R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+{
+    if let Some(junction_positions) = junction_positions {
+        eq_map.init_from_chunk_with_junctions(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            capture_intervals,
+            coverage,
+            junction_positions,
+        );
+    } else if let Some(coverage) = coverage {
+        eq_map.init_from_chunk_with_fixed_coverage(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            capture_intervals,
+            coverage,
+        );
+    } else if capture_intervals {
+        eq_map.init_from_chunk_with_intervals(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+        );
+    } else {
+        eq_map.init_from_chunk(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+        );
+    }
+}
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum EndModel {
@@ -85,7 +195,6 @@ impl FromStr for EndModel {
         }
     }
 }
-
 
 //==============================================================================
 
@@ -142,7 +251,6 @@ impl FromStr for TrueUmiOracleMode {
         }
     }
 }
-
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
 pub enum EditDistanceMode {
@@ -302,6 +410,7 @@ struct QuantOutputInfo {
     barcode_file: BufWriter<fs::File>,
     eds_file: BufWriter<GzEncoder<fs::File>>,
     feature_file: BufWriter<fs::File>,
+    truncation_file: Option<BufWriter<fs::File>>,
     trimat: sprs::TriMatI<f32, u32>,
     row_index: usize,
     bootstrap_helper: BootstrapHelper, //sample_or_mean_and_var: (BufWriter<GzEncoder<fs::File>>)
@@ -495,13 +604,11 @@ fn write_eqc_counts(
                 write!(&mut probs_writer, "\t{}", p)
                     .context("could not write geqc_probs.txt.gz")?;
             }
-            writeln!(&mut probs_writer)
-                .context("could not write geqc_probs.txt.gz")?;
+            writeln!(&mut probs_writer).context("could not write geqc_probs.txt.gz")?;
         }
 
         global_offset += num_cell_eqs;
     }
-
 
     Ok(true)
 }
@@ -514,17 +621,19 @@ pub fn load_true_umi_table(path: &std::path::Path) -> HashMap<String, Vec<u8>> {
 
     for (i, line) in reader.lines().enumerate() {
         let line = line.expect("could not read line");
-        if i == 0 { continue; } // skip header
+        if i == 0 {
+            continue;
+        } // skip header
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 11 { continue; }
+        if fields.len() < 11 {
+            continue;
+        }
         let true_umi = fields[7].as_bytes().to_vec();
         let read_name = fields[10].to_string();
         map.insert(read_name, true_umi);
     }
     map
 }
-
-
 
 /// table[eq_id][umi_idx] -> all distinct true UMIs found among the reads merged into this node
 pub fn build_true_umi_table(
@@ -536,7 +645,11 @@ pub fn build_true_umi_table(
         let entry = &eqmap.eqc_info[eqid];
         let mut node_umis = Vec::with_capacity(entry.umis.len());
         for umi_idx in 0..entry.umis.len() {
-            let qnames: &[String] = entry.qnames.get(umi_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+            let qnames: &[String] = entry
+                .qnames
+                .get(umi_idx)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
 
             let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
             for qn in qnames {
@@ -556,7 +669,6 @@ pub fn build_true_umi_table(
     table
 }
 
-
 /// Loads read_name -> true transcript from the ground-truth TSV (column 9).
 pub fn load_true_txp_table(path: &std::path::Path) -> HashMap<String, String> {
     let file = File::open(path).expect("could not open ground-truth TSV");
@@ -565,17 +677,19 @@ pub fn load_true_txp_table(path: &std::path::Path) -> HashMap<String, String> {
 
     for (i, line) in reader.lines().enumerate() {
         let line = line.expect("could not read line");
-        if i == 0 { continue; } // skip header
+        if i == 0 {
+            continue;
+        } // skip header
         let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 11 { continue; }
-        let true_txp = fields[9].to_string();   // was .as_bytes().to_vec() -> type mismatch
+        if fields.len() < 11 {
+            continue;
+        }
+        let true_txp = fields[9].to_string(); // was .as_bytes().to_vec() -> type mismatch
         let read_name = fields[10].to_string();
         map.insert(read_name, true_txp);
     }
     map
 }
-
-
 
 // TODO: see if we'd rather pass an structure
 // with these options
@@ -641,11 +755,25 @@ struct WorkerConfig {
     true_txp_mode: Option<bool>,
     ed_distance_model: EditDistanceMode,
     ed_upper_bound: usize,
-    em_prob_model: EMMode,  
+    em_prob_model: EMMode,
     end_model: EndModel,
     end_distribution: EndDistribution,
     end_threshold: f64,
     end_scale: f64,
+    coverage_model: bool,
+    coverage_dedup_model: bool,
+    truncation_model: bool,
+    truncation_interval_mode: TruncationIntervalMode,
+    truncation_spec: TruncationModelSpec,
+    /// With `--truncation-abundance shrink`, the strength of the pooled prior.
+    truncation_shrink: Option<f64>,
+    /// Truncation parameters estimated from all cells (`--truncation-params global`).
+    truncation_global: Option<Arc<truncation::GlobalFit>>,
+    /// Groups of cells with their own pooled abundances (`--truncation-groups`).
+    truncation_groups: Option<Arc<truncation::TruncationGroups>>,
+    coverage_bin_width: u32,
+    coverage_growth_rate: f64,
+    coverage_source: truncation::CoverageSource,
 }
 
 struct WorkerSharedState<R: MappedRecord> {
@@ -653,6 +781,7 @@ struct WorkerSharedState<R: MappedRecord> {
     is_done: Arc<std::sync::atomic::AtomicBool>,
     tid_to_gid: Arc<Vec<u32>>,
     ref_names: Arc<Vec<String>>,
+    junction_positions: Option<Arc<Vec<Vec<u32>>>>,
     cells_remaining: Arc<AtomicUsize>,
     bcout: Arc<Mutex<QuantOutputInfo>>,
     eqid_map_lock: Arc<Mutex<EqcMap>>,
@@ -662,6 +791,8 @@ struct WorkerSharedState<R: MappedRecord> {
     mmrate: Arc<Mutex<Vec<f64>>>,
     true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>>,
     true_txp_lookup: Option<Arc<HashMap<String, String>>>,
+    /// The coverage learned from all cells (`--coverage-source global`).
+    global_coverage: Option<Arc<Vec<CellTxpCoverage>>>,
 }
 
 fn run_worker_thread<B, R, P>(
@@ -687,6 +818,16 @@ where
     <R as MappedRecord>::ParsingContext: Send,
     P: EqClassPayload,
 {
+    assert!(
+        !(config.coverage_model || config.coverage_dedup_model || config.truncation_model)
+            || P::HAS_PROBS,
+        "long-read positional models require a long-read probability payload"
+    );
+    let junction_model = shared.junction_positions.is_some();
+    let junction_positions = shared
+        .junction_positions
+        .as_deref()
+        .map(|positions| positions.as_slice());
     // these can be created once and cleared after processing
     // each cell.
     let mut unique_evidence = vec![false; config.num_rows];
@@ -699,7 +840,12 @@ where
     let mut eds_mean_bytes: Vec<u8> = Vec::new();
     let mut eds_var_bytes: Vec<u8> = Vec::new();
 
-    let mut txp_cov: Vec<CellTxpCoverage> = (0..num_eq_targets as usize).map(|_| CellTxpCoverage::uninitialized()).collect();
+    let mut txp_cov: Option<Vec<CellTxpCoverage>> =
+        (config.coverage_model || config.coverage_dedup_model).then(|| {
+            (0..num_eq_targets as usize)
+                .map(|_| CellTxpCoverage::uninitialized())
+                .collect()
+        });
 
     // the variable we will use to bind the *cell-specific* gene-level
     // equivalence class table.
@@ -760,10 +906,20 @@ where
                 // cell.
                 let mut counts: Vec<f32>;
                 let mut alt_resolution = false;
+                let mut truncation_fit = None;
+                let mut truncation_counts: Option<Vec<f32>> = None;
 
                 let mut bootstraps: Vec<Vec<f32>> = Vec::new();
+                let mut resolved_molecules = (config.coverage_model
+                    || config.coverage_dedup_model
+                    || config.truncation_model)
+                    .then(Vec::<ResolvedMolecule>::new);
 
-                let non_trivial = c.reads.len() >= config.small_thresh;
+                let non_trivial = c.reads.len() >= config.small_thresh
+                    || config.coverage_model
+                    || config.coverage_dedup_model
+                    || config.truncation_model
+                    || junction_model;
                 if non_trivial {
                     // TODO: some testing was done, but see if there is a better way to set this value.
                     let small_cell = c.reads.len() <= 250;
@@ -774,7 +930,7 @@ where
                     match config.resolution {
                         ResolutionStrategy::CellRangerLike
                         | ResolutionStrategy::CellRangerLikeEm => {
-                            if small_cell {
+                            if small_cell && !junction_model {
                                 pugutils::get_num_molecules_cell_ranger_like_small::<B, R, P>(
                                     &mut c,
                                     &shared.tid_to_gid,
@@ -784,7 +940,17 @@ where
                                     &log,
                                 );
                             } else {
-                                eq_map.init_from_chunk::<R>(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
+                                init_eq_map_for_chunk(
+                                    &mut eq_map,
+                                    &mut c,
+                                    config.end_distribution,
+                                    config.end_model,
+                                    config.end_threshold,
+                                    config.end_scale,
+                                    false,
+                                    None,
+                                    junction_positions,
+                                );
                                 pugutils::get_num_molecules_cell_ranger_like(
                                     &eq_map,
                                     &shared.tid_to_gid,
@@ -840,7 +1006,17 @@ where
                             }
                         }
                         ResolutionStrategy::Trivial => {
-                            eq_map.init_from_chunk(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
+                            init_eq_map_for_chunk(
+                                &mut eq_map,
+                                &mut c,
+                                config.end_distribution,
+                                config.end_model,
+                                config.end_threshold,
+                                config.end_scale,
+                                false,
+                                None,
+                                junction_positions,
+                            );
                             let ct = pugutils::get_num_molecules_trivial_discard_all_ambig(
                                 &eq_map,
                                 &shared.tid_to_gid,
@@ -863,7 +1039,8 @@ where
                                 //eprintln!("before the init from chunk");
 
                                 // step 1: collect umi -> qnames BEFORE init_from_chunk destroys ordering
-                                let mut refs_umi_to_qnames: HashMap<(Vec<u32>, u64), Vec<String>> = HashMap::new();
+                                let mut refs_umi_to_qnames: HashMap<(Vec<u32>, u64), Vec<String>> =
+                                    HashMap::new();
                                 for r in c.reads.iter() {
                                     if let Some(qname) = r.maybe_qname() {
                                         refs_umi_to_qnames
@@ -873,15 +1050,39 @@ where
                                     }
                                 }
 
-                                eq_map.init_from_chunk(&mut c, config.end_distribution, config.end_model, config.end_threshold, config.end_scale);
+                                init_eq_map_for_chunk(
+                                    &mut eq_map,
+                                    &mut c,
+                                    config.end_distribution,
+                                    config.end_model,
+                                    config.end_threshold,
+                                    config.end_scale,
+                                    config.coverage_model
+                                        || config.coverage_dedup_model
+                                        || config.truncation_model,
+                                    // the truncation model's molecules take the global coverage into
+                                    // their priors here; the per-cell EM takes it in its second
+                                    // deduplication below, as it takes the cell's own coverage
+                                    if config.coverage_dedup_model
+                                        && config.truncation_model
+                                        && config.coverage_source == truncation::CoverageSource::Global
+                                    {
+                                        shared.global_coverage.as_deref().map(Vec::as_slice)
+                                    } else {
+                                        None
+                                    },
+                                    junction_positions,
+                                );
                                 //eprintln!("after the init from chunk");
 
                                 // step 3: populate qnames using the umi lookup
                                 // after init_from_chunk, eqc_info[i].umis contains deduplicated (umi_val, count) pairs
                                 for eq_id in 0..eq_map.num_eq_classes() {
-                                    let refs_for_this_eqc = eq_map.refs_for_eqc(eq_id as u32).to_vec();
+                                    let refs_for_this_eqc =
+                                        eq_map.refs_for_eqc(eq_id as u32).to_vec();
                                     let entry = &mut eq_map.eqc_info[eq_id];
-                                    entry.qnames = entry.umis
+                                    entry.qnames = entry
+                                        .umis
                                         .iter()
                                         .map(|(umi_val, _count)| {
                                             refs_umi_to_qnames
@@ -894,39 +1095,51 @@ where
 
                                 //let coverage_bin_width: u32 = 100;
                                 //let coverage_growth_rate: f64 = 2.0;
-//
+                                //
                                 //let coverage_opts = if coverage_bin_width > 0 {
                                 //    // Reset per-transcript coverage state for this cell.
                                 //    // Only reset transcripts that were actually initialised
                                 //    // (avoids touching the huge tail of never-seen transcripts).
                                 //    txp_cov.iter_mut().for_each(|t| t.clear());
-//
+                                //
                                 //    Some((&mut txp_cov, coverage_growth_rate, coverage_bin_width))
                                 //} else {
                                 //    None  // pass None to get the old score-only behaviour
                                 //};
-//
+                                //
                                 //eq_map.init_from_chunk_with_coverage(&mut c, coverage_opts);
-
                             }
 
                             //let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
 
-                            let true_umi_table = shared.true_umi_lookup.as_ref()
+                            let true_umi_table = shared
+                                .true_umi_lookup
+                                .as_ref()
                                 .map(|lookup| build_true_umi_table(&eq_map, lookup));
-
 
                             let g = match config.true_umi_mode {
                                 TrueUmiOracleMode::EdgeCorrection => {
                                     //pugutils::extract_graph(&eq_map, config.pug_exact_umi, true_umi_table.as_ref(), &log)
-                                    pugutils::extract_graph(&eq_map, config.pug_exact_umi, config.ed_distance_model, config.ed_upper_bound, &log)
+                                    pugutils::extract_graph(
+                                        &eq_map,
+                                        config.pug_exact_umi,
+                                        config.ed_distance_model,
+                                        config.ed_upper_bound,
+                                        &log,
+                                    )
                                 }
                                 _ => {
                                     //pugutils::extract_graph(&eq_map, config.pug_exact_umi, None, &log)
-                                    pugutils::extract_graph(&eq_map, config.pug_exact_umi, config.ed_distance_model, config.ed_upper_bound, &log)
+                                    pugutils::extract_graph(
+                                        &eq_map,
+                                        config.pug_exact_umi,
+                                        config.ed_distance_model,
+                                        config.ed_upper_bound,
+                                        &log,
+                                    )
                                 }
                             };
-                        
+
                             //let bfs_gate_table = match config.true_umi_mode {
                             //    TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
                             //    _ => None,
@@ -967,7 +1180,6 @@ where
                             //    &log,
                             //);
 
-
                             //let dp_cfg = DpConfig {
                             //    log_prior_odds: config.lambda_size,
                             //    tau_delta: config.tau_delta,
@@ -999,7 +1211,9 @@ where
                                         &shared.tid_to_gid,
                                         &shared.ref_names,
                                         bc.into(),
-                                        shared.true_umi_lookup.as_ref().expect("true_umi_lookup required for DirectCollapse mode"),
+                                        shared.true_umi_lookup.as_ref().expect(
+                                            "true_umi_lookup required for DirectCollapse mode",
+                                        ),
                                         shared.true_txp_lookup.as_ref(),
                                         config.em_prob_model,
                                         &mut gene_eqc,
@@ -1020,7 +1234,7 @@ where
                                 //        &eq_map,
                                 //        &shared.tid_to_gid,
                                 //        true_umi_table.as_ref().expect("true_umi_table required for DirectCollapse mode"),
-//
+                                //
                                 //        &mut gene_eqc,
                                 //        &log,
                                 //    )
@@ -1030,12 +1244,12 @@ where
                                         TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
                                         _ => None,
                                     };
-                                
+
                                     let dp_cfg = DpConfig {
                                         log_prior_odds: config.lambda_size,
                                         tau_delta: config.tau_delta,
                                     };
-                                
+
                                     get_num_molecules_log_dp_new(
                                         &g,
                                         &eq_map,
@@ -1044,6 +1258,7 @@ where
                                         &s,
                                         config.large_graph_thresh,
                                         dp_cfg,
+                                        resolved_molecules.as_mut(),
                                         //bfs_gate_table,
                                         &log,
                                     )
@@ -1051,6 +1266,223 @@ where
                             };
 
                             alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
+
+                            // The coverage the positional models use for this cell: its own, from
+                            // its molecules, or the one learned from all cells.
+                            let coverage_for_cell: Option<&[CellTxpCoverage]> = match (
+                                config.coverage_model || config.coverage_dedup_model,
+                                config.coverage_source,
+                            ) {
+                                (false, _) => None,
+                                (true, truncation::CoverageSource::Global) => {
+                                    shared.global_coverage.as_deref().map(Vec::as_slice)
+                                }
+                                (true, truncation::CoverageSource::Cell) => {
+                                    if let (Some(molecules), Some(coverage)) =
+                                        (resolved_molecules.as_ref(), txp_cov.as_mut())
+                                    {
+                                        accumulate_cell_coverage(
+                                            molecules,
+                                            coverage,
+                                            config.coverage_bin_width,
+                                            config.coverage_growth_rate,
+                                        );
+                                        if let Some(diag) = coverage_diag::get() {
+                                            diag.dump_cell(
+                                                cell_num,
+                                                bc.into(),
+                                                config.barcode_len,
+                                                molecules,
+                                                coverage,
+                                                &shared.tid_to_gid,
+                                            );
+                                        }
+                                    }
+                                    txp_cov.as_deref()
+                                }
+                            };
+
+                            if config.truncation_model {
+                                let molecules = resolved_molecules
+                                    .as_mut()
+                                    .expect("truncation model requires resolved molecules");
+                                let fit = truncation::fit_molecules_with(
+                                    molecules,
+                                    config.truncation_interval_mode,
+                                    config.truncation_global.as_deref(),
+                                    config.truncation_spec,
+                                    config.truncation_shrink,
+                                    config.truncation_groups.as_ref().map_or(0, |g| {
+                                        let b = bitmer_to_bytes((bc.into(), config.barcode_len as u8));
+                                        g.group_of(&String::from_utf8_lossy(&b))
+                                    }),
+                                    // --coverage-dedup put the coverage into the alignment
+                                    // probabilities already; --coverage-model applies it here
+                                    if config.coverage_model { coverage_for_cell } else { None },
+                                );
+                                if fit.mixed_interval_molecules > 0 {
+                                    warn!(
+                                        log,
+                                        "truncation model: {} of {} molecules in cell_num = {} have candidate transcripts both with and without alignment intervals; those without carry no positional likelihood and are favored",
+                                        fit.mixed_interval_molecules,
+                                        fit.molecule_count,
+                                        cell_num
+                                    );
+                                }
+                                truncation_fit = Some(fit);
+                                gene_eqc.clear();
+                                // The molecules' probabilities are now posteriors that include
+                                // the model's transcript abundances, so a further EM over them
+                                // would count abundance twice; the gene counts are their sums.
+                                let mut gene_counts = vec![0f64; config.num_genes];
+                                for molecule in molecules {
+                                    let mut gene_weights: Vec<(u32, f64)> = molecule
+                                        .transcript_probs
+                                        .iter()
+                                        .map(|&(transcript_id, weight)| {
+                                            (shared.tid_to_gid[transcript_id as usize], weight)
+                                        })
+                                        .collect();
+                                    gene_weights.sort_unstable_by_key(|(gene_id, _)| *gene_id);
+                                    let mut gene_ids = Vec::new();
+                                    let mut probabilities = Vec::new();
+                                    for (gene_id, weight) in gene_weights {
+                                        if gene_ids.last() == Some(&gene_id) {
+                                            *probabilities.last_mut().unwrap() += weight;
+                                        } else {
+                                            gene_ids.push(gene_id);
+                                            probabilities.push(weight);
+                                        }
+                                    }
+                                    if !config.usa_mode {
+                                        for (&gene_id, &p) in gene_ids.iter().zip(&probabilities) {
+                                            gene_counts[gene_id as usize] += p;
+                                        }
+                                    }
+                                    let payload = gene_eqc
+                                        .entry(gene_ids.clone())
+                                        .or_insert(P::new(gene_ids.len()));
+                                    payload.inc();
+                                    payload.add_probs(&probabilities);
+                                }
+                                if !config.usa_mode {
+                                    truncation_counts = Some(
+                                        gene_counts
+                                            .into_iter()
+                                            .map(|c| c as f32)
+                                            .map(|c| if c < MIN_OUTPUT_ALPHA { 0.0 } else { c })
+                                            .collect(),
+                                    );
+                                }
+                            }
+
+                            if let (Some(molecules), Some(coverage), false) = (
+                                resolved_molecules.as_ref(),
+                                coverage_for_cell,
+                                config.truncation_model,
+                            ) {
+                                if config.coverage_model {
+                                    gene_eqc.clear();
+                                    for molecule in molecules {
+                                        let mut txp_weights: Vec<(u32, f64)> = molecule
+                                            .transcript_probs
+                                            .iter()
+                                            .map(|&(transcript_id, base_weight)| {
+                                                let coverage_weight = molecule
+                                                    .intervals
+                                                    .get(&transcript_id)
+                                                    .map(|intervals| {
+                                                        let merged = merge_intervals(
+                                                            intervals
+                                                                .iter()
+                                                                .map(|i| (i.start, i.end))
+                                                                .collect(),
+                                                        );
+                                                        coverage[transcript_id as usize]
+                                                            .coverage_probability_for_intervals(
+                                                                &merged,
+                                                            )
+                                                    })
+                                                    .unwrap_or(1.0);
+                                                (transcript_id, base_weight * coverage_weight)
+                                            })
+                                            .collect();
+                                        let total_weight: f64 =
+                                            txp_weights.iter().map(|(_, p)| *p).sum();
+                                        assert!(
+                                            total_weight.is_finite() && total_weight > 0.0,
+                                            "invalid coverage-adjusted molecule probabilities"
+                                        );
+                                        txp_weights
+                                            .iter_mut()
+                                            .for_each(|(_, p)| *p /= total_weight);
+
+                                        let mut gene_weights: Vec<(u32, f64)> = txp_weights
+                                            .iter()
+                                            .map(|&(transcript_id, weight)| {
+                                                (shared.tid_to_gid[transcript_id as usize], weight)
+                                            })
+                                            .collect();
+                                        gene_weights.sort_unstable_by_key(|(gene_id, _)| *gene_id);
+                                        let mut gene_ids = Vec::new();
+                                        let mut probabilities = Vec::new();
+                                        for (gene_id, weight) in gene_weights {
+                                            if gene_ids.last() == Some(&gene_id) {
+                                                *probabilities.last_mut().unwrap() += weight;
+                                            } else {
+                                                gene_ids.push(gene_id);
+                                                probabilities.push(weight);
+                                            }
+                                        }
+                                        let payload = gene_eqc
+                                            .entry(gene_ids.clone())
+                                            .or_insert(P::new(gene_ids.len()));
+                                        payload.inc();
+                                        payload.add_probs(&probabilities);
+                                    }
+                                } else if config.coverage_dedup_model {
+                                    // the second deduplication, with the cell's own or the global
+                                    // coverage in the alignment probabilities
+                                    eq_map.clear();
+                                    init_eq_map_for_chunk(
+                                        &mut eq_map,
+                                        &mut c,
+                                        config.end_distribution,
+                                        config.end_model,
+                                        config.end_threshold,
+                                        config.end_scale,
+                                        false,
+                                        Some(coverage),
+                                        junction_positions,
+                                    );
+
+                                    let coverage_graph = pugutils::extract_graph(
+                                        &eq_map,
+                                        config.pug_exact_umi,
+                                        config.ed_distance_model,
+                                        config.ed_upper_bound,
+                                        &log,
+                                    );
+                                    gene_eqc.clear();
+                                    let dp_cfg = DpConfig {
+                                        log_prior_odds: config.lambda_size,
+                                        tau_delta: config.tau_delta,
+                                    };
+                                    let second_pass_stats = get_num_molecules_log_dp_new(
+                                        &coverage_graph,
+                                        &eq_map,
+                                        &shared.tid_to_gid,
+                                        &mut gene_eqc,
+                                        &s,
+                                        config.large_graph_thresh,
+                                        dp_cfg,
+                                        None,
+                                        &log,
+                                    );
+                                    alt_resolution = second_pass_stats.used_alternative_strategy;
+                                }
+                            }
+
                             eq_map.clear();
 
                             let only_unique = (config.resolution == ResolutionStrategy::Parsimony)
@@ -1059,6 +1491,10 @@ where
                             // NOTE: This configuration seems overly complicated
                             // see if we can simplify it.
                             match (config.usa_mode, only_unique, P::HAS_PROBS) {
+                                _ if truncation_counts.is_some() => {
+                                    // gene counts already summed from the truncation posteriors
+                                    counts = truncation_counts.take().unwrap();
+                                }
                                 (true, true, _) => {
                                     // USA mode, only gene-unqique reads
                                     counts = afutils::extract_counts(&gene_eqc, config.num_rows);
@@ -1334,6 +1770,56 @@ where
                     )
                     .expect("can't write to feature file");
 
+                    if let (Some(fit), Some(truncation_file)) =
+                        (truncation_fit, writer.truncation_file.as_mut())
+                    {
+                        let p = &fit.params;
+                        writeln!(
+                            truncation_file,
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            unsafe { std::str::from_utf8_unchecked(bc_bytes) },
+                            p.p3,
+                            p.p5,
+                            p.pf,
+                            p.pu,
+                            p.len3_mean,
+                            p.len5_mean,
+                            p.lenu_mean,
+                            p.k3_rho,
+                            p.k3_gap[0],
+                            p.k3_gap[1],
+                            p.k3_gap[2],
+                            p.k3_gap[3],
+                            p.k5_rho,
+                            p.k5_gap[0],
+                            p.k5_gap[1],
+                            p.k5_gap[2],
+                            p.k5_gap[3],
+                            fit.molecule_count,
+                            fit.iterations,
+                            fit.frozen_at
+                                .map_or_else(|| "NA".to_string(), |i| i.to_string()),
+                            fit.freeze_reason
+                                .map_or_else(|| "NA".to_string(), |r| r.to_string()),
+                            fit.converged,
+                            if fit.iterations == 0 {
+                                "no_data"
+                            } else if !fit.has_positional_evidence {
+                                "no_positional_evidence"
+                            } else if fit.converged {
+                                "converged"
+                            } else {
+                                "max_iterations"
+                            },
+                            fit.mixed_interval_molecules,
+                            four_col(&p.four, 0),
+                            four_col(&p.four, 1),
+                            four_col(&p.four, 2),
+                            four_col(&p.four, 3)
+                        )
+                        .expect("can't write to truncation model file");
+                    }
+
                     if config.num_bootstraps > 0 {
                         if config.summary_stat {
                             if let Some((meanf, varf)) = &mut writer.bootstrap_helper.mean_var_files
@@ -1367,19 +1853,26 @@ where
                         let mut avg_probs = vec![0.0f64; labels.len()];
 
                         if P::HAS_PROBS && labels.len() > 1 && count > 0 {
-                            let probs = payload.probs(); 
+                            let probs = payload.probs();
                             //################sanity check##############
                             if probs.stride() != labels.len() {
                                 panic!(
                                     "BAD STRIDE: cell={} eqc_labels_len={} stride={}",
-                                    row_index, labels.len(), probs.stride()
+                                    row_index,
+                                    labels.len(),
+                                    probs.stride()
                                 );
                             }
                             if probs.nrows() != count as usize {
                                 // don't keep going; your averaging loop assumes count rows exist
                                 panic!(
                                     "BAD NROWS: cell={} labels.len()={} count={} nrows={}, probs={:?}, probs_len={:?}",
-                                    row_index, labels.len(), count, probs.nrows(), probs, probs.probs.len()
+                                    row_index,
+                                    labels.len(),
+                                    count,
+                                    probs.nrows(),
+                                    probs,
+                                    probs.probs.len()
                                 );
                             }
 
@@ -1401,13 +1894,15 @@ where
                                 }
                             }
 
-
-
                             for tx_idx in 0..labels.len() {
-                                let sum: f64 = (0..count as usize).map(|i| probs[i][tx_idx] as f64).sum();
+                                let sum: f64 =
+                                    (0..count as usize).map(|i| probs[i][tx_idx] as f64).sum();
                                 avg_probs[tx_idx] = sum / (count as f64);
                                 if !avg_probs[tx_idx].is_finite() {
-                                    panic!("Non-finite average probability encountered for cell {}, tx_idx {}", row_index, tx_idx);
+                                    panic!(
+                                        "Non-finite average probability encountered for cell {}, tx_idx {}",
+                                        row_index, tx_idx
+                                    );
                                 }
                             }
                         } else {
@@ -1415,7 +1910,6 @@ where
                                 avg_probs[0] = 1.0;
                             }
                         }
-
 
                         //=====================================================
 
@@ -1445,6 +1939,663 @@ where
         } // while we can get work
     } // while cells remain
     local_nrec
+}
+
+/// The collated RAD file in `input_dir`, compressed or not as its `collate.json` records.
+fn open_collated_rad(input_dir: &std::path::Path) -> anyhow::Result<Box<dyn BufRead>> {
+    let collate_md_file = File::open(input_dir.join("collate.json"))
+        .context("could not open the collate.json file.")?;
+    let collate_md: serde_json::Value = serde_json::from_reader(&collate_md_file)?;
+    let compressed_input = collate_md["compressed_output"]
+        .as_bool()
+        .context("could not read compressed_output field from collate metadata.")?;
+    Ok(if compressed_input {
+        let i_file =
+            File::open(input_dir.join("map.collated.rad.sz")).context("run collate before quant")?;
+        Box::new(BufReader::new(snap::read::FrameDecoder::new(i_file)))
+    } else {
+        let i_file =
+            File::open(input_dir.join("map.collated.rad")).context("run collate before quant")?;
+        Box::new(BufReader::new(i_file))
+    })
+}
+
+/// With `--truncation-params global`: estimates the truncation model's parameters once, in a
+/// pass over the input before any cell is quantified, from the deduplicated molecules of all
+/// cells (of about `--truncation-global-cells` of them, spread evenly through the input, if
+/// that is nonzero). Each cell is resolved into molecules as the quantification pass resolves
+/// it (the truncation model requires `parsimony-em`). The parameters are written to
+/// `truncation_model_global.tsv`.
+#[allow(clippy::too_many_arguments)]
+fn estimate_global_truncation<B, R, P>(
+    quant_opts: &QuantOpts,
+    retained_bc: Option<&HashSet<u64, ahash::RandomState>>,
+    tid_to_gid: &[u32],
+    junction_positions: Option<&[Vec<u32>]>,
+    ref_count: u32,
+    num_cells: u64,
+    n_workers: usize,
+    output_path: &std::path::Path,
+    groups: Option<&truncation::TruncationGroups>,
+    barcode_len: u16,
+    genes: Option<&[u32]>,
+    coverage: Option<&[CellTxpCoverage]>,
+    junction_law_positions: Option<&[Vec<u32>]>,
+    ref_names: &[String],
+    dump_dir: Option<&std::path::Path>,
+    discover_genes: Option<&[u32]>,
+) -> anyhow::Result<(truncation::GlobalFit, Option<truncation::TruncationGroups>)>
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord
+        + CollatableMappedRecord<B>
+        + KnownSize
+        + UmiTaggedRecord
+        + OptionalAlignmentExtras
+        + MaybeQName
+        + 'static,
+    <R as MappedRecord>::ParsingContext: RecordContext,
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send,
+    P: EqClassPayload,
+{
+    let log = quant_opts.log;
+    let (end_distribution, end_model, end_threshold, end_scale) = (
+        quant_opts.end_distribution,
+        quant_opts.end_model,
+        quant_opts.end_threshold,
+        quant_opts.end_scale,
+    );
+    let (pug_exact_umi, ed_distance_model, ed_upper_bound) = (
+        quant_opts.pug_exact_umi,
+        quant_opts.ed_distance_model,
+        quant_opts.ed_upper_bound,
+    );
+    let (large_graph_thresh, lambda_size, tau_delta) = (
+        quant_opts.large_graph_thresh,
+        quant_opts.lambda_size,
+        quant_opts.tau_delta,
+    );
+    let interval_mode = quant_opts.truncation_interval_mode;
+    // --coverage-dedup puts the coverage into the alignment probabilities before deduplication;
+    // --coverage-model multiplies each molecule's candidate priors by it afterwards
+    let dedup_coverage = if quant_opts.coverage_dedup_model { coverage } else { None };
+    let em_coverage = if quant_opts.coverage_model { coverage } else { None };
+    let stride = match quant_opts.truncation_global_cells {
+        0 => 1,
+        n => (num_cells as usize).div_ceil(n).max(1),
+    };
+    info!(
+        log,
+        "estimating the truncation model's parameters from one in {} of {} cells before quantifying",
+        stride,
+        num_cells.to_formatted_string(&Locale::en)
+    );
+
+    let mut br = open_collated_rad(std::path::Path::new(quant_opts.input_dir))?;
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<R>::new(
+        &prelude,
+        std::num::NonZeroUsize::new(n_workers).unwrap(),
+    );
+    let cells = Mutex::new(Vec::<(usize, u64, truncation::CellMolecules)>::new());
+    // The longest transcript of any cell, sampled or not: the fitted laws must cover them all.
+    let max_len = AtomicU32::new(0);
+    // Reads in all cells and in the sampled ones, for the sample's share of the data.
+    let (all_reads, sampled_reads) = (AtomicU64::new(0), AtomicU64::new(0));
+
+    let read = thread::scope(|scope| {
+        for _ in 0..n_workers {
+            let in_q = chunk_reader.get_queue();
+            let is_done = chunk_reader.is_done();
+            let (cells, max_len) = (&cells, &max_len);
+            let (all_reads, sampled_reads) = (&all_reads, &sampled_reads);
+            scope.spawn(move || {
+                let mut eq_map = EqMap::new(ref_count, EqMapType::TranscriptLevel, P::HAS_PROBS);
+                let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+                let mut gene_eqc: HashMap<Vec<u32>, P, ahash::RandomState> =
+                    HashMap::with_hasher(s);
+                while !is_done.load(Ordering::SeqCst) || !in_q.is_empty() {
+                    while let Some(meta_chunk) = in_q.pop() {
+                        let first_cell_in_chunk = meta_chunk.first_chunk_index;
+                        for (cn, mut c) in meta_chunk.iter().enumerate() {
+                            for r in c.reads.iter() {
+                                if let Some(&len) =
+                                    r.maybe_aln_extras().and_then(|x| x.tlens.iter().max())
+                                {
+                                    max_len.fetch_max(len, Ordering::Relaxed);
+                                }
+                            }
+                            let cell_num = first_cell_in_chunk + cn;
+                            all_reads.fetch_add(c.reads.len() as u64, Ordering::Relaxed);
+                            if cell_num % stride != 0 || c.reads.is_empty() {
+                                continue;
+                            }
+                            sampled_reads.fetch_add(c.reads.len() as u64, Ordering::Relaxed);
+                            let bc = c.reads.first().expect("chunk with no reads").collate_key();
+                            init_eq_map_for_chunk(
+                                &mut eq_map,
+                                &mut c,
+                                end_distribution,
+                                end_model,
+                                end_threshold,
+                                end_scale,
+                                true,
+                                dedup_coverage,
+                                junction_positions,
+                            );
+                            let g = pugutils::extract_graph(
+                                &eq_map,
+                                pug_exact_umi,
+                                ed_distance_model,
+                                ed_upper_bound,
+                                log,
+                            );
+                            let hasher = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
+                            let mut molecules = Vec::new();
+                            get_num_molecules_log_dp_new(
+                                &g,
+                                &eq_map,
+                                tid_to_gid,
+                                &mut gene_eqc,
+                                &hasher,
+                                large_graph_thresh,
+                                DpConfig {
+                                    log_prior_odds: lambda_size,
+                                    tau_delta,
+                                },
+                                Some(&mut molecules),
+                                log,
+                            );
+                            gene_eqc.clear();
+                            eq_map.clear();
+                            let group = groups.map_or(0, |g| {
+                                let b = bitmer_to_bytes((bc.into(), barcode_len as u8));
+                                g.group_of(&String::from_utf8_lossy(&b))
+                            });
+                            let factors = truncation::PriorFactors {
+                                coverage: em_coverage,
+                                junction: None,
+                            };
+                            let cell = truncation::cell_molecules(
+                                &molecules,
+                                interval_mode,
+                                group,
+                                Some(&factors),
+                            );
+                            cells.lock().unwrap().push((cell_num, bc.into(), cell));
+                        }
+                    }
+                }
+            });
+        }
+        if let Some(ret_bc) = retained_bc {
+            let filter_fn =
+                |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
+                    let ch = R::peek_collatable_header(&buf[8..], record_context)
+                        .expect("at least one record");
+                    let ck: u64 = ch.collate_key().into();
+                    ret_bc.contains(&ck)
+                };
+            chunk_reader.start_filtered(&mut br, filter_fn, None::<fn(u64, u64)>)
+        } else {
+            chunk_reader.start(&mut br, None::<fn(u64, u64)>)
+        }
+    });
+    read?;
+
+    // In input order, so the fit does not depend on which thread resolved which cell.
+    let mut cells = cells.into_inner().unwrap();
+    cells.sort_unstable_by_key(|(cell_num, _, _)| *cell_num);
+    let barcodes: Vec<String> = cells
+        .iter()
+        .map(|(_, bc, _)| {
+            String::from_utf8_lossy(&bitmer_to_bytes((*bc, barcode_len as u8))).into_owned()
+        })
+        .collect();
+    let mut cells: Vec<truncation::CellMolecules> =
+        cells.into_iter().map(|(_, _, c)| c).collect();
+    let share = sampled_reads.into_inner() as f64 / all_reads.into_inner().max(1) as f64;
+    // --truncation-discover-groups: the groups for pooled abundances from the one-candidate
+    // molecules of these cells, in place of a --truncation-groups file
+    let discovered = if let Some(gene_of) = discover_genes {
+        let counts: Vec<Vec<(u32, u32)>> = cells
+            .iter()
+            .map(truncation::CellMolecules::one_candidate_counts)
+            .collect();
+        let settings = truncation_groups::DiscoverySettings {
+            threads: (quant_opts.num_threads as usize).max(1),
+            ..truncation_groups::DiscoverySettings::default()
+        };
+        let d = truncation_groups::discover_groups(&counts, gene_of, &settings);
+        info!(
+            log,
+            "discovering groups of cells that share isoform usage from {} one-candidate molecules in {} genes with at least two isoforms seen ({} transcripts) of {} cells",
+            (d.molecules as u64).to_formatted_string(&Locale::en),
+            d.genes.to_formatted_string(&Locale::en),
+            d.transcripts.to_formatted_string(&Locale::en),
+            cells.len().to_formatted_string(&Locale::en)
+        );
+        for r in &d.splits {
+            info!(log, "  {}", r);
+        }
+        for (i, moved) in d.refinement.iter().enumerate() {
+            info!(log, "  refinement {}: {} cells moved", i, moved);
+        }
+        let mut sizes = d.sizes.clone();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        info!(
+            log,
+            "truncation groups discovered: {} ({}); abundances are pooled within them",
+            d.n_groups,
+            sizes.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+        );
+        for (cell, &label) in cells.iter_mut().zip(&d.labels) {
+            cell.set_group(label);
+        }
+        let path = output_path.join("truncation_groups.tsv");
+        let mut file = BufWriter::new(File::create(&path)?);
+        for (bc, &label) in barcodes.iter().zip(&d.labels) {
+            writeln!(file, "{bc}\tL{label}")?;
+        }
+        file.flush()?;
+        Some(truncation::TruncationGroups::from_labels(&barcodes, &d.labels))
+    } else {
+        None
+    };
+    let n_groups = match (&discovered, groups) {
+        (Some(d), _) => d.n_groups(),
+        (None, Some(g)) => g.n_groups(),
+        (None, None) => 1,
+    };
+    info!(
+        log,
+        "fitting the truncation model's parameters to {} molecules from {} cells ({:.4} of the reads)",
+        cells
+            .iter()
+            .map(truncation::CellMolecules::molecule_count)
+            .sum::<usize>()
+            .to_formatted_string(&Locale::en),
+        cells.len().to_formatted_string(&Locale::en),
+        share
+    );
+    let fit = truncation::fit_global(
+        &mut cells,
+        max_len.into_inner(),
+        share,
+        (quant_opts.num_threads as usize).max(1),
+        TruncationModelSpec {
+            length_law: quant_opts.truncation_length_law,
+            end_kernels: quant_opts.truncation_end_kernels,
+            positional_power: quant_opts.truncation_positional_power,
+            calibrate_power: quant_opts.truncation_calibrate_power,
+            min_share: quant_opts.truncation_min_share,
+            sample_below: quant_opts.truncation_sample_below,
+            shrink_auto: quant_opts.truncation_shrink_auto,
+            shrink_per_gene: quant_opts.truncation_shrink_per_gene,
+            positional_law: quant_opts.truncation_positional_law,
+            group_shrink: quant_opts.truncation_group_shrink,
+            group_shrink_auto: quant_opts.truncation_group_shrink_auto,
+            group_shrink_per_gene: quant_opts.truncation_group_shrink_per_gene,
+        },
+        quant_opts.truncation_abundance,
+        ref_count as usize,
+        n_groups,
+        truncation::FitExtras {
+            genes,
+            junctions: junction_law_positions,
+        },
+    );
+    if let Some(dir) = dump_dir {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join("unique_counts.tsv.gz");
+        let (lines, molecules) = truncation::write_unique_counts(&cells, &barcodes, ref_names, &path)?;
+        info!(
+            log,
+            "truncation dump: {} (cell, transcript) lines for {} cells with {} one-candidate molecules written to {}",
+            lines.to_formatted_string(&Locale::en),
+            cells.len().to_formatted_string(&Locale::en),
+            molecules.to_formatted_string(&Locale::en),
+            path.display()
+        );
+    }
+    drop(cells);
+    let na = |x: Option<String>| x.unwrap_or_else(|| "NA".to_string());
+    let frozen_at = na(fit.frozen_at.map(|i| i.to_string()));
+    let freeze_reason = na(fit.freeze_reason.map(|r| r.to_string()));
+    info!(
+        log,
+        "global truncation parameters after {} iterations (frozen at {}, {}): {:?}",
+        fit.iterations,
+        frozen_at,
+        freeze_reason,
+        fit.params
+    );
+    if quant_opts.truncation_abundance != TruncationAbundance::Cell {
+        info!(
+            log,
+            "pooled transcript abundances after {} further EM steps",
+            fit.abundance_iterations
+        );
+    }
+    if let Some(p) = fit.prior.as_ref() {
+        if p.alpha.is_infinite() {
+            info!(
+                log,
+                "pooled prior strength from {} one-candidate molecules in {} {} of {} cells: no variation in isoform usage between cells beyond sampling; every cell uses the pooled isoform shares",
+                p.molecules.to_formatted_string(&Locale::en),
+                p.loci.to_formatted_string(&Locale::en),
+                if p.within_genes { "genes" } else { "loci" },
+                p.cells.to_formatted_string(&Locale::en)
+            );
+        } else {
+            info!(
+                log,
+                "pooled prior strength from {} one-candidate molecules in {} {} of {} cells: alpha = {:.2} pseudo-molecules per {}; a cell's own molecules of a {} weigh n / (n + alpha) against the pooled shares: 1 molecule {:.3}, 10 molecules {:.3}, 100 molecules {:.3}",
+                p.molecules.to_formatted_string(&Locale::en),
+                p.loci.to_formatted_string(&Locale::en),
+                if p.within_genes { "genes" } else { "loci" },
+                p.cells.to_formatted_string(&Locale::en),
+                p.alpha,
+                if p.within_genes { "gene" } else { "locus" },
+                if p.within_genes { "gene" } else { "locus" },
+                p.own_weight(1.0),
+                p.own_weight(10.0),
+                p.own_weight(100.0)
+            );
+        }
+        if p.per_locus.is_some() {
+            info!(
+                log,
+                "per {}: {} with a finite strength (median alpha {:.1}), the rest take the pooled shares",
+                if p.within_genes { "gene" } else { "locus" },
+                p.loci_finite.to_formatted_string(&Locale::en),
+                p.alpha_median
+            );
+        }
+    }
+    if let Some(p) = fit.group_prior.as_ref() {
+        if p.loci_finite == 0 {
+            info!(
+                log,
+                "group prior strength from the groups' own fits over {} molecules in {} {} of {} groups: no {} differs between the groups beyond sampling; every group uses the shares of all cells",
+                p.molecules.to_formatted_string(&Locale::en),
+                p.loci.to_formatted_string(&Locale::en),
+                if p.within_genes { "genes" } else { "loci" },
+                p.cells.to_formatted_string(&Locale::en),
+                if p.within_genes { "gene" } else { "locus" }
+            );
+        } else {
+            info!(
+                log,
+                "group prior strength from the groups' own fits over {} molecules in {} {} of {} groups: {} {} differ between the groups beyond sampling and keep each group's own shares with a median strength of {:.1} pseudo-molecules (a group's own n molecules of such a {} weigh n / (n + beta): 10 molecules {:.3}, 100 molecules {:.3}, 1000 molecules {:.3}); the rest take the shares of all cells",
+                p.molecules.to_formatted_string(&Locale::en),
+                p.loci.to_formatted_string(&Locale::en),
+                if p.within_genes { "genes" } else { "loci" },
+                p.cells.to_formatted_string(&Locale::en),
+                p.loci_finite.to_formatted_string(&Locale::en),
+                if p.within_genes { "genes" } else { "loci" },
+                p.alpha_median,
+                if p.within_genes { "gene" } else { "locus" },
+                p.own_weight(10.0),
+                p.own_weight(100.0),
+                p.own_weight(1000.0)
+            );
+        }
+    }
+    if let Some(c) = fit.calibration.as_ref() {
+        info!(
+            log,
+            "calibrated positional power {:.4} from {} molecules settled by their alignments (positional likelihood ranks their transcript first for {:.3}); calibration log-likelihood per molecule at powers {:?}",
+            c.p,
+            c.molecules,
+            c.positional_agreement,
+            c.curve
+                .iter()
+                .map(|(p, f)| format!("{p:.2}:{f:.5}"))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    if let Some(j) = fit.junction.as_ref() {
+        info!(
+            log,
+            "junction law learned from {} one-candidate molecules: every interval's prior is multiplied by the law's probability of its start",
+            j.molecules.to_formatted_string(&Locale::en)
+        );
+    }
+
+    let mut file = BufWriter::new(File::create(
+        output_path.join("truncation_model_global.tsv"),
+    )?);
+    writeln!(
+        file,
+        "P3Anchored\tP5Anchored\tPFullLength\tPUniform\tMeanLen3\tMeanLen5\tMeanLenUniform\tK3Rho\tK3Gap0\tK3Gap1to15\tK3Gap16to255\tK3Gap256plus\tK5Rho\tK5Gap0\tK5Gap1to15\tK5Gap16to255\tK5Gap256plus\tCells\tMolecules\tIterations\tParamsFrozenAtIteration\tFreezeReason\tPriorAlpha\tGroupPriorBeta\tFourFullLength\tFourStopRate\tFourThreePrime\tFourDecay"
+    )?;
+    let p = &fit.params;
+    writeln!(
+        file,
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        p.p3,
+        p.p5,
+        p.pf,
+        p.pu,
+        p.len3_mean,
+        p.len5_mean,
+        p.lenu_mean,
+        p.k3_rho,
+        p.k3_gap[0],
+        p.k3_gap[1],
+        p.k3_gap[2],
+        p.k3_gap[3],
+        p.k5_rho,
+        p.k5_gap[0],
+        p.k5_gap[1],
+        p.k5_gap[2],
+        p.k5_gap[3],
+        fit.cells,
+        fit.molecules,
+        fit.iterations,
+        frozen_at,
+        freeze_reason,
+        na(fit.prior.as_ref().map(|p| p.alpha.to_string())),
+        na(fit.group_prior.as_ref().map(|p| p.alpha.to_string())),
+        four_col(&p.four, 0),
+        four_col(&p.four, 1),
+        four_col(&p.four, 2),
+        four_col(&p.four, 3)
+    )?;
+    file.flush()?;
+    Ok((fit, discovered))
+}
+
+/// With `--coverage-source global`: the coverage models' coverage from the deduplicated molecules
+/// of all cells (every k-th with `--truncation-global-cells`), accumulated per transcript in a pass
+/// over the input before any cell is quantified, with the per-bin probabilities the per-cell
+/// models compute, so that a transcript's coverage comes from thousands of molecules instead of a
+/// handful.
+#[allow(clippy::too_many_arguments)]
+fn estimate_global_coverage<B, R, P>(
+    quant_opts: &QuantOpts,
+    retained_bc: Option<&HashSet<u64, ahash::RandomState>>,
+    tid_to_gid: &[u32],
+    junction_positions: Option<&[Vec<u32>]>,
+    ref_count: u32,
+    num_cells: u64,
+    n_workers: usize,
+) -> anyhow::Result<Vec<CellTxpCoverage>>
+where
+    B: ConvertiblePrimitiveInteger,
+    u64: From<B>,
+    R: MappedRecord
+        + CollatableMappedRecord<B>
+        + KnownSize
+        + UmiTaggedRecord
+        + OptionalAlignmentExtras
+        + MaybeQName
+        + 'static,
+    <R as MappedRecord>::ParsingContext: RecordContext,
+    <R as MappedRecord>::ParsingContext: Clone,
+    <R as MappedRecord>::ParsingContext: Send,
+    P: EqClassPayload,
+{
+    let log = quant_opts.log;
+    let (end_distribution, end_model, end_threshold, end_scale) = (
+        quant_opts.end_distribution,
+        quant_opts.end_model,
+        quant_opts.end_threshold,
+        quant_opts.end_scale,
+    );
+    let (pug_exact_umi, ed_distance_model, ed_upper_bound) = (
+        quant_opts.pug_exact_umi,
+        quant_opts.ed_distance_model,
+        quant_opts.ed_upper_bound,
+    );
+    let (large_graph_thresh, lambda_size, tau_delta) = (
+        quant_opts.large_graph_thresh,
+        quant_opts.lambda_size,
+        quant_opts.tau_delta,
+    );
+    let (bin_width, growth_rate) = (quant_opts.coverage_bin_width, quant_opts.coverage_growth_rate);
+    let stride = match quant_opts.truncation_global_cells {
+        0 => 1,
+        n => (num_cells as usize).div_ceil(n).max(1),
+    };
+    info!(
+        log,
+        "estimating transcript coverage from one in {} of {} cells before quantifying",
+        stride,
+        num_cells.to_formatted_string(&Locale::en)
+    );
+
+    let mut br = open_collated_rad(std::path::Path::new(quant_opts.input_dir))?;
+    let prelude = RadPrelude::from_bytes(&mut br)?;
+    prelude.file_tags.parse_tags_from_bytes(&mut br)?;
+    let mut chunk_reader = libradicl::readers::ParallelChunkReader::<R>::new(
+        &prelude,
+        std::num::NonZeroUsize::new(n_workers).unwrap(),
+    );
+    let parts = Mutex::new(Vec::<Vec<CellTxpCoverage>>::new());
+    let (cells_used, molecules_used) = (AtomicU64::new(0), AtomicU64::new(0));
+
+    let read = thread::scope(|scope| {
+        for _ in 0..n_workers {
+            let in_q = chunk_reader.get_queue();
+            let is_done = chunk_reader.is_done();
+            let parts = &parts;
+            let (cells_used, molecules_used) = (&cells_used, &molecules_used);
+            scope.spawn(move || {
+                let mut eq_map = EqMap::new(ref_count, EqMapType::TranscriptLevel, P::HAS_PROBS);
+                let s = ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64);
+                let mut gene_eqc: HashMap<Vec<u32>, P, ahash::RandomState> =
+                    HashMap::with_hasher(s);
+                let mut coverage: Vec<CellTxpCoverage> = (0..ref_count as usize)
+                    .map(|_| CellTxpCoverage::uninitialized())
+                    .collect();
+                while !is_done.load(Ordering::SeqCst) || !in_q.is_empty() {
+                    while let Some(meta_chunk) = in_q.pop() {
+                        let first_cell_in_chunk = meta_chunk.first_chunk_index;
+                        for (cn, mut c) in meta_chunk.iter().enumerate() {
+                            let cell_num = first_cell_in_chunk + cn;
+                            if cell_num % stride != 0 || c.reads.is_empty() {
+                                continue;
+                            }
+                            let bc = c.reads.first().expect("chunk with no reads").collate_key();
+                            init_eq_map_for_chunk(
+                                &mut eq_map,
+                                &mut c,
+                                end_distribution,
+                                end_model,
+                                end_threshold,
+                                end_scale,
+                                true,
+                                None,
+                                junction_positions,
+                            );
+                            let g = pugutils::extract_graph(
+                                &eq_map,
+                                pug_exact_umi,
+                                ed_distance_model,
+                                ed_upper_bound,
+                                log,
+                            );
+                            let hasher = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
+                            let mut molecules = Vec::new();
+                            get_num_molecules_log_dp_new(
+                                &g,
+                                &eq_map,
+                                tid_to_gid,
+                                &mut gene_eqc,
+                                &hasher,
+                                large_graph_thresh,
+                                DpConfig {
+                                    log_prior_odds: lambda_size,
+                                    tau_delta,
+                                },
+                                Some(&mut molecules),
+                                log,
+                            );
+                            gene_eqc.clear();
+                            eq_map.clear();
+                            add_molecules_to_coverage(&molecules, &mut coverage, bin_width);
+                            cells_used.fetch_add(1, Ordering::Relaxed);
+                            molecules_used.fetch_add(molecules.len() as u64, Ordering::Relaxed);
+                        }
+                    }
+                }
+                parts.lock().unwrap().push(coverage);
+            });
+        }
+        if let Some(ret_bc) = retained_bc {
+            let filter_fn =
+                |buf: &[u8], record_context: &<R as MappedRecord>::ParsingContext| -> bool {
+                    let ch = R::peek_collatable_header(&buf[8..], record_context)
+                        .expect("at least one record");
+                    let ck: u64 = ch.collate_key().into();
+                    ret_bc.contains(&ck)
+                };
+            chunk_reader.start_filtered(&mut br, filter_fn, None::<fn(u64, u64)>)
+        } else {
+            chunk_reader.start(&mut br, None::<fn(u64, u64)>)
+        }
+    });
+    read?;
+
+    // sum the threads' coverage; the first initialised copy of a transcript sets its bins
+    let mut coverage: Vec<CellTxpCoverage> = (0..ref_count as usize)
+        .map(|_| CellTxpCoverage::uninitialized())
+        .collect();
+    for part in parts.into_inner().unwrap() {
+        for (total, piece) in coverage.iter_mut().zip(part) {
+            if piece.len == 0 {
+                continue;
+            }
+            if total.len == 0 {
+                *total = piece;
+            } else {
+                for (a, b) in total.coverage_bins.iter_mut().zip(&piece.coverage_bins) {
+                    *a += b;
+                }
+                total.total_weight += piece.total_weight;
+            }
+        }
+    }
+    crate::eq_class::compute_cell_coverage_probs(&mut coverage, growth_rate);
+    let modelled = coverage
+        .iter()
+        .filter(|c| c.total_weight > crate::eq_class::MIN_ALIGNMENTS_FOR_COVERAGE)
+        .count();
+    info!(
+        log,
+        "transcript coverage from {} molecules of {} cells: {} transcripts with more than {} molecules get a coverage model, the rest a neutral one",
+        molecules_used.into_inner().to_formatted_string(&Locale::en),
+        cells_used.into_inner().to_formatted_string(&Locale::en),
+        modelled.to_formatted_string(&Locale::en),
+        crate::eq_class::MIN_ALIGNMENTS_FOR_COVERAGE
+    );
+    Ok(coverage)
 }
 
 pub(crate) fn do_quantify<T: BufRead, B, R, P>(
@@ -1484,6 +2635,8 @@ where
     let large_graph_thresh = quant_opts.large_graph_thresh;
     let filter_list = quant_opts.filter_list;
     let log = quant_opts.log;
+    let junction_model = quant_opts.junction_model;
+    let junction_gtf = quant_opts.junction_gtf;
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
     let true_umi_mode = quant_opts.true_umi_mode;
@@ -1496,8 +2649,51 @@ where
     let end_distribution = quant_opts.end_distribution;
     let end_threshold = quant_opts.end_threshold;
     let end_scale = quant_opts.end_scale;
+    let coverage_model = quant_opts.coverage_model;
+    let coverage_dedup_model = quant_opts.coverage_dedup_model;
+    let truncation_model = quant_opts.truncation_model;
+    let truncation_interval_mode = quant_opts.truncation_interval_mode;
+    let coverage_bin_width = quant_opts.coverage_bin_width;
+    let coverage_growth_rate = quant_opts.coverage_growth_rate;
 
     let hdr = &prelude.hdr;
+    let junction_likelihood = quant_opts.junction_likelihood;
+    let loaded_junctions = if junction_model || junction_likelihood {
+        anyhow::ensure!(
+            P::HAS_PROBS,
+            "the junction models require long-read alignment probability data"
+        );
+        let gtf_path =
+            junction_gtf.context("--junction-model and --junction-likelihood require --junction-gtf")?;
+        let positions = load_transcript_junctions(gtf_path, &hdr.ref_names)?;
+        let annotated_transcripts = positions
+            .iter()
+            .filter(|transcript_junctions| !transcript_junctions.is_empty())
+            .count();
+        info!(
+            log,
+            "Loaded splice-junction positions for {} of {} transcript references from {}.",
+            annotated_transcripts,
+            hdr.ref_names.len(),
+            gtf_path.display()
+        );
+        Some(Arc::new(positions))
+    } else {
+        None
+    };
+    // The earlier weight enters the alignment probabilities (--junction-model); the learned law
+    // enters the truncation model (--junction-likelihood).
+    let junction_positions = if junction_model {
+        loaded_junctions.clone()
+    } else {
+        None
+    };
+    let junction_law_positions = if junction_likelihood {
+        loaded_junctions
+    } else {
+        None
+    };
+
     // in the collated rad file, we have 1 cell per chunk.
     // we make this value `mut` since, if we have a non-empty
     // filter list, the number of cells will be dictated by
@@ -1515,7 +2711,7 @@ where
     if graph_dump::dump_cell_target().is_some() {
         graph_dump::dump_ref_names(&hdr.ref_names);
     }
-    
+
     // now that we have the header, parse and convert the
     // tgmap.
 
@@ -1690,13 +2886,19 @@ where
     let true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>> = match quant_opts.true_umi_mode {
         TrueUmiOracleMode::Off => None,
         _ => Some(Arc::new(load_true_umi_table(
-            quant_opts.true_umi_txp_file.as_ref().expect("true_umi_file required when true_umi_mode != Off"),
+            quant_opts
+                .true_umi_txp_file
+                .as_ref()
+                .expect("true_umi_file required when true_umi_mode != Off"),
         ))),
     };
-    
+
     let true_txp_lookup: Option<Arc<HashMap<String, String>>> = match quant_opts.true_txp_mode {
         Some(true) => Some(Arc::new(load_true_txp_table(
-            quant_opts.true_umi_txp_file.as_ref().expect("true_umi_txp_file required when true_txp_mode is Some(true)"),
+            quant_opts
+                .true_umi_txp_file
+                .as_ref()
+                .expect("true_umi_txp_file required when true_txp_mode is Some(true)"),
         ))),
         _ => None,
     };
@@ -1723,6 +2925,16 @@ where
         ff_file,
         "CB\tCorrectedReads\tMappedReads\tDeduplicatedReads\tMappingRate\tDedupRate\tMeanByMax\tNumGenesExpressed\tNumGenesOverMean"
     )?;
+    let truncation_file = if quant_opts.truncation_model {
+        let mut file = BufWriter::new(File::create(output_path.join("truncation_model.tsv"))?);
+        writeln!(
+            file,
+            "CB\tP3Anchored\tP5Anchored\tPFullLength\tPUniform\tMeanLen3\tMeanLen5\tMeanLenUniform\tK3Rho\tK3Gap0\tK3Gap1to15\tK3Gap16to255\tK3Gap256plus\tK5Rho\tK5Gap0\tK5Gap1to15\tK5Gap16to255\tK5Gap256plus\tMoleculeCount\tIterations\tParamsFrozenAtIteration\tFreezeReason\tConverged\tFitStatus\tMixedIntervalMolecules\tFourFullLength\tFourStopRate\tFourThreePrime\tFourDecay"
+        )?;
+        Some(file)
+    } else {
+        None
+    };
     let alt_res_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
     let empty_resolved_cells = Arc::new(Mutex::new(Vec::<u64>::new()));
 
@@ -1765,6 +2977,7 @@ where
         barcode_file: BufWriter::new(bc_file),
         eds_file: BufWriter::new(buffered),
         feature_file: BufWriter::new(ff_file),
+        truncation_file,
         trimat,
         row_index: 0usize,
         bootstrap_helper: boot_helper,
@@ -1788,6 +3001,124 @@ where
         cell_offset: Vec::new(),
     }));
 
+    let truncation_groups = match quant_opts.truncation_groups.as_ref() {
+        Some(path) => {
+            let g = truncation::TruncationGroups::load(path)
+                .with_context(|| format!("reading truncation groups {}", path.display()))?;
+            info!(
+                log,
+                "truncation groups: {} barcodes in {} groups ({}), unlisted barcodes in one more",
+                g.n_barcodes(),
+                g.names().len(),
+                g.names().join(", ")
+            );
+            Some(Arc::new(g))
+        }
+        None => None,
+    };
+    let global_coverage = if (coverage_model || coverage_dedup_model)
+        && quant_opts.coverage_source == truncation::CoverageSource::Global
+    {
+        Some(Arc::new(estimate_global_coverage::<B, R, P>(
+            &quant_opts,
+            retained_bc.as_ref(),
+            &tid_to_gid_shared,
+            junction_positions.as_deref().map(|p| p.as_slice()),
+            ref_count,
+            num_cells,
+            n_workers,
+        )?))
+    } else {
+        None
+    };
+    let truncation_genes = match quant_opts.truncation_genes.as_ref() {
+        Some(path) => {
+            let g = truncation::GeneMap::load(path, &ref_names_shared)
+                .with_context(|| format!("reading truncation genes {}", path.display()))?;
+            info!(
+                log,
+                "truncation genes: {} of {} transcripts found in {} genes; the pooled prior acts within genes",
+                g.matched.to_formatted_string(&Locale::en),
+                ref_names_shared.len().to_formatted_string(&Locale::en),
+                g.genes.to_formatted_string(&Locale::en)
+            );
+            Some(Arc::new(g))
+        }
+        None => None,
+    };
+    // --truncation-discover-groups takes its genes from the given file, else from the -m map,
+    // which must then group transcripts into genes (a transcript-to-transcript map does not)
+    let discover_genes: Option<Vec<u32>> = if quant_opts.truncation_discover_groups {
+        let gene_of = match quant_opts.truncation_discover_genes.as_ref() {
+            Some(path) => {
+                let g = truncation::GeneMap::load(path, &ref_names_shared)
+                    .with_context(|| format!("reading the genes for group discovery {}", path.display()))?;
+                info!(
+                    log,
+                    "group discovery genes: {} of {} transcripts found in {} genes of {}",
+                    g.matched.to_formatted_string(&Locale::en),
+                    ref_names_shared.len().to_formatted_string(&Locale::en),
+                    g.genes.to_formatted_string(&Locale::en),
+                    path.display()
+                );
+                g.gene_of
+            }
+            None => tid_to_gid_shared.to_vec(),
+        };
+        let mut per_gene: HashMap<u32, u32> = HashMap::new();
+        for &g in &gene_of {
+            *per_gene.entry(g).or_default() += 1;
+        }
+        if !per_gene.values().any(|&n| n >= 2) {
+            bail!(
+                "--truncation-discover-groups: no gene has two transcripts in the {} map, so isoform usage cannot be compared between cells; give a transcript<TAB>gene file as the option's value",
+                if quant_opts.truncation_discover_genes.is_some() { "given" } else { "-m" }
+            );
+        }
+        Some(gene_of)
+    } else {
+        None
+    };
+    let (truncation_global, truncation_groups) = if truncation_model
+        && quant_opts.truncation_params == TruncationParamScope::Global
+    {
+        let (mut fit, discovered) = estimate_global_truncation::<B, R, P>(
+            &quant_opts,
+            retained_bc.as_ref(),
+            &tid_to_gid_shared,
+            junction_positions.as_deref().map(|p| p.as_slice()),
+            ref_count,
+            num_cells,
+            n_workers,
+            output_path,
+            truncation_groups.as_deref(),
+            barcode_len,
+            truncation_genes.as_deref().map(|g| g.gene_of.as_slice()),
+            global_coverage.as_deref().map(Vec::as_slice),
+            junction_law_positions.as_deref().map(|p| p.as_slice()),
+            &ref_names_shared,
+            quant_opts.truncation_dump.as_deref(),
+            discover_genes.as_deref(),
+        )?;
+        let mut groups = discovered.map(Arc::new).or(truncation_groups);
+        if let Some(path) = quant_opts.truncation_oracle.as_ref() {
+            let oracle = truncation::load_oracle(path, &ref_names_shared, fit.pooled_abundances())
+                .with_context(|| format!("reading truncation oracle {}", path.display()))?;
+            info!(
+                log,
+                "truncation oracle: fixed abundances for {} cells over {} transcripts ({} lines named transcripts not in the reference); unlisted cells use the pooled abundances",
+                oracle.groups.n_barcodes().to_formatted_string(&Locale::en),
+                oracle.transcripts.to_formatted_string(&Locale::en),
+                oracle.unmatched.to_formatted_string(&Locale::en)
+            );
+            fit = fit.with_abundances(oracle.alpha);
+            groups = Some(Arc::new(oracle.groups));
+        }
+        (Some(Arc::new(fit)), groups)
+    } else {
+        (None, truncation_groups)
+    };
+
     // for each worker, spawn off a thread
     for worker in 0..n_workers {
         // each thread will need to access the work queue
@@ -1799,6 +3130,7 @@ where
         // the shared tid_to_gid map
         let tid_to_gid = tid_to_gid_shared.clone();
         let ref_names = ref_names_shared.clone();
+        let junction_positions = junction_positions.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
 
@@ -1869,13 +3201,40 @@ where
             end_distribution,
             end_threshold,
             end_scale,
+            coverage_model,
+            coverage_dedup_model,
+            truncation_model,
+            truncation_interval_mode,
+            truncation_spec: TruncationModelSpec {
+                length_law: quant_opts.truncation_length_law,
+                end_kernels: quant_opts.truncation_end_kernels,
+                positional_power: quant_opts.truncation_positional_power,
+                calibrate_power: quant_opts.truncation_calibrate_power,
+                min_share: quant_opts.truncation_min_share,
+                sample_below: quant_opts.truncation_sample_below,
+                shrink_auto: quant_opts.truncation_shrink_auto,
+                shrink_per_gene: quant_opts.truncation_shrink_per_gene,
+                positional_law: quant_opts.truncation_positional_law,
+                group_shrink: quant_opts.truncation_group_shrink,
+                group_shrink_auto: quant_opts.truncation_group_shrink_auto,
+                group_shrink_per_gene: quant_opts.truncation_group_shrink_per_gene,
+            },
+            truncation_shrink: (quant_opts.truncation_abundance == TruncationAbundance::Shrink)
+                .then_some(quant_opts.truncation_shrink),
+            truncation_global: truncation_global.clone(),
+            truncation_groups: truncation_groups.clone(),
+            coverage_bin_width,
+            coverage_growth_rate,
+            coverage_source: quant_opts.coverage_source,
         };
 
         let shared = WorkerSharedState {
+            global_coverage: global_coverage.clone(),
             in_q,
             is_done,
             tid_to_gid,
             ref_names,
+            junction_positions,
             cells_remaining,
             bcout,
             eqid_map_lock: eqid_map_lockc,
@@ -2026,6 +3385,10 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+
+    if quant_opts.truncation_model && !matches!(&rec_type, KnownRecordType::RnaLong(_)) {
+        anyhow::bail!("--model-truncation requires long-read RNA-seq alignment input");
+    }
 
     match rec_type {
         KnownRecordType::RnaLong(_bc_len) => {

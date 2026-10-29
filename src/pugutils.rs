@@ -59,6 +59,7 @@ pub enum PugEdgeType {
 pub struct PugResolutionStatistics {
     pub used_alternative_strategy: bool,
     pub total_mccs: u64,
+    pub large_graph_mccs: u64,
     pub ambiguous_mccs: u64,
     pub trivial_mccs: u64,
 }
@@ -772,6 +773,7 @@ pub fn get_num_molecules_log_greedy<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };
@@ -1261,6 +1263,7 @@ pub fn get_num_molecules_log<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };
@@ -2229,6 +2232,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
     let mut pug_stats = PugResolutionStatistics {
         used_alternative_strategy: false,
         total_mccs: 0u64,
+        large_graph_mccs: 0u64,
         ambiguous_mccs: 0u64,
         trivial_mccs: 0u64,
     };

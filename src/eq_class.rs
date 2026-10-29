@@ -9,8 +9,10 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::{BuildHasher, Hasher};
-use std::io::BufRead;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
 
+use anyhow::Context;
 use libradicl::chunk;
 use libradicl::record::{MappedRecord, UmiTaggedRecord};
 
@@ -19,6 +21,152 @@ use statrs::distribution::{Normal, Continuous};
 use std::f64::consts::LN_10;
 use crate::quant::{EndModel, EndDistribution};
 //use anyhow::bail;
+
+#[derive(Debug, Clone, Copy)]
+pub struct AlignmentInterval {
+    pub transcript_id: u32,
+    pub start: u32,
+    pub end: u32,
+    pub transcript_len: u32,
+}
+
+pub fn merge_intervals(mut intervals: Vec<(u32, u32)>) -> Vec<(u32, u32)> {
+    intervals.retain(|(start, end)| start < end);
+    intervals.sort_unstable();
+
+    let mut merged: Vec<(u32, u32)> = Vec::new();
+    for (start, end) in intervals {
+        if let Some(last) = merged.last_mut() {
+            if start <= last.1 {
+                last.1 = last.1.max(end);
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged
+}
+
+pub fn load_transcript_junctions(
+    gtf_path: &Path,
+    reference_names: &[String],
+) -> anyhow::Result<Vec<Vec<u32>>> {
+    let reference_ids: HashMap<&str, usize> = reference_names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.as_str(), idx))
+        .collect();
+    let mut exons = vec![Vec::<(u32, u32)>::new(); reference_names.len()];
+    let mut reverse_strands = vec![None; reference_names.len()];
+    let gtf = std::fs::File::open(gtf_path)
+        .with_context(|| format!("opening junction GTF {}", gtf_path.display()))?;
+
+    for (line_idx, line) in BufReader::new(gtf).lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "reading junction GTF {} at line {}",
+                gtf_path.display(),
+                line_idx + 1
+            )
+        })?;
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() != 9 {
+            anyhow::bail!(
+                "malformed GTF record at {}:{}: expected 9 tab-delimited fields",
+                gtf_path.display(),
+                line_idx + 1
+            );
+        }
+        if fields[2] != "exon" {
+            continue;
+        }
+
+        let Some(id_start) = fields[8].find("transcript_id \"") else {
+            anyhow::bail!(
+                "exon record has no transcript_id at {}:{}",
+                gtf_path.display(),
+                line_idx + 1
+            );
+        };
+        let id_start = id_start + "transcript_id \"".len();
+        let Some(id_len) = fields[8][id_start..].find('"') else {
+            anyhow::bail!(
+                "unterminated transcript_id at {}:{}",
+                gtf_path.display(),
+                line_idx + 1
+            );
+        };
+        let transcript_id = &fields[8][id_start..id_start + id_len];
+        let Some(&reference_id) = reference_ids.get(transcript_id) else {
+            continue;
+        };
+        let reverse_strand = match fields[6] {
+            "+" => false,
+            "-" => true,
+            other => anyhow::bail!(
+                "invalid exon strand {other:?} at {}:{}",
+                gtf_path.display(),
+                line_idx + 1
+            ),
+        };
+        if let Some(existing) = reverse_strands[reference_id] {
+            anyhow::ensure!(
+                existing == reverse_strand,
+                "conflicting exon strands for transcript {transcript_id} in {}",
+                gtf_path.display()
+            );
+        } else {
+            reverse_strands[reference_id] = Some(reverse_strand);
+        }
+
+        let start = fields[3].parse::<u32>().with_context(|| {
+            format!("invalid exon start at {}:{}", gtf_path.display(), line_idx + 1)
+        })?;
+        let end = fields[4].parse::<u32>().with_context(|| {
+            format!("invalid exon end at {}:{}", gtf_path.display(), line_idx + 1)
+        })?;
+        anyhow::ensure!(
+            start > 0 && start <= end,
+            "invalid exon coordinates at {}:{}",
+            gtf_path.display(),
+            line_idx + 1
+        );
+        exons[reference_id].push((start, end));
+    }
+
+    let mut junctions = vec![Vec::new(); reference_names.len()];
+    let mut annotated_count = 0usize;
+    for (reference_id, transcript_exons) in exons.iter_mut().enumerate() {
+        if transcript_exons.is_empty() {
+            continue;
+        }
+        annotated_count += 1;
+        transcript_exons.sort_unstable();
+        transcript_exons.dedup();
+        if reverse_strands[reference_id].unwrap_or(false) {
+            transcript_exons.reverse();
+        }
+
+        let mut transcript_position = 0u32;
+        for &(start, end) in transcript_exons.iter().take(transcript_exons.len().saturating_sub(1)) {
+            transcript_position = transcript_position
+                .checked_add(end - start + 1)
+                .context("transcript exon coordinates exceed u32 range")?;
+            junctions[reference_id].push(transcript_position);
+        }
+    }
+
+    anyhow::ensure!(
+        annotated_count > 0,
+        "junction GTF {} contains no exon records for the quantification references",
+        gtf_path.display()
+    );
+    Ok(junctions)
+}
+
 
 /// Minimal per-transcript coverage state needed for the per-cell model.
 /// Mirrors TranscriptInfo from oarfish but lives here to avoid a crate dep.
@@ -67,6 +215,11 @@ impl CellTxpCoverage {
     /// Add one alignment interval [start, end) with the given weight.
     #[inline]
     pub fn add_interval(&mut self, start: u32, end: u32, weight: f64) {
+        self.add_interval_coverage(start, end, weight);
+        self.total_weight += weight;
+    }
+
+    fn add_interval_coverage(&mut self, start: u32, end: u32, weight: f64) {
         if self.coverage_bins.is_empty() {
             return;
         }
@@ -86,7 +239,32 @@ impl CellTxpCoverage {
             let frac = olap / (bin_e - bin_s);
             self.coverage_bins[b] += frac * weight;
         }
-        self.total_weight += weight;
+    }
+
+    pub fn add_molecule_intervals(&mut self, intervals: &[(u32, u32)], weight: f64) {
+        for &(start, end) in intervals {
+            self.add_interval_coverage(start, end, weight);
+        }
+        if !intervals.is_empty() {
+            self.total_weight += weight;
+        }
+    }
+
+    pub fn coverage_probability_for_intervals(&self, intervals: &[(u32, u32)]) -> f64 {
+        let mut covered_bases = 0.0;
+        let mut weighted_probability = 0.0;
+        for &(start, end) in intervals {
+            let length = end.saturating_sub(start) as f64;
+            if length > 0.0 {
+                covered_bases += length;
+                weighted_probability += aln_coverage_prob(self, start, end) * length;
+            }
+        }
+        if covered_bases > 0.0 {
+            weighted_probability / covered_bases
+        } else {
+            1.0
+        }
     }
 
     /// Reset between cells.
@@ -106,7 +284,7 @@ fn logistic_clamp(x: f64, k: f64) -> f64 {
 /// Compute per-bin logistic coverage probabilities for every transcript
 /// that has been seen in this cell.  Call this *once* after all reads have
 /// been accumulated, before building the final probability map.
-const MIN_ALIGNMENTS_FOR_COVERAGE: f64 = 10.0;
+pub const MIN_ALIGNMENTS_FOR_COVERAGE: f64 = 10.0;
 
 pub fn compute_cell_coverage_probs(txp_cov: &mut [CellTxpCoverage], growth_rate: f64) {
     for t in txp_cov.iter_mut() {
@@ -133,7 +311,7 @@ pub fn compute_cell_coverage_probs(txp_cov: &mut [CellTxpCoverage], growth_rate:
     }
 }
 
-/// Compute the combined (score × coverage) probability vector for one read,
+/// Compute the combined (score × end × coverage) probability vector for one read,
 /// normalised to sum to 1.
 ///
 /// Accepts raw slices so it has no dependency on the `OptionalAlignmentExtras`
@@ -142,10 +320,20 @@ fn build_final_probs_inner(
     as_scores: &[i32],
     starts: &[u32],
     ends: &[u32],
+    tlens: &[u32],
+    dirs: &[bool],
+    end_model: Option<(EndDistribution, EndModel, f64, f64)>,
     refs: &[u32],
     tcov: Option<&[CellTxpCoverage]>,
+    junction_positions: Option<&[Vec<u32>]>,
 ) -> Vec<f64> {
     let score_probs = score_probabilities(as_scores);
+    let end_probs = match end_model {
+        Some((distribution, model, threshold, scale)) => end_probabilities_oriented(
+            starts, ends, tlens, dirs, distribution, model, threshold, scale,
+        ),
+        None => vec![1.0; score_probs.len()],
+    };
 
     let cov_probs: Vec<f64> = match tcov {
         Some(tc) => {
@@ -166,13 +354,18 @@ fn build_final_probs_inner(
         }
         None => vec![1.0_f64; score_probs.len()],
     };
-
-    // elementwise product — both vectors already sum to 1 individually,
-    // so this product still needs a final renormalization
+    let junction_probs = junction_positions
+        .map(|positions| junction_start_probabilities(starts, ends, tlens, dirs, refs, positions))
+        .unwrap_or_else(|| vec![1.0; score_probs.len()]);
+    // Normalize the combined alignment likelihoods after applying all factors.
     let mut final_probs: Vec<f64> = score_probs
         .iter()
-        .zip(cov_probs.iter())
-        .map(|(s, c)| s * c)
+        .zip(
+            end_probs
+                .iter()
+                .zip(cov_probs.iter().zip(junction_probs.iter())),
+        )
+        .map(|(score, (end, (coverage, junction)))| score * end * coverage * junction)
         .collect();
 
     let prob_sum: f64 = final_probs.iter().sum();
@@ -187,6 +380,43 @@ fn build_final_probs_inner(
     }
     assert!(!final_probs.is_empty(), "Empty final_probs");
     final_probs
+}
+
+fn junction_start_probabilities(
+    starts: &[u32],
+    ends: &[u32],
+    tlens: &[u32],
+    dirs: &[bool],
+    refs: &[u32],
+    junction_positions: &[Vec<u32>],
+) -> Vec<f64> {
+    debug_assert_eq!(starts.len(), ends.len());
+    debug_assert_eq!(starts.len(), tlens.len());
+    debug_assert_eq!(starts.len(), dirs.len());
+    debug_assert_eq!(starts.len(), refs.len());
+
+    (0..starts.len())
+        .map(|idx| {
+            let read_start = if dirs[idx] { starts[idx] } else { ends[idx] }.min(tlens[idx]);
+            if read_start == 0 {
+                return 1.0;
+            }
+
+            let Some(previous_junction) = junction_positions
+                .get(refs[idx] as usize)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&junction| junction <= read_start && junction <= tlens[idx])
+                .max()
+            else {
+                return 1.0;
+            };
+
+            let ratio = (read_start - previous_junction) as f64 / read_start as f64;
+            ratio.sqrt().max(1e-6)
+        })
+        .collect()
 }
 
 /// Expected coverage probability for a single alignment [start, end)
@@ -669,6 +899,8 @@ pub struct EqMap {
     eqid_map: HashMap<Vec<u32>, u32, ahash::RandomState>,
     pub map_type: EqMapType,
     pub prob_map: Option<ProbMap>,
+    // add this info to compute the coverage probabilities after deduplication step in each cell
+    pub alignment_intervals: Option<HashMap<(u32, u64), Vec<AlignmentInterval>>>,
 }
 
 // the probability map is an attribute map over f64s
@@ -944,6 +1176,9 @@ impl EqMap {
         self.ref_offsets.clear();
         self.ref_labels.clear();
         self.prob_map.iter_mut().for_each(|x| x.clear());
+        if let Some(intervals) = self.alignment_intervals.as_mut() {
+            intervals.clear();
+        }
         // keep map_type
         //self.eqid_map.clear();
     }
@@ -966,6 +1201,7 @@ impl EqMap {
             } else {
                 None
             },
+            alignment_intervals: None,
         }
     }
 
@@ -1156,6 +1392,103 @@ impl EqMap {
     where
         R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
     {
+        self.init_from_chunk_internal(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            false,
+            None,
+            None,
+        );
+    }
+
+    pub fn init_from_chunk_with_junctions<R>(
+        &mut self,
+        cell_chunk: &mut chunk::Chunk<R>,
+        end_distribution: EndDistribution,
+        end_model: EndModel,
+        end_threshold: f64,
+        end_scale: f64,
+        capture_intervals: bool,
+        coverage: Option<&[CellTxpCoverage]>,
+        junction_positions: &[Vec<u32>],
+    ) where
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+    {
+        self.init_from_chunk_internal(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            capture_intervals,
+            coverage,
+            Some(junction_positions),
+        );
+    }
+
+    pub fn init_from_chunk_with_intervals<R>(
+        &mut self,
+        cell_chunk: &mut chunk::Chunk<R>,
+        end_distribution: EndDistribution,
+        end_model: EndModel,
+        end_threshold: f64,
+        end_scale: f64,
+    ) where
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+    {
+        self.init_from_chunk_internal(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            true,
+            None,
+            None,
+        );
+    }
+
+    pub fn init_from_chunk_with_fixed_coverage<R>(
+        &mut self,
+        cell_chunk: &mut chunk::Chunk<R>,
+        end_distribution: EndDistribution,
+        end_model: EndModel,
+        end_threshold: f64,
+        end_scale: f64,
+        capture_intervals: bool,
+        coverage: &[CellTxpCoverage],
+    ) where
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+    {
+        self.init_from_chunk_internal(
+            cell_chunk,
+            end_distribution,
+            end_model,
+            end_threshold,
+            end_scale,
+            capture_intervals,
+            Some(coverage),
+            None,
+        );
+    }
+
+    fn init_from_chunk_internal<R>(
+        &mut self,
+        cell_chunk: &mut chunk::Chunk<R>,
+        end_distribution: EndDistribution,
+        end_model: EndModel,
+        end_threshold: f64,
+        end_scale: f64,
+        capture_intervals: bool,
+        coverage: Option<&[CellTxpCoverage]>,
+        junction_positions: Option<&[Vec<u32>]>,
+    )
+    where
+        R: MappedRecord + UmiTaggedRecord + OptionalAlignmentExtras,
+    {
         /*
         if cell_chunk.reads.len() < 10 {
         self.init_from_small_chunk(cell_chunk);
@@ -1173,6 +1506,13 @@ impl EqMap {
         let mut temp_prob_map = TempProbMap::new();
 
         self.eqid_map.clear();
+        if capture_intervals {
+            self.alignment_intervals
+                .get_or_insert_with(HashMap::new)
+                .clear();
+        } else {
+            self.alignment_intervals = None;
+        }
         // gather the equivalence class info
         for r in &mut cell_chunk.reads {
 
@@ -1183,6 +1523,26 @@ impl EqMap {
 
             let refs = r.refs();
             let _umi = r.umi();
+            let read_intervals: Vec<AlignmentInterval> = if capture_intervals {
+                maybe_aln_extras
+                    .as_ref()
+                    .map(|extras| {
+                        refs.iter()
+                            .enumerate()
+                            .filter_map(|(i, &transcript_id)| {
+                                Some(AlignmentInterval {
+                                    transcript_id,
+                                    start: *extras.starts.get(i)?,
+                                    end: *extras.ends.get(i)?,
+                                    transcript_len: *extras.tlens.get(i)?,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
 
             //==========================================================
             // DEBUG: check for duplicate transcript IDs inside ONE read
@@ -1205,49 +1565,18 @@ impl EqMap {
                 // umi.
                 Some(v) => {
                     self.eqc_info[*v as usize].umis.push((r.umi(), 1));
-                    // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
-                        let scores = extras.as_scores;
-                        let starts   = extras.starts;
-                        let ends   = extras.ends;
-                        let tlens  = extras.tlens;
-                        //let dirs = extras.dirs;
-                        let score_probs = score_probabilities(scores);
-                        let end_probs = end_probabilities_oriented(starts, ends, tlens, extras.dirs, end_distribution, end_model, end_threshold, end_scale);
-                        let mut final_probs: Vec<f64> = score_probs
-                            .iter()
-                            .zip(end_probs.iter())
-                            .map(|(sp, ep)| sp * ep)
-                            .collect();
-                        //let start_probs = start_probabilities(starts);
-                        //let end_probs = end_probabilities(ends, tlens);
-                        //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
-                        //let mut final_probs: Vec<f64> = score_probs;
-                        let prob_sum: f64 = final_probs.iter().sum();
-
-                        if prob_sum.is_infinite() {
-                            panic!("Non-finite prob SUM in: sum={prob_sum}");
-                        }
-
-                        if prob_sum.is_nan() {
-                            panic!("Non-finite prob SUM in: sum={prob_sum}");
-                        }
-
-                        if prob_sum > 0.0 {
-                            for p in final_probs.iter_mut() {
-                                *p /= prob_sum;
-                            }
-                        }
-
-                        if final_probs.iter().any(|p| !p.is_finite()) {
-                            panic!("Found NaN or infinite probability: {:?}", final_probs);
-                        }
-
-                        if final_probs.is_empty() {
-                            panic!("No probabilities computed for alignment extras: {:?}", extras);
-                        }
-
-                        // push score probs with associated eq_id of *v
+                        let final_probs = build_final_probs_inner(
+                            extras.as_scores,
+                            extras.starts,
+                            extras.ends,
+                            extras.tlens,
+                            extras.dirs,
+                            Some((end_distribution, end_model, end_threshold, end_scale)),
+                            refs,
+                            coverage,
+                            junction_positions,
+                        );
                         temp_prob_map.push(*v, &final_probs);
                     };
                 }
@@ -1270,52 +1599,32 @@ impl EqMap {
                         qnames: vec![],
                     });
                     self.eqid_map.insert(refs.to_vec(), eq_num);
-                    // if we have scores, add them labeled with this equivalence class
                     if let Some(extras) = maybe_aln_extras {
-                        let scores = extras.as_scores;
-                        let starts   = extras.starts;
-                        let ends   = extras.ends;
-                        let tlens  = extras.tlens;
-                        let score_probs = score_probabilities(scores);
-                        let end_probs = end_probabilities_oriented(starts, ends, tlens, extras.dirs, end_distribution, end_model, end_threshold, end_scale);
-                        let mut final_probs: Vec<f64> = score_probs
-                            .iter()
-                            .zip(end_probs.iter())
-                            .map(|(sp, ep)| sp * ep)
-                            .collect();
-                        //let start_probs = start_probabilities(starts);
-                        //let end_probs = end_probabilities(ends, tlens);
-                        //let mut final_probs: Vec<f64> = score_probs.iter().zip(start_probs.iter()).map(|(sp, ep)| sp * ep).collect();
-                        //let mut final_probs: Vec<f64> = score_probs;
-                        let prob_sum: f64 = final_probs.iter().sum();
-
-                        if prob_sum.is_infinite() {
-                            panic!("Non-finite prob SUM in: sum={prob_sum}");
-                        }
-
-                        if prob_sum.is_nan() {
-                            panic!("Non-finite prob SUM in: sum={prob_sum}");
-                        }
-                        
-                        if prob_sum > 0.0 {
-                            for p in final_probs.iter_mut() {
-                                *p /= prob_sum;
-                            }
-                        }
-
-                        if final_probs.iter().any(|p| !p.is_finite()) {
-                            panic!("Found NaN or infinite probability: {:?}", final_probs);
-                        }
-
-                        if final_probs.is_empty() {
-                            panic!("No probabilities computed for alignment extras: {:?}", extras);
-                        }
-                        
-                        // push score probs with associated eq_id of *v
+                        let final_probs = build_final_probs_inner(
+                            extras.as_scores,
+                            extras.starts,
+                            extras.ends,
+                            extras.tlens,
+                            extras.dirs,
+                            Some((end_distribution, end_model, end_threshold, end_scale)),
+                            refs,
+                            coverage,
+                            junction_positions,
+                        );
                         temp_prob_map.push(eq_num, &final_probs);
                     }
                     //self.eqc_map.insert(r.refs.clone(), EqMapEntry { umis : vec![(r.umi,1)], eq_num });
                 }
+            }
+
+            if capture_intervals && !read_intervals.is_empty() {
+                let eq_id = *self.eqid_map.get(refs).expect("equivalence class was inserted");
+                self.alignment_intervals
+                    .as_mut()
+                    .expect("interval capture was enabled")
+                    .entry((eq_id, r.umi()))
+                    .or_default()
+                    .extend(read_intervals);
             }
         }
         // final value to avoid special cases
@@ -1519,8 +1828,12 @@ impl EqMap {
                             extras.as_scores,
                             extras.starts,
                             extras.ends,
+                            extras.tlens,
+                            extras.dirs,
+                            None,
                             refs,
                             tcov_slice,
+                            None,
                         );
                         temp_prob_map.push(*v, &fp);
                     }
@@ -1544,8 +1857,12 @@ impl EqMap {
                             extras.as_scores,
                             extras.starts,
                             extras.ends,
+                            extras.tlens,
+                            extras.dirs,
+                            None,
                             refs,
                             tcov_slice,
+                            None,
                         );
                         temp_prob_map.push(eq_num, &fp);
                     }
@@ -1681,6 +1998,96 @@ impl EqMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_intervals_returns_union() {
+        assert_eq!(
+            merge_intervals(vec![(8, 12), (0, 5), (4, 9), (20, 20)]),
+            vec![(0, 12)]
+        );
+    }
+
+    #[test]
+    fn gtf_exons_produce_transcript_oriented_junctions() {
+        let gtf_path = std::env::temp_dir().join(format!(
+            "alevin-fry-junction-test-{}.gtf",
+            std::process::id()
+        ));
+        let gtf = concat!(
+            "chr1\ttest\texon\t101\t105\t.\t+\t.\ttranscript_id \"tx_plus\";\n",
+            "chr1\ttest\texon\t201\t207\t.\t+\t.\ttranscript_id \"tx_plus\";\n",
+            "chr1\ttest\texon\t301\t305\t.\t+\t.\ttranscript_id \"tx_plus\";\n",
+            "chr2\ttest\texon\t301\t305\t.\t-\t.\ttranscript_id \"tx_minus\";\n",
+            "chr2\ttest\texon\t201\t207\t.\t-\t.\ttranscript_id \"tx_minus\";\n",
+            "chr2\ttest\texon\t101\t105\t.\t-\t.\ttranscript_id \"tx_minus\";\n",
+            "chr3\ttest\texon\t1\t9\t.\t+\t.\ttranscript_id \"single_exon\";\n",
+        );
+        std::fs::write(&gtf_path, gtf).unwrap();
+        let refs = vec![
+            "tx_plus".to_owned(),
+            "tx_minus".to_owned(),
+            "single_exon".to_owned(),
+            "unannotated".to_owned(),
+        ];
+
+        let result = load_transcript_junctions(&gtf_path, &refs);
+        std::fs::remove_file(gtf_path).unwrap();
+
+        let junctions = result.unwrap();
+        assert_eq!(junctions[0], vec![5, 12]);
+        assert_eq!(junctions[1], vec![5, 12]);
+        assert!(junctions[2].is_empty());
+        assert!(junctions[3].is_empty());
+    }
+
+    #[test]
+    fn junction_model_uses_the_preceding_junction_and_read_orientation() {
+        let weights = junction_start_probabilities(
+            &[50, 50, 50, 0],
+            &[60, 60, 60, 10],
+            &[100; 4],
+            &[true, false, true, true],
+            &[0, 0, 1, 0],
+            &[vec![40], vec![]],
+        );
+
+        assert!((weights[0] - 0.4472135954999579).abs() < 1e-12);
+        assert!((weights[1] - (1.0_f64 / 3.0).sqrt()).abs() < 1e-12);
+        assert_eq!(weights[2], 1.0);
+        assert_eq!(weights[3], 1.0);
+    }
+
+    #[test]
+    fn junction_model_adjusts_and_normalizes_alignment_probabilities() {
+        let probs = build_final_probs_inner(
+            &[0, 0],
+            &[10, 50],
+            &[20, 60],
+            &[100, 100],
+            &[true, true],
+            None,
+            &[0, 1],
+            None,
+            Some(&[vec![9], vec![10]]),
+        );
+
+        let first_weight = 0.1_f64.sqrt();
+        let second_weight = 0.8_f64.sqrt();
+        assert!((probs[0] - first_weight / (first_weight + second_weight)).abs() < 1e-12);
+        assert!((probs[1] - second_weight / (first_weight + second_weight)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn molecule_intervals_increment_weight_once() {
+        let mut coverage = CellTxpCoverage::new(100, 10);
+        coverage.add_molecule_intervals(&[(0, 20), (50, 70)], 0.5);
+
+        assert_eq!(coverage.total_weight, 0.5);
+        assert_eq!(coverage.coverage_bins[0], 0.5);
+        assert_eq!(coverage.coverage_bins[1], 0.5);
+        assert_eq!(coverage.coverage_bins[5], 0.5);
+        assert_eq!(coverage.coverage_bins[6], 0.5);
+    }
 
     #[test]
     fn temp_prob_map_add() {

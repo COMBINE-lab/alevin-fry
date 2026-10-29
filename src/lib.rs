@@ -27,4 +27,7 @@ pub mod pugutils_dp_new;
 pub mod quant;
 pub mod utils;
 pub mod graph_dump;
+pub mod coverage_diag;
 pub mod umi_general_distance;
+pub mod truncation;
+pub mod truncation_groups;

@@ -14,7 +14,14 @@ use slog;
 use typed_builder::TypedBuilder;
 
 use crate::cellfilter::CellFilterMethod;
-use crate::quant::{ResolutionStrategy, SplicedAmbiguityModel, TrueUmiOracleMode, EditDistanceMode, EMMode, EndModel, EndDistribution};
+use crate::quant::{
+    EMMode, EditDistanceMode, EndDistribution, EndModel, ResolutionStrategy, SplicedAmbiguityModel,
+    TrueUmiOracleMode,
+};
+use crate::truncation::{
+    CoverageSource, TruncationAbundance, TruncationEndKernels, TruncationIntervalMode,
+    TruncationLengthLaw, TruncationParamScope, TruncationPositionalLaw, TruncationPreset,
+};
 
 use std::path::PathBuf;
 
@@ -24,6 +31,8 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub input_dir: &'a PathBuf,
     pub tg_map: &'b PathBuf,
     pub output_dir: &'c PathBuf,
+    pub junction_model: bool,
+    pub junction_gtf: Option<&'a PathBuf>,
     pub num_threads: u32,
     pub num_bootstraps: u32,
     pub init_uniform: bool,
@@ -50,6 +59,37 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub end_distribution: EndDistribution,
     pub end_threshold: f64,
     pub end_scale: f64,
+    pub coverage_model: bool,
+    pub coverage_dedup_model: bool,
+    pub truncation_model: bool,
+    pub truncation_preset: Option<TruncationPreset>,
+    pub truncation_discover_groups: bool,
+    pub truncation_discover_genes: Option<PathBuf>,
+    pub truncation_interval_mode: TruncationIntervalMode,
+    pub truncation_params: TruncationParamScope,
+    pub truncation_length_law: TruncationLengthLaw,
+    pub truncation_end_kernels: TruncationEndKernels,
+    pub truncation_abundance: TruncationAbundance,
+    pub truncation_shrink: f64,
+    pub truncation_shrink_auto: bool,
+    pub truncation_shrink_per_gene: bool,
+    pub truncation_positional_power: f64,
+    pub truncation_calibrate_power: bool,
+    pub truncation_min_share: f64,
+    pub truncation_sample_below: f64,
+    pub truncation_global_cells: usize,
+    pub truncation_groups: Option<PathBuf>,
+    pub truncation_genes: Option<PathBuf>,
+    pub truncation_dump: Option<PathBuf>,
+    pub truncation_oracle: Option<PathBuf>,
+    pub truncation_group_shrink: f64,
+    pub truncation_group_shrink_auto: bool,
+    pub truncation_group_shrink_per_gene: bool,
+    pub truncation_positional_law: TruncationPositionalLaw,
+    pub coverage_source: CoverageSource,
+    pub junction_likelihood: bool,
+    pub coverage_bin_width: u32,
+    pub coverage_growth_rate: f64,
     #[serde(skip_serializing)]
     pub log: &'g slog::Logger,
 }
