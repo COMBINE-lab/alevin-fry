@@ -1,5 +1,9 @@
 //! Per-cell positional (truncation) model for long-read molecules.
 //!
+//! The model is the one of oarfish's `truncation.rs` (`truncation-mixture` branch), whose
+//! likelihood, laws and M-step are reproduced here unchanged: a mixture of the ways a long read
+//! can sit on a transcript.
+//!
 //! Long-read protocols sequence one read per captured molecule, so read counts need no
 //! fragmentation-style length correction. What does depend on the transcript is where a read
 //! can land on it, and that differs by protocol: direct RNA and oligo(dT)-primed cDNA give reads
@@ -117,21 +121,25 @@ impl GapLaw {
     /// Per-nt density `dens[d]` and distribution function `cdf[x] = P(gap <= x)` for gaps up
     /// to `max_len`.
     fn tables(&self, max_len: u32) -> (Vec<f64>, Vec<f64>) {
-        let dens: Vec<f64> = (0..=max_len)
-            .map(|d| {
-                let b = Self::bin(d);
-                self.h.get(b).map_or(0.0, |p| p / Self::width(b))
-            })
-            .collect();
-        let mut acc = 0.0;
-        let cdf = dens
-            .iter()
-            .map(|x| {
-                acc += x;
-                acc
-            })
-            .collect();
+        let (mut dens, mut cdf) = (Vec::new(), Vec::new());
+        self.tables_into(max_len, &mut dens, &mut cdf);
         (dens, cdf)
+    }
+
+    /// [`GapLaw::tables`] written into existing buffers (the same values, no new allocation
+    /// once the buffers have their capacity).
+    fn tables_into(&self, max_len: u32, dens: &mut Vec<f64>, cdf: &mut Vec<f64>) {
+        dens.clear();
+        dens.extend((0..=max_len).map(|d| {
+            let b = Self::bin(d);
+            self.h.get(b).map_or(0.0, |p| p / Self::width(b))
+        }));
+        let mut acc = 0.0;
+        cdf.clear();
+        cdf.extend(dens.iter().map(|x| {
+            acc += x;
+            acc
+        }));
     }
 
     /// Mass at gap 0, in 1-15, 16-255 and 256 or more.
@@ -627,6 +635,15 @@ pub struct TruncationModelSpec {
     /// With pooled abundances: choose the power from the data ([`calibrate_power`]) instead of
     /// using `positional_power`.
     pub calibrate_power: bool,
+    /// With the cell's own abundances: Dirichlet pseudo-count added to every candidate
+    /// transcript's abundance in each M-step of the cell's EM, a within-cell prior toward equal
+    /// shares that keeps a few molecules' positional evidence from driving a locus to one
+    /// isoform; 0 is the cell's maximum likelihood estimate.
+    pub cell_prior: f64,
+    /// With the cell's own abundances: at most this many abundance updates in the cell's EM
+    /// (`Some(0)`: the abundances stay uniform and each molecule is split by its alignment
+    /// prior and positional likelihood alone); `None` runs the EM to convergence.
+    pub cell_iterations: Option<u32>,
     /// A molecule's final shares below this are dropped and the rest renormalized
     /// ([`prune_shares`]); 0 keeps every share.
     pub min_share: f64,
@@ -660,6 +677,8 @@ impl Default for TruncationModelSpec {
             end_kernels: TruncationEndKernels::default(),
             positional_power: 1.0,
             calibrate_power: false,
+            cell_prior: 0.0,
+            cell_iterations: None,
             min_share: 0.0,
             sample_below: 0.0,
             shrink_auto: false,
@@ -1040,6 +1059,21 @@ impl Exps {
             g5d,
             g5c,
         }
+    }
+
+    /// The tables for new parameters, rebuilt in place: the end-kernel tables keep their
+    /// buffers (one entry per base up to the longest transcript, rebuilt every iteration of a
+    /// fit), and the small per-bin length tables are replaced.
+    fn refresh(&mut self, par: &Params, max_len: u32) {
+        let tabs = |laws: &[LenLaw], out: &mut Vec<LenTab>| {
+            out.clear();
+            out.extend(laws.iter().map(LenTab::new));
+        };
+        tabs(&par.len3, &mut self.l3);
+        tabs(&par.len5, &mut self.l5);
+        tabs(&par.lenu, &mut self.lu);
+        par.k3.abs.tables_into(max_len, &mut self.g3d, &mut self.g3c);
+        par.k5.abs.tables_into(max_len, &mut self.g5d, &mut self.g5c);
     }
 }
 
@@ -2372,9 +2406,11 @@ pub fn fit_global(
     let mut last_ll = f64::NEG_INFINITY;
     let mut iterations = 0_usize;
 
+    let mut exps = Exps::new(&par, max_len);
     while iterations < MAX_EM_ITER as usize {
-        let e = Exps::new(&par, max_len);
-        let (par_ref, e_ref) = (&par, &e);
+        exps.refresh(&par, max_len);
+        let e = &exps;
+        let (par_ref, e_ref) = (&par, e);
         let st = std::thread::scope(|scope| {
             let handles: Vec<_> = cells
                 .chunks(per_thread)
@@ -2965,9 +3001,10 @@ fn fit_pooled(
     let (mut frozen_at, mut freeze_reason) = (None, None);
     let mut last_ll = f64::NEG_INFINITY;
     let mut iterations = 0_usize;
+    let mut exps = Exps::new(&par, max_len);
     while iterations < MAX_EM_ITER as usize {
-        let e = Exps::new(&par, max_len);
-        let (st, next_alpha) = pooled_step(cells, &par, &e, &alpha, n_threads);
+        exps.refresh(&par, max_len);
+        let (st, next_alpha) = pooled_step(cells, &par, &exps, &alpha, n_threads);
         alpha = next_alpha;
         iterations += 1;
         let ll_gain = st.ll - last_ll;
@@ -3554,6 +3591,11 @@ pub fn fit_molecules_with(
         None => (None, None),
     };
     let plain_first = if global.is_some() { PLAIN_FIRST } else { 0 };
+    // A within-cell prior or a cap on the abundance updates: plain EM steps throughout, so that
+    // every update is one E-step and one (MAP) M-step.
+    let cell_prior = spec.cell_prior.max(0.0);
+    let plain = cell_prior > 0.0 || spec.cell_iterations.is_some();
+    let mut abundance_updates = 0_u32;
     let mut freeze = Freeze::new(1.0);
     let mut niter = 0_u32;
     let mut steps = 0_usize;
@@ -3561,10 +3603,21 @@ pub fn fit_molecules_with(
     let mut converged = false;
     let mut has_positional_evidence =
         global.is_some() && cell.alns.iter().any(|a| a.span.is_some());
+    // the likelihood tables, refreshed in place whenever the parameters change
+    let mut exps = Exps::new(&par, max_len);
 
     while niter < MAX_EM_ITER {
+        // Once the cap on abundance updates is reached the abundances stay where they are; the
+        // parameters, if the cell's own, keep being estimated under them until they freeze.
+        let abundances_done = spec
+            .cell_iterations
+            .map_or(false, |k| abundance_updates >= k);
+        if abundances_done && frozen.is_some() {
+            converged = true;
+            break;
+        }
         match &frozen {
-            Some(fx) if niter < plain_first => {
+            Some(fx) if plain || niter < plain_first => {
                 step_static(fx, &prev, &mut curr);
                 steps += 1;
             }
@@ -3574,8 +3627,8 @@ pub fn fit_molecules_with(
                 steps += 2;
             }
             None => {
-                let e = Exps::new(&par, max_len);
-                let st = step_with(&cell, &par, &e, &prev, &mut curr);
+                exps.refresh(&par, max_len);
+                let st = step_with(&cell, &par, &exps, &prev, &mut curr);
                 steps += 1;
                 has_positional_evidence |= st.n > 0.0;
                 let ll_gain = st.ll - last_ll;
@@ -3584,13 +3637,23 @@ pub fn fit_molecules_with(
                 let reason = freeze.update(moved(&next, &par), ll_gain);
                 par = next;
                 if reason.is_some() {
-                    let e = Exps::new(&par, max_len);
-                    frozen = Some(Fixed::new(&cell, &par, &e));
+                    exps.refresh(&par, max_len);
+                    frozen = Some(Fixed::new(&cell, &par, &exps));
                     frozen_at = Some(steps);
                     freeze_reason = reason;
                 }
             }
         }
+        if abundances_done {
+            niter += 1;
+            continue;
+        }
+        if cell_prior > 0.0 {
+            for c in curr.iter_mut() {
+                *c += cell_prior;
+            }
+        }
+        abundance_updates += 1;
         // Largest relative change in either direction (after a SQUAREM extrapolation most of
         // the motion is in decreases).
         let mut rel_diff = 0.0_f64;
@@ -3615,40 +3678,62 @@ pub fn fit_molecules_with(
         }
     }
     let exps = Exps::new(&par, max_len);
+    // per-molecule buffers, reused: the weights of its alignments, and its shares over its own
+    // candidate transcripts in ascending target order (a transcript with several alignments has
+    // them summed in alignment order, as the dense vector did)
+    let mut weights: Vec<f64> = Vec::new();
+    let mut shares: Vec<(usize, f64)> = Vec::new();
+    let mut targets: Vec<usize> = Vec::new();
+    let mut probabilities: Vec<f64> = Vec::new();
     for (m, molecule) in molecules.iter_mut().enumerate() {
         let alignments = cell.molecule(m);
-        let mut weights: Vec<f64> = match &frozen {
-            Some(fx) => (fx.off[m]..fx.off[m + 1])
-                .map(|k| prev[fx.t[k]] * fx.w[k])
-                .collect(),
-            None => alignments
-                .iter()
-                .map(|a| a.weight(&prev, &par, &exps, cell.positional).0)
-                .collect(),
+        weights.clear();
+        match &frozen {
+            Some(fx) => weights.extend((fx.off[m]..fx.off[m + 1]).map(|k| prev[fx.t[k]] * fx.w[k])),
+            None => weights.extend(
+                alignments
+                    .iter()
+                    .map(|a| a.weight(&prev, &par, &exps, cell.positional).0),
+            ),
         };
         let mut denominator: f64 = weights.iter().sum();
         if !(denominator.is_finite() && denominator > EM_DENOM_THRESH) {
             // The molecule is already deduplicated and must keep its counts, so it falls
             // back to its prior probabilities.
-            weights = alignments.iter().map(|a| a.prior).collect();
+            weights.clear();
+            weights.extend(alignments.iter().map(|a| a.prior));
             denominator = weights.iter().sum();
         }
         assert!(
             denominator.is_finite() && denominator > 0.0,
             "truncation model produced invalid final molecule probabilities"
         );
-        let mut probabilities = vec![0.0; n_targets];
-        for (alignment, weight) in alignments.iter().zip(weights) {
-            probabilities[alignment.target] += weight / denominator;
+        shares.clear();
+        shares.extend(
+            alignments
+                .iter()
+                .zip(&weights)
+                .map(|(alignment, weight)| (alignment.target, weight / denominator)),
+        );
+        // stable: repeated targets keep their alignment order
+        shares.sort_by_key(|&(target, _)| target);
+        targets.clear();
+        probabilities.clear();
+        for &(target, share) in &shares {
+            if targets.last() == Some(&target) {
+                *probabilities.last_mut().expect("a share") += share;
+            } else {
+                targets.push(target);
+                probabilities.push(share);
+            }
         }
         prune_shares(&mut probabilities, spec.min_share);
         sample_small_shares(&mut probabilities, spec.sample_below, molecule_uniform(&molecule.vertices));
-        molecule.transcript_probs = probabilities
-            .into_iter()
-            .enumerate()
-            .filter_map(|(target, probability)| {
-                (probability > 0.0).then_some((target_ids[target], probability))
-            })
+        molecule.transcript_probs = targets
+            .iter()
+            .zip(&probabilities)
+            .filter(|(_, probability)| **probability > 0.0)
+            .map(|(&target, &probability)| (target_ids[target], probability))
             .collect();
     }
     TruncationFit {

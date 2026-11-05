@@ -24,8 +24,7 @@ use alevin_fry::cmd_parse_utils::{
 };
 use alevin_fry::prog_opts::{GenPermitListOpts, QuantOpts};
 use alevin_fry::quant::{
-    EMMode, EditDistanceMode, EndDistribution, EndModel, ResolutionStrategy, SplicedAmbiguityModel,
-    TrueUmiOracleMode,
+    DedupCount, DedupCover, DedupEdges, DedupModel, EMMode, EditDistanceMode, EndDistribution, EndModel, ResolutionStrategy, SplicedAmbiguityModel,
 };
 use alevin_fry::truncation::{
     CoverageSource, TruncationAbundance, TruncationEndKernels, TruncationIntervalMode,
@@ -221,15 +220,9 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"tau-delta" <TAUDELTA> "minimum delta(v,t) = score(v,t) - best_alt(v) for transcript admissibility")
         .value_parser(value_parser!(f64))
         .default_value("0.0"))
-    .arg(arg!(--"true-umi-mode" <MODE> "how (if at all) to use ground-truth UMIs to compute an oracle upper bound")
-        .ignore_case(true)
-        .value_parser(value_parser!(TrueUmiOracleMode))
+    .arg(arg!(--"true-umi-mode" <MODE> "removed; accepted for compatibility with older command lines and must be `off`")
+        .hide(true)
         .default_value("off"))
-    .arg(arg!(--"true-txp-mode" <TxpMODE> "if using the true transcript in the oracle mode")
-        .ignore_case(true)
-        .value_parser(value_parser!(bool)))
-    .arg(arg!(--"true-umi-txp-file" <TRUEUMIFILE> "TSV file mapping read names to true UMI/gene ground truth; required unless --true-umi-mode=off")
-        .value_parser(pathbuf_file_exists_validator))
     .arg(arg!(--"ed-distance-model" <EDMODE> "edit distance model to use for UMI correction")
         .ignore_case(true)
         .value_parser(value_parser!(EditDistanceMode))
@@ -237,6 +230,38 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"ed-upper-bound" <EDUPPERBOUND> "upper bound for edit distance")
         .value_parser(value_parser!(usize))
         .default_value("2"))
+    .arg(arg!(--"dedup-model" <DEDUP> "how each cell's UMI graph is resolved into molecules: bf (the likelihood / Bayes-factor model), parsimony (alevin-fry's largest monochromatic component) or parsimony-weighted (by mean alignment probability); every model gives its molecules the same softmax priors for the EM")
+        .ignore_case(true)
+        .value_parser(value_parser!(DedupModel))
+        .default_value("bf"))
+    .arg(arg!(--"dedup-edges" <EDGES> "how UMI edges are decided: rule (the edit-distance bound, plus --ed-far-bound) or bayes (a model calibrated on each cell: the posterior that two UMIs within distance 3 are one molecule, from their distance and whether their reads agree in position within --ed-far-window bases), or bayes-tx (bayes with the probability that two different molecules agree in position estimated per transcript, since it rises as transcripts get shorter)")
+        .ignore_case(true)
+        .value_parser(value_parser!(DedupEdges))
+        .default_value("rule"))
+    .arg(arg!(--"dedup-cover" <COVER> "how a connected component is covered by molecules: parsimony (the largest monochromatic connected component, as alevin-fry) or posterior (that component refined by correlation clustering on the calibrated edge model's pair posteriors; needs --dedup-edges bayes and --dedup-model parsimony)")
+        .ignore_case(true)
+        .value_parser(value_parser!(DedupCover))
+        .default_value("parsimony"))
+    .arg(arg!(--"dedup-count" <COUNT> "how molecules are counted: hard (one per molecule) or expected (each molecule counts the expected number of molecules its component holds under the calibrated edge model, one plus the sum of 1 - p over its maximum-probability spanning tree; needs --dedup-edges bayes and --dedup-model parsimony)")
+        .ignore_case(true)
+        .value_parser(value_parser!(DedupCount))
+        .default_value("hard"))
+    .arg(arg!(--"dedup-soft-floor" <F> "with --dedup-count expected: UMI pairs whose posterior is at least F are joined (0.5 reproduces the hard graph; lower values let uncertain pairs share a molecule's expected count)")
+        .value_parser(value_parser!(f64))
+        .default_value("0.2"))
+    .arg(arg!(--"em-prior" <PRIOR> "the transcript prior each molecule carries into the EM: likelihood (the softmax of its alignment log-likelihoods, as before) or uniform (equal over its candidates, as alevin-fry's EM), so that deduplication engines can be compared under the same EM")
+        .ignore_case(true)
+        .value_parser(["likelihood", "uniform"])
+        .default_value("likelihood"))
+    .arg(arg!(--"as-denominator" <D> "denominator of the alignment-score probability exp((AS - best AS) / D) of each alignment (oarfish uses 10)")
+        .value_parser(value_parser!(f64))
+        .default_value("5.0"))
+    .arg(arg!(--"ed-far-bound" <N> "UMIs at an edit distance of at least --ed-upper-bound and below N are also joined when their reads lie at the same place on a shared transcript (within --ed-far-window bases at both ends); N <= --ed-upper-bound (default) disables this")
+        .value_parser(value_parser!(usize))
+        .default_value("0"))
+    .arg(arg!(--"ed-far-window" <W> "positional window, in bases, for --ed-far-bound")
+        .value_parser(value_parser!(u32))
+        .default_value("10"))
     .arg(arg!(--"em-prob-model" <EMMODE> "probability model to use for EM-based UMI correction")
         .ignore_case(true)
         .value_parser(value_parser!(EMMode))
@@ -297,6 +322,11 @@ fn main() -> anyhow::Result<()> {
     .arg(arg!(--"truncation-positional-power" <P> "power the truncation model's positional likelihood is raised to (1: as modelled, 0: positions ignored)")
         .value_parser(value_parser!(f64))
         .default_value("1.0"))
+    .arg(arg!(--"truncation-cell-prior" <B> "with --truncation-abundance cell: Dirichlet pseudo-count B added to every candidate transcript's abundance in each M-step of the cell's own EM, a within-cell prior toward equal isoform shares (0: the cell's maximum likelihood estimate)")
+        .value_parser(value_parser!(f64))
+        .default_value("0.0"))
+    .arg(arg!(--"truncation-cell-iterations" <N> "with --truncation-abundance cell: at most N abundance updates in each cell's own EM (0: the abundances stay uniform and each molecule is split by its alignment prior and positional likelihood alone)")
+        .value_parser(value_parser!(u32)))
     .arg(arg!(--"truncation-calibrate-power" "with pooled abundances, choose the positional power from the data: the power that best predicts, from position and abundance, the transcript of molecules whose alignments settle it")
         .requires("truncation-abundance"))
     .arg(arg!(--"truncation-min-share" <EPS> "drop each molecule's final transcript shares below EPS and renormalize the rest (0: keep all)")
@@ -570,11 +600,20 @@ fn main() -> anyhow::Result<()> {
         let filter_list: Option<&PathBuf> = t.get_one("quant-subset");
         let large_graph_thresh: usize = *t.get_one("large-graph-thresh").unwrap();
         let umi_edit_dist: u32 = *t.get_one("umi-edit-dist").unwrap();
-        let true_umi_mode = *t.get_one::<TrueUmiOracleMode>("true-umi-mode").unwrap();
-        let true_txp_mode: Option<bool> = t.get_one("true-txp-mode").cloned();
-        let true_umi_txp_file: Option<&PathBuf> = t.get_one("true-umi-txp-file");
+        if t.get_one::<String>("true-umi-mode").is_some_and(|m| !m.eq_ignore_ascii_case("off")) {
+            bail!("--true-umi-mode: the ground-truth oracle modes were removed; only `off` is accepted");
+        }
         let ed_distance_model = *t.get_one::<EditDistanceMode>("ed-distance-model").unwrap();
         let ed_upper_bound: usize = *t.get_one("ed-upper-bound").unwrap();
+        let dedup_model = *t.get_one::<DedupModel>("dedup-model").unwrap();
+        let dedup_edges = *t.get_one::<DedupEdges>("dedup-edges").unwrap();
+        let dedup_cover = *t.get_one::<DedupCover>("dedup-cover").unwrap();
+        let dedup_count = *t.get_one::<DedupCount>("dedup-count").unwrap();
+        let em_uniform_prior = t.get_one::<String>("em-prior").map_or(false, |v| v.eq_ignore_ascii_case("uniform"));
+        let dedup_soft_floor: f64 = *t.get_one("dedup-soft-floor").unwrap();
+        let as_denominator: f64 = *t.get_one("as-denominator").unwrap();
+        let ed_far_bound: usize = *t.get_one("ed-far-bound").unwrap();
+        let ed_far_window: u32 = *t.get_one("ed-far-window").unwrap();
         let em_prob_model = *t.get_one::<EMMode>("em-prob-model").unwrap();
         let end_model = *t.get_one::<EndModel>("end-model").unwrap();
         let end_distribution = *t.get_one::<EndDistribution>("end-distribution").unwrap();
@@ -659,6 +698,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         let truncation_min_share: f64 = *t.get_one("truncation-min-share").unwrap();
+        let truncation_cell_prior: f64 = *t.get_one("truncation-cell-prior").unwrap();
+        let truncation_cell_iterations: Option<u32> =
+            t.get_one::<u32>("truncation-cell-iterations").copied();
         let truncation_sample_below: f64 = *t.get_one("truncation-sample-below").unwrap();
         let coverage_bin_width: u32 = *t.get_one("coverage-bin-width").unwrap();
         let coverage_growth_rate: f64 = *t.get_one("coverage-growth-rate").unwrap();
@@ -673,15 +715,12 @@ fn main() -> anyhow::Result<()> {
         {
             bail!("--junction-model requires transcript-level resolution");
         }
-        if junction_model && true_umi_mode == TrueUmiOracleMode::DirectCollapse {
-            bail!("--junction-model is not supported with --true-umi-mode=direct");
-        }
 
         if coverage_model && coverage_dedup_model {
             bail!("--coverage-model and --coverage-dedup are separate modes; select one");
         }
-        if truncation_model && (end_model != EndModel::Off || num_bootstraps > 0) {
-            bail!("--model-truncation cannot be combined with --end-model or bootstrapping");
+        if truncation_model && num_bootstraps > 0 {
+            bail!("--model-truncation cannot be combined with bootstrapping");
         }
         if truncation_model && coverage_dedup_model && coverage_source == CoverageSource::Cell {
             bail!("--model-truncation with --coverage-dedup requires --coverage-source global: a cell's own coverage is only known after its deduplication");
@@ -697,9 +736,6 @@ fn main() -> anyhow::Result<()> {
         }
         if truncation_model && resolution != ResolutionStrategy::ParsimonyEm {
             bail!("--model-truncation requires transcript-level --resolution parsimony-em");
-        }
-        if truncation_model && true_umi_mode == TrueUmiOracleMode::DirectCollapse {
-            bail!("--model-truncation is not supported with --true-umi-mode=direct");
         }
         if !truncation_model && truncation_params == TruncationParamScope::Global {
             bail!("--truncation-params global requires --model-truncation");
@@ -768,9 +804,6 @@ fn main() -> anyhow::Result<()> {
         if coverage_enabled && resolution != ResolutionStrategy::ParsimonyEm {
             bail!("coverage modes currently require transcript-level parsimony-em resolution");
         }
-        if coverage_enabled && true_umi_mode == TrueUmiOracleMode::DirectCollapse {
-            bail!("coverage modes are not supported with --true-umi-mode=direct");
-        }
         if coverage_enabled && num_bootstraps > 0 {
             bail!("coverage modes cannot currently be combined with bootstrapping");
         }
@@ -779,16 +812,6 @@ fn main() -> anyhow::Result<()> {
             bail!("--end-threshold must be non-negative and --end-scale must be positive");
         }
 
-        if (true_umi_mode != TrueUmiOracleMode::Off || true_txp_mode == Some(true))
-            && true_umi_txp_file.is_none()
-        {
-            crit!(
-                log,
-                "--true-umi-mode was set to {:?} but no --true-umi-txp-file was provided",
-                true_umi_mode
-            );
-            bail!("Invalid command line option");
-        }
         let mut pug_exact_umi = false;
 
         match umi_edit_dist {
@@ -894,12 +917,18 @@ fn main() -> anyhow::Result<()> {
             .large_graph_thresh(large_graph_thresh)
             .filter_list(filter_list)
             .pug_exact_umi(pug_exact_umi)
-            .true_umi_mode(true_umi_mode)
-            .true_txp_mode(true_txp_mode)
-            .true_umi_txp_file(true_umi_txp_file.cloned())
             .ed_distance_model(ed_distance_model)
             .ed_upper_bound(ed_upper_bound)
             .em_prob_model(em_prob_model)
+            .dedup_model(dedup_model)
+            .dedup_edges(dedup_edges)
+            .dedup_cover(dedup_cover)
+            .dedup_count(dedup_count)
+            .em_uniform_prior(em_uniform_prior)
+            .dedup_soft_floor(dedup_soft_floor)
+            .as_denominator(as_denominator)
+            .ed_far_bound(ed_far_bound)
+            .ed_far_window(ed_far_window)
             .end_model(end_model)
             .end_distribution(end_distribution)
             .end_threshold(end_threshold)
@@ -922,6 +951,8 @@ fn main() -> anyhow::Result<()> {
             .truncation_positional_power(truncation_positional_power)
             .truncation_calibrate_power(truncation_calibrate_power)
             .truncation_min_share(truncation_min_share)
+            .truncation_cell_prior(truncation_cell_prior)
+            .truncation_cell_iterations(truncation_cell_iterations)
             .truncation_sample_below(truncation_sample_below)
             .truncation_global_cells(truncation_global_cells)
             .truncation_groups(truncation_groups.cloned())

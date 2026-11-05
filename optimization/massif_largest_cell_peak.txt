@@ -1,0 +1,693 @@
+ 72 3,637,110,609,350      550,255,808      461,308,917    88,946,891            0
+83.84% (461,308,917B) (heap allocation functions) malloc/new/new[], --alloc-fns, etc.
+->18.70% (102,893,500B) 0x3AA6E5: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->18.70% (102,893,500B) 0x3AA6E5: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->18.70% (102,893,500B) 0x3AA6E5: alloc (alloc.rs:95)
+|     ->18.70% (102,893,500B) 0x3AA6E5: alloc_impl (alloc.rs:190)
+|       ->18.70% (102,893,500B) 0x3AA6E5: allocate (alloc.rs:251)
+|         ->18.70% (102,893,500B) 0x3AA6E5: do_alloc<alloc::alloc::Global> (alloc.rs:19)
+|           ->18.70% (102,893,500B) 0x3AA6E5: new_uninitialized<alloc::alloc::Global> (mod.rs:1476)
+|             ->18.70% (102,893,500B) 0x3AA6E5: hashbrown::raw::RawTableInner::fallible_with_capacity (mod.rs:1515)
+|               ->06.29% (34,603,024B) 0x242BEF: UnknownInlinedFun (mod.rs:1542)
+|               | ->06.29% (34,603,024B) 0x242BEF: UnknownInlinedFun (mod.rs:680)
+|               |   ->06.29% (34,603,024B) 0x242BEF: UnknownInlinedFun (mod.rs:630)
+|               |     ->06.29% (34,603,024B) 0x242BEF: UnknownInlinedFun (map.rs:502)
+|               |       ->06.29% (34,603,024B) 0x242BEF: with_capacity_and_hasher<alloc::string::String, u32, ahash::random_state::RandomState> (map.rs:348)
+|               |         ->06.29% (34,603,024B) 0x242BEF: alevin_fry::quant::do_quantify (quant.rs:2663)
+|               |           ->06.29% (34,603,024B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|               |             ->06.29% (34,603,024B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|               |               ->06.29% (34,603,024B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|               |                 ->06.29% (34,603,024B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|               |                   ->06.29% (34,603,024B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|               |                     ->06.29% (34,603,024B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|               |                       ->06.29% (34,603,024B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|               |                         ->06.29% (34,603,024B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|               |                           ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|               |                             ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|               |                               ->06.29% (34,603,024B) 0x5F15F0: {closure
+|               |                                 ->06.29% (34,603,024B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|               |                                   ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|               |                                     ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|               |                                       ->06.29% (34,603,024B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|               |                                         ->06.29% (34,603,024B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|               |                                           
+|               ->06.29% (34,603,024B) 0x3AD19F: prepare_resize<alloc::alloc::Global> (mod.rs:2584)
+|               | ->06.29% (34,603,024B) 0x3AD19F: resize_inner<alloc::alloc::Global> (mod.rs:2782)
+|               |   ->06.29% (34,603,024B) 0x3AD19F: reserve_rehash_inner<alloc::alloc::Global> (mod.rs:2670)
+|               |     ->06.29% (34,603,024B) 0x3AD19F: hashbrown::raw::RawTable<T,A>::reserve_rehash (mod.rs:991)
+|               |       ->06.29% (34,603,024B) 0x34726B: UnknownInlinedFun (mod.rs:940)
+|               |         ->06.29% (34,603,024B) 0x34726B: reserve<alloc::string::String, u32, ahash::random_state::RandomState, alloc::alloc::Global> (map.rs:1105)
+|               |           ->06.29% (34,603,024B) 0x34726B: hashbrown::rustc_entry::<impl hashbrown::map::HashMap<K,V,S,A>>::rustc_entry (rustc_entry.rs:45)
+|               |             ->06.29% (34,603,024B) 0x2E09E7: entry<alloc::string::String, u32, ahash::random_state::RandomState> (map.rs:888)
+|               |               ->06.29% (34,603,024B) 0x2E09E7: parse_tg_spliced (utils.rs:710)
+|               |                 ->06.29% (34,603,024B) 0x2E09E7: alevin_fry::utils::parse_tg_map (utils.rs:763)
+|               |                   ->06.29% (34,603,024B) 0x242E43: alevin_fry::quant::do_quantify (quant.rs:2682)
+|               |                     ->06.29% (34,603,024B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|               |                       ->06.29% (34,603,024B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|               |                         ->06.29% (34,603,024B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|               |                           ->06.29% (34,603,024B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|               |                             ->06.29% (34,603,024B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|               |                               ->06.29% (34,603,024B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|               |                                 ->06.29% (34,603,024B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|               |                                   ->06.29% (34,603,024B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|               |                                     ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|               |                                       ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|               |                                         ->06.29% (34,603,024B) 0x5F15F0: {closure
+|               |                                           ->06.29% (34,603,024B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|               |                                             ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|               |                                               ->06.29% (34,603,024B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|               |                                                 ->06.29% (34,603,024B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|               |                                                   ->06.29% (34,603,024B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|               |                                                     
+|               ->04.06% (22,349,660B) 0x3ACC53: prepare_resize<alloc::alloc::Global> (mod.rs:2584)
+|               | ->04.06% (22,349,660B) 0x3ACC53: resize_inner<alloc::alloc::Global> (mod.rs:2782)
+|               |   ->04.06% (22,349,660B) 0x3ACC53: reserve_rehash_inner<alloc::alloc::Global> (mod.rs:2670)
+|               |     ->04.06% (22,349,660B) 0x3ACC53: hashbrown::raw::RawTable<T,A>::reserve_rehash (mod.rs:991)
+|               |       ->04.06% (22,349,660B) 0x340D00: UnknownInlinedFun (mod.rs:940)
+|               |         ->04.06% (22,349,660B) 0x340D00: reserve<u32, alloc::vec::Vec<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global>, std::hash::random::RandomState, alloc::alloc::Global> (map.rs:1105)
+|               |           ->04.06% (22,349,660B) 0x340D00: rustc_entry<u32, alloc::vec::Vec<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global>, std::hash::random::RandomState, alloc::alloc::Global> (rustc_entry.rs:45)
+|               |             ->04.06% (22,349,660B) 0x340D00: entry<u32, alloc::vec::Vec<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global>, std::hash::random::RandomState> (map.rs:888)
+|               |               ->04.06% (22,349,660B) 0x340D00: alevin_fry::pugutils_dp_new::intervals_for_resolved_vertices (pugutils_dp_new.rs:570)
+|               |                 ->02.91% (15,994,256B) 0x33C1EB: alevin_fry::pugutils_dp_new::get_num_molecules_log_dp_new (pugutils_dp_new.rs:1002)
+|               |                 | ->02.91% (15,994,256B) 0x278480: alevin_fry::quant::run_worker_thread (quant.rs:1188)
+|               |                 |   ->02.91% (15,994,256B) 0x30CCD6: {closure
+|               |                 |     ->02.91% (15,994,256B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|               |                 |       ->02.91% (15,994,256B) 0x427A4A: {closure
+|               |                 |         ->02.91% (15,994,256B) 0x427A4A: call_once<usize, std::thread::{impl
+|               |                 |           ->02.91% (15,994,256B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                 |             ->02.91% (15,994,256B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                 |               ->02.91% (15,994,256B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                 |                 ->02.91% (15,994,256B) 0x427A4A: {closure
+|               |                 |                   ->02.91% (15,994,256B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|               |                 |                     ->02.91% (15,994,256B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|               |                 |                       ->02.91% (15,994,256B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|               |                 |                         ->02.91% (15,994,256B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|               |                 |                           ->02.91% (15,994,256B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|               |                 |                             
+|               |                 ->01.15% (6,355,404B) 0x33AEF3: alevin_fry::pugutils_dp_new::get_num_molecules_log_dp_new (pugutils_dp_new.rs:929)
+|               |                   ->01.15% (6,355,404B) 0x278480: alevin_fry::quant::run_worker_thread (quant.rs:1188)
+|               |                     ->01.15% (6,355,404B) 0x30CCD6: {closure
+|               |                       ->01.15% (6,355,404B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|               |                         ->01.15% (6,355,404B) 0x427A4A: {closure
+|               |                           ->01.15% (6,355,404B) 0x427A4A: call_once<usize, std::thread::{impl
+|               |                             ->01.15% (6,355,404B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                               ->01.15% (6,355,404B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                                 ->01.15% (6,355,404B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|               |                                   ->01.15% (6,355,404B) 0x427A4A: {closure
+|               |                                     ->01.15% (6,355,404B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|               |                                       ->01.15% (6,355,404B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|               |                                         ->01.15% (6,355,404B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|               |                                           ->01.15% (6,355,404B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|               |                                             ->01.15% (6,355,404B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|               |                                               
+|               ->02.06% (11,337,792B) in 10 places, all below massif's threshold (1.00%)
+|                 
+->12.05% (66,284,240B) 0x411AFB: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->12.05% (66,284,240B) 0x411AFB: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->12.05% (66,284,240B) 0x411AFB: alloc (alloc.rs:95)
+|     ->12.05% (66,284,240B) 0x411AFB: alloc_impl (alloc.rs:190)
+|       ->12.05% (66,284,240B) 0x411AFB: allocate (alloc.rs:251)
+|         ->12.05% (66,284,240B) 0x411AFB: alloc::raw_vec::RawVecInner<A>::finish_grow (mod.rs:755)
+|           ->05.54% (30,471,368B) 0x411DC3: grow_amortized<alloc::alloc::Global> (mod.rs:698)
+|           | ->05.54% (30,471,368B) 0x411DC3: alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle (mod.rs:557)
+|           |   ->02.02% (11,121,984B) 0x3CD83A: UnknownInlinedFun (mod.rs:564)
+|           |   | ->02.02% (11,121,984B) 0x3CD83A: UnknownInlinedFun (mod.rs:327)
+|           |   |   ->02.02% (11,121,984B) 0x3CD83A: UnknownInlinedFun (mod.rs:1338)
+|           |   |     ->02.02% (11,121,984B) 0x3CD83A: UnknownInlinedFun (mod.rs:3821)
+|           |   |       ->02.02% (11,121,984B) 0x3CD83A: spec_extend<f64, core::iter::adapters::map::Map<core::ops::range::RangeInclusive<u32>, alevin_fry::truncation::{impl
+|           |   |         ->02.02% (11,121,984B) 0x3CD83A: extend<f64, alloc::alloc::Global, core::iter::adapters::map::Map<core::ops::range::RangeInclusive<u32>, alevin_fry::truncation::{impl
+|           |   |           ->02.02% (11,121,984B) 0x3CD83A: tables_into (truncation.rs:133)
+|           |   |             ->02.02% (11,121,984B) 0x3CD83A: alevin_fry::truncation::GapLaw::tables (truncation.rs:125)
+|           |   |               ->01.01% (5,560,992B) 0x3C7737: alevin_fry::truncation::Exps::new (truncation.rs:1051)
+|           |   |               | ->01.01% (5,560,992B) in 2 places, all below massif's threshold (1.00%)
+|           |   |               |   
+|           |   |               ->01.01% (5,560,992B) 0x3C7785: alevin_fry::truncation::Exps::new (truncation.rs:1052)
+|           |   |                 ->01.01% (5,560,992B) in 2 places, all below massif's threshold (1.00%)
+|           |   |                   
+|           |   ->02.02% (11,121,984B) 0x3CD8E4: UnknownInlinedFun (mod.rs:564)
+|           |   | ->02.02% (11,121,984B) 0x3CD8E4: UnknownInlinedFun (mod.rs:327)
+|           |   |   ->02.02% (11,121,984B) 0x3CD8E4: UnknownInlinedFun (mod.rs:1338)
+|           |   |     ->02.02% (11,121,984B) 0x3CD8E4: UnknownInlinedFun (mod.rs:3821)
+|           |   |       ->02.02% (11,121,984B) 0x3CD8E4: spec_extend<f64, core::iter::adapters::map::Map<core::slice::iter::Iter<f64>, alevin_fry::truncation::{impl
+|           |   |         ->02.02% (11,121,984B) 0x3CD8E4: extend<f64, alloc::alloc::Global, core::iter::adapters::map::Map<core::slice::iter::Iter<f64>, alevin_fry::truncation::{impl
+|           |   |           ->02.02% (11,121,984B) 0x3CD8E4: tables_into (truncation.rs:139)
+|           |   |             ->02.02% (11,121,984B) 0x3CD8E4: alevin_fry::truncation::GapLaw::tables (truncation.rs:125)
+|           |   |               ->01.01% (5,560,992B) 0x3C7737: alevin_fry::truncation::Exps::new (truncation.rs:1051)
+|           |   |               | ->01.01% (5,560,992B) in 2 places, all below massif's threshold (1.00%)
+|           |   |               |   
+|           |   |               ->01.01% (5,560,992B) 0x3C7785: alevin_fry::truncation::Exps::new (truncation.rs:1052)
+|           |   |                 ->01.01% (5,560,992B) in 2 places, all below massif's threshold (1.00%)
+|           |   |                   
+|           |   ->01.25% (6,889,376B) 0x401875: UnknownInlinedFun (mod.rs:564)
+|           |   | ->01.25% (6,889,376B) 0x401875: UnknownInlinedFun (mod.rs:327)
+|           |   |   ->01.25% (6,889,376B) 0x401875: UnknownInlinedFun (mod.rs:1338)
+|           |   |     ->01.25% (6,889,376B) 0x401875: UnknownInlinedFun (mod.rs:2798)
+|           |   |       ->01.25% (6,889,376B) 0x401875: UnknownInlinedFun (spec_extend.rs:33)
+|           |   |         ->01.25% (6,889,376B) 0x401875: extend<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global, alloc::vec::Vec<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global>> (mod.rs:3757)
+|           |   |           ->01.25% (6,889,376B) 0x401875: alevin_fry::eq_class::EqMap::init_from_chunk_internal (eq_class.rs:1645)
+|           |   |             ->01.25% (6,889,376B) 0x285FCB: alevin_fry::quant::init_eq_map_for_chunk (quant.rs:0)
+|           |   |               ->01.25% (6,889,376B) 0x277FC7: alevin_fry::quant::run_worker_thread (quant.rs:1059)
+|           |   |                 ->01.25% (6,889,376B) 0x30CCD6: {closure
+|           |   |                   ->01.25% (6,889,376B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |   |                     ->01.25% (6,889,376B) 0x427A4A: {closure
+|           |   |                       ->01.25% (6,889,376B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |   |                         ->01.25% (6,889,376B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                           ->01.25% (6,889,376B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                             ->01.25% (6,889,376B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                               ->01.25% (6,889,376B) 0x427A4A: {closure
+|           |   |                                 ->01.25% (6,889,376B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |   |                                   ->01.25% (6,889,376B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |   |                                     ->01.25% (6,889,376B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |   |                                       ->01.25% (6,889,376B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |   |                                         ->01.25% (6,889,376B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |   |                                           
+|           |   ->00.24% (1,338,024B) in 1+ places, all below ms_print's threshold (01.00%)
+|           |   
+|           ->03.97% (21,867,072B) 0x411A19: grow_amortized<alloc::alloc::Global> (mod.rs:698)
+|           | ->03.97% (21,867,072B) 0x411A19: grow_one<alloc::alloc::Global> (mod.rs:577)
+|           |   ->03.97% (21,867,072B) 0x411A19: alloc::raw_vec::RawVec<T,A>::grow_one (mod.rs:336)
+|           |     ->03.97% (21,867,072B) 0x340CBE: push_mut<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global> (mod.rs:2646)
+|           |       ->03.97% (21,867,072B) 0x340CBE: push<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global> (mod.rs:2564)
+|           |         ->03.97% (21,867,072B) 0x340CBE: alevin_fry::pugutils_dp_new::intervals_for_resolved_vertices (pugutils_dp_new.rs:572)
+|           |           ->02.91% (16,016,128B) 0x33C1EB: alevin_fry::pugutils_dp_new::get_num_molecules_log_dp_new (pugutils_dp_new.rs:1002)
+|           |           | ->02.91% (16,016,128B) 0x278480: alevin_fry::quant::run_worker_thread (quant.rs:1188)
+|           |           |   ->02.91% (16,016,128B) 0x30CCD6: {closure
+|           |           |     ->02.91% (16,016,128B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |           |       ->02.91% (16,016,128B) 0x427A4A: {closure
+|           |           |         ->02.91% (16,016,128B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |           |           ->02.91% (16,016,128B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |           |             ->02.91% (16,016,128B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |           |               ->02.91% (16,016,128B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |           |                 ->02.91% (16,016,128B) 0x427A4A: {closure
+|           |           |                   ->02.91% (16,016,128B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |           |                     ->02.91% (16,016,128B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |           |                       ->02.91% (16,016,128B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |           |                         ->02.91% (16,016,128B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |           |                           ->02.91% (16,016,128B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |           |                             
+|           |           ->01.06% (5,850,944B) 0x33AEF3: alevin_fry::pugutils_dp_new::get_num_molecules_log_dp_new (pugutils_dp_new.rs:929)
+|           |             ->01.06% (5,850,944B) 0x278480: alevin_fry::quant::run_worker_thread (quant.rs:1188)
+|           |               ->01.06% (5,850,944B) 0x30CCD6: {closure
+|           |                 ->01.06% (5,850,944B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |                   ->01.06% (5,850,944B) 0x427A4A: {closure
+|           |                     ->01.06% (5,850,944B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |                       ->01.06% (5,850,944B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |                         ->01.06% (5,850,944B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |                           ->01.06% (5,850,944B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |                             ->01.06% (5,850,944B) 0x427A4A: {closure
+|           |                               ->01.06% (5,850,944B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |                                 ->01.06% (5,850,944B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |                                   ->01.06% (5,850,944B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |                                     ->01.06% (5,850,944B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |                                       ->01.06% (5,850,944B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |                                         
+|           ->02.21% (12,176,760B) 0x3506F3: UnknownInlinedFun (mod.rs:725)
+|           | ->02.21% (12,176,760B) 0x3506F3: UnknownInlinedFun (mod.rs:630)
+|           |   ->02.21% (12,176,760B) 0x3506F3: UnknownInlinedFun (mod.rs:612)
+|           |     ->02.21% (12,176,760B) 0x3506F3: reserve_exact<alloc::string::String, alloc::alloc::Global> (mod.rs:369)
+|           |       ->02.21% (12,176,760B) 0x3506F3: reserve_exact<alloc::string::String, alloc::alloc::Global> (mod.rs:1368)
+|           |         ->02.21% (12,176,760B) 0x3506F3: from_bytes<std::io::buffered::bufreader::BufReader<&std::fs::File>> (header.rs:89)
+|           |           ->02.21% (12,176,760B) 0x3506F3: libradicl::header::RadPrelude::from_bytes (header.rs:225)
+|           |             ->02.21% (12,176,760B) 0x2962C1: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3307)
+|           |               ->02.21% (12,176,760B) 0x2962C1: alevin_fry::quant::quantify (quant.rs:755)
+|           |                 ->02.21% (12,176,760B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|           |                   ->02.21% (12,176,760B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|           |                     ->02.21% (12,176,760B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |                       ->02.21% (12,176,760B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|           |                         ->02.21% (12,176,760B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|           |                           ->02.21% (12,176,760B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|           |                             ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|           |                               ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|           |                                 ->02.21% (12,176,760B) 0x5F15F0: {closure
+|           |                                   ->02.21% (12,176,760B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|           |                                     ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|           |                                       ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|           |                                         ->02.21% (12,176,760B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|           |                                           ->02.21% (12,176,760B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|           |                                             
+|           ->00.32% (1,769,040B) in 1+ places, all below ms_print's threshold (01.00%)
+|           
+->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (alloc.rs:95)
+|     ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (alloc.rs:190)
+|       ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (alloc.rs:251)
+|         ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (mod.rs:468)
+|           ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (mod.rs:419)
+|             ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (mod.rs:187)
+|               ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (mod.rs:929)
+|                 ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (slice.rs:445)
+|                   ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (slice.rs:398)
+|                     ->09.73% (53,527,393B) 0x35AF72: UnknownInlinedFun (mod.rs:3573)
+|                       ->09.73% (53,527,393B) 0x35AF72: fill_work_queue_filtered<libradicl::record::ScLongReadRecordT<u64>, &mut std::io::buffered::bufreader::BufReader<&std::fs::File>, libradicl::readers::ChunkCountIterator<&mut std::io::buffered::bufreader::BufReader<&std::fs::File>>, alevin_fry::quant::do_quantify::{closure_env
+|                         ->09.73% (53,527,393B) 0x35AF72: libradicl::readers::ParallelChunkReader<R>::start_filtered (readers.rs:803)
+|                           ->09.73% (53,527,393B) 0x2469F5: alevin_fry::quant::do_quantify (quant.rs:3196)
+|                             ->09.73% (53,527,393B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                               ->09.73% (53,527,393B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                                 ->09.73% (53,527,393B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                   ->09.73% (53,527,393B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                     ->09.73% (53,527,393B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                       ->09.73% (53,527,393B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                         ->09.73% (53,527,393B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                           ->09.73% (53,527,393B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                             ->09.73% (53,527,393B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                               ->09.73% (53,527,393B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                                 ->09.73% (53,527,393B) 0x5F15F0: {closure
+|                                                   ->09.73% (53,527,393B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                     ->09.73% (53,527,393B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                       ->09.73% (53,527,393B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                         ->09.73% (53,527,393B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                           ->09.73% (53,527,393B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                             
+->09.05% (49,793,904B) 0x411AC5: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:54)
+| ->09.05% (49,793,904B) 0x411AC5: UnknownInlinedFun (library/std/src/alloc.rs:425)
+|   ->09.05% (49,793,904B) 0x411AC5: realloc (alloc.rs:135)
+|     ->09.05% (49,793,904B) 0x411AC5: grow_impl (alloc.rs:223)
+|       ->09.05% (49,793,904B) 0x411AC5: grow (alloc.rs:285)
+|         ->09.05% (49,793,904B) 0x411AC5: alloc::raw_vec::RawVecInner<A>::finish_grow (mod.rs:752)
+|           ->04.20% (23,129,296B) 0x411DC3: grow_amortized<alloc::alloc::Global> (mod.rs:698)
+|           | ->04.20% (23,129,296B) 0x411DC3: alloc::raw_vec::RawVecInner<A>::reserve::do_reserve_and_handle (mod.rs:557)
+|           |   ->01.64% (9,015,680B) 0x401875: UnknownInlinedFun (mod.rs:564)
+|           |   | ->01.64% (9,015,680B) 0x401875: UnknownInlinedFun (mod.rs:327)
+|           |   |   ->01.64% (9,015,680B) 0x401875: UnknownInlinedFun (mod.rs:1338)
+|           |   |     ->01.64% (9,015,680B) 0x401875: UnknownInlinedFun (mod.rs:2798)
+|           |   |       ->01.64% (9,015,680B) 0x401875: UnknownInlinedFun (spec_extend.rs:33)
+|           |   |         ->01.64% (9,015,680B) 0x401875: extend<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global, alloc::vec::Vec<alevin_fry::eq_class::AlignmentInterval, alloc::alloc::Global>> (mod.rs:3757)
+|           |   |           ->01.64% (9,015,680B) 0x401875: alevin_fry::eq_class::EqMap::init_from_chunk_internal (eq_class.rs:1645)
+|           |   |             ->01.64% (9,015,680B) 0x285FCB: alevin_fry::quant::init_eq_map_for_chunk (quant.rs:0)
+|           |   |               ->01.64% (9,015,680B) 0x277FC7: alevin_fry::quant::run_worker_thread (quant.rs:1059)
+|           |   |                 ->01.64% (9,015,680B) 0x30CCD6: {closure
+|           |   |                   ->01.64% (9,015,680B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |   |                     ->01.64% (9,015,680B) 0x427A4A: {closure
+|           |   |                       ->01.64% (9,015,680B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |   |                         ->01.64% (9,015,680B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                           ->01.64% (9,015,680B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                             ->01.64% (9,015,680B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                               ->01.64% (9,015,680B) 0x427A4A: {closure
+|           |   |                                 ->01.64% (9,015,680B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |   |                                   ->01.64% (9,015,680B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |   |                                     ->01.64% (9,015,680B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |   |                                       ->01.64% (9,015,680B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |   |                                         ->01.64% (9,015,680B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |   |                                           
+|           |   ->01.52% (8,388,608B) 0x4021B9: UnknownInlinedFun (mod.rs:564)
+|           |   | ->01.52% (8,388,608B) 0x4021B9: UnknownInlinedFun (mod.rs:327)
+|           |   |   ->01.52% (8,388,608B) 0x4021B9: UnknownInlinedFun (mod.rs:1338)
+|           |   |     ->01.52% (8,388,608B) 0x4021B9: UnknownInlinedFun (mod.rs:2798)
+|           |   |       ->01.52% (8,388,608B) 0x4021B9: UnknownInlinedFun (spec_extend.rs:55)
+|           |   |         ->01.52% (8,388,608B) 0x4021B9: extend_from_slice<f64, alloc::alloc::Global> (mod.rs:3325)
+|           |   |           ->01.52% (8,388,608B) 0x4021B9: alevin_fry::eq_class::EqMap::init_from_chunk_internal (eq_class.rs:1712)
+|           |   |             ->01.52% (8,388,608B) 0x285FCB: alevin_fry::quant::init_eq_map_for_chunk (quant.rs:0)
+|           |   |               ->01.52% (8,388,608B) 0x277FC7: alevin_fry::quant::run_worker_thread (quant.rs:1059)
+|           |   |                 ->01.52% (8,388,608B) 0x30CCD6: {closure
+|           |   |                   ->01.52% (8,388,608B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |   |                     ->01.52% (8,388,608B) 0x427A4A: {closure
+|           |   |                       ->01.52% (8,388,608B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |   |                         ->01.52% (8,388,608B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                           ->01.52% (8,388,608B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                             ->01.52% (8,388,608B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |   |                               ->01.52% (8,388,608B) 0x427A4A: {closure
+|           |   |                                 ->01.52% (8,388,608B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |   |                                   ->01.52% (8,388,608B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |   |                                     ->01.52% (8,388,608B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |   |                                       ->01.52% (8,388,608B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |   |                                         ->01.52% (8,388,608B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |   |                                           
+|           |   ->01.04% (5,725,008B) in 19 places, all below massif's threshold (1.00%)
+|           |     
+|           ->02.48% (13,631,488B) 0x4115B9: grow_amortized<alloc::alloc::Global> (mod.rs:698)
+|           | ->02.48% (13,631,488B) 0x4115B9: grow_one<alloc::alloc::Global> (mod.rs:577)
+|           |   ->02.48% (13,631,488B) 0x4115B9: alloc::raw_vec::RawVec<T,A>::grow_one (mod.rs:336)
+|           |     ->02.48% (13,631,488B) 0x33C2C8: push_mut<alevin_fry::pugutils_dp_new::ResolvedMolecule, alloc::alloc::Global> (mod.rs:2646)
+|           |     | ->02.48% (13,631,488B) 0x33C2C8: push<alevin_fry::pugutils_dp_new::ResolvedMolecule, alloc::alloc::Global> (mod.rs:2564)
+|           |     |   ->02.48% (13,631,488B) 0x33C2C8: alevin_fry::pugutils_dp_new::get_num_molecules_log_dp_new (pugutils_dp_new.rs:996)
+|           |     |     ->02.48% (13,631,488B) 0x278480: alevin_fry::quant::run_worker_thread (quant.rs:1188)
+|           |     |       ->02.48% (13,631,488B) 0x30CCD6: {closure
+|           |     |         ->02.48% (13,631,488B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |     |           ->02.48% (13,631,488B) 0x427A4A: {closure
+|           |     |             ->02.48% (13,631,488B) 0x427A4A: call_once<usize, std::thread::{impl
+|           |     |               ->02.48% (13,631,488B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |     |                 ->02.48% (13,631,488B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |     |                   ->02.48% (13,631,488B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|           |     |                     ->02.48% (13,631,488B) 0x427A4A: {closure
+|           |     |                       ->02.48% (13,631,488B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|           |     |                         ->02.48% (13,631,488B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|           |     |                           ->02.48% (13,631,488B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|           |     |                             ->02.48% (13,631,488B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|           |     |                               ->02.48% (13,631,488B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|           |     |                                 
+|           |     ->00.00% (0B) in 1+ places, all below ms_print's threshold (01.00%)
+|           |     
+|           ->02.37% (13,033,120B) in 8 places, all below massif's threshold (1.00%)
+|             
+->08.56% (47,111,074B) in 330 places, all below massif's threshold (1.00%)
+| 
+->04.65% (25,596,000B) 0x3CB377: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:54)
+| ->04.65% (25,596,000B) 0x3CB377: UnknownInlinedFun (library/std/src/alloc.rs:425)
+|   ->04.65% (25,596,000B) 0x3CB377: UnknownInlinedFun (alloc.rs:135)
+|     ->04.65% (25,596,000B) 0x3CB377: UnknownInlinedFun (alloc.rs:325)
+|       ->04.65% (25,596,000B) 0x3CB377: UnknownInlinedFun (mod.rs:812)
+|         ->04.65% (25,596,000B) 0x3CB377: shrink<alloc::alloc::Global> (mod.rs:771)
+|           ->04.65% (25,596,000B) 0x3CB377: shrink_to_fit<alloc::alloc::Global> (mod.rs:648)
+|             ->04.65% (25,596,000B) 0x3CB377: shrink_to_fit<alevin_fry::truncation::Alignment, alloc::alloc::Global> (mod.rs:396)
+|               ->04.65% (25,596,000B) 0x3CB377: shrink_to_fit<alevin_fry::truncation::Alignment, alloc::alloc::Global> (mod.rs:1476)
+|                 ->04.65% (25,596,000B) 0x3CB377: alevin_fry::truncation::build (truncation.rs:2160)
+|                   ->04.65% (25,596,000B) 0x3C1EA8: alevin_fry::truncation::fit_molecules_with (truncation.rs:3550)
+|                     ->04.65% (25,596,000B) 0x278BEE: alevin_fry::quant::run_worker_thread (quant.rs:1246)
+|                       ->04.65% (25,596,000B) 0x30CCD6: {closure
+|                         ->04.65% (25,596,000B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                           ->04.65% (25,596,000B) 0x427A4A: {closure
+|                             ->04.65% (25,596,000B) 0x427A4A: call_once<usize, std::thread::{impl
+|                               ->04.65% (25,596,000B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                 ->04.65% (25,596,000B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                   ->04.65% (25,596,000B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                     ->04.65% (25,596,000B) 0x427A4A: {closure
+|                                       ->04.65% (25,596,000B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|                                         ->04.65% (25,596,000B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|                                           ->04.65% (25,596,000B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|                                             ->04.65% (25,596,000B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|                                               ->04.65% (25,596,000B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|                                                 
+->04.43% (24,353,620B) 0x6104F2: realloc (unix.rs:54)
+| ->04.43% (24,353,620B) 0x6104F2: __rdl_realloc (alloc.rs:425)
+|   ->04.43% (24,353,620B) 0x6104F2: realloc (alloc.rs:135)
+|     ->04.43% (24,353,620B) 0x6104F2: grow_impl (alloc.rs:223)
+|       ->04.43% (24,353,620B) 0x6104F2: grow (alloc.rs:285)
+|         ->04.43% (24,353,620B) 0x6104F2: alloc::raw_vec::RawVecInner<A>::finish_grow (mod.rs:752)
+|           ->04.43% (24,353,472B) 0x6100AE: grow_amortized<alloc::alloc::Global> (mod.rs:698)
+|           | ->04.43% (24,353,472B) 0x6100AE: grow_one<alloc::alloc::Global> (mod.rs:577)
+|           |   ->04.43% (24,353,472B) 0x6100AE: alloc::raw_vec::RawVec<T,A>::grow_one (mod.rs:336)
+|           |     ->04.43% (24,353,472B) 0x2E0B47: push_mut<alloc::string::String, alloc::alloc::Global> (mod.rs:2646)
+|           |       ->04.43% (24,353,472B) 0x2E0B47: push<alloc::string::String, alloc::alloc::Global> (mod.rs:2564)
+|           |         ->04.43% (24,353,472B) 0x2E0B47: parse_tg_spliced (utils.rs:714)
+|           |           ->04.43% (24,353,472B) 0x2E0B47: alevin_fry::utils::parse_tg_map (utils.rs:763)
+|           |             ->04.43% (24,353,472B) 0x242E43: alevin_fry::quant::do_quantify (quant.rs:2682)
+|           |               ->04.43% (24,353,472B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|           |                 ->04.43% (24,353,472B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|           |                   ->04.43% (24,353,472B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|           |                     ->04.43% (24,353,472B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|           |                       ->04.43% (24,353,472B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|           |                         ->04.43% (24,353,472B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|           |                           ->04.43% (24,353,472B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|           |                             ->04.43% (24,353,472B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|           |                               ->04.43% (24,353,472B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|           |                                 ->04.43% (24,353,472B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|           |                                   ->04.43% (24,353,472B) 0x5F15F0: {closure
+|           |                                     ->04.43% (24,353,472B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|           |                                       ->04.43% (24,353,472B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|           |                                         ->04.43% (24,353,472B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|           |                                           ->04.43% (24,353,472B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|           |                                             ->04.43% (24,353,472B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|           |                                               
+|           ->00.00% (148B) in 1+ places, all below ms_print's threshold (01.00%)
+|           
+->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (alloc.rs:95)
+|     ->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (alloc.rs:190)
+|       ->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (alloc.rs:251)
+|         ->04.32% (23,762,080B) 0x34A926: UnknownInlinedFun (mod.rs:468)
+|           ->04.32% (23,762,080B) 0x34A926: with_capacity_in<alloc::alloc::Global> (mod.rs:419)
+|             ->04.32% (23,762,080B) 0x34A926: with_capacity_in<libradicl::record::ScLongReadRecordT<u64>, alloc::alloc::Global> (mod.rs:187)
+|               ->04.32% (23,762,080B) 0x34A926: with_capacity_in<libradicl::record::ScLongReadRecordT<u64>, alloc::alloc::Global> (mod.rs:929)
+|                 ->04.32% (23,762,080B) 0x34A926: with_capacity<libradicl::record::ScLongReadRecordT<u64>> (mod.rs:519)
+|                   ->04.32% (23,762,080B) 0x34A926: from_bytes<libradicl::record::ScLongReadRecordT<u64>, std::io::cursor::Cursor<&[u8]>> (chunk.rs:246)
+|                     ->04.32% (23,762,080B) 0x34A926: <libradicl::readers::MetaChunkIterator<R> as core::iter::traits::iterator::Iterator>::next (readers.rs:61)
+|                       ->04.32% (23,762,080B) 0x277794: next<libradicl::readers::MetaChunkIterator<libradicl::record::ScLongReadRecordT<u64>>> (enumerate.rs:80)
+|                         ->04.32% (23,762,080B) 0x277794: alevin_fry::quant::run_worker_thread (quant.rs:902)
+|                           ->04.32% (23,762,080B) 0x30CCD6: {closure
+|                             ->04.32% (23,762,080B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                               ->04.32% (23,762,080B) 0x427A4A: {closure
+|                                 ->04.32% (23,762,080B) 0x427A4A: call_once<usize, std::thread::{impl
+|                                   ->04.32% (23,762,080B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                     ->04.32% (23,762,080B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                       ->04.32% (23,762,080B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                         ->04.32% (23,762,080B) 0x427A4A: {closure
+|                                           ->04.32% (23,762,080B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|                                             ->04.32% (23,762,080B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|                                               ->04.32% (23,762,080B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|                                                 ->04.32% (23,762,080B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|                                                   ->04.32% (23,762,080B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|                                                     
+->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (alloc.rs:95)
+|     ->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (alloc.rs:190)
+|       ->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (alloc.rs:251)
+|         ->02.21% (12,176,760B) 0x2CC8F0: UnknownInlinedFun (mod.rs:468)
+|           ->02.21% (12,176,760B) 0x2CC8F0: with_capacity_in<alloc::alloc::Global> (mod.rs:419)
+|             ->02.21% (12,176,760B) 0x2CC8F0: with_capacity_in<alloc::string::String, alloc::alloc::Global> (mod.rs:187)
+|               ->02.21% (12,176,760B) 0x2CC8F0: with_capacity_in<alloc::string::String, alloc::alloc::Global> (mod.rs:929)
+|                 ->02.21% (12,176,760B) 0x2CC8F0: to_vec<alloc::string::String, alloc::alloc::Global> (slice.rs:423)
+|                   ->02.21% (12,176,760B) 0x2CC8F0: to_vec_in<alloc::string::String, alloc::alloc::Global> (slice.rs:398)
+|                     ->02.21% (12,176,760B) 0x2CC8F0: <alloc::vec::Vec<T,A> as core::clone::Clone>::clone (mod.rs:3573)
+|                       ->02.21% (12,176,760B) 0x243AA4: alevin_fry::quant::do_quantify (quant.rs:2821)
+|                         ->02.21% (12,176,760B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                           ->02.21% (12,176,760B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                             ->02.21% (12,176,760B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                               ->02.21% (12,176,760B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                 ->02.21% (12,176,760B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                   ->02.21% (12,176,760B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                     ->02.21% (12,176,760B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                       ->02.21% (12,176,760B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                         ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                           ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                             ->02.21% (12,176,760B) 0x5F15F0: {closure
+|                                               ->02.21% (12,176,760B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                 ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                   ->02.21% (12,176,760B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                     ->02.21% (12,176,760B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                       ->02.21% (12,176,760B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                         
+->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/alloc.rs:95)
+|     ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/alloc.rs:190)
+|       ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/alloc.rs:251)
+|         ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:468)
+|           ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:419)
+|             ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:187)
+|               ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/vec/mod.rs:929)
+|                 ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/slice.rs:445)
+|                   ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/slice.rs:398)
+|                     ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/vec/mod.rs:3573)
+|                       ->01.57% (8,630,287B) 0x242CA1: UnknownInlinedFun (library/alloc/src/string.rs:2351)
+|                         ->01.57% (8,630,287B) 0x242CA1: alevin_fry::quant::do_quantify (quant.rs:2665)
+|                           ->01.57% (8,630,287B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                             ->01.57% (8,630,287B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                               ->01.57% (8,630,287B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                 ->01.57% (8,630,287B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                   ->01.57% (8,630,287B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                     ->01.57% (8,630,287B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                       ->01.57% (8,630,287B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                         ->01.57% (8,630,287B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                           ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                             ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                               ->01.57% (8,630,287B) 0x5F15F0: {closure
+|                                                 ->01.57% (8,630,287B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                   ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                     ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                       ->01.57% (8,630,287B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                         ->01.57% (8,630,287B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                           
+->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/alloc.rs:95)
+|     ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/alloc.rs:190)
+|       ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/alloc.rs:251)
+|         ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:468)
+|           ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:419)
+|             ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:187)
+|               ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/vec/mod.rs:929)
+|                 ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/slice.rs:445)
+|                   ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/slice.rs:398)
+|                     ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/vec/mod.rs:3573)
+|                       ->01.57% (8,630,287B) 0x2CC94B: UnknownInlinedFun (library/alloc/src/string.rs:2351)
+|                         ->01.57% (8,630,287B) 0x2CC94B: to_vec<alloc::string::String, alloc::alloc::Global> (slice.rs:430)
+|                           ->01.57% (8,630,287B) 0x2CC94B: to_vec_in<alloc::string::String, alloc::alloc::Global> (slice.rs:398)
+|                             ->01.57% (8,630,287B) 0x2CC94B: <alloc::vec::Vec<T,A> as core::clone::Clone>::clone (mod.rs:3573)
+|                               ->01.57% (8,630,287B) 0x243AA4: alevin_fry::quant::do_quantify (quant.rs:2821)
+|                                 ->01.57% (8,630,287B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                                   ->01.57% (8,630,287B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                                     ->01.57% (8,630,287B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                       ->01.57% (8,630,287B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                         ->01.57% (8,630,287B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                           ->01.57% (8,630,287B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                             ->01.57% (8,630,287B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                               ->01.57% (8,630,287B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                                 ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                                   ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                                     ->01.57% (8,630,287B) 0x5F15F0: {closure
+|                                                       ->01.57% (8,630,287B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                         ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                           ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                             ->01.57% (8,630,287B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                               ->01.57% (8,630,287B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                                 
+->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/alloc.rs:95)
+|     ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/alloc.rs:190)
+|       ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/alloc.rs:251)
+|         ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:468)
+|           ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:419)
+|             ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:187)
+|               ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/vec/mod.rs:929)
+|                 ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/slice.rs:445)
+|                   ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/slice.rs:398)
+|                     ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/vec/mod.rs:3573)
+|                       ->01.57% (8,630,287B) 0x2E0990: UnknownInlinedFun (library/alloc/src/string.rs:2351)
+|                         ->01.57% (8,630,287B) 0x2E0990: parse_tg_spliced (utils.rs:710)
+|                           ->01.57% (8,630,287B) 0x2E0990: alevin_fry::utils::parse_tg_map (utils.rs:763)
+|                             ->01.57% (8,630,287B) 0x242E43: alevin_fry::quant::do_quantify (quant.rs:2682)
+|                               ->01.57% (8,630,287B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                                 ->01.57% (8,630,287B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                                   ->01.57% (8,630,287B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                     ->01.57% (8,630,287B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                       ->01.57% (8,630,287B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                         ->01.57% (8,630,287B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                           ->01.57% (8,630,287B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                             ->01.57% (8,630,287B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                               ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                                 ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                                   ->01.57% (8,630,287B) 0x5F15F0: {closure
+|                                                     ->01.57% (8,630,287B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                       ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                         ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                           ->01.57% (8,630,287B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                             ->01.57% (8,630,287B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                               
+->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (alloc.rs:95)
+|     ->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (alloc.rs:190)
+|       ->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (alloc.rs:251)
+|         ->01.57% (8,630,287B) 0x350664: UnknownInlinedFun (mod.rs:468)
+|           ->01.57% (8,630,287B) 0x350664: with_capacity_in<alloc::alloc::Global> (mod.rs:419)
+|             ->01.57% (8,630,287B) 0x350664: with_capacity_in<u8, alloc::alloc::Global> (mod.rs:187)
+|               ->01.57% (8,630,287B) 0x350664: with_capacity_in<u8, alloc::alloc::Global> (mod.rs:929)
+|                 ->01.57% (8,630,287B) 0x350664: to_vec<u8, alloc::alloc::Global> (slice.rs:445)
+|                   ->01.57% (8,630,287B) 0x350664: to_vec_in<u8, alloc::alloc::Global> (slice.rs:398)
+|                     ->01.57% (8,630,287B) 0x350664: to_vec<u8> (slice.rs:374)
+|                       ->01.57% (8,630,287B) 0x350664: to_owned<u8> (slice.rs:838)
+|                         ->01.57% (8,630,287B) 0x350664: to_owned (str.rs:211)
+|                           ->01.57% (8,630,287B) 0x350664: from (string.rs:3089)
+|                             ->01.57% (8,630,287B) 0x350664: spec_to_string (string.rs:3020)
+|                               ->01.57% (8,630,287B) 0x350664: to_string<str> (string.rs:2869)
+|                                 ->01.57% (8,630,287B) 0x350664: from_bytes<std::io::buffered::bufreader::BufReader<&std::fs::File>> (header.rs:99)
+|                                   ->01.57% (8,630,287B) 0x350664: libradicl::header::RadPrelude::from_bytes (header.rs:225)
+|                                     ->01.57% (8,630,287B) 0x2962C1: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3307)
+|                                       ->01.57% (8,630,287B) 0x2962C1: alevin_fry::quant::quantify (quant.rs:755)
+|                                         ->01.57% (8,630,287B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                           ->01.57% (8,630,287B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                             ->01.57% (8,630,287B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                               ->01.57% (8,630,287B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                                 ->01.57% (8,630,287B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                                   ->01.57% (8,630,287B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                                     ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                                       ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                                         ->01.57% (8,630,287B) 0x5F15F0: {closure
+|                                                           ->01.57% (8,630,287B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                             ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                               ->01.57% (8,630,287B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                                 ->01.57% (8,630,287B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                                   ->01.57% (8,630,287B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                                     
+->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/alloc.rs:95)
+|     ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/alloc.rs:190)
+|       ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/alloc.rs:251)
+|         ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:468)
+|           ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:419)
+|             ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/raw_vec/mod.rs:187)
+|               ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/vec/mod.rs:929)
+|                 ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/slice.rs:445)
+|                   ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/slice.rs:398)
+|                     ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/vec/mod.rs:3573)
+|                       ->01.54% (8,491,198B) 0x2E0B0E: UnknownInlinedFun (library/alloc/src/string.rs:2351)
+|                         ->01.54% (8,491,198B) 0x2E0B0E: parse_tg_spliced (utils.rs:714)
+|                           ->01.54% (8,491,198B) 0x2E0B0E: alevin_fry::utils::parse_tg_map (utils.rs:763)
+|                             ->01.54% (8,491,198B) 0x242E43: alevin_fry::quant::do_quantify (quant.rs:2682)
+|                               ->01.54% (8,491,198B) 0x296943: do_quantify_dispatch<std::io::buffered::bufreader::BufReader<&std::fs::File>> (quant.rs:3325)
+|                                 ->01.54% (8,491,198B) 0x296943: alevin_fry::quant::quantify (quant.rs:755)
+|                                   ->01.54% (8,491,198B) 0x463BF0: alevin_fry::main (main.rs:1006)
+|                                     ->01.54% (8,491,198B) 0x484EA2: call_once<fn() -> core::result::Result<(), anyhow::Error>, ()> (function.rs:250)
+|                                       ->01.54% (8,491,198B) 0x484EA2: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                         ->01.54% (8,491,198B) 0x4D419C: std::rt::lang_start::{{closure}} (rt.rs:206)
+|                                           ->01.54% (8,491,198B) 0x5F15F0: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:287)
+|                                             ->01.54% (8,491,198B) 0x5F15F0: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:590)
+|                                               ->01.54% (8,491,198B) 0x5F15F0: catch_unwind<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:553)
+|                                                 ->01.54% (8,491,198B) 0x5F15F0: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:359)
+|                                                   ->01.54% (8,491,198B) 0x5F15F0: {closure
+|                                                     ->01.54% (8,491,198B) 0x5F15F0: do_call<std::rt::lang_start_internal::{closure_env
+|                                                       ->01.54% (8,491,198B) 0x5F15F0: catch_unwind<isize, std::rt::lang_start_internal::{closure_env
+|                                                         ->01.54% (8,491,198B) 0x5F15F0: catch_unwind<std::rt::lang_start_internal::{closure_env
+|                                                           ->01.54% (8,491,198B) 0x5F15F0: std::rt::lang_start_internal (rt.rs:171)
+|                                                             ->01.54% (8,491,198B) 0x46B6FB: main (in /scratch5/zahra/tmp/optim/target_prof2/release/alevin-fry)
+|                                                               
+->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+| ->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (library/std/src/alloc.rs:403)
+|   ->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (alloc.rs:95)
+|     ->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (alloc.rs:190)
+|       ->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (alloc.rs:251)
+|         ->01.16% (6,399,000B) 0x2C22CD: UnknownInlinedFun (mod.rs:468)
+|           ->01.16% (6,399,000B) 0x2C22CD: with_capacity_in<alloc::alloc::Global> (mod.rs:419)
+|             ->01.16% (6,399,000B) 0x2C22CD: with_capacity_in<f64, alloc::alloc::Global> (mod.rs:187)
+|               ->01.16% (6,399,000B) 0x2C22CD: with_capacity_in<f64, alloc::alloc::Global> (mod.rs:929)
+|                 ->01.16% (6,399,000B) 0x2C22CD: with_capacity<f64> (mod.rs:519)
+|                   ->01.16% (6,399,000B) 0x2C22CD: <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter (spec_from_iter_nested.rs:52)
+|                     ->01.16% (6,399,000B) 0x3C8267: from_iter<f64, core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+|                       ->01.16% (6,399,000B) 0x3C8267: from_iter<f64, core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+|                         ->01.16% (6,399,000B) 0x3C8267: collect<core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+|                           ->01.16% (6,399,000B) 0x3C8267: alevin_fry::truncation::Fixed::new (truncation.rs:2206)
+|                             ->01.16% (6,399,000B) 0x3C2BDA: alevin_fry::truncation::fit_molecules_with (truncation.rs:3641)
+|                               ->01.16% (6,399,000B) 0x278BEE: alevin_fry::quant::run_worker_thread (quant.rs:1246)
+|                                 ->01.16% (6,399,000B) 0x30CCD6: {closure
+|                                   ->01.16% (6,399,000B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+|                                     ->01.16% (6,399,000B) 0x427A4A: {closure
+|                                       ->01.16% (6,399,000B) 0x427A4A: call_once<usize, std::thread::{impl
+|                                         ->01.16% (6,399,000B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                           ->01.16% (6,399,000B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                             ->01.16% (6,399,000B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+|                                               ->01.16% (6,399,000B) 0x427A4A: {closure
+|                                                 ->01.16% (6,399,000B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+|                                                   ->01.16% (6,399,000B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+|                                                     ->01.16% (6,399,000B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+|                                                       ->01.16% (6,399,000B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+|                                                         ->01.16% (6,399,000B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+|                                                           
+->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (library/std/src/sys/alloc/unix.rs:14)
+  ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (library/std/src/alloc.rs:403)
+    ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (alloc.rs:95)
+      ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (alloc.rs:190)
+        ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (alloc.rs:251)
+          ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (mod.rs:468)
+            ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (mod.rs:419)
+              ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (mod.rs:187)
+                ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (mod.rs:929)
+                  ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (mod.rs:519)
+                    ->01.16% (6,399,000B) 0x3C8165: UnknownInlinedFun (spec_from_iter_nested.rs:52)
+                      ->01.16% (6,399,000B) 0x3C8165: from_iter<usize, core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+                        ->01.16% (6,399,000B) 0x3C8165: from_iter<usize, core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+                          ->01.16% (6,399,000B) 0x3C8165: collect<core::iter::adapters::map::Map<core::slice::iter::Iter<alevin_fry::truncation::Alignment>, alevin_fry::truncation::{impl
+                            ->01.16% (6,399,000B) 0x3C8165: alevin_fry::truncation::Fixed::new (truncation.rs:2201)
+                              ->01.16% (6,399,000B) 0x3C2BDA: alevin_fry::truncation::fit_molecules_with (truncation.rs:3641)
+                                ->01.16% (6,399,000B) 0x278BEE: alevin_fry::quant::run_worker_thread (quant.rs:1246)
+                                  ->01.16% (6,399,000B) 0x30CCD6: {closure
+                                    ->01.16% (6,399,000B) 0x30CCD6: std::sys::backtrace::__rust_begin_short_backtrace (backtrace.rs:158)
+                                      ->01.16% (6,399,000B) 0x427A4A: {closure
+                                        ->01.16% (6,399,000B) 0x427A4A: call_once<usize, std::thread::{impl
+                                          ->01.16% (6,399,000B) 0x427A4A: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+                                            ->01.16% (6,399,000B) 0x427A4A: catch_unwind<usize, core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+                                              ->01.16% (6,399,000B) 0x427A4A: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::{impl
+                                                ->01.16% (6,399,000B) 0x427A4A: {closure
+                                                  ->01.16% (6,399,000B) 0x427A4A: core::ops::function::FnOnce::call_once{{vtable.shim}} (function.rs:250)
+                                                    ->01.16% (6,399,000B) 0x5F6F8E: call_once<(), dyn core::ops::function::FnOnce<(), Output=()>, alloc::alloc::Global> (boxed.rs:2005)
+                                                      ->01.16% (6,399,000B) 0x5F6F8E: std::sys::thread::unix::Thread::new::thread_start (unix.rs:126)
+                                                        ->01.16% (6,399,000B) 0x50631C9: start_thread (in /usr/lib64/libpthread-2.28.so)
+                                                          ->01.16% (6,399,000B) 0x583A952: clone (in /usr/lib64/libc-2.28.so)
+                                                            
+--------------------------------------------------------------------------------
+  n        time(i)         total(B)   useful-heap(B) extra-heap(B)    stacks(B)
+--------------------------------------------------------------------------------

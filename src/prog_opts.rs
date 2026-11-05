@@ -15,8 +15,7 @@ use typed_builder::TypedBuilder;
 
 use crate::cellfilter::CellFilterMethod;
 use crate::quant::{
-    EMMode, EditDistanceMode, EndDistribution, EndModel, ResolutionStrategy, SplicedAmbiguityModel,
-    TrueUmiOracleMode,
+    DedupCount, DedupCover, DedupEdges, DedupModel, EMMode, EditDistanceMode, EndDistribution, EndModel, ResolutionStrategy, SplicedAmbiguityModel,
 };
 use crate::truncation::{
     CoverageSource, TruncationAbundance, TruncationEndKernels, TruncationIntervalMode,
@@ -49,12 +48,18 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub filter_list: Option<&'d PathBuf>,
     pub cmdline: &'e str,
     pub version: &'f str,
-    pub true_umi_mode: TrueUmiOracleMode,
-    pub true_txp_mode: Option<bool>,
-    pub true_umi_txp_file: Option<PathBuf>,
     pub ed_distance_model: EditDistanceMode,
     pub ed_upper_bound: usize,
     pub em_prob_model: EMMode,
+    pub dedup_model: DedupModel,
+    pub dedup_edges: DedupEdges,
+    pub dedup_cover: DedupCover,
+    pub dedup_count: DedupCount,
+    pub em_uniform_prior: bool,
+    pub dedup_soft_floor: f64,
+    pub as_denominator: f64,
+    pub ed_far_bound: usize,
+    pub ed_far_window: u32,
     pub end_model: EndModel,
     pub end_distribution: EndDistribution,
     pub end_threshold: f64,
@@ -75,6 +80,8 @@ pub struct QuantOpts<'a, 'b, 'c, 'd, 'e, 'f, 'g> {
     pub truncation_shrink_per_gene: bool,
     pub truncation_positional_power: f64,
     pub truncation_calibrate_power: bool,
+    pub truncation_cell_prior: f64,
+    pub truncation_cell_iterations: Option<u32>,
     pub truncation_min_share: f64,
     pub truncation_sample_below: f64,
     pub truncation_global_cells: usize,

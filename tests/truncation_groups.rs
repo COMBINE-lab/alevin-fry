@@ -157,6 +157,7 @@ fn molecule(target_intervals: &[(u32, f64, u32, u32, u32)]) -> ResolvedMolecule 
         transcript_probs,
         intervals,
         vertices: Vec::new(),
+        weight: 1.0,
     }
 }
 

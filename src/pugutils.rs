@@ -31,8 +31,8 @@ use slog::{crit, info, warn};
 use crate::eq_class::{EqMap, EqMapType};
 use crate::quant::SplicedAmbiguityModel;
 use crate::utils::{self as afutils, EqClassPayload};
-use crate::umi_general_distance::umi_edit_distance_from_packed_shifted;
-use crate::quant::{EditDistanceMode, EMMode};
+use crate::umi_general_distance::umi_edit_distance_within;
+use crate::quant::EditDistanceMode;
 
 use needletail::bitkmer::bitmer_to_bytes;
 use triple_accel::levenshtein::levenshtein;
@@ -76,26 +76,80 @@ pub struct PugResolutionStatistics {
 /// twice the frequency of the other, the edge is directed from the
 /// more frequent to the less freuqent node.  Otherwise, edges are
 /// added in both directions.
+/// Whether two vertices' reads lie on one shared transcript at the same place: some read of `b`
+/// starts and ends within `window` bases of the range of `a`'s reads on that transcript. Reads of one
+/// molecule share both alignment ends (98% within 10 nt on the simulations), reads of different
+/// molecules of the same transcript rarely do (1–3%), so this is evidence that two UMIs further apart
+/// than the edit-distance bound still come from one molecule. Needs the captured alignment intervals.
+pub fn positional_agreement(eqmap: &EqMap, a: (u32, u64), b: (u32, u64), window: u32) -> bool {
+    let Some(intervals) = eqmap.alignment_intervals.as_ref() else {
+        return false;
+    };
+    let (Some(ia), Some(ib)) = (intervals.get(&a), intervals.get(&b)) else {
+        return false;
+    };
+    let mut range: HashMap<u32, (u32, u32, u32, u32)> = HashMap::with_capacity(ia.len());
+    for i in ia {
+        let e = range
+            .entry(i.transcript_id)
+            .or_insert((i.start, i.start, i.end, i.end));
+        e.0 = e.0.min(i.start);
+        e.1 = e.1.max(i.start);
+        e.2 = e.2.min(i.end);
+        e.3 = e.3.max(i.end);
+    }
+    for i in ib {
+        if let Some(&(smin, smax, emin, emax)) = range.get(&i.transcript_id) {
+            let ds = if i.start < smin { smin - i.start } else { i.start.saturating_sub(smax) };
+            let de = if i.end < emin { emin - i.end } else { i.end.saturating_sub(emax) };
+            if ds <= window && de <= window {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+static UMI_LEN: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+
+/// Record the UMI length of the RAD file (its `ulen` tag); the graph code decodes packed UMIs with it.
+pub fn set_umi_len(len: u8) {
+    let _ = UMI_LEN.set(len);
+}
+
+/// The UMI length set by `set_umi_len`, 12 if none was set.
+pub fn umi_len() -> u8 {
+    *UMI_LEN.get().unwrap_or(&12)
+}
+
 pub fn extract_graph(
     eqmap: &EqMap,
     pug_exact_umi: bool, // true if only identical UMIs induce an edge
     ed_distance_model: EditDistanceMode,
     ed_upper_bound: usize,
+    // `Some((bound, window))`: UMIs at a distance in `ed_upper_bound..bound` are also joined when
+    // their reads agree in position within `window` bases ([`positional_agreement`])
+    far_edges: Option<(usize, u32)>,
     log: &slog::Logger,
 ) -> petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed> {
     let verbose = false;
     let mut one_edit = 0u64;
     let mut zero_edit = 0u64;
+    let (far_bound, far_window) = far_edges
+        .map(|(b, w)| (b.max(ed_upper_bound), w))
+        .unwrap_or((ed_upper_bound, 0));
 
-    // given 2 pairs (UMI, count), determine if an edge exists
+    // given 2 pairs (UMI, count) and their equivalence classes, determine if an edge exists
     // between them, and if so, what type.
-    let umi_len: u8 = 12;
-    let mut has_edge = |x: &(u64, u32), y: &(u64, u32)| -> PugEdgeType {
+    let umi_len: u8 = umi_len();
+    // distances of `far_bound` or more all mean "no edge", so the general distance is only evaluated up to far_bound - 1
+    let general_bound: u32 = far_bound.saturating_sub(1) as u32;
+    let mut has_edge = |ex: u32, x: &(u64, u32), ey: u32, y: &(u64, u32)| -> PugEdgeType {
         let hdist = if pug_exact_umi {
             if x.0 == y.0 { 0 } else { usize::MAX }
         } else {
             if ed_distance_model == EditDistanceMode::General {
-                umi_edit_distance_from_packed_shifted(x.0, y.0, umi_len)
+                umi_edit_distance_within(x.0, y.0, umi_len, general_bound).map_or(usize::MAX, |d| d as usize)
             } else if ed_distance_model == EditDistanceMode::Levenshtein {
                 umi_edit_distance_from_packed(x.0, y.0, umi_len)
             } else if ed_distance_model == EditDistanceMode::Hamming {
@@ -111,7 +165,11 @@ pub fn extract_graph(
             return PugEdgeType::BiDirected;
         }
 
-        if hdist < ed_upper_bound {
+        let near = hdist < ed_upper_bound;
+        let far = !near
+            && hdist < far_bound
+            && positional_agreement(eqmap, (ex, x.0), (ey, y.0), far_window);
+        if near || far {
             one_edit += 1;
             return if x.1 > (2 * y.1 - 1) {
                 PugEdgeType::XToY
@@ -169,7 +227,7 @@ pub fn extract_graph(
                 // graph.add_node((eqid as u32, xi2 as u32));
 
                 // determine if an edge exists between x and x2, and if so, what kind
-                let et = has_edge(x, x2);
+                let et = has_edge(eqid as u32, x, eqid as u32, x2);
                 // for each type of edge, add the appropriate edge in the graph
                 match et {
                     PugEdgeType::BiDirected => {
@@ -241,7 +299,7 @@ pub fn extract_graph(
                         // Node for equiv : eq2id and umi : yi
                         // graph.add_node((*eq2id as u32, yi as u32));
 
-                        let et = has_edge(x, y);
+                        let et = has_edge(eqid as u32, x, *eq2id, y);
                         match et {
                             PugEdgeType::BiDirected => {
                                 graph.add_edge((eqid as u32, xi as u32), (*eq2id, yi as u32), ());
@@ -291,6 +349,452 @@ pub fn extract_graph(
     }
 
     graph
+}
+
+
+/// The posterior that two vertices are one molecule, for every pair the calibrated edge model scored
+/// (UMI distance 1 to 3 on a shared transcript), keyed by the ordered pair of (equivalence class, UMI index).
+pub type PairPosteriors = HashMap<((u32, u32), (u32, u32)), f32, ahash::RandomState>;
+
+/// The hasher of the per-cell lookup maps: fixed seeds, so a run is reproducible.
+fn lookup_hasher() -> ahash::RandomState {
+    ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64)
+}
+
+/// Greedy correlation clustering of one monochromatic component on the pair posteriors
+/// (`--dedup-cover posterior`): the molecule grows from the vertex with most reads, adding at each step
+/// the adjacent vertex whose summed log-odds of being one molecule with every member is largest, as long
+/// as that sum is positive; a pair the edge model never scored (UMI distance 4 or more) counts as
+/// `FLOOR`. Vertices left out stay uncovered and form their own molecules later. Where parsimony keeps a
+/// chain A-B-C together on connectivity alone, this cuts it when A and C are unlikely to be one molecule.
+fn refine_by_posteriors(
+    mcc: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    eqmap: &EqMap,
+    post: &PairPosteriors,
+) -> Vec<u32> {
+    const FLOOR: f64 = 0.05;
+    let logit = |p: f64| {
+        let p = p.clamp(1e-6, 1.0 - 1e-6);
+        (p / (1.0 - p)).ln()
+    };
+    let node = |v: u32| g.from_index(v as usize);
+    let count = |v: u32| {
+        let (e, i) = node(v);
+        eqmap.eqc_info[e as usize].umis[i as usize].1
+    };
+    let affinity = |u: u32, v: u32| -> f64 {
+        let (a, b) = (node(u), node(v));
+        let key = if a <= b { (a, b) } else { (b, a) };
+        logit(post.get(&key).map_or(FLOOR, |p| *p as f64))
+    };
+    let edge = |u: u32, v: u32| -> bool {
+        let (a, b) = (node(u), node(v));
+        g.contains_edge(a, b) || g.contains_edge(b, a)
+    };
+    let seed = *mcc.iter().max_by_key(|&&v| count(v)).expect("a component has a vertex");
+    let mut members = vec![seed];
+    let mut rest: Vec<u32> = mcc.iter().copied().filter(|&v| v != seed).collect();
+    let mut score: Vec<f64> = rest.iter().map(|&v| affinity(seed, v)).collect();
+    let mut adj: Vec<bool> = rest.iter().map(|&v| edge(seed, v)).collect();
+    loop {
+        let mut best: Option<(usize, f64)> = None;
+        for k in 0..rest.len() {
+            if adj[k] && score[k] > 0.0 && best.map_or(true, |(_, s)| score[k] > s) {
+                best = Some((k, score[k]));
+            }
+        }
+        let Some((k, _)) = best else { break };
+        let v = rest.swap_remove(k);
+        score.swap_remove(k);
+        adj.swap_remove(k);
+        for (j, &w) in rest.iter().enumerate() {
+            score[j] += affinity(v, w);
+            adj[j] = adj[j] || edge(v, w);
+        }
+        members.push(v);
+    }
+    members
+}
+
+/// The expected number of molecules in one monochromatic component under the calibrated edge model
+/// (`--dedup-count expected`): on the component's maximum-probability spanning tree every edge is cut
+/// independently with probability `1 − p`, so the expectation is `1 + Σ (1 − p_e)` over the tree's edges.
+/// A hard partition counts a chain whose links are each 55% likely as one molecule; this counts it as
+/// one plus 0.45 per link, which is right on average.
+fn expected_molecules(
+    mcc: &[u32],
+    g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
+    post: &PairPosteriors,
+) -> f64 {
+    let n = mcc.len();
+    if n <= 1 {
+        return 1.0;
+    }
+    let node = |v: u32| g.from_index(v as usize);
+    let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (a, b) = (node(mcc[i]), node(mcc[j]));
+            let key = if a <= b { (a, b) } else { (b, a) };
+            if let Some(&p) = post.get(&key) {
+                pairs.push((p as f64, i, j));
+            }
+        }
+    }
+    pairs.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(Ordering::Equal));
+    fn find(parent: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while parent[r] != r {
+            r = parent[r];
+        }
+        let mut c = x;
+        while parent[c] != r {
+            let next = parent[c];
+            parent[c] = r;
+            c = next;
+        }
+        r
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    let (mut w, mut joined) = (1.0, 0usize);
+    for (p, i, j) in pairs {
+        let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+        if ri != rj {
+            parent[ri] = rj;
+            w += 1.0 - p;
+            joined += 1;
+            if joined == n - 1 {
+                break;
+            }
+        }
+    }
+    // vertices the scored pairs leave unjoined were connected through identical UMIs (always one molecule)
+    w
+}
+
+/// Parameters and counts of the calibrated UMI/position edge model of one cell ([`extract_graph_bayes`]).
+#[derive(Debug, Clone, Default)]
+pub struct UmiEdgeStats {
+    /// P(the reads of two vertices agree in position | one molecule), from vertices with two reads.
+    pub p_agree_same: f64,
+    pub n_same: usize,
+    /// P(agree | different molecules), from vertex pairs at UMI distance 4 or more.
+    pub p_agree_diff: f64,
+    pub n_diff: usize,
+    /// Share of one-molecule pairs among the vertex pairs at UMI distance 1, 2 and 3 (index = distance),
+    /// per crowding stratum of the pair (the larger of its two equivalence classes holds fewer than 10,
+    /// 10 to 99, or at least 100 UMIs): random near-UMIs are commoner where molecules are many.
+    pub pi: [[f64; 4]; 3],
+    pub n_pairs: [[usize; 4]; 3],
+    pub merged: [[usize; 4]; 3],
+    /// Some parameter could not be estimated from this cell and a default or the fixed rule was used.
+    pub fallback: bool,
+    /// With the per-transcript model: transcripts with at least 20 sampled different-molecule pairs, and the
+    /// 10th, 50th and 90th percentiles of their P(agree | different).
+    pub tx_estimated: usize,
+    pub p_diff_tx_quantiles: [f64; 3],
+}
+
+type VertexRanges = HashMap<(u32, u64), SmallVec<[(u32, u32, u32, u32, u32); 4]>, ahash::RandomState>;
+
+/// Each vertex's reads summarised per candidate transcript as (transcript, min start, max start, min end, max end).
+fn vertex_ranges(eqmap: &EqMap) -> VertexRanges {
+    let mut out: VertexRanges = HashMap::with_hasher(lookup_hasher());
+    if let Some(iv) = eqmap.alignment_intervals.as_ref() {
+        for (key, intervals) in iv {
+            let mut r: SmallVec<[(u32, u32, u32, u32, u32); 4]> = SmallVec::new();
+            for i in intervals {
+                match r.iter_mut().find(|e| e.0 == i.transcript_id) {
+                    Some(e) => {
+                        e.1 = e.1.min(i.start);
+                        e.2 = e.2.max(i.start);
+                        e.3 = e.3.min(i.end);
+                        e.4 = e.4.max(i.end);
+                    }
+                    None => r.push((i.transcript_id, i.start, i.start, i.end, i.end)),
+                }
+            }
+            out.insert(*key, r);
+        }
+    }
+    out
+}
+
+/// The transcripts two vertices share, each with whether their reads agree in position on it.
+fn shared_agreement(a: &[(u32, u32, u32, u32, u32)], b: &[(u32, u32, u32, u32, u32)], window: u32) -> SmallVec<[(u32, bool); 4]> {
+    let mut out: SmallVec<[(u32, bool); 4]> = SmallVec::new();
+    for x in a {
+        for y in b {
+            if x.0 != y.0 {
+                continue;
+            }
+            let ds = if y.2 < x.1 { x.1 - y.2 } else { y.1.saturating_sub(x.2) };
+            let de = if y.4 < x.3 { x.3 - y.4 } else { y.3.saturating_sub(x.4) };
+            out.push((x.0, ds <= window && de <= window));
+        }
+    }
+    out
+}
+
+/// Whether two vertices' reads lie at the same place on a shared transcript: both the start and the end
+/// ranges within `window` bases of each other.
+fn ranges_agree(a: &[(u32, u32, u32, u32, u32)], b: &[(u32, u32, u32, u32, u32)], window: u32) -> bool {
+    for x in a {
+        for y in b {
+            if x.0 != y.0 {
+                continue;
+            }
+            let ds = if y.2 < x.1 { x.1 - y.2 } else { y.1.saturating_sub(x.2) };
+            let de = if y.4 < x.3 { x.3 - y.4 } else { y.3.saturating_sub(x.4) };
+            if ds <= window && de <= window {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The calibrated UMI/position edge model (`--dedup-edges bayes`). Two vertices that share a transcript are
+/// one molecule with posterior probability
+///
+/// `pi_d * P(a | same) / (pi_d * P(a | same) + (1 - pi_d) * P(a | different))`
+///
+/// where `d` is their UMI distance (1, 2 or 3; identical UMIs always join, 4 or more never), `a` whether
+/// their reads agree in position (both alignment ends within `window` bases on a shared transcript), and
+/// every parameter is estimated from the cell itself: `P(a | same)` from vertices with two reads (one UMI,
+/// so one molecule), `P(a | different)` from vertex pairs at distance 4 or more (different molecules), and
+/// `pi_d`, the share of one-molecule pairs at distance `d`, from the agreement rate of the pairs at that
+/// distance, `r_d = pi_d P(a|same) + (1 - pi_d) P(a|different)`. An edge joins the pair when the posterior
+/// is at least one half; it takes the usual direction from the read counts. Where a cell has too few
+/// observations the fixed rule stands in: distance 1 always joins, distance 2 joins on agreement.
+pub fn extract_graph_bayes(
+    eqmap: &EqMap,
+    ed_distance_model: EditDistanceMode,
+    window: u32,
+    edge_threshold: f64,
+    per_transcript: bool,
+    _log: &slog::Logger,
+) -> (petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>, UmiEdgeStats, PairPosteriors) {
+    const MAX_D: usize = 3;
+    let mut posteriors: PairPosteriors = HashMap::with_hasher(lookup_hasher());
+    // different-molecule pairs sampled for P(agree | different): every 20th, or every 4th when it is estimated per transcript
+    let diff_stride: usize = if per_transcript { 4 } else { 20 };
+    // prior weight (in pairs) of the cell's P(agree | different) in each transcript's own estimate
+    const TX_PRIOR_PAIRS: f64 = 20.0;
+    let mut tx_stats: HashMap<u32, (u32, u32)> = HashMap::new();
+    const MIN_SAME: usize = 100;
+    const MIN_DIFF: usize = 100;
+    const MIN_PAIRS: usize = 30;
+    const DEFAULT_P_SAME: f64 = 0.98;
+    const DEFAULT_P_DIFF: f64 = 0.03;
+    let umi_len: u8 = umi_len();
+    // `Some(d)` for a distance of at most MAX_D, `None` beyond it (the exact value is not needed there)
+    let dist = |x: u64, y: u64| -> Option<usize> {
+        match ed_distance_model {
+            EditDistanceMode::General => umi_edit_distance_within(x, y, umi_len, MAX_D as u32).map(|d| d as usize),
+            EditDistanceMode::Levenshtein => Some(umi_edit_distance_from_packed(x, y, umi_len)).filter(|d| *d <= MAX_D),
+            EditDistanceMode::Hamming => Some(afutils::count_diff_2_bit_packed(x, y)).filter(|d| *d <= MAX_D),
+        }
+    };
+    let ranges = vertex_ranges(eqmap);
+    let agree = |ex: u32, ux: u64, ey: u32, uy: u64| -> bool {
+        match (ranges.get(&(ex, ux)), ranges.get(&(ey, uy))) {
+            (Some(a), Some(b)) => ranges_agree(a, b, window),
+            _ => false,
+        }
+    };
+    let mut st = UmiEdgeStats::default();
+    let mut graph = DiGraphMap::<(u32, u32), ()>::new();
+    let mut same_agree = 0usize;
+    for eqid in 0..eqmap.num_eq_classes() {
+        let eq = &eqmap.eqc_info[eqid];
+        for (xi, (umi, count)) in eq.umis.iter().enumerate() {
+            graph.add_node((eqid as u32, xi as u32));
+            if *count == 2 {
+                if let Some(r) = ranges.get(&(eqid as u32, *umi)) {
+                    st.n_same += 1;
+                    if r.iter().any(|e| e.2 - e.1 <= window && e.4 - e.3 <= window) {
+                        same_agree += 1;
+                    }
+                }
+            }
+        }
+    }
+    // candidate pairs: (eq x, umi index x, eq y, umi index y, distance, agreement, count x, count y, stratum)
+    let mut cands: Vec<(u32, u32, u32, u32, u8, bool, u32, u32, u8)> = Vec::new();
+    let stratum_of = |n: usize| -> u8 { if n < 10 { 0 } else if n < 100 { 1 } else { 2 } };
+    let (mut diff_seen, mut diff_agree) = (0usize, 0usize);
+    macro_rules! consider {
+        ($ex:expr, $xi:expr, $x:expr, $ey:expr, $yi:expr, $y:expr) => {{
+            let d = dist($x.0, $y.0);
+            if d == Some(0) {
+                graph.add_edge(($ex, $xi), ($ey, $yi), ());
+                graph.add_edge(($ey, $yi), ($ex, $xi), ());
+            } else if let Some(d) = d {
+                let a = agree($ex, $x.0, $ey, $y.0);
+                let crowd = stratum_of(eqmap.eqc_info[$ex as usize].umis.len().max(eqmap.eqc_info[$ey as usize].umis.len()));
+                cands.push(($ex, $xi, $ey, $yi, d as u8, a, $x.1, $y.1, crowd));
+            } else {
+                diff_seen += 1;
+                if diff_seen % diff_stride == 0 {
+                    st.n_diff += 1;
+                    if per_transcript {
+                        if let (Some(a), Some(b)) = (ranges.get(&($ex, $x.0)), ranges.get(&($ey, $y.0))) {
+                            let mut any = false;
+                            for (t, ag) in shared_agreement(a, b, window) {
+                                let e = tx_stats.entry(t).or_insert((0, 0));
+                                e.0 += 1;
+                                if ag {
+                                    e.1 += 1;
+                                    any = true;
+                                }
+                            }
+                            if any {
+                                diff_agree += 1;
+                            }
+                        }
+                    } else if agree($ex, $x.0, $ey, $y.0) {
+                        diff_agree += 1;
+                    }
+                }
+            }
+        }};
+    }
+    let mut hset = vec![0u8; eqmap.num_eq_classes()];
+    let mut idxvec: SmallVec<[u32; 128]> = SmallVec::new();
+    for eqid in 0..eqmap.num_eq_classes() {
+        let u1 = &eqmap.eqc_info[eqid].umis;
+        for (xi, x) in u1.iter().enumerate() {
+            for (xi2, x2) in u1.iter().enumerate().skip(xi + 1) {
+                consider!(eqid as u32, xi as u32, x, eqid as u32, xi2 as u32, x2);
+            }
+        }
+        for i in &idxvec {
+            hset[*i as usize] = 0u8;
+        }
+        idxvec.clear();
+        for r in eqmap.refs_for_eqc(eqid as u32) {
+            for eq2id in eqmap.eq_classes_containing(*r).iter() {
+                if (*eq2id as usize) <= eqid || hset[*eq2id as usize] > 0 {
+                    continue;
+                }
+                hset[*eq2id as usize] = 1;
+                idxvec.push(*eq2id);
+                let u2 = &eqmap.eqc_info[*eq2id as usize].umis;
+                for (xi, x) in u1.iter().enumerate() {
+                    for (yi, y) in u2.iter().enumerate() {
+                        consider!(eqid as u32, xi as u32, x, *eq2id, yi as u32, y);
+                    }
+                }
+            }
+        }
+    }
+    // the parameters
+    let p_same = if st.n_same >= MIN_SAME {
+        same_agree as f64 / st.n_same as f64
+    } else {
+        st.fallback = true;
+        DEFAULT_P_SAME
+    };
+    let p_diff = if st.n_diff >= MIN_DIFF {
+        diff_agree as f64 / st.n_diff as f64
+    } else {
+        st.fallback = true;
+        DEFAULT_P_DIFF
+    };
+    st.p_agree_same = p_same;
+    st.p_agree_diff = p_diff;
+    // P(agree | different) per transcript: its sampled pairs, shrunk to the cell's value with TX_PRIOR_PAIRS pairs' weight
+    let p_diff_tx: HashMap<u32, f64> = if per_transcript {
+        tx_stats
+            .iter()
+            .map(|(t, (n, k))| (*t, (*k as f64 + TX_PRIOR_PAIRS * p_diff) / (*n as f64 + TX_PRIOR_PAIRS)))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    if per_transcript {
+        let mut v: Vec<f64> = tx_stats.iter().filter(|(_, (n, _))| *n >= 20).map(|(t, _)| p_diff_tx[t]).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        st.tx_estimated = v.len();
+        if !v.is_empty() {
+            st.p_diff_tx_quantiles = [v[v.len() / 10], v[v.len() / 2], v[v.len() * 9 / 10]];
+        }
+    }
+    // each candidate pair's P(agree | different): the largest over the transcripts the two vertices share
+    let pdiff_of = |ex: u32, xi: u32, ey: u32, yi: u32| -> f64 {
+        if !per_transcript {
+            return p_diff;
+        }
+        let ux = eqmap.eqc_info[ex as usize].umis[xi as usize].0;
+        let uy = eqmap.eqc_info[ey as usize].umis[yi as usize].0;
+        match (ranges.get(&(ex, ux)), ranges.get(&(ey, uy))) {
+            (Some(a), Some(b)) => shared_agreement(a, b, window)
+                .iter()
+                .map(|(t, _)| *p_diff_tx.get(t).unwrap_or(&p_diff))
+                .fold(f64::NAN, f64::max)
+                .max(if shared_agreement(a, b, window).is_empty() { p_diff } else { 0.0 }),
+            _ => p_diff,
+        }
+    };
+    let cand_pd: Vec<f64> = cands.iter().map(|c| pdiff_of(c.0, c.1, c.2, c.3)).collect();
+    let mut agree_d = [[0usize; 4]; 3];
+    let mut pd_sum = [[0f64; 4]; 3];
+    for (c, pd) in cands.iter().zip(cand_pd.iter()) {
+        st.n_pairs[c.8 as usize][c.4 as usize] += 1;
+        pd_sum[c.8 as usize][c.4 as usize] += pd;
+        if c.5 {
+            agree_d[c.8 as usize][c.4 as usize] += 1;
+        }
+    }
+    // the share of one-molecule pairs from the agreement rate, with the pairs' mean P(agree | different)
+    let pi_of = |n: usize, k: usize, pd_total: f64| -> f64 {
+        let pd = if n > 0 { pd_total / n as f64 } else { p_diff };
+        if n >= MIN_PAIRS && p_same > pd + 0.05 {
+            ((k as f64 / n as f64 - pd) / (p_same - pd)).clamp(0.0, 1.0)
+        } else {
+            f64::NAN
+        }
+    };
+    for d in 1..=MAX_D {
+        // a stratum with too few pairs takes the estimate over all strata
+        let pooled = pi_of((0..3).map(|b| st.n_pairs[b][d]).sum(), (0..3).map(|b| agree_d[b][d]).sum(), (0..3).map(|b| pd_sum[b][d]).sum());
+        for b in 0..3 {
+            let own = pi_of(st.n_pairs[b][d], agree_d[b][d], pd_sum[b][d]);
+            st.pi[b][d] = if own.is_finite() { own } else { pooled };
+            if !st.pi[b][d].is_finite() {
+                st.fallback = true;
+            }
+        }
+    }
+    // the decisions
+    for (&(ex, xi, ey, yi, d, a, cx, cy, crowd), &pd) in cands.iter().zip(cand_pd.iter()) {
+        let pi = st.pi[crowd as usize][d as usize];
+        let (merge, post) = if pi.is_finite() {
+            let (l1, l0) = if a { (p_same, pd) } else { (1.0 - p_same, 1.0 - pd) };
+            let p = pi * l1 / (pi * l1 + (1.0 - pi) * l0).max(1e-300);
+            (p >= edge_threshold, p)
+        } else {
+            let m = d == 1 || (d == 2 && a);
+            (m, if m { 1.0 } else { 0.0 })
+        };
+        let key = if (ex, xi) <= (ey, yi) { ((ex, xi), (ey, yi)) } else { ((ey, yi), (ex, xi)) };
+        posteriors.insert(key, post as f32);
+        if !merge {
+            continue;
+        }
+        st.merged[crowd as usize][d as usize] += 1;
+        if cx > 2 * cy - 1 {
+            graph.add_edge((ex, xi), (ey, yi), ());
+        } else if cy > 2 * cx - 1 {
+            graph.add_edge((ey, yi), (ex, xi), ());
+        } else {
+            graph.add_edge((ex, xi), (ey, yi), ());
+            graph.add_edge((ey, yi), (ex, xi), ());
+        }
+    }
+    (graph, st, posteriors)
 }
 
 /// Extract the weakly connected components from the directed graph
@@ -2177,6 +2681,12 @@ pub fn get_num_molecules_large_component<P: EqClassPayload>(
 /// and the transcript-to-gene map `tid_to_gid`, apply the parsimonious
 /// umi resolution algorithm.  Pass any relevant logging messages along to
 /// `log`.
+/// Parsimony deduplication (`--dedup-model parsimony`): each component is covered greedily by the
+/// largest monochromatic connected component, as alevin-fry does; with `weighted` (`parsimony-weighted`)
+/// by the component of highest mean alignment probability, joining neighbours only when their mean
+/// probabilities differ by less than 0.5 (the variant in the user's parsimony build). Each molecule's
+/// transcript priors are the softmax of its vertices' summed log-likelihoods, as in the likelihood model,
+/// so the two deduplications feed the same EM. With `resolved_molecules` the molecules are also returned.
 pub fn get_num_molecules<P: EqClassPayload>(
     g: &petgraph::graphmap::GraphMap<(u32, u32), (), petgraph::Directed>,
     eqmap: &EqMap,
@@ -2184,10 +2694,15 @@ pub fn get_num_molecules<P: EqClassPayload>(
     gene_eqclass_hash: &mut HashMap<Vec<u32>, P, ahash::RandomState>,
     hasher_state: &ahash::RandomState,
     large_graph_thresh: usize,
+    weighted: bool,
+    posteriors: Option<&PairPosteriors>,
+    expected_counts: bool,
+    mut resolved_molecules: Option<&mut Vec<crate::pugutils_dp_new::ResolvedMolecule>>,
     log: &slog::Logger,
 ) -> PugResolutionStatistics
 //,)
 {
+    use crate::pugutils_dp_new::{intervals_for_resolved_vertices, vertex_keys, ResolvedMolecule};
     const EMPTY_VEC: Vec<(u32, f64)> = vec![];
     type U32Set = HashSet<u32, ahash::RandomState>;
     let get_set = |cap: u32| {
@@ -2305,7 +2820,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     // NOTE: what if there are multiple different mccs that
                     // are equally good? (@k3yavi — I don't think this case
                     // is even handled in the C++ code either).
-                    let (cand_mcc, cand_txp, cand_prob, eq_txs_prob) = if P::HAS_PROBS {
+                    let (cand_mcc, cand_txp, cand_prob, eq_txs_prob) = if P::HAS_PROBS && weighted {
                         collapse_vertices_weighted(*v, &uncovered_vertices, g, eqmap, hasher_state)
                     } else {
                         let (new_mcc, covering_txp) =
@@ -2314,7 +2829,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     };
 
                     let mcc_len = cand_mcc.len();
-                    if P::HAS_PROBS {
+                    if P::HAS_PROBS && weighted {
                         if best_mcc_prob < cand_prob {
                             best_mcc = cand_mcc;
                             best_mcc_prob = cand_prob;
@@ -2341,6 +2856,15 @@ pub fn get_num_molecules<P: EqClassPayload>(
                     crit!(log, "Could not find a covering transcript");
                     std::process::exit(1);
                 }
+                if let Some(post) = posteriors {
+                    if best_mcc.len() > 1 && !expected_counts {
+                        best_mcc = refine_by_posteriors(&best_mcc, g, eqmap, post);
+                    }
+                }
+                let mol_weight = match (expected_counts, posteriors) {
+                    (true, Some(post)) => expected_molecules(&best_mcc, g, post),
+                    _ => 1.0,
+                };
 
                 // get gene_id of best covering transcript
                 let best_covering_gene = if gene_level_eq_map {
@@ -2382,35 +2906,39 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 //eprintln!("@@@@@@@@@@@@@ global txp = {:?}", global_txps);
                 //eprintln!("############# best_mcc_txp_probs = {:?}", best_mcc_txp_probs);
 
-                // for long reads obtain the probabiltiy for the global txps
+                // for long reads obtain the probability for the global txps: the softmax of the
+                // component's summed log-likelihoods, as the likelihood deduplication computes it
                 let mut global_txp_prob: Vec<f64> = vec![];
+                let mut sorted_txps: Vec<u32> = global_txps.iter().copied().collect();
+                sorted_txps.sort_unstable();
                 if P::HAS_PROBS {
-
-                    if let Some((k, &p)) = best_mcc_txp_probs.iter().enumerate().find(|(_, p)| !p.1.is_finite()) {
-                        panic!(
-                            "NON-FINITE prob_vec entry -- 1 -- best_mcc_txp_prob"
-                        );
-                    }
-
-                    let mut txp_prob_temp: Vec<(u32, f64)> = best_mcc_txp_probs
-                        .iter()
-                        .filter(|(t, _)| global_txps.contains(t))
-                        .cloned()
+                    let _ = &best_mcc_txp_probs;
+                    let scores: Vec<(u32, f64)> = component_tx_log_scores(&best_mcc, g, eqmap, hasher_state)
+                        .into_iter()
+                        .filter(|(t, _)| sorted_txps.binary_search(t).is_ok())
                         .collect();
-
-                    if global_txps.len() != txp_prob_temp.len() {
-                        eprintln!("global_txp = {:?}, global_txp_len = {}, best_mcc = {:?}, best_mcc_len = {:?}, txp_prob_temp: {:?}, txp_prob_temp_len = {:?}, best_mcc_txp_probs = {:?}, best_mcc_txp_probs_len = {:?}", 
-                        global_txps, global_txps.len(), best_mcc, best_mcc.len(), txp_prob_temp, txp_prob_temp.len(), best_mcc_txp_probs, best_mcc_txp_probs.len());
+                    if scores.len() != sorted_txps.len() {
+                        crit!(log, "component scores cover {} of {} covering transcripts", scores.len(), sorted_txps.len());
                         std::process::exit(1);
                     }
-                    //assert_eq!(global_txps.len(), txp_prob_temp.len(), "after - length of global txps and their corresponding probs should be the same");
-
-                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
-                    global_txp_prob = if txp_prob_temp.len() == 1 {
+                    global_txp_prob = if scores.len() == 1 {
                         vec![1.0]
                     } else {
-                        txp_prob_temp.iter().map(|(_, p)| *p).collect()
+                        softmax_log_scores(&scores).iter().map(|(_, p)| *p).collect()
                     };
+                    crate::eq_class::uniformize(&mut global_txp_prob);
+                }
+                if let Some(molecules) = resolved_molecules.as_mut() {
+                    molecules.push(ResolvedMolecule {
+                        transcript_probs: sorted_txps
+                            .iter()
+                            .copied()
+                            .zip(global_txp_prob.iter().copied().chain(std::iter::repeat(1.0)))
+                            .collect(),
+                        intervals: intervals_for_resolved_vertices(&best_mcc, &sorted_txps, g, eqmap),
+                        vertices: vertex_keys(&best_mcc, g, eqmap),
+                        weight: mol_weight,
+                    });
                 }
 
                 // at this point, whatever transcript ids remain in
@@ -2457,7 +2985,7 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 let payload = gene_eqclass_hash
                     .entry(global_genes)
                     .or_insert(P::new(eq_label_len));
-                payload.inc();
+                payload.inc_by(mol_weight as f32);
 
                 if P::HAS_PROBS {
                     if let Some((k, &p)) = global_txp_prob.iter().enumerate().find(|(_, p)| !p.is_finite()) {
@@ -2489,19 +3017,30 @@ pub fn get_num_molecules<P: EqClassPayload>(
                 if tl.len() == 1 {
                     global_txp_prob = vec![1.0];
                 } else {
-                    let mut txp_prob_temp: Vec<(u32, f64)> = Vec::with_capacity(tl.len());
-                    for (i, t) in tl.iter().enumerate() {
-                        let (eq_id, umi_id) = g.from_index(*tv as usize);
-                        let prob_vec = eqmap
-                            .probs_for_eq_umi_tx(eq_id, umi_id, i)
-                            .expect("should be a valid eq/umi pair");
-                        let avg_prob = prob_vec.iter().sum::<f64>() / prob_vec.len() as f64;
-                        txp_prob_temp.push((*t, avg_prob));
-                    }
-
-                    txp_prob_temp.sort_unstable_by_key(|(t, _)| *t);
-                    global_txp_prob = txp_prob_temp.iter().map(|(_, p)| *p).collect();
+                    let (eq_id, umi_id) = g.from_index(*tv as usize);
+                    let mut tx_scores: Vec<(u32, f64)> = tl
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| (*t, vertex_loglik_for_tx(eq_id, umi_id, i, eqmap)))
+                        .collect();
+                    tx_scores.sort_unstable_by_key(|(t, _)| *t);
+                    global_txp_prob = softmax_log_scores(&tx_scores).iter().map(|(_, p)| *p).collect();
+                    crate::eq_class::uniformize(&mut global_txp_prob);
                 }
+            }
+            if let Some(molecules) = resolved_molecules.as_mut() {
+                let mut sorted_txps: Vec<u32> = tl.to_vec();
+                sorted_txps.sort_unstable();
+                molecules.push(ResolvedMolecule {
+                    transcript_probs: sorted_txps
+                        .iter()
+                        .copied()
+                        .zip(global_txp_prob.iter().copied().chain(std::iter::repeat(1.0)))
+                        .collect(),
+                    intervals: intervals_for_resolved_vertices(&[*tv], &sorted_txps, g, eqmap),
+                    vertices: vertex_keys(&[*tv], g, eqmap),
+                    weight: 1.0,
+                });
             }
 
             let mut global_genes: Vec<u32>;

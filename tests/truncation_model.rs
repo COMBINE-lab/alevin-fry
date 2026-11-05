@@ -34,6 +34,7 @@ fn molecule(target_intervals: &[(u32, f64, u32, u32, u32)]) -> ResolvedMolecule 
         transcript_probs,
         intervals,
         vertices: Vec::new(),
+        weight: 1.0,
     }
 }
 
@@ -77,6 +78,7 @@ fn stable_fit_reports_convergence_without_positional_evidence() {
             transcript_probs: vec![(0, 1.0)],
             intervals: HashMap::new(),
             vertices: Vec::new(),
+            weight: 1.0,
         })
         .collect::<Vec<_>>();
     let fit = fit_molecules(&mut molecules, TruncationIntervalMode::All, spec());
@@ -669,4 +671,87 @@ fn a_group_prior_keeps_groups_apart_only_when_their_usage_differs() {
     // a moderate given prior lies in between
     let (m0, _, _) = grouped_share(true, group_spec(false, 220.0));
     assert!(m0 > 0.55 && m0 < s0, "220 pseudo-molecules against 220 molecules halve the distance: {m0}");
+}
+
+/// The cell's own abundances with a within-cell prior or a cap on the abundance updates.
+fn per_cell_spec(cell_prior: f64, cell_iterations: Option<u32>) -> TruncationModelSpec {
+    TruncationModelSpec {
+        cell_prior,
+        cell_iterations,
+        ..TruncationModelSpec::default()
+    }
+}
+
+/// Molecules tied between a long isoform (read at its 3' end) and a short one it covers in
+/// full: the positional model prefers the short one for all of them alike.
+fn tied_molecules(n: usize) -> Vec<ResolvedMolecule> {
+    (0..n)
+        .map(|_| molecule(&[(0, 0.5, 1000, 2000, 2000), (1, 0.5, 0, 1000, 1000)]))
+        .collect()
+}
+
+/// Molecules whose alignment priors alone prefer isoform 0 (0.6 against 0.4), all alike; the
+/// positional likelihood is switched off ([`TruncationIntervalMode::Ignore`]) so that the
+/// abundances are the only thing that can move the shares.
+fn tied_priors(n: usize) -> Vec<ResolvedMolecule> {
+    (0..n)
+        .map(|_| molecule(&[(0, 0.6, 0, 1000, 2000), (1, 0.4, 0, 1000, 1000)]))
+        .collect()
+}
+
+fn mass_on(molecules: &[ResolvedMolecule], target: u32) -> f64 {
+    molecules
+        .iter()
+        .map(|m| {
+            m.transcript_probs
+                .iter()
+                .find_map(|(t, p)| (*t == target).then_some(*p))
+                .unwrap_or(0.0)
+        })
+        .sum()
+}
+
+fn fit_priors(n: usize, s: TruncationModelSpec) -> (Vec<ResolvedMolecule>, f64) {
+    let mut m = tied_priors(n);
+    fit_molecules_with(&mut m, TruncationIntervalMode::Ignore, None, s, None, 0, None);
+    let mass = mass_on(&m, 1);
+    (m, mass)
+}
+
+#[test]
+fn the_cells_maximum_likelihood_sends_tied_molecules_to_one_isoform() {
+    let mut molecules = tied_molecules(30);
+    fit_molecules(&mut molecules, TruncationIntervalMode::All, spec());
+    // the same preference in every molecule compounds through the abundances to a corner
+    let long = mass_on(&molecules, 0);
+    assert!(long < 0.5, "expected the long isoform to lose all mass; long={long}");
+    let (_, weaker) = fit_priors(30, spec());
+    assert!(weaker < 0.5, "a 0.6 : 0.4 prior alone also ends in a corner; mass={weaker}");
+}
+
+#[test]
+fn uniform_abundances_split_each_molecule_by_its_prior_alone() {
+    let (molecules, mass) = fit_priors(30, per_cell_spec(0.0, Some(0)));
+    assert!((mass - 12.0).abs() < 1e-9, "30 molecules x 0.4; mass={mass}");
+    for m in &molecules {
+        assert_eq!(m.transcript_probs.len(), 2);
+        assert!((m.transcript_probs[0].1 - 0.6).abs() < 1e-9 && (m.transcript_probs[1].1 - 0.4).abs() < 1e-9,
+            "shares are the priors: {:?}", m.transcript_probs);
+    }
+}
+
+#[test]
+fn a_within_cell_prior_keeps_both_isoforms_of_tied_molecules() {
+    let (molecules, mass) = fit_priors(30, per_cell_spec(1.0, None));
+    assert!((mass_on(&molecules, 0) + mass - 30.0).abs() < 1e-9);
+    assert!(mass > 0.5, "the prior keeps isoform 1 from vanishing; mass={mass}");
+    assert!(mass < 12.0, "the abundances still favor isoform 0; mass={mass}");
+}
+
+#[test]
+fn one_abundance_update_lies_between_uniform_and_maximum_likelihood() {
+    let (_, uniform) = fit_priors(30, per_cell_spec(0.0, Some(0)));
+    let (_, one) = fit_priors(30, per_cell_spec(0.0, Some(1)));
+    let (_, mle) = fit_priors(30, spec());
+    assert!(uniform > one && one > mle, "uniform={uniform} one={one} mle={mle}");
 }

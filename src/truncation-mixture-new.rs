@@ -1,5 +1,9 @@
 //! Per-cell positional (truncation) model for long-read molecules.
 //!
+//! The model is the one of oarfish's `truncation.rs` (`truncation-mixture` branch), whose
+//! likelihood, laws and M-step are reproduced here unchanged: a mixture of the ways a long read
+//! can sit on a transcript.
+//!
 //! Long-read protocols sequence one read per captured molecule, so read counts need no
 //! fragmentation-style length correction. What does depend on the transcript is where a read
 //! can land on it, and that differs by protocol: direct RNA and oligo(dT)-primed cDNA give reads

@@ -187,7 +187,7 @@ fn write_list<W: Write>(
     bc: u64,
     umit: &RadType,
     umi: u64,
-    qname: &str,
+    _qname: &str,
     w: &mut W,
 ) -> anyhow::Result<()> {
     assert!(!tid_list.is_empty(), "Trying to write empty tid_list");
@@ -205,12 +205,9 @@ fn write_list<W: Write>(
     // umi
     write_barcode(umit, umi, w)?;
 
-    // NEW: write qname as u8-length-prefixed string
-    let qname_bytes = qname.as_bytes();
-    let qname_len = qname_bytes.len();
-    assert!(qname_len <= 255, "qname too long: {} chars", qname_len);
-    w.write_all(&[qname_len as u8])?;   // 1 byte: the length
-    w.write_all(qname_bytes)?;           // N bytes: the actual string
+    // read-name field: a one-byte length, always 0 (names are not kept in the RAD file; readers
+    // of older files skip the name bytes the length announces)
+    w.write_all(&[0u8])?;
 
     // write per-alignment fields
     for i in 0..na {
@@ -906,7 +903,7 @@ where
                     handle,
                     "ID:{}\tQNAME:{}\tHI:{}\tNH:{}\tCB:{}\tUMI:{}\tDIR:{:?}\t{}\tAS:{}\tSTART:{}\tEND:{}\tTLEN:{}",
                     id,
-                    read.qname,
+                    "-",
                     i + 1,
                     num_entries,
                     bc_str,

@@ -53,12 +53,7 @@ use crate::prog_opts::QuantOpts;
 use crate::pugutils;
 //use crate::pugutils_dp;
 //use crate::pugutils_dp::{get_num_molecules_log_dp, DpConfig};
-use crate::coverage_diag;
-use crate::graph_dump;
-use crate::pugutils_dp_new::{
-    DpConfig, ResolvedMolecule, get_num_molecules_log_dp_new, get_num_molecules_true_umi_oracle,
-    get_num_molecules_true_umi_oracle_virtual_node,
-};
+use crate::pugutils_dp_new::{DpConfig, ResolvedMolecule, get_num_molecules_log_dp_new};
 use crate::truncation;
 use crate::truncation_groups;
 use crate::truncation::{
@@ -66,7 +61,7 @@ use crate::truncation::{
 };
 use crate::utils as afutils;
 use crate::utils::{
-    BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload, MaybeQName,
+    BasicEqClassPayload, EqClassPayload, KnownRecordType, LongReadEqClassPayload,
     OptionalAlignmentExtras,
 };
 
@@ -224,32 +219,139 @@ impl FromStr for EndDistribution {
 }
 //==============================================================================
 
+/// Which algorithm resolves each cell's PUG into molecules (`--dedup-model`).
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
-pub enum TrueUmiOracleMode {
+pub enum DedupModel {
+    /// The likelihood (Bayes-factor) model: a vertex joins a molecule when its reads prefer the
+    /// molecule's transcript over every alternative.
     #[default]
-    Off,
-    EdgeCorrection,
-    BfsGate,
-    DirectCollapse,
+    Bf,
+    /// alevin-fry's parsimony: the largest monochromatic connected component, greedily.
+    Parsimony,
+    /// Parsimony by mean alignment probability (the user's parsimony build).
+    ParsimonyWeighted,
 }
 
-impl fmt::Display for TrueUmiOracleMode {
+impl fmt::Display for DedupModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl FromStr for TrueUmiOracleMode {
-    type Err = &'static str;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "off" => Ok(TrueUmiOracleMode::Off),
-            "edge" => Ok(TrueUmiOracleMode::EdgeCorrection),
-            "bfs" => Ok(TrueUmiOracleMode::BfsGate),
-            "direct" => Ok(TrueUmiOracleMode::DirectCollapse),
-            _ => Err("no match"),
+        match self {
+            DedupModel::Bf => write!(f, "bf"),
+            DedupModel::Parsimony => write!(f, "parsimony"),
+            DedupModel::ParsimonyWeighted => write!(f, "parsimony-weighted"),
         }
     }
+}
+
+impl FromStr for DedupModel {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "bf" | "likelihood" => Ok(DedupModel::Bf),
+            "parsimony" => Ok(DedupModel::Parsimony),
+            "parsimony-weighted" | "weighted" => Ok(DedupModel::ParsimonyWeighted),
+            _ => Err("expected bf, parsimony or parsimony-weighted"),
+        }
+    }
+}
+
+/// How UMI edges are decided (`--dedup-edges`): the fixed rule (edit-distance bound, optional position-gated far
+/// edges) or the calibrated UMI/position model ([`pugutils::extract_graph_bayes`]).
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum DedupEdges {
+    #[default]
+    Rule,
+    Bayes,
+    /// `Bayes` with P(agree | different) estimated per transcript (shrunk to the cell's value).
+    BayesTx,
+}
+
+impl fmt::Display for DedupEdges {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DedupEdges::Rule => write!(f, "rule"),
+            DedupEdges::Bayes => write!(f, "bayes"),
+            DedupEdges::BayesTx => write!(f, "bayes-tx"),
+        }
+    }
+}
+
+impl FromStr for DedupEdges {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "rule" => Ok(DedupEdges::Rule),
+            "bayes" | "calibrated" => Ok(DedupEdges::Bayes),
+            "bayes-tx" | "calibrated-tx" => Ok(DedupEdges::BayesTx),
+            _ => Err("expected rule or bayes"),
+        }
+    }
+}
+
+/// How a component is covered by molecules (`--dedup-cover`): parsimony's largest monochromatic connected
+/// component, or that component refined by correlation clustering on the calibrated model's pair posteriors.
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum DedupCover {
+    #[default]
+    Parsimony,
+    Posterior,
+}
+
+impl fmt::Display for DedupCover {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DedupCover::Parsimony => write!(f, "parsimony"),
+            DedupCover::Posterior => write!(f, "posterior"),
+        }
+    }
+}
+
+impl FromStr for DedupCover {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "parsimony" => Ok(DedupCover::Parsimony),
+            "posterior" | "correlation" => Ok(DedupCover::Posterior),
+            _ => Err("expected parsimony or posterior"),
+        }
+    }
+}
+
+/// How molecules are counted (`--dedup-count`): one each, or the expected number under the calibrated
+/// edge model ([`pugutils::get_num_molecules`]), with UMI edges drawn down to `--dedup-soft-floor`.
+#[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
+pub enum DedupCount {
+    #[default]
+    Hard,
+    Expected,
+}
+
+impl fmt::Display for DedupCount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DedupCount::Hard => write!(f, "hard"),
+            DedupCount::Expected => write!(f, "expected"),
+        }
+    }
+}
+
+impl FromStr for DedupCount {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "hard" => Ok(DedupCount::Hard),
+            "expected" | "soft" => Ok(DedupCount::Expected),
+            _ => Err("expected hard or expected"),
+        }
+    }
+}
+
+/// `Some((bound, window))` when UMIs beyond the edit-distance bound may be joined on positional agreement.
+fn far_edges(ed_far_bound: usize, ed_upper_bound: usize, ed_far_window: u32) -> Option<(usize, u32)> {
+    (ed_far_bound > ed_upper_bound).then_some((ed_far_bound, ed_far_window))
 }
 
 #[derive(PartialEq, Eq, Debug, Default, Clone, Copy, Serialize)]
@@ -613,84 +715,6 @@ fn write_eqc_counts(
     Ok(true)
 }
 
-/// Loads read_name -> true_umi (as raw bytes) from the ground-truth TSV.
-pub fn load_true_umi_table(path: &std::path::Path) -> HashMap<String, Vec<u8>> {
-    let file = File::open(path).expect("could not open ground-truth TSV");
-    let reader = BufReader::new(file);
-    let mut map = HashMap::new();
-
-    for (i, line) in reader.lines().enumerate() {
-        let line = line.expect("could not read line");
-        if i == 0 {
-            continue;
-        } // skip header
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 11 {
-            continue;
-        }
-        let true_umi = fields[7].as_bytes().to_vec();
-        let read_name = fields[10].to_string();
-        map.insert(read_name, true_umi);
-    }
-    map
-}
-
-/// table[eq_id][umi_idx] -> all distinct true UMIs found among the reads merged into this node
-pub fn build_true_umi_table(
-    eqmap: &EqMap,
-    read_to_true_umi: &HashMap<String, Vec<u8>>,
-) -> Vec<Vec<Vec<Vec<u8>>>> {
-    let mut table = Vec::with_capacity(eqmap.num_eq_classes());
-    for eqid in 0..eqmap.num_eq_classes() {
-        let entry = &eqmap.eqc_info[eqid];
-        let mut node_umis = Vec::with_capacity(entry.umis.len());
-        for umi_idx in 0..entry.umis.len() {
-            let qnames: &[String] = entry
-                .qnames
-                .get(umi_idx)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
-
-            let mut counts: HashMap<Vec<u8>, u32> = HashMap::new();
-            for qn in qnames {
-                if let Some(tu) = read_to_true_umi.get(qn) {
-                    *counts.entry(tu.clone()).or_insert(0) += 1;
-                }
-            }
-
-            let mut list: Vec<(Vec<u8>, u32)> = counts.into_iter().collect();
-            list.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let uniq: Vec<Vec<u8>> = list.into_iter().map(|(u, _)| u).collect();
-
-            node_umis.push(uniq);
-        }
-        table.push(node_umis);
-    }
-    table
-}
-
-/// Loads read_name -> true transcript from the ground-truth TSV (column 9).
-pub fn load_true_txp_table(path: &std::path::Path) -> HashMap<String, String> {
-    let file = File::open(path).expect("could not open ground-truth TSV");
-    let reader = BufReader::new(file);
-    let mut map = HashMap::new();
-
-    for (i, line) in reader.lines().enumerate() {
-        let line = line.expect("could not read line");
-        if i == 0 {
-            continue;
-        } // skip header
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 11 {
-            continue;
-        }
-        let true_txp = fields[9].to_string(); // was .as_bytes().to_vec() -> type mismatch
-        let read_name = fields[10].to_string();
-        map.insert(read_name, true_txp);
-    }
-    map
-}
-
 // TODO: see if we'd rather pass an structure
 // with these options
 pub fn quantify(quant_opts: QuantOpts) -> anyhow::Result<()> {
@@ -751,10 +775,15 @@ struct WorkerConfig {
     num_genes: usize,
     num_rows: usize,
     barcode_len: u16,
-    true_umi_mode: TrueUmiOracleMode,
-    true_txp_mode: Option<bool>,
     ed_distance_model: EditDistanceMode,
     ed_upper_bound: usize,
+    ed_far_bound: usize,
+    ed_far_window: u32,
+    dedup_model: DedupModel,
+    dedup_edges: DedupEdges,
+    dedup_cover: DedupCover,
+    dedup_count: DedupCount,
+    dedup_soft_floor: f64,
     em_prob_model: EMMode,
     end_model: EndModel,
     end_distribution: EndDistribution,
@@ -780,7 +809,6 @@ struct WorkerSharedState<R: MappedRecord> {
     in_q: Arc<crossbeam_queue::ArrayQueue<libradicl::readers::MetaChunk<R>>>,
     is_done: Arc<std::sync::atomic::AtomicBool>,
     tid_to_gid: Arc<Vec<u32>>,
-    ref_names: Arc<Vec<String>>,
     junction_positions: Option<Arc<Vec<Vec<u32>>>>,
     cells_remaining: Arc<AtomicUsize>,
     bcout: Arc<Mutex<QuantOutputInfo>>,
@@ -789,8 +817,6 @@ struct WorkerSharedState<R: MappedRecord> {
     empty_resolved_cells: Arc<Mutex<Vec<u64>>>,
     unmapped_count: Arc<HashMap<u64, u32>>,
     mmrate: Arc<Mutex<Vec<f64>>>,
-    true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>>,
-    true_txp_lookup: Option<Arc<HashMap<String, String>>>,
     /// The coverage learned from all cells (`--coverage-source global`).
     global_coverage: Option<Arc<Vec<CellTxpCoverage>>>,
 }
@@ -811,7 +837,6 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
-        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -876,12 +901,6 @@ where
             for (cn, mut c) in meta_chunk.iter().enumerate() {
                 shared.cells_remaining.fetch_sub(1, Ordering::SeqCst);
                 let cell_num = first_cell_in_chunk + cn;
-
-                let mut cell_num_ok = false;
-                if cell_num == 647 {
-                    info!(log, "debug breakpoint cell_num = 647");
-                    cell_num_ok = true;
-                }
 
                 let nbytes = c.nbytes;
                 let nrec = c.nrec;
@@ -1036,20 +1055,6 @@ where
                             {
                                 eq_map.init_from_chunk_gene_level(&mut c, &shared.tid_to_gid);
                             } else {
-                                //eprintln!("before the init from chunk");
-
-                                // step 1: collect umi -> qnames BEFORE init_from_chunk destroys ordering
-                                let mut refs_umi_to_qnames: HashMap<(Vec<u32>, u64), Vec<String>> =
-                                    HashMap::new();
-                                for r in c.reads.iter() {
-                                    if let Some(qname) = r.maybe_qname() {
-                                        refs_umi_to_qnames
-                                            .entry((r.refs().to_vec(), r.umi()))
-                                            .or_default()
-                                            .push(qname.to_string());
-                                    }
-                                }
-
                                 init_eq_map_for_chunk(
                                     &mut eq_map,
                                     &mut c,
@@ -1059,7 +1064,9 @@ where
                                     config.end_scale,
                                     config.coverage_model
                                         || config.coverage_dedup_model
-                                        || config.truncation_model,
+                                        || config.truncation_model
+                                        || config.ed_far_bound > config.ed_upper_bound
+                                        || matches!(config.dedup_edges, DedupEdges::Bayes | DedupEdges::BayesTx),
                                     // the truncation model's molecules take the global coverage into
                                     // their priors here; the per-cell EM takes it in its second
                                     // deduplication below, as it takes the cell's own coverage
@@ -1073,26 +1080,6 @@ where
                                     },
                                     junction_positions,
                                 );
-                                //eprintln!("after the init from chunk");
-
-                                // step 3: populate qnames using the umi lookup
-                                // after init_from_chunk, eqc_info[i].umis contains deduplicated (umi_val, count) pairs
-                                for eq_id in 0..eq_map.num_eq_classes() {
-                                    let refs_for_this_eqc =
-                                        eq_map.refs_for_eqc(eq_id as u32).to_vec();
-                                    let entry = &mut eq_map.eqc_info[eq_id];
-                                    entry.qnames = entry
-                                        .umis
-                                        .iter()
-                                        .map(|(umi_val, _count)| {
-                                            refs_umi_to_qnames
-                                                .get(&(refs_for_this_eqc.clone(), *umi_val))
-                                                .cloned()
-                                                .unwrap_or_default()
-                                        })
-                                        .collect();
-                                }
-
                                 //let coverage_bin_width: u32 = 100;
                                 //let coverage_growth_rate: f64 = 2.0;
                                 //
@@ -1112,38 +1099,33 @@ where
 
                             //let g = pugutils::extract_graph(&eq_map, config.pug_exact_umi, &log);
 
-                            let true_umi_table = shared
-                                .true_umi_lookup
-                                .as_ref()
-                                .map(|lookup| build_true_umi_table(&eq_map, lookup));
-
-                            let g = match config.true_umi_mode {
-                                TrueUmiOracleMode::EdgeCorrection => {
-                                    //pugutils::extract_graph(&eq_map, config.pug_exact_umi, true_umi_table.as_ref(), &log)
+                            let (g, pair_posteriors): (_, Option<pugutils::PairPosteriors>) = match config.dedup_edges {
+                                DedupEdges::Bayes | DedupEdges::BayesTx => {
+                                    let (g, st, post) = pugutils::extract_graph_bayes(
+                                        &eq_map,
+                                        config.ed_distance_model,
+                                        config.ed_far_window,
+                                        if config.dedup_count == DedupCount::Expected { config.dedup_soft_floor } else { 0.5 },
+                                        config.dedup_edges == DedupEdges::BayesTx,
+                                        &log,
+                                    );
+                                    if cell_num % 250 == 0 {
+                                        info!(log, "cell_num = {}: UMI edge model {:?}", cell_num, st);
+                                    }
+                                    (g, Some(post))
+                                }
+                                DedupEdges::Rule => (
                                     pugutils::extract_graph(
                                         &eq_map,
                                         config.pug_exact_umi,
                                         config.ed_distance_model,
                                         config.ed_upper_bound,
+                                        far_edges(config.ed_far_bound, config.ed_upper_bound, config.ed_far_window),
                                         &log,
-                                    )
-                                }
-                                _ => {
-                                    //pugutils::extract_graph(&eq_map, config.pug_exact_umi, None, &log)
-                                    pugutils::extract_graph(
-                                        &eq_map,
-                                        config.pug_exact_umi,
-                                        config.ed_distance_model,
-                                        config.ed_upper_bound,
-                                        &log,
-                                    )
-                                }
+                                    ),
+                                    None,
+                                ),
                             };
-
-                            //let bfs_gate_table = match config.true_umi_mode {
-                            //    TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
-                            //    _ => None,
-                            //};
 
                             // for the PUG resolution algorithm, set the hasher
                             // that will be used based on the cell barcode.
@@ -1185,12 +1167,6 @@ where
                             //    tau_delta: config.tau_delta,
                             //};
 
-                            if let Some(target) = graph_dump::dump_cell_target() {
-                                if cell_num == target {
-                                    graph_dump::dump_cell_graph(cell_num, &g, &eq_map);
-                                }
-                            }
-
                             //let pug_stats = get_num_molecules_log_dp_new(
                             //    &g,
                             //    &eq_map,
@@ -1203,70 +1179,40 @@ where
                             //    &log,
                             //);
 
-                            let pug_stats = match config.true_umi_mode {
-                                TrueUmiOracleMode::DirectCollapse => {
-                                    get_num_molecules_true_umi_oracle_virtual_node(
-                                        &g,
-                                        &eq_map,
-                                        &shared.tid_to_gid,
-                                        &shared.ref_names,
-                                        bc.into(),
-                                        shared.true_umi_lookup.as_ref().expect(
-                                            "true_umi_lookup required for DirectCollapse mode",
-                                        ),
-                                        shared.true_txp_lookup.as_ref(),
-                                        config.em_prob_model,
-                                        &mut gene_eqc,
-                                        &log,
-                                    )
-                                    //get_num_molecules_true_umi_oracle(
-                                    //    &g,
-                                    //    &eq_map,
-                                    //    &shared.tid_to_gid,
-                                    //    true_umi_table.as_ref().expect("true_umi_table required for DirectCollapse mode"),
-                                    //    &mut gene_eqc,
-                                    //    &log,
-                                    //)
-                                }
-                                //TrueUmiOracleMode::EdgeCorrection => {
-                                //    get_num_molecules_true_umi_oracle(
-                                //        &g,
-                                //        &eq_map,
-                                //        &shared.tid_to_gid,
-                                //        true_umi_table.as_ref().expect("true_umi_table required for DirectCollapse mode"),
-                                //
-                                //        &mut gene_eqc,
-                                //        &log,
-                                //    )
-                                //}
-                                _ => {
-                                    let bfs_gate_table = match config.true_umi_mode {
-                                        TrueUmiOracleMode::BfsGate => true_umi_table.as_ref(),
-                                        _ => None,
-                                    };
-
-                                    let dp_cfg = DpConfig {
-                                        log_prior_odds: config.lambda_size,
-                                        tau_delta: config.tau_delta,
-                                    };
-
-                                    get_num_molecules_log_dp_new(
+                            let dp_cfg = DpConfig {
+                                log_prior_odds: config.lambda_size,
+                                tau_delta: config.tau_delta,
+                            };
+                            let pug_stats = match config.dedup_model {
+                                DedupModel::Bf => get_num_molecules_log_dp_new(
+                                    &g,
+                                    &eq_map,
+                                    &shared.tid_to_gid,
+                                    &mut gene_eqc,
+                                    &s,
+                                    config.large_graph_thresh,
+                                    dp_cfg,
+                                    resolved_molecules.as_mut(),
+                                    &log,
+                                ),
+                                DedupModel::Parsimony | DedupModel::ParsimonyWeighted => {
+                                    pugutils::get_num_molecules::<P>(
                                         &g,
                                         &eq_map,
                                         &shared.tid_to_gid,
                                         &mut gene_eqc,
                                         &s,
                                         config.large_graph_thresh,
-                                        dp_cfg,
+                                        config.dedup_model == DedupModel::ParsimonyWeighted,
+                                        if config.dedup_cover == DedupCover::Posterior || config.dedup_count == DedupCount::Expected { pair_posteriors.as_ref() } else { None },
+                                        config.dedup_count == DedupCount::Expected,
                                         resolved_molecules.as_mut(),
-                                        //bfs_gate_table,
                                         &log,
                                     )
                                 }
                             };
 
-                            alt_resolution = pug_stats.used_alternative_strategy; // alt_res;
-
+                            alt_resolution = pug_stats.used_alternative_strategy;
                             // The coverage the positional models use for this cell: its own, from
                             // its molecules, or the one learned from all cells.
                             let coverage_for_cell: Option<&[CellTxpCoverage]> = match (
@@ -1287,16 +1233,6 @@ where
                                             config.coverage_bin_width,
                                             config.coverage_growth_rate,
                                         );
-                                        if let Some(diag) = coverage_diag::get() {
-                                            diag.dump_cell(
-                                                cell_num,
-                                                bc.into(),
-                                                config.barcode_len,
-                                                molecules,
-                                                coverage,
-                                                &shared.tid_to_gid,
-                                            );
-                                        }
                                     }
                                     txp_cov.as_deref()
                                 }
@@ -1356,13 +1292,13 @@ where
                                     }
                                     if !config.usa_mode {
                                         for (&gene_id, &p) in gene_ids.iter().zip(&probabilities) {
-                                            gene_counts[gene_id as usize] += p;
+                                            gene_counts[gene_id as usize] += p * molecule.weight;
                                         }
                                     }
                                     let payload = gene_eqc
                                         .entry(gene_ids.clone())
                                         .or_insert(P::new(gene_ids.len()));
-                                    payload.inc();
+                                    payload.inc_by(molecule.weight as f32);
                                     payload.add_probs(&probabilities);
                                 }
                                 if !config.usa_mode {
@@ -1437,7 +1373,7 @@ where
                                         let payload = gene_eqc
                                             .entry(gene_ids.clone())
                                             .or_insert(P::new(gene_ids.len()));
-                                        payload.inc();
+                                        payload.inc_by(molecule.weight as f32);
                                         payload.add_probs(&probabilities);
                                     }
                                 } else if config.coverage_dedup_model {
@@ -1461,6 +1397,7 @@ where
                                         config.pug_exact_umi,
                                         config.ed_distance_model,
                                         config.ed_upper_bound,
+                                        far_edges(config.ed_far_bound, config.ed_upper_bound, config.ed_far_window),
                                         &log,
                                     );
                                     gene_eqc.clear();
@@ -1541,7 +1478,6 @@ where
                                         config.num_genes,
                                         only_unique,
                                         &log,
-                                        cell_num_ok,
                                     );
                                 }
                             }
@@ -1993,7 +1929,6 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
-        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -2012,6 +1947,7 @@ where
         quant_opts.ed_distance_model,
         quant_opts.ed_upper_bound,
     );
+    let far = far_edges(quant_opts.ed_far_bound, quant_opts.ed_upper_bound, quant_opts.ed_far_window);
     let (large_graph_thresh, lambda_size, tau_delta) = (
         quant_opts.large_graph_thresh,
         quant_opts.lambda_size,
@@ -2091,6 +2027,7 @@ where
                                 pug_exact_umi,
                                 ed_distance_model,
                                 ed_upper_bound,
+                                far,
                                 log,
                             );
                             let hasher = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
@@ -2231,6 +2168,8 @@ where
             end_kernels: quant_opts.truncation_end_kernels,
             positional_power: quant_opts.truncation_positional_power,
             calibrate_power: quant_opts.truncation_calibrate_power,
+            cell_prior: quant_opts.truncation_cell_prior,
+            cell_iterations: quant_opts.truncation_cell_iterations,
             min_share: quant_opts.truncation_min_share,
             sample_below: quant_opts.truncation_sample_below,
             shrink_auto: quant_opts.truncation_shrink_auto,
@@ -2434,7 +2373,6 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
-        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -2453,6 +2391,7 @@ where
         quant_opts.ed_distance_model,
         quant_opts.ed_upper_bound,
     );
+    let far = far_edges(quant_opts.ed_far_bound, quant_opts.ed_upper_bound, quant_opts.ed_far_window);
     let (large_graph_thresh, lambda_size, tau_delta) = (
         quant_opts.large_graph_thresh,
         quant_opts.lambda_size,
@@ -2519,6 +2458,7 @@ where
                                 pug_exact_umi,
                                 ed_distance_model,
                                 ed_upper_bound,
+                                far,
                                 log,
                             );
                             let hasher = ahash::RandomState::with_seeds(bc.into(), 7u64, 1u64, 8u64);
@@ -2612,7 +2552,6 @@ where
         + KnownSize
         + UmiTaggedRecord
         + OptionalAlignmentExtras
-        + MaybeQName
         + 'static,
     <R as MappedRecord>::ParsingContext: RecordContext,
     <R as MappedRecord>::ParsingContext: Clone,
@@ -2639,11 +2578,17 @@ where
     let junction_gtf = quant_opts.junction_gtf;
     let num_threads = quant_opts.num_threads;
     let num_bootstraps = quant_opts.num_bootstraps;
-    let true_umi_mode = quant_opts.true_umi_mode;
-    let true_txp_mode = quant_opts.true_txp_mode;
-    let true_umi_txp_file = quant_opts.true_umi_txp_file.clone();
     let ed_distance_model = quant_opts.ed_distance_model;
     let ed_upper_bound = quant_opts.ed_upper_bound;
+    let ed_far_bound = quant_opts.ed_far_bound;
+    let ed_far_window = quant_opts.ed_far_window;
+    let dedup_model = quant_opts.dedup_model;
+    let dedup_edges = quant_opts.dedup_edges;
+    let dedup_cover = quant_opts.dedup_cover;
+    let dedup_count = quant_opts.dedup_count;
+    let dedup_soft_floor = quant_opts.dedup_soft_floor;
+    crate::eq_class::set_as_denominator(quant_opts.as_denominator);
+    crate::eq_class::set_uniform_priors(quant_opts.em_uniform_prior);
     let em_prob_model = quant_opts.em_prob_model;
     let end_model = quant_opts.end_model;
     let end_distribution = quant_opts.end_distribution;
@@ -2707,10 +2652,6 @@ where
         hdr.ref_count.to_formatted_string(&Locale::en),
         hdr.num_chunks.to_formatted_string(&Locale::en)
     );
-
-    if graph_dump::dump_cell_target().is_some() {
-        graph_dump::dump_ref_names(&hdr.ref_names);
-    }
 
     // now that we have the header, parse and convert the
     // tgmap.
@@ -2876,32 +2817,12 @@ where
     let cells_to_process = Arc::new(AtomicUsize::new(num_cells as usize));
     // each thread needs a *read-only* copy of this transcript <-> gene map
     let tid_to_gid_shared = std::sync::Arc::new(tid_to_gid);
-    let ref_names_shared = Arc::new(hdr.ref_names.clone());
+    let ref_names_shared = &hdr.ref_names;
     // the number of reference sequences
     let ref_count = hdr.ref_count as u32;
 
     // the number of genes (different than the number of reference sequences, which are transcripts)
     let num_genes = gene_name_to_id.len();
-
-    let true_umi_lookup: Option<Arc<HashMap<String, Vec<u8>>>> = match quant_opts.true_umi_mode {
-        TrueUmiOracleMode::Off => None,
-        _ => Some(Arc::new(load_true_umi_table(
-            quant_opts
-                .true_umi_txp_file
-                .as_ref()
-                .expect("true_umi_file required when true_umi_mode != Off"),
-        ))),
-    };
-
-    let true_txp_lookup: Option<Arc<HashMap<String, String>>> = match quant_opts.true_txp_mode {
-        Some(true) => Some(Arc::new(load_true_txp_table(
-            quant_opts
-                .true_umi_txp_file
-                .as_ref()
-                .expect("true_umi_txp_file required when true_txp_mode is Some(true)"),
-        ))),
-        _ => None,
-    };
 
     // create our output directory
     let output_path = std::path::Path::new(quant_opts.output_dir);
@@ -3129,7 +3050,6 @@ where
         let log = log.clone();
         // the shared tid_to_gid map
         let tid_to_gid = tid_to_gid_shared.clone();
-        let ref_names = ref_names_shared.clone();
         let junction_positions = junction_positions.clone();
         // and the atomic counter of remaining work
         let cells_remaining = cells_to_process.clone();
@@ -3143,8 +3063,6 @@ where
         let empty_resolved_cells = empty_resolved_cells.clone();
         let unmapped_count = bc_unmapped_map.clone();
         let mmrate = mmrate.clone();
-        let true_umi_lookup = true_umi_lookup.clone();
-        let true_txp_lookup = true_txp_lookup.clone();
 
         // if we are performing parsimony-gene or parsimony-gene-em
         // resolution, then the equivalence classes will be immediately
@@ -3192,10 +3110,15 @@ where
             num_genes,
             num_rows,
             barcode_len,
-            true_umi_mode,
-            true_txp_mode,
             ed_distance_model,
             ed_upper_bound,
+            ed_far_bound,
+            ed_far_window,
+            dedup_model,
+            dedup_edges,
+            dedup_cover,
+            dedup_count,
+            dedup_soft_floor,
             em_prob_model,
             end_model,
             end_distribution,
@@ -3210,6 +3133,8 @@ where
                 end_kernels: quant_opts.truncation_end_kernels,
                 positional_power: quant_opts.truncation_positional_power,
                 calibrate_power: quant_opts.truncation_calibrate_power,
+                cell_prior: quant_opts.truncation_cell_prior,
+                cell_iterations: quant_opts.truncation_cell_iterations,
                 min_share: quant_opts.truncation_min_share,
                 sample_below: quant_opts.truncation_sample_below,
                 shrink_auto: quant_opts.truncation_shrink_auto,
@@ -3233,7 +3158,6 @@ where
             in_q,
             is_done,
             tid_to_gid,
-            ref_names,
             junction_positions,
             cells_remaining,
             bcout,
@@ -3242,8 +3166,6 @@ where
             empty_resolved_cells,
             unmapped_count,
             mmrate,
-            true_umi_lookup,
-            true_txp_lookup,
         };
 
         // now, make the worker thread
@@ -3309,8 +3231,6 @@ where
             }
         }
     }
-
-    crate::pugutils_dp_new::report_true_umi_oracle_totals();
 
     // write to matrix market if we are using it
     if use_mtx {
@@ -3385,6 +3305,12 @@ pub fn do_quantify_dispatch<T: BufRead>(mut br: T, quant_opts: QuantOpts) -> any
     let file_tag_map = prelude.file_tags.parse_tags_from_bytes(&mut br).unwrap();
 
     let rec_type = afutils::get_record_type_from_prelude(&prelude, &file_tag_map);
+    if let Some(ulen) = file_tag_map.get("ulen") {
+        if let Ok(l) = <&_ as TryInto<u16>>::try_into(ulen) {
+            pugutils::set_umi_len(l as u8);
+            info!(log, "UMI length from the RAD file: {}", l);
+        }
+    }
 
     if quant_opts.truncation_model && !matches!(&rec_type, KnownRecordType::RnaLong(_)) {
         anyhow::bail!("--model-truncation requires long-read RNA-seq alignment input");

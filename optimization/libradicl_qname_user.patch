@@ -1,0 +1,271 @@
+diff --git a/libradicl/src/lib.rs b/libradicl/src/lib.rs
+index 0c2676f..e7993db 100644
+--- a/libradicl/src/lib.rs
++++ b/libradicl/src/lib.rs
+@@ -348,6 +348,13 @@ where
+         if tbuf.len() < req_size {
+             tbuf.resize(req_size, 0);
+         }
++        // skip qname
++        let mut qlen_buf = [0u8; 1];
++        reader.read_exact(&mut qlen_buf).unwrap();
++        let qname_len = qlen_buf[0] as usize;
++        if qname_len > 0 {
++            reader.read_exact(&mut tbuf[0..qname_len]).unwrap();
++        }
+         reader.read_exact(&mut tbuf[0..(size_of_aln * na)]).unwrap();
+         // compute the total number of bytes this record requires
+         let nbytes = calc_record_bytes(na);
+@@ -408,6 +415,15 @@ where
+                 .expect("could write header");
+ 
+             let bytes_for_aln_rec = R::nbytes_aln(rec_context);
++            // NEW: copy qname bytes to output
++            let mut qlen_buf = [0u8; 1];
++            reader.read_exact(&mut qlen_buf).unwrap();
++            output_buffer.write_all(&qlen_buf).unwrap();
++            let qname_len = qlen_buf[0] as usize;
++            if qname_len > 0 {
++                reader.read_exact(&mut tbuf[0..qname_len]).unwrap();
++                output_buffer.write_all(&tbuf[0..qname_len]).unwrap();
++            }
+             // copy over the alignment records
+             reader
+                 .read_exact(&mut tbuf[0..(bytes_for_aln_rec * na)])
+@@ -1030,12 +1046,21 @@ pub fn dump_corrected_cb_chunk_to_temp_file<T: Read>(
+ 
+         // if this record had a correct or correctable barcode
+         if let Some(corrected_id) = correct_map.get(&tup.0) {
++
++            let mut qlen_buf = [0u8; 1];
++            reader.read_exact(&mut qlen_buf).unwrap();
++            let qname_len = qlen_buf[0] as usize;
++            let mut qname_buf = vec![0u8; qname_len];
++            reader.read_exact(&mut qname_buf).unwrap();
++            let qname = String::from_utf8(qname_buf).unwrap_or_default();
++
+             let rr = AlevinFryReadRecord::from_bytes_with_header_keep_ori(
+                 reader,
+                 tup.0,
+                 tup.1,
+                 tup.2,
+                 expected_ori,
++                qname,
+             );
+ 
+             if rr.is_empty() {
+diff --git a/libradicl/src/record.rs b/libradicl/src/record.rs
+index 4441370..430e8df 100644
+--- a/libradicl/src/record.rs
++++ b/libradicl/src/record.rs
+@@ -375,6 +375,9 @@ impl<B: ConvertiblePrimitiveInteger> KnownSize for AlevinFryReadRecordT<B> {
+         ctx.bct.bytes_for_type() +
+         // for umi 
+         ctx.umit.bytes_for_type() +
++        //read name length (1 byte) + read name (qname)
++        1 +
++        68 +
+         // an ori_ref for each alignment
+         (na as usize * Self::nbytes_aln(ctx))
+     }
+@@ -431,6 +434,9 @@ impl<B: ConvertiblePrimitiveInteger> KnownSize for ScLongReadRecordT<B> {
+         ctx.bct.bytes_for_type() +
+         // for the umi
+         ctx.umit.bytes_for_type() +
++        //read name length (1 byte) + read name (qname)
++        1 +
++        68 +
+         // for each alignment a 
+         (na as usize * Self::nbytes_aln(ctx))
+     }
+@@ -484,6 +490,7 @@ pub trait UmiTaggedRecord {
+ pub struct AlevinFryReadRecordT<B: ConvertiblePrimitiveInteger> {
+     pub bc: B,
+     pub umi: u64,
++    pub qname: String, 
+     pub dirs: Vec<bool>,
+     pub refs: Vec<u32>,
+ }
+@@ -529,6 +536,7 @@ pub struct ScLongReadRecordT<B: ConvertiblePrimitiveInteger> {
+     pub ends: Vec<u32>,
+     // TODO: Move this to a file-level tag
+     pub tlens: Vec<u32>,
++    pub qname: String,
+ }
+ 
+ /// A concrete struct representing a [MappedRecord] for
+@@ -855,12 +863,21 @@ impl<B: ConvertiblePrimitiveInteger> CollatableMappedRecord<B> for AlevinFryRead
+         _ctx: &<Self as MappedRecord>::ParsingContext,
+         expected_ori: &MappedFragmentOrientation,
+     ) -> Self {
++        // NEW: read and preserve the qname
++        let mut qlen_buf = [0u8; 1];
++        reader.read_exact(&mut qlen_buf).unwrap();
++        let qname_len = qlen_buf[0] as usize;
++        let mut qname_buf = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_buf).unwrap();
++        let qname = String::from_utf8(qname_buf).unwrap_or_default();
++
+         let rec = AlevinFryReadRecordT::<B>::from_bytes_with_header_keep_ori(
+             reader,
+             hdr.bc,
+             hdr.umi,
+             hdr.naln,
+             expected_ori.into(),
++            qname,
+         );
+         hdr.naln = rec.refs.len() as u32;
+         rec
+@@ -1044,9 +1061,18 @@ impl<B: ConvertiblePrimitiveInteger> MappedRecord for AlevinFryReadRecordT<B> {
+ 
+         let (bc, umi, na) = Self::from_bytes_record_header(reader, &ctx.bct, &ctx.umit);
+ 
++        // NEW: read qname
++        let mut qlen_buf = [0u8; 1];
++        reader.read_exact(&mut qlen_buf).unwrap();
++        let qname_len = qlen_buf[0] as usize;
++        let mut qname_buf = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_buf).unwrap();
++        let qname = String::from_utf8(qname_buf).expect("invalid utf8 qname");
++
+         let mut rec = Self {
+             bc,
+             umi,
++            qname,
+             dirs: Vec::with_capacity(na as usize),
+             refs: Vec::with_capacity(na as usize),
+         };
+@@ -1074,6 +1100,14 @@ impl<B: ConvertiblePrimitiveInteger> MappedRecord for AlevinFryReadRecordT<B> {
+             .write_to(self.umi, writer)
+             .context("couldn't write umi field for record")?;
+ 
++        // NEW: write qname as u8-length-prefixed string
++        let qname_bytes = self.qname.as_bytes();
++        assert!(qname_bytes.len() <= 255, "qname too long: {} chars", qname_bytes.len());
++        writer.write_all(&[qname_bytes.len() as u8])
++            .context("couldn't write qname length")?;
++        writer.write_all(qname_bytes)
++            .context("couldn't write qname bytes")?;
++
+         // if we don't have orientations (because of filtering) then just pretend they are false
+         let dir_iter = self.dirs.iter();
+         for (dir, ref_idx) in
+@@ -1422,9 +1456,18 @@ impl<B: ConvertiblePrimitiveInteger> AlevinFryReadRecordT<B> {
+ 
+         let (bc, umi, na) = Self::from_bytes_record_header(reader, bct, umit);
+ 
++        // NEW: read qname
++        let mut qlen_buf = [0u8; 1];
++        reader.read_exact(&mut qlen_buf).unwrap();
++        let qname_len = qlen_buf[0] as usize;
++        let mut qname_buf = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_buf).unwrap();
++        let qname = String::from_utf8(qname_buf).expect("invalid utf8 qname");
++
+         let mut rec = Self {
+             bc,
+             umi,
++            qname,
+             dirs: Vec::with_capacity(na as usize),
+             refs: Vec::with_capacity(na as usize),
+         };
+@@ -1469,11 +1512,13 @@ impl<B: ConvertiblePrimitiveInteger> AlevinFryReadRecordT<B> {
+         umi: u64,
+         na: u32,
+         expected_ori: &Strand,
++        qname: String,
+     ) -> Self {
+         let mut rbuf = [0u8; 255];
+         let mut rec = Self {
+             bc,
+             umi,
++            qname,
+             dirs: Vec::with_capacity(na as usize),
+             refs: Vec::with_capacity(na as usize),
+         };
+@@ -1514,7 +1559,14 @@ impl<B: ConvertiblePrimitiveInteger> AlevinFryReadRecordT<B> {
+         expected_ori: &Strand,
+     ) -> Self {
+         let (bc, umi, na) = Self::from_bytes_record_header(reader, bct, umit);
+-        Self::from_bytes_with_header_keep_ori(reader, bc, umi, na, expected_ori)
++        // read qname before calling keep_ori
++        let mut qlen_buf = [0u8; 1];
++        reader.read_exact(&mut qlen_buf).unwrap();
++        let qname_len = qlen_buf[0] as usize;
++        let mut qname_buf = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_buf).unwrap();
++        let qname = String::from_utf8(qname_buf).unwrap_or_default();
++        Self::from_bytes_with_header_keep_ori(reader, bc, umi, na, expected_ori, qname)
+     }
+ }
+ 
+@@ -2061,6 +2113,14 @@ impl<B: ConvertiblePrimitiveInteger> CollatableMappedRecord<B> for ScLongReadRec
+         let umi = hdr.umi;
+         let mut rbuf = [0u8; 255];
+ 
++        // NEW: read qname
++        let mut len_buf = [0u8; 1];
++        reader.read_exact(&mut len_buf).unwrap();
++        let qname_len = len_buf[0] as usize;
++        let mut qname_bytes = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_bytes).unwrap();
++        let qname = String::from_utf8(qname_bytes).unwrap_or_default();
++
+         let mut rec = Self {
+             bc,
+             umi,
+@@ -2070,6 +2130,7 @@ impl<B: ConvertiblePrimitiveInteger> CollatableMappedRecord<B> for ScLongReadRec
+             starts: Vec::with_capacity(na as usize),
+             ends: Vec::with_capacity(na as usize),
+             tlens: Vec::with_capacity(na as usize),
++            qname,
+         };
+ 
+         for _ in 0..(na as usize) {
+@@ -2182,6 +2243,15 @@ impl<B: ConvertiblePrimitiveInteger> MappedRecord for ScLongReadRecordT<B> {
+         let mut rbuf = [0u8; 255];
+ 
+         let (bc, umi, na) = Self::from_bytes_record_header(reader, &ctx.bct, &ctx.umit);
++
++        // NEW: read qname (u8 length prefix + string bytes)
++        let mut len_buf = [0u8; 1];
++        reader.read_exact(&mut len_buf).unwrap();
++        let qname_len = len_buf[0] as usize;
++        let mut qname_bytes = vec![0u8; qname_len];
++        reader.read_exact(&mut qname_bytes).unwrap();
++        let qname = String::from_utf8(qname_bytes).unwrap_or_default();
++
+         let mut rec = Self {
+             bc,
+             umi,
+@@ -2191,6 +2261,7 @@ impl<B: ConvertiblePrimitiveInteger> MappedRecord for ScLongReadRecordT<B> {
+             starts: Vec::with_capacity(na as usize),
+             ends: Vec::with_capacity(na as usize),
+             tlens: Vec::with_capacity(na as usize),
++            qname,
+         };
+ 
+         for _ in 0..(na as usize) {
+@@ -2238,6 +2309,14 @@ impl<B: ConvertiblePrimitiveInteger> MappedRecord for ScLongReadRecordT<B> {
+             .write_to(self.umi, writer)
+             .context("couldn't write umi field for record")?;
+ 
++        // NEW: write qname as u8-length-prefixed string
++        let qname_bytes = self.qname.as_bytes();
++        assert!(qname_bytes.len() <= 255, "qname too long");
++        writer.write_all(&[qname_bytes.len() as u8])
++            .context("couldn't write qname length")?;
++        writer.write_all(qname_bytes)
++            .context("couldn't write qname bytes")?;
++
+         for i in 0..(na as usize) {
+             let ref_idx = self.refs[i];
+             let dir = self.dirs[i];
+@@ -2881,6 +2960,7 @@ mod tests {
+         let rec = AlevinFryReadRecord {
+             bc: 12345_u64,
+             umi: 6789_u64,
++            qname: "read1".to_string(),
+             dirs: vec![true, true, true, false],
+             refs: vec![123, 456, 78, 910],
+         };

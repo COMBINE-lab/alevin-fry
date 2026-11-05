@@ -47,37 +47,6 @@ struct QuantArguments {
 }
 */
 
-// Helper trait to optionally extract qname
-pub trait MaybeQName {
-    fn maybe_qname(&self) -> Option<&str>;
-}
-
-// Implement for ScLongReadRecordT — has qname field
-impl<B: ConvertiblePrimitiveInteger> MaybeQName for ScLongReadRecordT<B> {
-    fn maybe_qname(&self) -> Option<&str> {
-        Some(&self.qname)
-    }
-}
-
-// Implement for short-read types — no qname
-impl<B: ConvertiblePrimitiveInteger> MaybeQName for AlevinFryReadRecordT<B> {
-    fn maybe_qname(&self) -> Option<&str> {
-        None
-    }
-}
-
-impl<B: ConvertiblePrimitiveInteger> MaybeQName for AlevinFryReadRecordWithPositionT<B> {
-    fn maybe_qname(&self) -> Option<&str> {
-        None
-    }
-}
-
-impl MaybeQName for AtacSeqReadRecord {
-    fn maybe_qname(&self) -> Option<&str> {
-        None
-    }
-}
-
 /// Trait that allows us to paramaterize the payload stored along with
 /// and equivalence class.  The most basic (required) information is a
 /// count.  However, it is also possible to store probabilities, read start
@@ -93,6 +62,15 @@ pub trait EqClassPayload {
     fn new_from_count_and_probs(eqc_len: usize, ct: u32, probs: &[f64]) -> Self;
     fn count(&self) -> u32;
     fn inc(&mut self);
+    /// Counts a molecule with weight `w`, an expected number of molecules; the default counts it once.
+    fn inc_by(&mut self, w: f32) {
+        let _ = w;
+        self.inc();
+    }
+    /// The summed weight of the molecules counted; equal to `count()` unless weights were given.
+    fn weight(&self) -> f32 {
+        self.count() as f32
+    }
     // a 1D (unrolled) slice of all probabilities associated with this
     // equivalence class
     fn probs(&self) -> &ProbMap<f64>;
@@ -210,6 +188,8 @@ impl<T: Clone + Copy> std::ops::Index<usize> for ProbMap<T> {
 /// vector.
 pub struct LongReadEqClassPayload {
     pub ct: u32,
+    /// Summed molecule weights (expected molecules), `ct` when every molecule weighs one.
+    pub wt: f32,
     pub prob_map: ProbMap<f64>,
 }
 
@@ -220,6 +200,7 @@ impl EqClassPayload for LongReadEqClassPayload {
     fn new(label_len: usize) -> Self {
         Self {
             ct: 0,
+            wt: 0.0,
             prob_map: ProbMap::new(label_len),
         }
     }
@@ -228,6 +209,7 @@ impl EqClassPayload for LongReadEqClassPayload {
     fn new_from_count(label_len: usize, ct: u32) -> Self {
         Self {
             ct,
+            wt: ct as f32,
             prob_map: ProbMap::new(label_len),
         }
     }
@@ -237,6 +219,7 @@ impl EqClassPayload for LongReadEqClassPayload {
         debug_assert_eq!(label_len, probs.len());
         Self {
             ct,
+            wt: ct as f32,
             prob_map: ProbMap::new_from_probs(probs),
         }
     }
@@ -249,6 +232,18 @@ impl EqClassPayload for LongReadEqClassPayload {
     #[inline(always)]
     fn inc(&mut self) {
         self.ct += 1;
+        self.wt += 1.0;
+    }
+
+    #[inline(always)]
+    fn inc_by(&mut self, w: f32) {
+        self.ct += 1;
+        self.wt += w;
+    }
+
+    #[inline(always)]
+    fn weight(&self) -> f32 {
+        self.wt
     }
 
     #[inline(always)]
@@ -517,7 +512,7 @@ pub(crate) fn remove_file_if_exists(fname: &Path) -> anyhow::Result<()> {
 
 /// FROM https://github.com/10XGenomics/rust-debruijn/blob/master/src/dna_string.rs
 /// count Hamming distance between 2 2-bit DNA packed u64s
-pub(super) fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
+pub fn count_diff_2_bit_packed(a: u64, b: u64) -> usize {
     let bit_diffs = a ^ b;
     let two_bit_diffs = (bit_diffs | bit_diffs >> 1) & 0x5555555555555555;
     two_bit_diffs.count_ones() as usize

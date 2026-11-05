@@ -93,8 +93,10 @@ statrs = "0.18"
 
 [profile.release]
 #debug = true
-lto = "thin"
-#codegen-units=1
+# fat LTO and a single codegen unit: a slower build, a faster binary (cross-crate inlining of the
+# libradicl record parsers and the hashing / vector code in the hot loops)
+lto = "fat"
+codegen-units = 1
 opt-level = 3
 
 # The profile that 'cargo dist' will build with

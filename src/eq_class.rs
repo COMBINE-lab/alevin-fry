@@ -450,8 +450,38 @@ fn aln_coverage_prob(txp: &CellTxpCoverage, start: u32, end: u32) -> f64 {
     if total_w > 0.0 { (prob_w / total_w).max(1e-8) } else { 1.0 }
 }
 
+/// The denominator of the alignment-score probability `exp((AS - max AS) / D)` (`--as-denominator`).
+static AS_DENOMINATOR: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+
+/// Sets the alignment-score denominator once, before any cell is quantified; later calls are ignored.
+/// `--em-prior uniform`: every molecule's transcript prior is made uniform over its candidates before the EM.
+static UNIFORM_PRIORS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn set_uniform_priors(on: bool) {
+    let _ = UNIFORM_PRIORS.set(on);
+}
+
+/// Replaces a molecule's prior by the uniform one when `--em-prior uniform` was given.
+pub fn uniformize(v: &mut Vec<f64>) {
+    if *UNIFORM_PRIORS.get_or_init(|| false) && v.len() > 1 {
+        let k = v.len() as f64;
+        for p in v.iter_mut() {
+            *p = 1.0 / k;
+        }
+    }
+}
+
+pub fn set_as_denominator(d: f64) {
+    let _ = AS_DENOMINATOR.set(if d.is_finite() && d > 0.0 { d } else { 5.0 });
+}
+
+#[inline]
+fn as_denominator() -> f64 {
+    *AS_DENOMINATOR.get_or_init(|| 5.0)
+}
+
 fn score_probabilities(scores: &[i32]) -> Vec<f64> {
-    const DENOM: f64 = 5.0;
+    let DENOM: f64 = as_denominator();
     //eprintln!("DENOM val: {:?}", DENOM);
     let max_score = *scores.iter().max().unwrap();
 
@@ -704,7 +734,6 @@ pub enum EqMapType {
 pub struct EqMapEntry {
     pub umis: Vec<(u64, u32)>,
     pub eq_num: u32,
-    pub qnames: Vec<Vec<String>>,
 }
 // NOTE: this is _clearly_ redundant with the EqMap below.
 // we should re-factor so that EqMap makes use of this class
@@ -900,7 +929,7 @@ pub struct EqMap {
     pub map_type: EqMapType,
     pub prob_map: Option<ProbMap>,
     // add this info to compute the coverage probabilities after deduplication step in each cell
-    pub alignment_intervals: Option<HashMap<(u32, u64), Vec<AlignmentInterval>>>,
+    pub alignment_intervals: Option<HashMap<(u32, u64), Vec<AlignmentInterval>, ahash::RandomState>>,
 }
 
 // the probability map is an attribute map over f64s
@@ -1154,14 +1183,6 @@ impl EqMap {
         self.eqc_info.len()
     }
 
-    pub fn qnames_for_eq_umi(&self, eqid: u32, umi_rank: usize) -> &[String] {
-        self.eqc_info
-            .get(eqid as usize)
-            .and_then(|e| e.qnames.get(umi_rank))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.eqc_info.clear();
@@ -1270,7 +1291,6 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(cumi, 1)],
                         eq_num: eq_num as u32,
-                        qnames: vec![],
                     });
                     prev_hash = chash;
                 }
@@ -1332,7 +1352,6 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
-                        qnames: vec![],
                     });
                     self.eqid_map.insert(gvec.clone(), eq_num);
                 }
@@ -1508,7 +1527,7 @@ impl EqMap {
         self.eqid_map.clear();
         if capture_intervals {
             self.alignment_intervals
-                .get_or_insert_with(HashMap::new)
+                .get_or_insert_with(|| HashMap::with_hasher(ahash::RandomState::with_seeds(2u64, 7u64, 1u64, 8u64)))
                 .clear();
         } else {
             self.alignment_intervals = None;
@@ -1596,7 +1615,6 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
-                        qnames: vec![],
                     });
                     self.eqid_map.insert(refs.to_vec(), eq_num);
                     if let Some(extras) = maybe_aln_extras {
@@ -1849,7 +1867,6 @@ impl EqMap {
                     self.eqc_info.push(EqMapEntry {
                         umis: vec![(r.umi(), 1)],
                         eq_num,
-                        qnames: vec![],
                     });
                     self.eqid_map.insert(refs.to_vec(), eq_num);
                     if let Some(extras) = maybe_aln_extras {
@@ -1952,6 +1969,11 @@ impl EqMap {
     
 
     /// Returns the probability row (length = label_len) for a specific graph node (eqid, umi_idx).
+    /// The id of the equivalence class with exactly these references, if any.
+    pub fn eq_id_for_refs(&self, refs: &[u32]) -> Option<u32> {
+        self.eqid_map.get(refs).copied()
+    }
+
     pub fn probs_for_eq_umi_tx(
         &self,
         eqid: u32,
