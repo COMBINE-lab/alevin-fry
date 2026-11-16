@@ -205,9 +205,6 @@ fn write_list<W: Write>(
     // umi
     write_barcode(umit, umi, w)?;
 
-    // read-name field: a one-byte length, always 0 (names are not kept in the RAD file; readers
-    // of older files skip the name bytes the length announces)
-    w.write_all(&[0u8])?;
 
     // write per-alignment fields
     for i in 0..na {

@@ -242,3 +242,13 @@ base (the running sum would then be computed differently, so not bit-identical).
 * `pipeline_test.sh <binary> <out dir>`: convert, permit list, collate and quant on the pilot BAM.
 * `umi_general_distance_v2.rs`: the distance module as installed in `src/`.
 * `libradicl_qname_user.patch`: your read-name change to libradicl, as it was before step 2.
+
+## 2026-11-16: no read-name byte, stock libradicl
+
+`convert` no longer writes the one-byte read-name length (always 0) that step 2 had kept for older
+RAD files, so the records are exactly libradicl v0.13.0's long-read records and the crate depends
+on that release from GitHub (`tag = "v0.13.0"`) instead of a locally patched checkout. The two
+reader changes of the local libradicl (copying only a chunk's bytes, sleeping instead of spinning
+while the queue is full) are performance-only and are not part of this branch. Older RAD files
+that carry read names are no longer readable by this build. Verified on a 2 M-read ONT subset:
+same cells, counts within the run-to-run variation of `collate`'s cell order.
